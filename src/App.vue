@@ -1,58 +1,82 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   NConfigProvider,
-  NLayout,
-  NLayoutHeader,
-  NLayoutContent,
-  NSpace,
-  NText,
-  NSwitch,
   NMessageProvider,
+  NDialogProvider,
   darkTheme,
   lightTheme,
 } from 'naive-ui'
-import Dashboard from './components/Dashboard.vue'
+import TitleBar from './components/TitleBar.vue'
+import SideNav from './components/SideNav.vue'
+import QuickLaunch from './components/QuickLaunch.vue'
+import NotesView from './components/NotesView.vue'
+import SettingsView from './components/SettingsView.vue'
+import GlobalSearch from './components/GlobalSearch.vue'
+import { useStore } from './stores/workbench'
 
-const darkMode = ref(false)
+const store = useStore()
+const activeView = ref<'quick' | 'notes' | 'settings'>('quick')
+const searchOpen = ref(false)
+
+const darkMode = computed(() => store.state.config.theme === 'dark')
+
+function handleKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+    e.preventDefault()
+    searchOpen.value = true
+  }
+}
+
+onMounted(async () => {
+  await store.loadInitialData()
+  document.addEventListener('keydown', handleKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleKeydown)
+})
 </script>
 
 <template>
   <n-config-provider :theme="darkMode ? darkTheme : lightTheme">
     <n-message-provider>
-      <n-layout position="absolute" class="full-layout">
-        <n-layout-header bordered class="header">
-          <n-space align="center" justify="space-between">
-            <n-text strong class="title">Tauri2 + Vite + Vue3 + NaiveUI</n-text>
-            <n-space align="center">
-              <n-text depth="3">深色模式</n-text>
-              <n-switch v-model:value="darkMode" />
-            </n-space>
-          </n-space>
-        </n-layout-header>
-        <n-layout-content class="content" content-style="padding: 24px;">
-          <Dashboard />
-        </n-layout-content>
-      </n-layout>
+      <n-dialog-provider>
+        <div class="app-shell" :class="{ 'app-shell--dark': darkMode }">
+          <TitleBar @toggle-search="searchOpen = true" />
+          <div class="app-body">
+            <SideNav v-model:view="activeView" />
+            <main class="app-main">
+              <KeepAlive>
+                <QuickLaunch v-if="activeView === 'quick'" />
+                <NotesView v-else-if="activeView === 'notes'" />
+                <SettingsView v-else />
+              </KeepAlive>
+            </main>
+          </div>
+          <GlobalSearch v-model:open="searchOpen" />
+        </div>
+      </n-dialog-provider>
     </n-message-provider>
   </n-config-provider>
 </template>
 
 <style scoped>
-.full-layout {
+.app-shell {
   height: 100vh;
-}
-.header {
-  padding: 0 24px;
-  height: 56px;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--n-color);
 }
-.title {
-  font-size: 18px;
-}
-.content {
+.app-body {
+  flex: 1;
   display: flex;
-  justify-content: center;
+  min-height: 0;
+}
+.app-main {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
 }
 </style>

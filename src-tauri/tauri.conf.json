@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "tauri-vue3-naiveui",
+  "productName": "personal-workbench",
   "version": "0.1.0",
-  "identifier": "com.example.tauri-vue3-naiveui",
+  "identifier": "com.workbench.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -12,14 +12,16 @@
   "app": {
     "windows": [
       {
-        "title": "Tauri2 + Vue3 + NaiveUI",
-        "width": 1024,
-        "height": 768,
+        "title": "个人效率工作台",
+        "width": 1100,
+        "height": 760,
         "minWidth": 800,
         "minHeight": 600,
         "resizable": true,
         "fullscreen": false,
-        "center": true
+        "center": true,
+        "decorations": false,
+        "shadow": true
       }
     ],
     "security": {

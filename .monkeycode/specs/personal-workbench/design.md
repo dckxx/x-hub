@@ -7,6 +7,11 @@ Updated: 2026-08-01
 
 基于 Tauri 2 + Vite + Vue3 + NaiveUI 构建的本地个人效率工作台桌面客户端。MVP 版本包含窗口基础能力（无边框、托盘常驻、全局快捷键）、快捷启动工作台（本地程序与网页书签）、速记笔记、系统设置四大模块。所有业务数据存于本地 SQLite，基础配置存于本地 JSON 文件，无主动联网上传行为。
 
+### 样式方案
+
+- **NaiveUI**：主 UI 组件库（表单、按钮、弹窗、数据展示等标准组件），主题通过 `NConfigProvider` 切换亮色/暗色。
+- **Tailwind CSS v4**：作为 NaiveUI 的补充样式层，通过 `@tailwindcss/vite` 插件集成，用于 NaiveUI 未覆盖的自定义布局、间距、微交互等场景，避免为简单样式编写手写 CSS。
+
 ## Architecture
 
 ```mermaid

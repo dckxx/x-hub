@@ -52,6 +52,13 @@ pub fn set_note_tags(conn: &Connection, note_id: i64, tag_ids: &[i64]) -> Result
     tx.commit()
 }
 
+/// 笔记-标签全量关联（前端构建筛选映射用）
+pub fn list_note_tags(conn: &Connection) -> Result<Vec<(i64, i64)>> {
+    let mut stmt = conn.prepare("SELECT note_id, tag_id FROM note_tags")?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
+    rows.collect()
+}
+
 fn row_to_tag(row: &rusqlite::Row) -> Result<Tag> {
     Ok(Tag {
         id: row.get(0)?,

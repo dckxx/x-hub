@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { Plus, X } from 'lucide-vue-next'
 import type { Note } from '../api/tauri'
+import { useStore } from '../stores/workbench'
 
 const props = defineProps<{
   notes: readonly Note[]
@@ -14,11 +15,30 @@ const emit = defineEmits<{
   (e: 'delete', id: number): void
 }>()
 
-const sortedNotes = computed(() =>
-  [...props.notes].sort(
+const store = useStore()
+
+// ---- 标签筛选 ----
+const activeTagId = ref<number | null>(null)
+const tagMap = ref<Map<number, number[]>>(new Map()) // note_id -> tag_ids
+
+onMounted(async () => {
+  const rows = await store.loadNoteTagsMap()
+  const map = new Map<number, number[]>()
+  for (const row of rows) {
+    const list = map.get(row.note_id) ?? []
+    list.push(row.tag_id)
+    map.set(row.note_id, list)
+  }
+  tagMap.value = map
+})
+
+const sortedNotes = computed(() => {
+  const list = [...props.notes].sort(
     (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
-  ),
-)
+  )
+  if (activeTagId.value === null) return list
+  return list.filter((n) => tagMap.value.get(n.id)?.includes(activeTagId.value!))
+})
 
 function formatTime(iso: string): string {
   const t = new Date(iso)
@@ -48,6 +68,26 @@ function summary(n: Note): string {
         <Plus :size="15" :stroke-width="2.2" />
       </button>
     </header>
+
+    <!-- 标签筛选（横向滚动） -->
+    <nav v-if="store.state.tags.length > 0" class="tag-filter" aria-label="标签筛选">
+      <button
+        class="tag-filter-item"
+        :class="{ active: activeTagId === null }"
+        @click="activeTagId = null"
+      >
+        全部
+      </button>
+      <button
+        v-for="t in store.state.tags"
+        :key="t.id"
+        class="tag-filter-item"
+        :class="{ active: activeTagId === t.id }"
+        @click="activeTagId = t.id"
+      >
+        {{ t.name }}
+      </button>
+    </nav>
 
     <div v-if="sortedNotes.length > 0" class="nl-body">
       <div
@@ -121,6 +161,40 @@ function summary(n: Note): string {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+/* 标签筛选条 */
+.tag-filter {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 0 4px 8px;
+  margin-bottom: 4px;
+  scrollbar-width: none;
+}
+.tag-filter::-webkit-scrollbar {
+  display: none;
+}
+.tag-filter-item {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.tag-filter-item:hover {
+  background: var(--brand-50);
+  color: var(--brand-500);
+}
+.tag-filter-item.active {
+  background: var(--brand-500);
+  color: #fff;
 }
 .note-item {
   position: relative;

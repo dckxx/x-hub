@@ -54,3 +54,12 @@ fn get(conn: &Connection, id: i64) -> Result<FileEntry> {
         row_to_file,
     )
 }
+
+pub fn search(conn: &Connection, keyword: &str) -> Result<Vec<FileEntry>> {
+    let pattern = format!("%{}%", keyword);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLS} FROM files WHERE name LIKE ?1 ORDER BY created_at DESC, id DESC"
+    ))?;
+    let rows = stmt.query_map(params![pattern], row_to_file)?;
+    rows.collect()
+}

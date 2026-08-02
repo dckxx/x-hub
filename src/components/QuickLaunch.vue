@@ -3,7 +3,7 @@ import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { FilePlus, FolderPlus, Pencil, Plus, Trash2 } from 'lucide-vue-next'
-import { isTauri, tauriApi, type Resource } from '../api/tauri'
+import { isTauri, tauriApi, type Group, type Resource } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 import GroupFormDialog from './GroupFormDialog.vue'
@@ -70,77 +70,83 @@ const visibleResources = computed(() => {
   return store.state.resources.filter((r) => r.group_id === activeGroupId.value)
 })
 
-// ---- 拖拽排序（分组 tabs） ----
+// ---- 拖拽排序（分组 tabs，视觉占位模式） ----
 const dragGroupId = ref<number | null>(null)
-const localGroupOrder = ref<number[] | null>(null)
+const dragGroupIndex = ref<number | null>(null)
 
 const displayGroups = computed(() => {
-  if (!localGroupOrder.value) return store.state.groups
-  return localGroupOrder.value
-    .map((id) => store.state.groups.find((g) => g.id === id))
-    .filter((g): g is NonNullable<typeof g> => !!g)
+  const base = store.state.groups
+  if (dragGroupId.value === null) return base
+  const list = base.filter((g) => g.id !== dragGroupId.value)
+  const idx = dragGroupIndex.value ?? list.length
+  const result: (Group | null)[] = [...list.slice(0, idx), null, ...list.slice(idx)]
+  return result
 })
 
 function onGroupDragStart(gid: number) {
   dragGroupId.value = gid
-  localGroupOrder.value = store.state.groups.map((g) => g.id)
+  dragGroupIndex.value = null
 }
 
-function onGroupDragOver(gid: number) {
-  if (dragGroupId.value === null || !localGroupOrder.value) return
-  const order = localGroupOrder.value
-  const from = order.indexOf(dragGroupId.value)
-  const to = order.indexOf(gid)
-  if (from === -1 || to === -1 || from === to) return
-  order.splice(from, 1)
-  order.splice(to, 0, dragGroupId.value)
-  localGroupOrder.value = [...order]
+function onGroupDragOver(e: DragEvent, gid: number) {
+  if (dragGroupId.value === null) return
+  const list = store.state.groups.filter((g) => g.id !== dragGroupId.value)
+  let idx = list.findIndex((g) => g.id === gid)
+  const el = e.currentTarget as HTMLElement
+  if (e.offsetY > el.offsetHeight / 2) idx += 1
+  dragGroupIndex.value = idx
 }
 
 async function onGroupDragEnd() {
-  if (localGroupOrder.value) {
-    await store.moveGroups(localGroupOrder.value)
+  if (dragGroupId.value !== null) {
+    const order = displayGroups.value
+      .filter((g): g is Group => g !== null)
+      .map((g) => g.id)
+    await store.moveGroups(order)
   }
   dragGroupId.value = null
-  localGroupOrder.value = null
+  dragGroupIndex.value = null
 }
 
-// ---- 拖拽排序（资源卡片） ----
+// ---- 拖拽排序（资源卡片，视觉占位模式） ----
 const dragResId = ref<number | null>(null)
-const localResOrder = ref<number[] | null>(null)
+const dragResIndex = ref<number | null>(null)
 
 const displayResources = computed(() => {
-  if (!localResOrder.value) return visibleResources.value
-  return localResOrder.value
-    .map((id) => visibleResources.value.find((r) => r.id === id))
-    .filter((r): r is NonNullable<typeof r> => !!r)
+  const base = visibleResources.value
+  if (dragResId.value === null) return base
+  const list = base.filter((r) => r.id !== dragResId.value)
+  const idx = dragResIndex.value ?? list.length
+  const result: (Resource | null)[] = [...list.slice(0, idx), null, ...list.slice(idx)]
+  return result
 })
 
 function onResDragStart(rid: number) {
   dragResId.value = rid
-  localResOrder.value = visibleResources.value.map((r) => r.id)
+  dragResIndex.value = null
 }
 
-function onResDragOver(rid: number) {
-  if (dragResId.value === null || !localResOrder.value) return
-  const order = localResOrder.value
-  const from = order.indexOf(dragResId.value)
-  const to = order.indexOf(rid)
-  if (from === -1 || to === -1 || from === to) return
-  order.splice(from, 1)
-  order.splice(to, 0, dragResId.value)
-  localResOrder.value = [...order]
+function onResDragOver(e: DragEvent, rid: number) {
+  if (dragResId.value === null) return
+  const list = visibleResources.value.filter((r) => r.id !== dragResId.value)
+  let idx = list.findIndex((r) => r.id === rid)
+  const el = e.currentTarget as HTMLElement
+  if (e.offsetY > el.offsetHeight / 2) idx += 1
+  dragResIndex.value = idx
 }
 
 async function onResDragEnd() {
-  if (localResOrder.value) {
+  if (dragResId.value !== null) {
+    const order = displayResources.value
+      .filter((r): r is Resource => r !== null)
+      .map((r) => r.id)
     const groupId = activeGroupId.value === 'all' ? null : activeGroupId.value
     if (groupId !== null) {
-      await store.moveResources(groupId, localResOrder.value)
+      await store.moveResources(groupId, order)
     }
   }
   dragResId.value = null
-  localResOrder.value = null
+  dragResIndex.value = null
 }
 
 // ---- 右键菜单 ----
@@ -327,7 +333,7 @@ function showImageIcon(r: Resource): boolean {
       </div>
     </header>
 
-    <!-- 分组 tabs（可拖拽排序） -->
+    <!-- 分组 tabs（可拖拽排序，占位模式） -->
     <nav class="group-tabs" aria-label="资源分组">
       <button
         class="group-tab"
@@ -336,41 +342,52 @@ function showImageIcon(r: Resource): boolean {
       >
         全部
       </button>
-      <button
-        v-for="g in displayGroups"
-        :key="g.id"
-        class="group-tab"
-        :class="{
-          active: activeGroupId === g.id,
-          dragging: dragGroupId === g.id,
-        }"
-        draggable="true"
-        @click="activeGroupId = g.id"
-        @contextmenu="onGroupContext($event, g.id)"
-        @dragstart="onGroupDragStart(g.id)"
-        @dragover.prevent="onGroupDragOver(g.id)"
-        @dragend="onGroupDragEnd"
-      >
-        {{ g.name }}
-      </button>
+      <template v-for="(g, i) in displayGroups" :key="g ? g.id : 'group-ph-' + i">
+        <span
+          v-if="g === null"
+          class="group-placeholder"
+          aria-hidden="true"
+        ></span>
+        <button
+          v-else
+          class="group-tab"
+          :class="{
+            active: activeGroupId === g.id,
+            dragging: dragGroupId === g.id,
+          }"
+          draggable="true"
+          @click="activeGroupId = g.id"
+          @contextmenu="onGroupContext($event, g.id)"
+          @dragstart="onGroupDragStart(g.id)"
+          @dragover.prevent="onGroupDragOver($event, g.id)"
+          @dragend="onGroupDragEnd"
+        >
+          {{ g.name }}
+        </button>
+      </template>
     </nav>
 
-    <!-- 资源网格（可拖拽排序） -->
+    <!-- 资源网格（可拖拽排序，占位模式） -->
     <div class="ql-body">
-      <div v-if="displayResources.length > 0" class="resource-grid">
-        <div
-          v-for="r in displayResources"
-          :key="r.id"
-          class="res-card"
-          :class="{ dragging: dragResId === r.id }"
-          :title="r.target"
-          draggable="true"
-          @click="onLaunch(r)"
-          @contextmenu="onResourceContext($event, r)"
-          @dragstart="onResDragStart(r.id)"
-          @dragover.prevent="onResDragOver(r.id)"
-          @dragend="onResDragEnd"
-        >
+      <div v-if="visibleResources.length > 0" class="resource-grid">
+        <template v-for="(r, i) in displayResources" :key="r ? r.id : 'res-ph-' + i">
+          <div
+            v-if="r === null"
+            class="res-card placeholder"
+            aria-hidden="true"
+          ></div>
+          <div
+            v-else
+            class="res-card"
+            :class="{ dragging: dragResId === r.id }"
+            :title="r.target"
+            draggable="true"
+            @click="onLaunch(r)"
+            @contextmenu="onResourceContext($event, r)"
+            @dragstart="onResDragStart(r.id)"
+            @dragover.prevent="onResDragOver($event, r.id)"
+            @dragend="onResDragEnd"
+          >
           <div class="res-actions">
             <button
               class="res-action"
@@ -413,7 +430,8 @@ function showImageIcon(r: Resource): boolean {
             <span class="res-kind" :class="r.kind">·</span>
           </div>
           <span class="res-name">{{ r.name }}</span>
-        </div>
+          </div>
+        </template>
       </div>
 
       <div v-else class="empty-state">
@@ -553,6 +571,14 @@ function showImageIcon(r: Resource): boolean {
 .group-tab:active {
   cursor: grabbing;
 }
+.group-placeholder {
+  flex-shrink: 0;
+  width: 48px;
+  height: 26px;
+  border: 2px dashed var(--brand-500);
+  border-radius: var(--radius-pill);
+  opacity: 0.6;
+}
 
 /* 资源网格 */
 .ql-body {
@@ -584,6 +610,13 @@ function showImageIcon(r: Resource): boolean {
 .res-card.dragging {
   opacity: 0.4;
   transform: scale(0.96);
+}
+.res-card.placeholder {
+  border: 2px dashed var(--brand-500);
+  background: var(--brand-50);
+  opacity: 0.6;
+  min-height: 108px;
+  cursor: default;
 }
 .res-actions {
   position: absolute;

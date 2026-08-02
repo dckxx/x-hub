@@ -228,13 +228,36 @@ pub fn search_all(state: State<'_, DbState>, keyword: String) -> Result<SearchRe
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let resources = resource::search(&conn, &keyword).map_err(err_str)?;
     let notes = note::search(&conn, &keyword).map_err(err_str)?;
+    let files = file::search(&conn, &keyword).map_err(err_str)?;
     log::debug!(
-        "全局搜索「{}」: 资源 {} 条, 笔记 {} 条",
+        "全局搜索「{}」: 资源 {} 条, 笔记 {} 条, 文件 {} 条",
         keyword,
         resources.len(),
-        notes.len()
+        notes.len(),
+        files.len()
     );
-    Ok(SearchResult { resources, notes })
+    Ok(SearchResult {
+        resources,
+        notes,
+        files,
+    })
+}
+
+/// 笔记-标签全量关联（列表筛选用）
+#[tauri::command]
+pub fn list_note_tags(state: State<'_, DbState>) -> Result<Vec<NoteTagRow>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let rows = tag::list_note_tags(&conn).map_err(err_str)?;
+    Ok(rows
+        .into_iter()
+        .map(|(note_id, tag_id)| NoteTagRow { note_id, tag_id })
+        .collect())
+}
+
+#[derive(serde::Serialize)]
+pub struct NoteTagRow {
+    pub note_id: i64,
+    pub tag_id: i64,
 }
 
 // ---------- 配置 ----------

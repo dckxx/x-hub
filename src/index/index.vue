@@ -10,7 +10,7 @@ import AppDock from '../components/AppDock.vue'
 import GlobalSearch from '../components/GlobalSearch.vue'
 import SettingsDialog from '../components/SettingsDialog.vue'
 import { useStore } from '../stores/workbench'
-import type { Note, Resource } from '../api/tauri'
+import type { FileEntry, Note, Resource } from '../api/tauri'
 
 const store = useStore()
 
@@ -80,6 +80,15 @@ function onOpenNote(n: Note) {
   searchVisible.value = false
 }
 
+async function onOpenFile(f: FileEntry) {
+  searchVisible.value = false
+  try {
+    await store.openFile(f.path)
+  } catch (e) {
+    showToast(`无法打开「${f.name}」：${String(e)}`)
+  }
+}
+
 // ---- 轻提示 ----
 const toastMsg = ref('')
 let toastTimer: ReturnType<typeof setTimeout> | null = null
@@ -134,6 +143,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
       @close="searchVisible = false"
       @open-resource="onOpenResource"
       @open-note="onOpenNote"
+      @open-file="onOpenFile"
     />
     <SettingsDialog
       :visible="settingsVisible"

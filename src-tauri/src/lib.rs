@@ -272,6 +272,7 @@ pub fn run() {
             commands::delete_tag,
             commands::get_note_tags,
             commands::set_note_tags,
+            commands::list_note_tags,
             commands::backup_data,
             commands::restore_data,
         ])

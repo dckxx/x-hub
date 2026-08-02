@@ -70,6 +70,12 @@ export interface InitialData {
 export interface SearchResult {
   resources: Resource[]
   notes: Note[]
+  files: FileEntry[]
+}
+
+export interface NoteTagRow {
+  note_id: number
+  tag_id: number
 }
 
 export interface DroppedAppInfo {
@@ -149,6 +155,7 @@ export const tauriApi = {
   getNoteTags: (noteId: number) => invoke<Tag[]>('get_note_tags', { noteId }),
   setNoteTags: (noteId: number, tagIds: number[]) =>
     invoke<void>('set_note_tags', { noteId, tagIds }),
+  listNoteTags: () => invoke<NoteTagRow[]>('list_note_tags'),
   backupData: (targetDir: string) => invoke<void>('backup_data', { targetDir }),
   restoreData: (sourceDir: string) => invoke<void>('restore_data', { sourceDir }),
   saveConfig: (config: AppConfig) => invoke<AppConfig>('save_config', { config }),

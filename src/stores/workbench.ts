@@ -150,7 +150,8 @@ export function useStore() {
   }
 
   async function searchAll(keyword: string) {
-    if (!isTauri()) return { resources: [] as Resource[], notes: [] as Note[] }
+    if (!isTauri())
+      return { resources: [] as Resource[], notes: [] as Note[], files: [] as FileEntry[] }
     return tauriApi.searchAll(keyword)
   }
 
@@ -189,6 +190,12 @@ export function useStore() {
     state.tags = state.tags.filter((x) => x.id !== id)
   }
 
+  // ---- 笔记-标签关联（列表筛选用） ----
+  async function loadNoteTagsMap() {
+    if (!isTauri()) return []
+    return tauriApi.listNoteTags()
+  }
+
   // ---- 配置 ----
   async function setTheme(theme: 'light' | 'dark') {
     state.config.theme = theme
@@ -225,6 +232,7 @@ export function useStore() {
     openFile,
     createTag,
     deleteTag,
+    loadNoteTagsMap,
     setTheme,
     setAlwaysOnTop,
   }

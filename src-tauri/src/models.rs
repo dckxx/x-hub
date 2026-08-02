@@ -44,6 +44,7 @@ pub struct Note {
 pub struct SearchResult {
     pub resources: Vec<Resource>,
     pub notes: Vec<Note>,
+    pub files: Vec<FileEntry>,
 }
 
 /// 文件管理条目（仅存储链接，不复制源文件）

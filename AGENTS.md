@@ -25,7 +25,7 @@ x-hub/
 │       ├── NoteEditor.vue      # 笔记编辑弹窗（600ms 防抖自动保存）
 │       ├── FileManager.vue     # 文件管理：分类 tabs（选中黑底）+ 文件链接网格
 │       ├── FileFormDialog.vue  # 新增/编辑文件链接弹窗（文件夹/文件 + 自动分类）
-│       ├── GlobalSearch.vue    # Ctrl+K 全局搜索弹窗（300ms 防抖）
+│       ├── GlobalSearch.vue    # Ctrl+K 全局搜索弹窗（资源/笔记/文件 + 300ms 防抖）
 │       ├── SettingsDialog.vue  # 设置弹窗（亮/暗主题、窗口置顶）
 │       ├── ResourceFormDialog.vue  # 新增/编辑资源弹窗（app/web + 文件选择）
 │       ├── GroupFormDialog.vue     # 新建/重命名分组弹窗
@@ -131,5 +131,4 @@ npm run tauri:build   # 构建桌面应用（产物在 src-tauri/target/release/
 
 ## 待实现
 
-- 拖拽排序的视觉占位优化（当前为实时换位排序，逻辑已通）
-- 笔记标签的列表筛选（标签管理已在编辑弹窗内）
+- 暂无排期需求；可探索方向：拖拽排序的动效打磨、键盘导航（spec §5）、前端单元测试、打包发布全流程验证（tauri:build）

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Search } from 'lucide-vue-next'
-import type { Note, Resource } from '../api/tauri'
+import type { FileEntry, Note, Resource } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 
 const props = defineProps<{
@@ -12,14 +12,16 @@ const emit = defineEmits<{
   (e: 'close'): void
   (e: 'openResource', r: Resource): void
   (e: 'openNote', n: Note): void
+  (e: 'openFile', f: FileEntry): void
 }>()
 
 const store = useStore()
 
 const keyword = ref('')
-const results = ref<{ resources: Resource[]; notes: Note[] }>({
+const results = ref<{ resources: Resource[]; notes: Note[]; files: FileEntry[] }>({
   resources: [],
   notes: [],
+  files: [],
 })
 const searched = ref(false)
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -31,7 +33,7 @@ watch(
   (v) => {
     if (v) {
       keyword.value = ''
-      results.value = { resources: [], notes: [] }
+      results.value = { resources: [], notes: [], files: [] }
       searched.value = false
       setTimeout(() => inputRef.value?.focus(), 30)
     }
@@ -42,7 +44,7 @@ watch(keyword, (kw) => {
   if (searchTimer) clearTimeout(searchTimer)
   const trimmed = kw.trim()
   if (!trimmed) {
-    results.value = { resources: [], notes: [] }
+    results.value = { resources: [], notes: [], files: [] }
     searched.value = false
     return
   }
@@ -113,17 +115,37 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               </div>
             </template>
 
+            <!-- 文件 -->
+            <template v-if="results.files.length > 0">
+              <p class="result-group-title">文件</p>
+              <div
+                v-for="f in results.files"
+                :key="'f' + f.id"
+                class="result-item"
+                @click="emit('openFile', f)"
+              >
+                <span class="result-badge file-badge">文件</span>
+                <span class="result-name">{{ f.name }}</span>
+                <span class="result-sub">{{ f.path }}</span>
+              </div>
+            </template>
+
             <!-- 状态 -->
-            <div v-if="searched && results.resources.length === 0 && results.notes.length === 0" class="empty-state">
+            <div v-if="searched && results.resources.length === 0 && results.notes.length === 0 && results.files.length === 0" class="empty-state">
               <span style="font-size: 26px">🔍</span>
               <p>未找到「{{ keyword.trim() }}」相关内容</p>
             </div>
             <div
               v-else-if="!keyword.trim()"
               class="empty-state"
-              style="padding: 28px 16px"
+              style="padding: 24px 16px"
             >
-              <p style="color: var(--text-4)">输入关键词检索快捷资源与笔记</p>
+              <p style="color: var(--text-4)">输入关键词检索快捷资源、笔记与文件</p>
+              <div class="shortcut-hints">
+                <span><kbd>Ctrl</kbd> + <kbd>K</kbd> 唤起搜索</span>
+                <span><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> 显示/隐藏窗口</span>
+                <span><kbd>Esc</kbd> 关闭</span>
+              </div>
             </div>
           </div>
         </div>
@@ -236,6 +258,26 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .note-badge {
   background: var(--c-yellow);
   color: #7c5e00;
+}
+.file-badge {
+  background: var(--c-purple);
+}
+.shortcut-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.shortcut-hints kbd {
+  font-family: inherit;
+  font-size: 11px;
+  background: var(--bg-card-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  padding: 1px 6px;
+  color: var(--text-2);
 }
 .result-name {
   flex-shrink: 0;

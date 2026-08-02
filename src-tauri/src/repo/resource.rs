@@ -36,6 +36,7 @@ pub fn get(conn: &Connection, id: i64) -> Result<Resource> {
     )
 }
 
+#[cfg(test)]
 pub fn list_by_group(conn: &Connection, group_id: i64) -> Result<Vec<Resource>> {
     let mut stmt = conn.prepare(
         "SELECT id, group_id, kind, name, target, icon, args, sort_order, created_at, updated_at FROM resources WHERE group_id = ?1 ORDER BY sort_order ASC, id ASC",

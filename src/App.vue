@@ -1,81 +1,194 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import TitleBar from './components/TitleBar.vue'
-import ProfileCard from './components/ProfileCard.vue'
-import NewsCard from './components/NewsCard.vue'
-import WeatherCard from './components/WeatherCard.vue'
-import CalendarCard from './components/CalendarCard.vue'
-import NotesRow from './components/NotesRow.vue'
-import FileCard from './components/FileCard.vue'
-import Taskbar from './components/Taskbar.vue'
+import QuickLaunch from './components/QuickLaunch.vue'
+import NoteList from './components/NoteList.vue'
+import NoteEditor from './components/NoteEditor.vue'
+import AppDock from './components/AppDock.vue'
+import GlobalSearch from './components/GlobalSearch.vue'
+import SettingsDialog from './components/SettingsDialog.vue'
+import { useStore } from './stores/workbench'
+import type { Note, Resource } from './api/tauri'
 
-const appContainer = ref<HTMLElement | null>(null)
+const store = useStore()
 
-function scaleApp() {
-  const viewport = document.getElementById('viewport')
-  const app = appContainer.value
-  if (!viewport || !app) return
-  const scale = Math.min(viewport.clientWidth / 1440, viewport.clientHeight / 900)
-  app.style.transform = `scale(${scale})`
+// ---- 主题（跟随配置，持久化） ----
+const theme = computed(() => store.state.config.theme)
+watch(
+  theme,
+  (t) => {
+    document.documentElement.dataset.theme = t === 'dark' ? 'dark' : ''
+  },
+  { immediate: true },
+)
+
+// ---- 启动加载 ----
+onMounted(() => {
+  store.loadInitialData()
+})
+
+// ---- 笔记选中与操作 ----
+const activeNoteId = ref<number | null>(null)
+
+const activeNote = computed(
+  () => store.state.notes.find((n) => n.id === activeNoteId.value) ?? null,
+)
+
+async function onCreateNote() {
+  const n = await store.addNote('无标题笔记')
+  activeNoteId.value = n.id
 }
 
-onMounted(() => {
-  scaleApp()
-  window.addEventListener('resize', scaleApp)
-})
+function onSelectNote(id: number) {
+  activeNoteId.value = id
+}
 
-onUnmounted(() => {
-  window.removeEventListener('resize', scaleApp)
-})
+async function onDeleteNote(id: number) {
+  await store.removeNote(id)
+  if (activeNoteId.value === id) activeNoteId.value = null
+  showToast('笔记已删除')
+}
+
+function onSaveNote(id: number, title: string, content: string) {
+  store.saveNote(id, title, content)
+}
+
+// ---- 全局搜索 / 设置 ----
+const searchVisible = ref(false)
+const settingsVisible = ref(false)
+
+function onSearchKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    searchVisible.value = !searchVisible.value
+  }
+}
+
+async function onOpenResource(r: Resource) {
+  searchVisible.value = false
+  try {
+    await store.launchResource(r.id)
+  } catch {
+    showToast(`无法启动「${r.name}」，请检查路径`)
+  }
+}
+
+function onOpenNote(n: Note) {
+  activeNoteId.value = n.id
+  searchVisible.value = false
+}
+
+// ---- 轻提示 ----
+const toastMsg = ref('')
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+
+function showToast(msg: string) {
+  toastMsg.value = msg
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    toastMsg.value = ''
+  }, 2200)
+}
+
+provide('showToast', showToast)
+
+onMounted(() => window.addEventListener('keydown', onSearchKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 </script>
 
 <template>
-  <div id="viewport">
-    <div id="app-container" ref="appContainer">
-      <TitleBar />
-      <main class="workspace">
-        <div class="content-grid">
-          <section class="column column-left">
-            <ProfileCard />
-            <NewsCard />
-            <WeatherCard />
-          </section>
-          <section class="column column-middle">
-            <CalendarCard />
-            <NotesRow />
-          </section>
-          <section class="column column-right">
-            <FileCard />
-          </section>
-        </div>
-        <Taskbar />
-      </main>
-    </div>
+  <div class="app-shell">
+    <TitleBar
+      @search="searchVisible = true"
+      @settings="settingsVisible = true"
+    />
+
+    <main class="main-area">
+      <QuickLaunch />
+      <NoteList
+        :notes="store.state.notes"
+        :active-id="activeNoteId"
+        @select="onSelectNote"
+        @create="onCreateNote"
+        @delete="onDeleteNote"
+      />
+      <NoteEditor
+        :note="activeNote"
+        @save="onSaveNote"
+        @delete="onDeleteNote"
+      />
+    </main>
+
+    <AppDock />
+
+    <GlobalSearch
+      :visible="searchVisible"
+      @close="searchVisible = false"
+      @open-resource="onOpenResource"
+      @open-note="onOpenNote"
+    />
+    <SettingsDialog
+      :visible="settingsVisible"
+      @close="settingsVisible = false"
+    />
+
+    <Transition name="toast">
+      <div v-if="toastMsg" class="toast">{{ toastMsg }}</div>
+    </Transition>
   </div>
 </template>
 
 <style scoped>
-.workspace {
-  flex: 1;
+.app-shell {
+  height: 100vh;
   display: flex;
   flex-direction: column;
-  padding: 32px;
-  gap: 24px;
+  background: var(--bg-page);
+  border-radius: 8px;
   overflow: hidden;
+  position: relative;
 }
-.content-grid {
+
+.main-area {
   flex: 1;
-  display: flex;
-  gap: 24px;
-  overflow: hidden;
-}
-.column {
-  display: flex;
-  flex-direction: column;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 360px 240px minmax(0, 1fr);
   gap: 16px;
-  height: 100%;
+  padding: 16px 20px 88px;
 }
-.column-left { width: 300px; flex-shrink: 0; }
-.column-middle { width: 460px; flex-shrink: 0; }
-.column-right { flex: 1; min-width: 0; }
+.main-area > * {
+  min-height: 0;
+  min-width: 0;
+}
+
+/* 轻提示 */
+.toast {
+  position: fixed;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 500;
+  background: var(--text-1);
+  color: var(--bg-card);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 9px 18px;
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-dock);
+  max-width: 70vw;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+}
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-8px);
+}
 </style>

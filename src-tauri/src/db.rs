@@ -9,6 +9,7 @@ pub fn init(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+#[cfg(test)]
 pub fn init_in_memory() -> Result<Connection> {
     let conn = Connection::open_in_memory()?;
     conn.pragma_update(None, "foreign_keys", "ON")?;

@@ -1,82 +1,81 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import {
-  NConfigProvider,
-  NMessageProvider,
-  NDialogProvider,
-  darkTheme,
-  lightTheme,
-} from 'naive-ui'
+import { onMounted, onUnmounted, ref } from 'vue'
 import TitleBar from './components/TitleBar.vue'
-import SideNav from './components/SideNav.vue'
-import QuickLaunch from './components/QuickLaunch.vue'
-import NotesView from './components/NotesView.vue'
-import SettingsView from './components/SettingsView.vue'
-import GlobalSearch from './components/GlobalSearch.vue'
-import { useStore } from './stores/workbench'
+import ProfileCard from './components/ProfileCard.vue'
+import NewsCard from './components/NewsCard.vue'
+import WeatherCard from './components/WeatherCard.vue'
+import CalendarCard from './components/CalendarCard.vue'
+import NotesRow from './components/NotesRow.vue'
+import FileCard from './components/FileCard.vue'
+import Taskbar from './components/Taskbar.vue'
 
-const store = useStore()
-const activeView = ref<'quick' | 'notes' | 'settings'>('quick')
-const searchOpen = ref(false)
+const appContainer = ref<HTMLElement | null>(null)
 
-const darkMode = computed(() => store.state.config.theme === 'dark')
-
-function handleKeydown(e: KeyboardEvent) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-    e.preventDefault()
-    searchOpen.value = true
-  }
+function scaleApp() {
+  const viewport = document.getElementById('viewport')
+  const app = appContainer.value
+  if (!viewport || !app) return
+  const scale = Math.min(viewport.clientWidth / 1440, viewport.clientHeight / 900)
+  app.style.transform = `scale(${scale})`
 }
 
-onMounted(async () => {
-  await store.loadInitialData()
-  document.addEventListener('keydown', handleKeydown)
+onMounted(() => {
+  scaleApp()
+  window.addEventListener('resize', scaleApp)
 })
 
 onUnmounted(() => {
-  document.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('resize', scaleApp)
 })
 </script>
 
 <template>
-  <n-config-provider :theme="darkMode ? darkTheme : lightTheme">
-    <n-message-provider>
-      <n-dialog-provider>
-        <div class="app-shell" :class="{ 'app-shell--dark': darkMode }">
-          <TitleBar @toggle-search="searchOpen = true" />
-          <div class="app-body">
-            <SideNav v-model:view="activeView" />
-            <main class="app-main">
-              <KeepAlive>
-                <QuickLaunch v-if="activeView === 'quick'" />
-                <NotesView v-else-if="activeView === 'notes'" />
-                <SettingsView v-else />
-              </KeepAlive>
-            </main>
-          </div>
-          <GlobalSearch v-model:open="searchOpen" />
+  <div id="viewport">
+    <div id="app-container" ref="appContainer">
+      <TitleBar />
+      <main class="workspace">
+        <div class="content-grid">
+          <section class="column column-left">
+            <ProfileCard />
+            <NewsCard />
+            <WeatherCard />
+          </section>
+          <section class="column column-middle">
+            <CalendarCard />
+            <NotesRow />
+          </section>
+          <section class="column column-right">
+            <FileCard />
+          </section>
         </div>
-      </n-dialog-provider>
-    </n-message-provider>
-  </n-config-provider>
+        <Taskbar />
+      </main>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.app-shell {
-  height: 100vh;
+.workspace {
+  flex: 1;
   display: flex;
   flex-direction: column;
+  padding: 32px;
+  gap: 24px;
   overflow: hidden;
-  background-color: var(--n-color);
 }
-.app-body {
+.content-grid {
   flex: 1;
   display: flex;
-  min-height: 0;
+  gap: 24px;
+  overflow: hidden;
 }
-.app-main {
-  flex: 1;
-  min-width: 0;
-  overflow: auto;
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
 }
+.column-left { width: 300px; flex-shrink: 0; }
+.column-middle { width: 460px; flex-shrink: 0; }
+.column-right { flex: 1; min-width: 0; }
 </style>

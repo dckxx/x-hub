@@ -1,10 +1,5 @@
 <script setup lang="ts">
-import { NButton, NSpace } from 'naive-ui'
-import { tauriApi, isTauri } from '../api/tauri'
-
-const emit = defineEmits<{
-  (e: 'toggle-search'): void
-}>()
+import { isTauri, tauriApi } from '../api/tauri'
 
 function minimize() {
   if (isTauri()) tauriApi.minimizeWindow()
@@ -17,34 +12,33 @@ function toggleMaximize() {
 function close() {
   if (isTauri()) tauriApi.hideToTray()
 }
-
-function onSearch() {
-  emit('toggle-search')
-}
 </script>
 
 <template>
   <div class="title-bar" data-tauri-drag-region>
-    <div class="title-bar__left">
-      <span class="title-bar__logo">WB</span>
-      <span class="title-bar__title">个人效率工作台</span>
+    <div class="window-title">
+      <svg width="18" height="18" viewBox="0 0 32 32" fill="none">
+        <rect width="32" height="32" rx="6" fill="#4F46E5"/>
+        <path d="M8 16h16M16 8v16" stroke="white" stroke-width="3" stroke-linecap="round"/>
+      </svg>
+      <span class="title-text">x-hub</span>
     </div>
-    <div class="title-bar__actions">
-      <NButton text class="title-bar__search-btn" title="全局搜索 (Ctrl+K)" @click="onSearch">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-        <span class="title-bar__search-hint">Ctrl K</span>
-      </NButton>
-      <NSpace class="title-bar__win-btns" :size="0">
-        <button class="win-btn" title="最小化" @click="minimize">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
-        </button>
-        <button class="win-btn" title="最大化/还原" @click="toggleMaximize">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="1"/></svg>
-        </button>
-        <button class="win-btn win-btn--close" title="关闭（最小化至托盘）" @click="close">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-        </button>
-      </NSpace>
+    <div class="window-controls">
+      <button class="win-btn minimize" title="最小化" @click="minimize">
+        <svg width="46" height="40" viewBox="0 0 46 40" fill="none">
+          <path d="M17 21h12" stroke="#4B5563" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <button class="win-btn maximize" title="最大化/还原" @click="toggleMaximize">
+        <svg width="46" height="40" viewBox="0 0 46 40" fill="none">
+          <rect x="17" y="14" width="12" height="10" rx="1" stroke="#4B5563" stroke-width="1.5"/>
+        </svg>
+      </button>
+      <button class="win-btn close" title="关闭（最小化至托盘）" @click="close">
+        <svg width="46" height="40" viewBox="0 0 46 40" fill="none">
+          <path d="M18 15l10 10M28 15L18 25" stroke="#4B5563" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </button>
     </div>
   </div>
 </template>
@@ -52,76 +46,43 @@ function onSearch() {
 <style scoped>
 .title-bar {
   height: 40px;
+  background: var(--titlebar);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 8px 0 14px;
-  -webkit-user-select: none;
-  user-select: none;
-  border-bottom: 1px solid rgba(127, 127, 127, 0.15);
+  padding-left: 16px;
+  flex-shrink: 0;
+  border-radius: 8px 8px 0 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
-.title-bar__left {
+.window-title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
-.title-bar__logo {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: linear-gradient(135deg, #18a058 0%, #2080f0 100%);
-  color: #fff;
-  font-size: 10px;
+.title-text {
+  font-size: 14px;
   font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.2px;
+}
+.window-controls {
   display: flex;
   align-items: center;
-  justify-content: center;
-}
-.title-bar__title {
-  font-size: 13px;
-  font-weight: 500;
-}
-.title-bar__actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.title-bar__search-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-}
-.title-bar__search-btn:hover {
-  background-color: rgba(127, 127, 127, 0.12);
-}
-.title-bar__search-hint {
-  font-size: 11px;
-  opacity: 0.6;
-}
-.title-bar__win-btns {
-  display: flex;
+  height: 100%;
 }
 .win-btn {
-  width: 42px;
-  height: 32px;
+  width: 46px;
+  height: 100%;
   border: none;
   background: transparent;
-  color: inherit;
-  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.8;
+  cursor: pointer;
+  transition: background 0.15s;
 }
-.win-btn:hover {
-  background-color: rgba(127, 127, 127, 0.15);
-}
-.win-btn--close:hover {
-  background-color: #e81123;
-  color: #fff;
-  opacity: 1;
-}
+.win-btn:hover { background: rgba(0, 0, 0, 0.04); }
+.win-btn.close:hover { background: #E81123; }
+.win-btn.close:hover svg path { stroke: #fff; }
 </style>

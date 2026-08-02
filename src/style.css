@@ -1,21 +1,47 @@
 @import "tailwindcss";
 
 :root {
-  font-family: 'v-sans', system-ui, -apple-system, sans-serif;
-  color: #213547;
-  background-color: #ffffff;
+  --bg-start: #F0F4F9;
+  --bg-mid: #E8EEF7;
+  --bg-end: #F5F7FB;
+  --surface: #FFFFFF;
+  --titlebar: #FFFFFF;
+  --text-primary: #1A1A2E;
+  --text-secondary: #4B5563;
+  --text-tertiary: #6B7280;
+  --text-muted: #9CA3AF;
+  --border: #E5E7EB;
+  --accent: #4F46E5;
+  --accent-light: #EEF2FF;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 2px 8px rgba(15, 23, 42, 0.04), 0 6px 24px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 8px 32px rgba(15, 23, 42, 0.10), 0 2px 8px rgba(15, 23, 42, 0.04);
+  --shadow-float: 0 16px 48px rgba(15, 23, 42, 0.14);
+  --radius-sm: 8px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%; height: 100%; overflow: hidden;
+  background: linear-gradient(160deg, #E0E7F1 0%, #EEF2F8 40%, #F7F9FC 100%);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+#viewport {
+  width: 100vw; height: 100vh;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
 }
 
-html,
-body,
-#app {
-  height: 100%;
+#app-container {
+  width: 1440px; height: 900px;
+  background: linear-gradient(180deg, var(--bg-start) 0%, var(--bg-mid) 50%, var(--bg-end) 100%);
+  border-radius: 8px;
+  box-shadow: var(--shadow-float), 0 0 0 1px rgba(255, 255, 255, 0.6) inset;
+  display: flex; flex-direction: column;
+  transform-origin: top left; overflow: hidden;
 }

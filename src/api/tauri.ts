@@ -17,6 +17,7 @@ export interface Resource {
   icon: string | null
   args: string | null
   sort_order: number
+  last_launched_at: string | null
   created_at: string
   updated_at: string
 }
@@ -42,10 +43,27 @@ export interface AppConfig {
   window: WindowState
 }
 
+export interface FileEntry {
+  id: number
+  name: string
+  path: string
+  category: string
+  created_at: string
+  updated_at: string
+}
+
+export interface Tag {
+  id: number
+  name: string
+  created_at: string
+}
+
 export interface InitialData {
   groups: Group[]
   resources: Resource[]
   notes: Note[]
+  files: FileEntry[]
+  tags: Tag[]
   config: AppConfig
 }
 
@@ -54,11 +72,10 @@ export interface SearchResult {
   notes: Note[]
 }
 
-export interface WindowPosPayload {
-  x: number | null
-  y: number | null
-  width: number
-  height: number
+export interface DroppedAppInfo {
+  name: string
+  target: string
+  icon: string | null
 }
 
 export const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -110,10 +127,31 @@ export const tauriApi = {
     invoke<Note>('update_note', { id, title, content }),
   deleteNote: (id: number) => invoke<void>('delete_note', { id }),
   searchAll: (keyword: string) => invoke<SearchResult>('search_all', { keyword }),
-  getConfig: () => invoke<AppConfig>('get_config'),
+  parseDroppedPath: (path: string) => invoke<DroppedAppInfo>('parse_dropped_path', { path }),
+  importIconFile: (source: string) =>
+    invoke<string | null>('import_icon_file', { source }),
+  listFiles: () => invoke<FileEntry[]>('list_files'),
+  createFileLink: (payload: { name: string; path: string; category: string }) =>
+    invoke<FileEntry>('create_file_link', {
+      name: payload.name,
+      path: payload.path,
+      category: payload.category,
+    }),
+  updateFileLink: (id: number, name: string, category: string) =>
+    invoke<FileEntry>('update_file_link', { id, name, category }),
+  deleteFileLink: (id: number) => invoke<void>('delete_file_link', { id }),
+  openFileLink: (path: string) => invoke<void>('open_file_link', { path }),
+  inspectPath: (path: string) =>
+    invoke<{ name: string; is_dir: boolean }>('inspect_path', { path }),
+  listTags: () => invoke<Tag[]>('list_tags'),
+  createTag: (name: string) => invoke<Tag>('create_tag', { name }),
+  deleteTag: (id: number) => invoke<void>('delete_tag', { id }),
+  getNoteTags: (noteId: number) => invoke<Tag[]>('get_note_tags', { noteId }),
+  setNoteTags: (noteId: number, tagIds: number[]) =>
+    invoke<void>('set_note_tags', { noteId, tagIds }),
+  backupData: (targetDir: string) => invoke<void>('backup_data', { targetDir }),
+  restoreData: (sourceDir: string) => invoke<void>('restore_data', { sourceDir }),
   saveConfig: (config: AppConfig) => invoke<AppConfig>('save_config', { config }),
-  saveWindowState: (payload: WindowPosPayload) =>
-    invoke<void>('save_window_state', { payload }),
   setWindowAlwaysOnTop: (value: boolean) =>
     invoke<void>('set_window_always_on_top', { value }),
   setAlwaysOnTopConfig: (value: boolean) =>
@@ -121,6 +159,4 @@ export const tauriApi = {
   minimizeWindow: () => invoke<void>('minimize_window'),
   toggleMaximize: () => invoke<void>('toggle_maximize'),
   hideToTray: () => invoke<void>('hide_to_tray'),
-  toggleWindowVisibility: () => invoke<void>('toggle_window_visibility'),
-  quitApp: () => invoke<void>('quit_app'),
 }

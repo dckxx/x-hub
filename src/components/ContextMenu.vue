@@ -45,14 +45,12 @@ function onItemClick(item: ContextMenuItem) {
 onMounted(() => {
   window.addEventListener('click', globalClose)
   window.addEventListener('contextmenu', globalClose)
-  window.addEventListener('blur', globalClose)
   window.addEventListener('resize', globalClose)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('click', globalClose)
   window.removeEventListener('contextmenu', globalClose)
-  window.removeEventListener('blur', globalClose)
   window.removeEventListener('resize', globalClose)
 })
 </script>

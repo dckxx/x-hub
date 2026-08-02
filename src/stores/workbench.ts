@@ -3,15 +3,19 @@ import {
   tauriApi,
   isTauri,
   type AppConfig,
+  type FileEntry,
   type Group,
   type Note,
   type Resource,
+  type Tag,
 } from '../api/tauri'
 
 interface StoreState {
   groups: Group[]
   resources: Resource[]
   notes: Note[]
+  files: FileEntry[]
+  tags: Tag[]
   config: AppConfig
   loaded: boolean
 }
@@ -20,6 +24,8 @@ const state = reactive<StoreState>({
   groups: [],
   resources: [],
   notes: [],
+  files: [],
+  tags: [],
   config: {
     theme: 'light',
     window: {
@@ -40,6 +46,8 @@ export function useStore() {
     state.groups = data.groups
     state.resources = data.resources
     state.notes = data.notes
+    state.files = data.files
+    state.tags = data.tags
     state.config = data.config
     state.loaded = true
   }
@@ -146,6 +154,41 @@ export function useStore() {
     return tauriApi.searchAll(keyword)
   }
 
+  // ---- 文件管理 ----
+  async function addFileLink(payload: { name: string; path: string; category: string }) {
+    const f = await tauriApi.createFileLink(payload)
+    state.files.unshift(f)
+    return f
+  }
+
+  async function editFileLink(id: number, name: string, category: string) {
+    const f = await tauriApi.updateFileLink(id, name, category)
+    const idx = state.files.findIndex((x) => x.id === id)
+    if (idx >= 0) state.files[idx] = f
+    return f
+  }
+
+  async function removeFileLink(id: number) {
+    await tauriApi.deleteFileLink(id)
+    state.files = state.files.filter((x) => x.id !== id)
+  }
+
+  async function openFile(path: string) {
+    await tauriApi.openFileLink(path)
+  }
+
+  // ---- 标签 ----
+  async function createTag(name: string) {
+    const t = await tauriApi.createTag(name)
+    if (!state.tags.some((x) => x.id === t.id)) state.tags.push(t)
+    return t
+  }
+
+  async function deleteTag(id: number) {
+    await tauriApi.deleteTag(id)
+    state.tags = state.tags.filter((x) => x.id !== id)
+  }
+
   // ---- 配置 ----
   async function setTheme(theme: 'light' | 'dark') {
     state.config.theme = theme
@@ -176,6 +219,12 @@ export function useStore() {
     saveNote,
     removeNote,
     searchAll,
+    addFileLink,
+    editFileLink,
+    removeFileLink,
+    openFile,
+    createTag,
+    deleteTag,
     setTheme,
     setAlwaysOnTop,
   }

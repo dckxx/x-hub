@@ -30,7 +30,7 @@ pub fn create(
 
 pub fn get(conn: &Connection, id: i64) -> Result<Resource> {
     conn.query_row(
-        "SELECT id, group_id, kind, name, target, icon, args, sort_order, created_at, updated_at FROM resources WHERE id = ?1",
+        "SELECT id, group_id, kind, name, target, icon, args, sort_order, last_launched_at, created_at, updated_at FROM resources WHERE id = ?1",
         params![id],
         row_to_resource,
     )
@@ -39,7 +39,7 @@ pub fn get(conn: &Connection, id: i64) -> Result<Resource> {
 #[cfg(test)]
 pub fn list_by_group(conn: &Connection, group_id: i64) -> Result<Vec<Resource>> {
     let mut stmt = conn.prepare(
-        "SELECT id, group_id, kind, name, target, icon, args, sort_order, created_at, updated_at FROM resources WHERE group_id = ?1 ORDER BY sort_order ASC, id ASC",
+        "SELECT id, group_id, kind, name, target, icon, args, sort_order, last_launched_at, created_at, updated_at FROM resources WHERE group_id = ?1 ORDER BY sort_order ASC, id ASC",
     )?;
     let rows = stmt.query_map(params![group_id], row_to_resource)?;
     rows.collect()
@@ -47,7 +47,7 @@ pub fn list_by_group(conn: &Connection, group_id: i64) -> Result<Vec<Resource>> 
 
 pub fn list_all(conn: &Connection) -> Result<Vec<Resource>> {
     let mut stmt = conn.prepare(
-        "SELECT id, group_id, kind, name, target, icon, args, sort_order, created_at, updated_at FROM resources ORDER BY sort_order ASC, id ASC",
+        "SELECT id, group_id, kind, name, target, icon, args, sort_order, last_launched_at, created_at, updated_at FROM resources ORDER BY sort_order ASC, id ASC",
     )?;
     let rows = stmt.query_map([], row_to_resource)?;
     rows.collect()
@@ -75,6 +75,15 @@ pub fn delete(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// 记录资源最近启动时间（最近使用排序用）
+pub fn touch(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE resources SET last_launched_at = ?1 WHERE id = ?2",
+        params![now(), id],
+    )?;
+    Ok(())
+}
+
 /// 重新排列指定分组内的资源顺序。
 /// ids 为目标分组内按新顺序排列的资源 id 列表。
 pub fn reorder(conn: &Connection, group_id: i64, ids: &[i64]) -> Result<()> {
@@ -92,7 +101,7 @@ pub fn reorder(conn: &Connection, group_id: i64, ids: &[i64]) -> Result<()> {
 pub fn search(conn: &Connection, keyword: &str) -> Result<Vec<Resource>> {
     let pattern = format!("%{}%", keyword);
     let mut stmt = conn.prepare(
-        "SELECT id, group_id, kind, name, target, icon, args, sort_order, created_at, updated_at FROM resources WHERE name LIKE ?1 ORDER BY sort_order ASC",
+        "SELECT id, group_id, kind, name, target, icon, args, sort_order, last_launched_at, created_at, updated_at FROM resources WHERE name LIKE ?1 ORDER BY sort_order ASC",
     )?;
     let rows = stmt.query_map(params![pattern], row_to_resource)?;
     rows.collect()
@@ -119,8 +128,9 @@ pub fn row_to_resource(row: &rusqlite::Row) -> Result<Resource> {
         icon: row.get(5)?,
         args: row.get(6)?,
         sort_order: row.get(7)?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
+        last_launched_at: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
     })
 }
 

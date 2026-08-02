@@ -26,3 +26,9 @@ components.d.ts
 *.njsproj
 *.sln
 *.sw?
+
+# Tool working directories
+.omo/
+.workbuddy/
+src-tauri/target/
+

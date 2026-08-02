@@ -26,6 +26,7 @@ pub struct Resource {
     pub icon: Option<String>,
     pub args: Option<String>,
     pub sort_order: i64,
+    pub last_launched_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -43,4 +44,23 @@ pub struct Note {
 pub struct SearchResult {
     pub resources: Vec<Resource>,
     pub notes: Vec<Note>,
+}
+
+/// 文件管理条目（仅存储链接，不复制源文件）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileEntry {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+    pub category: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 笔记标签
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tag {
+    pub id: i64,
+    pub name: String,
+    pub created_at: String,
 }

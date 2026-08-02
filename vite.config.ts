@@ -2,8 +2,6 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import AutoImport from 'unplugin-auto-import/vite'
-import Components from 'unplugin-vue-components/vite'
-import { NaiveUiResolver } from 'unplugin-vue-components/resolvers'
 
 const host = process.env.TAURI_DEV_HOST
 
@@ -13,20 +11,7 @@ export default defineConfig({
     vue(),
     tailwindcss(),
     AutoImport({
-      imports: [
-        'vue',
-        {
-          'naive-ui': [
-            'useDialog',
-            'useMessage',
-            'useNotification',
-            'useLoadingBar',
-          ],
-        },
-      ],
-    }),
-    Components({
-      resolvers: [NaiveUiResolver()],
+      imports: ['vue'],
     }),
   ],
 

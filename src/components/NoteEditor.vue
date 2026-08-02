@@ -1,6 +1,11 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import type { Note } from '../api/tauri'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { marked } from 'marked'
+import { Eye, Pencil, Tag as TagIcon, Trash2, X } from 'lucide-vue-next'
+import { isTauri, tauriApi, type Note, type Tag } from '../api/tauri'
+import { useStore } from '../stores/workbench'
+
+const store = useStore()
 
 const props = defineProps<{
   note: Readonly<Note> | null
@@ -9,6 +14,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'save', id: number, title: string, content: string): void
   (e: 'delete', id: number): void
+  (e: 'close'): void
 }>()
 
 const localTitle = ref('')
@@ -16,7 +22,73 @@ const localContent = ref('')
 const dirty = ref(false)
 const syncing = ref(false)
 
+// ---- Markdown 编辑/预览 ----
+const mode = ref<'edit' | 'preview'>('edit')
+
+const previewHtml = computed(() => {
+  if (mode.value !== 'preview') return ''
+  return marked.parse(localContent.value, { async: false }) as string
+})
+
+// ---- 标签 ----
+const noteTags = ref<Tag[]>([])
+const tagInputVisible = ref(false)
+const tagInput = ref('')
+
+watch(
+  () => props.note?.id,
+  async () => {
+    syncLocal()
+    mode.value = 'edit'
+    // 加载笔记标签
+    if (props.note && isTauri()) {
+      noteTags.value = await tauriApi.getNoteTags(props.note.id)
+    } else {
+      noteTags.value = []
+    }
+  },
+)
+
+async function persistTags() {
+  if (!props.note) return
+  await tauriApi.setNoteTags(props.note.id, noteTags.value.map((t) => t.id))
+}
+
+async function addTag(tag: Tag) {
+  if (noteTags.value.some((t) => t.id === tag.id)) return
+  noteTags.value.push(tag)
+  await persistTags()
+}
+
+function removeTag(tagId: number) {
+  noteTags.value = noteTags.value.filter((t) => t.id !== tagId)
+  void persistTags()
+}
+
+async function submitTagInput() {
+  const name = tagInput.value.trim()
+  if (!name) {
+    tagInputVisible.value = false
+    return
+  }
+  try {
+    const t = await store.createTag(name)
+    await addTag(t)
+    tagInput.value = ''
+  } catch (e) {
+    console.error('创建标签失败', e)
+  }
+  tagInputVisible.value = false
+}
+
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') emit('close')
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 function syncLocal() {
   syncing.value = true
@@ -58,95 +130,304 @@ function formatSavedTime(iso: string): string {
 </script>
 
 <template>
-  <section class="card editor">
-    <template v-if="note">
-      <header class="ed-header">
-        <input
-          v-model="localTitle"
-          class="ed-title-input"
-          type="text"
-          maxlength="80"
-          placeholder="笔记标题"
-          @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
-        />
-        <button class="icon-btn del" title="删除笔记" @click="emit('delete', note.id)">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </button>
-      </header>
+  <Teleport to="body">
+    <Transition name="mask">
+      <div v-if="note" class="modal-mask">
+        <div class="modal-card editor-card" role="dialog" aria-label="笔记编辑">
+          <header class="ed-header">
+            <input
+              v-model="localTitle"
+              class="ed-title-input"
+              type="text"
+              maxlength="80"
+              placeholder="笔记标题"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+            />
+            <button
+              class="icon-btn mode-btn"
+              :class="{ active: mode === 'edit' }"
+              title="编辑模式"
+              @click="mode = 'edit'"
+            >
+              <Pencil :size="13" :stroke-width="1.8" />
+            </button>
+            <button
+              class="icon-btn mode-btn"
+              :class="{ active: mode === 'preview' }"
+              title="预览模式"
+              @click="mode = 'preview'"
+            >
+              <Eye :size="13" :stroke-width="1.8" />
+            </button>
+            <button class="icon-btn" title="关闭" @click="emit('close')">
+              <X :size="14" :stroke-width="2" />
+            </button>
+            <button class="icon-btn del" title="删除笔记" @click="emit('delete', note.id)">
+              <Trash2 :size="14" :stroke-width="1.8" />
+            </button>
+          </header>
 
-      <textarea
-        v-model="localContent"
-        class="ed-content"
-        placeholder="开始记录…"
-        spellcheck="false"
-      ></textarea>
+          <textarea
+            v-if="mode === 'edit'"
+            v-model="localContent"
+            class="ed-content"
+            placeholder="开始记录…（支持 Markdown）"
+            spellcheck="false"
+          ></textarea>
+          <div
+            v-else
+            class="ed-content md-preview"
+            v-html="previewHtml"
+          ></div>
 
-      <footer class="ed-footer">
-        <span class="ed-status" :class="{ dirty }">
-          {{ dirty ? '编辑中…' : `已保存 ${formatSavedTime(note.updated_at)}` }}
-        </span>
-      </footer>
-    </template>
+          <!-- 标签行 -->
+          <div class="tag-row">
+            <TagIcon :size="13" :stroke-width="1.8" class="tag-row-icon" />
+            <span
+              v-for="t in noteTags"
+              :key="t.id"
+              class="tag-chip"
+              :title="`移除标签「${t.name}」`"
+              @click="removeTag(t.id)"
+            >
+              {{ t.name }} ✕
+            </span>
+            <template v-if="tagInputVisible">
+              <input
+                v-model="tagInput"
+                class="tag-input"
+                type="text"
+                maxlength="20"
+                placeholder="标签名，回车确认"
+                @keydown.enter.prevent="submitTagInput"
+                @keydown.esc="tagInputVisible = false"
+              />
+            </template>
+            <button
+              v-else
+              class="tag-add"
+              title="添加标签"
+              @click="tagInputVisible = true"
+            >
+              +
+            </button>
+          </div>
 
-    <div v-else class="empty-state editor-empty">
-      <span style="font-size: 40px">📓</span>
-      <p>选择或新建一篇笔记</p>
-      <p style="font-size: 12px; color: var(--text-4)">内容将自动保存到本地</p>
-    </div>
-  </section>
+          <footer class="ed-footer">
+            <span class="ed-status" :class="{ dirty }">
+              {{ dirty ? '编辑中…' : `已保存 ${formatSavedTime(note.updated_at)}` }}
+            </span>
+          </footer>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
 </template>
 
 <style scoped>
-.editor {
-  height: 100%;
+.editor-card {
+  width: 600px;
+  max-width: calc(100vw - 48px);
+  height: 480px;
+  max-height: calc(100vh - 120px);
   display: flex;
   flex-direction: column;
   padding: 20px 24px;
-  min-height: 0;
 }
 .ed-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 .ed-title-input {
   flex: 1;
   min-width: 0;
-  border: none;
-  background: transparent;
-  font-size: 17px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-card-soft);
+  border-radius: var(--radius-md);
+  font-size: 16px;
   font-weight: 600;
   font-family: inherit;
   color: var(--text-1);
   outline: none;
-  padding: 2px 0;
+  padding: 8px 14px;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 .ed-title-input:focus {
-  box-shadow: 0 2px 0 var(--brand-500);
+  border-color: var(--brand-500);
+  box-shadow: var(--shadow-focus);
+}
+.ed-title-input::placeholder {
+  color: var(--text-4);
+  font-weight: 400;
 }
 .del:hover {
   color: var(--c-red);
   background: color-mix(in srgb, var(--c-red) 10%, transparent);
+}
+.mode-btn.active {
+  background: var(--brand-50);
+  color: var(--brand-500);
 }
 
 .ed-content {
   flex: 1;
   min-height: 0;
   width: 100%;
-  border: none;
-  background: transparent;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-card-soft);
+  border-radius: var(--radius-md);
   resize: none;
   outline: none;
   font-size: 14px;
   line-height: 1.7;
   font-family: inherit;
   color: var(--text-2);
+  padding: 14px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  overflow-y: auto;
+}
+.ed-content:focus {
+  border-color: var(--brand-500);
+  box-shadow: var(--shadow-focus);
 }
 .ed-content::placeholder {
   color: var(--text-4);
+}
+
+/* Markdown 预览 */
+.md-preview :deep(h1),
+.md-preview :deep(h2),
+.md-preview :deep(h3) {
+  color: var(--text-1);
+  margin: 14px 0 8px;
+  line-height: 1.4;
+}
+.md-preview :deep(h1) {
+  font-size: 20px;
+}
+.md-preview :deep(h2) {
+  font-size: 17px;
+}
+.md-preview :deep(h3) {
+  font-size: 15px;
+}
+.md-preview :deep(p) {
+  margin: 8px 0;
+}
+.md-preview :deep(ul),
+.md-preview :deep(ol) {
+  padding-left: 22px;
+  margin: 8px 0;
+}
+.md-preview :deep(code) {
+  background: var(--bg-card);
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 12px;
+  font-family: 'FiraCode', Consolas, monospace;
+}
+.md-preview :deep(pre) {
+  background: var(--bg-card);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+.md-preview :deep(pre code) {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.md-preview :deep(blockquote) {
+  border-left: 3px solid var(--brand-500);
+  padding-left: 12px;
+  color: var(--text-3);
+  margin: 8px 0;
+}
+.md-preview :deep(a) {
+  color: var(--brand-500);
+}
+.md-preview :deep(hr) {
+  border: none;
+  border-top: 1px solid var(--border-soft);
+  margin: 14px 0;
+}
+.md-preview :deep(table) {
+  border-collapse: collapse;
+  margin: 10px 0;
+}
+.md-preview :deep(th),
+.md-preview :deep(td) {
+  border: 1px solid var(--border-soft);
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+/* 标签行 */
+.tag-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 0 0;
+  min-height: 34px;
+}
+.tag-row-icon {
+  color: var(--text-4);
+  flex-shrink: 0;
+}
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--brand-500);
+  background: var(--brand-50);
+  border-radius: var(--radius-pill);
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.tag-chip:hover {
+  background: color-mix(in srgb, var(--c-red) 12%, transparent);
+  color: var(--c-red);
+}
+.tag-add {
+  width: 20px;
+  height: 20px;
+  border: 1px dashed var(--text-4);
+  background: transparent;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.tag-add:hover {
+  border-color: var(--brand-500);
+  color: var(--brand-500);
+}
+.tag-input {
+  width: 130px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-card-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 4px 10px;
+  outline: none;
+}
+.tag-input:focus {
+  border-color: var(--brand-500);
 }
 
 .ed-footer {
@@ -162,8 +443,13 @@ function formatSavedTime(iso: string): string {
 .ed-status.dirty {
   color: var(--brand-500);
 }
-.editor-empty {
-  flex: 1;
-  gap: 10px;
+
+.mask-enter-active,
+.mask-leave-active {
+  transition: opacity 0.18s ease-out;
+}
+.mask-enter-from,
+.mask-leave-to {
+  opacity: 0;
 }
 </style>

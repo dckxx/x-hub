@@ -1,13 +1,66 @@
 <script setup lang="ts">
-import { computed, inject, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { convertFileSrc } from '@tauri-apps/api/core'
+import { FilePlus, FolderPlus, Pencil, Plus, Trash2 } from 'lucide-vue-next'
+import { isTauri, tauriApi, type Resource } from '../api/tauri'
 import { useStore } from '../stores/workbench'
-import type { Resource } from '../api/tauri'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 import GroupFormDialog from './GroupFormDialog.vue'
 import ResourceFormDialog from './ResourceFormDialog.vue'
 
 const store = useStore()
 const showToast = inject<(msg: string) => void>('showToast', () => {})
+const rootRef = ref<HTMLElement | null>(null)
+
+// 判断拖拽位置是否落在本组件区域内（物理坐标 → CSS 坐标）
+function isInside(e: { x: number; y: number }): boolean {
+  const el = rootRef.value
+  if (!el) return false
+  const rect = el.getBoundingClientRect()
+  const dpr = window.devicePixelRatio || 1
+  const x = e.x / dpr
+  const y = e.y / dpr
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
+}
+
+// ---- 拖拽导入本地应用（exe / lnk，仅拖入本区域时响应） ----
+const dropping = ref(false)
+const prefill = ref<{ name?: string; target?: string } | null>(null)
+let unlistenDrop: (() => void) | null = null
+
+onMounted(async () => {
+  if (!isTauri()) return
+  const webview = getCurrentWebview()
+  unlistenDrop = await webview.onDragDropEvent((event) => {
+    const ev = event.payload
+    if (ev.type === 'enter' || ev.type === 'over') {
+      dropping.value = isInside(ev.position)
+    } else if (ev.type === 'leave') {
+      dropping.value = false
+    } else if (ev.type === 'drop') {
+      dropping.value = false
+      if (!isInside(ev.position)) return
+      const file = ev.paths?.[0]
+      if (file) void handleDrop(file)
+    }
+  })
+})
+
+onBeforeUnmount(() => {
+  unlistenDrop?.()
+})
+
+async function handleDrop(file: string) {
+  try {
+    const info = await tauriApi.parseDroppedPath(file)
+    prefill.value = { name: info.name, target: info.target }
+    editing.value = null
+    resourceDialogVisible.value = true
+  } catch (e) {
+    showToast(String(e))
+  }
+}
 
 // ---- 分组选中 ----
 const activeGroupId = ref<number | 'all'>('all')
@@ -16,6 +69,79 @@ const visibleResources = computed(() => {
   if (activeGroupId.value === 'all') return store.state.resources
   return store.state.resources.filter((r) => r.group_id === activeGroupId.value)
 })
+
+// ---- 拖拽排序（分组 tabs） ----
+const dragGroupId = ref<number | null>(null)
+const localGroupOrder = ref<number[] | null>(null)
+
+const displayGroups = computed(() => {
+  if (!localGroupOrder.value) return store.state.groups
+  return localGroupOrder.value
+    .map((id) => store.state.groups.find((g) => g.id === id))
+    .filter((g): g is NonNullable<typeof g> => !!g)
+})
+
+function onGroupDragStart(gid: number) {
+  dragGroupId.value = gid
+  localGroupOrder.value = store.state.groups.map((g) => g.id)
+}
+
+function onGroupDragOver(gid: number) {
+  if (dragGroupId.value === null || !localGroupOrder.value) return
+  const order = localGroupOrder.value
+  const from = order.indexOf(dragGroupId.value)
+  const to = order.indexOf(gid)
+  if (from === -1 || to === -1 || from === to) return
+  order.splice(from, 1)
+  order.splice(to, 0, dragGroupId.value)
+  localGroupOrder.value = [...order]
+}
+
+async function onGroupDragEnd() {
+  if (localGroupOrder.value) {
+    await store.moveGroups(localGroupOrder.value)
+  }
+  dragGroupId.value = null
+  localGroupOrder.value = null
+}
+
+// ---- 拖拽排序（资源卡片） ----
+const dragResId = ref<number | null>(null)
+const localResOrder = ref<number[] | null>(null)
+
+const displayResources = computed(() => {
+  if (!localResOrder.value) return visibleResources.value
+  return localResOrder.value
+    .map((id) => visibleResources.value.find((r) => r.id === id))
+    .filter((r): r is NonNullable<typeof r> => !!r)
+})
+
+function onResDragStart(rid: number) {
+  dragResId.value = rid
+  localResOrder.value = visibleResources.value.map((r) => r.id)
+}
+
+function onResDragOver(rid: number) {
+  if (dragResId.value === null || !localResOrder.value) return
+  const order = localResOrder.value
+  const from = order.indexOf(dragResId.value)
+  const to = order.indexOf(rid)
+  if (from === -1 || to === -1 || from === to) return
+  order.splice(from, 1)
+  order.splice(to, 0, dragResId.value)
+  localResOrder.value = [...order]
+}
+
+async function onResDragEnd() {
+  if (localResOrder.value) {
+    const groupId = activeGroupId.value === 'all' ? null : activeGroupId.value
+    if (groupId !== null) {
+      await store.moveResources(groupId, localResOrder.value)
+    }
+  }
+  dragResId.value = null
+  localResOrder.value = null
+}
 
 // ---- 右键菜单 ----
 const menu = ref({ visible: false, x: 0, y: 0, items: [] as ContextMenuItem[] })
@@ -71,8 +197,8 @@ function onGroupContext(e: MouseEvent, gid: number) {
 async function onLaunch(r: Resource) {
   try {
     await store.launchResource(r.id)
-  } catch {
-    showToast(`无法启动「${r.name}」，请检查路径`)
+  } catch (e) {
+    showToast(`无法启动「${r.name}」：${String(e)}`)
   }
 }
 
@@ -87,6 +213,11 @@ const groupDialog = ref<{
 
 function openAddResource() {
   editing.value = null
+  resourceDialogVisible.value = true
+}
+
+function onEditResource(r: Resource) {
+  editing.value = r
   resourceDialogVisible.value = true
 }
 
@@ -154,10 +285,32 @@ function iconText(r: Resource): string {
   if (r.icon) return r.icon
   return r.name.charAt(0).toUpperCase()
 }
+
+// ---- 图标渲染：文件路径（提取的 PNG）用 asset 协议显示，否则 emoji/首字母 ----
+const IMAGE_ICON_RE = /\.(png|jpg|jpeg|ico|gif|webp)$/i
+
+function isImageIcon(icon: string | null): boolean {
+  return !!icon && IMAGE_ICON_RE.test(icon)
+}
+
+function iconSrc(icon: string): string {
+  return isTauri() ? convertFileSrc(icon) : ''
+}
+
+// 图片加载失败的图标回退到首字母（避免破图）
+const failedIcons = ref(new Set<number>())
+
+function onIconError(r: Resource) {
+  failedIcons.value.add(r.id)
+}
+
+function showImageIcon(r: Resource): boolean {
+  return isImageIcon(r.icon) && !failedIcons.value.has(r.id)
+}
 </script>
 
 <template>
-  <section class="card quicklaunch">
+  <section ref="rootRef" class="card quicklaunch">
     <header class="ql-header">
       <h2 class="ql-title">快捷启动</h2>
       <div class="ql-actions">
@@ -166,20 +319,15 @@ function iconText(r: Resource): string {
           title="新建分组"
           @click="groupDialog = { visible: true, title: '新建分组', group: null }"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-            <path d="M4 7h11l2 2h3v9H4z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
-            <path d="M4 7V5h7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
+          <FolderPlus :size="15" :stroke-width="1.8" />
         </button>
         <button class="icon-btn add" title="添加资源" @click="openAddResource">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-            <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-          </svg>
+          <Plus :size="15" :stroke-width="2.2" />
         </button>
       </div>
     </header>
 
-    <!-- 分组 tabs -->
+    <!-- 分组 tabs（可拖拽排序） -->
     <nav class="group-tabs" aria-label="资源分组">
       <button
         class="group-tab"
@@ -189,34 +337,73 @@ function iconText(r: Resource): string {
         全部
       </button>
       <button
-        v-for="g in store.state.groups"
+        v-for="g in displayGroups"
         :key="g.id"
         class="group-tab"
-        :class="{ active: activeGroupId === g.id }"
+        :class="{
+          active: activeGroupId === g.id,
+          dragging: dragGroupId === g.id,
+        }"
+        draggable="true"
         @click="activeGroupId = g.id"
         @contextmenu="onGroupContext($event, g.id)"
+        @dragstart="onGroupDragStart(g.id)"
+        @dragover.prevent="onGroupDragOver(g.id)"
+        @dragend="onGroupDragEnd"
       >
         {{ g.name }}
       </button>
     </nav>
 
-    <!-- 资源网格 -->
+    <!-- 资源网格（可拖拽排序） -->
     <div class="ql-body">
-      <div v-if="visibleResources.length > 0" class="resource-grid">
+      <div v-if="displayResources.length > 0" class="resource-grid">
         <div
-          v-for="r in visibleResources"
+          v-for="r in displayResources"
           :key="r.id"
           class="res-card"
+          :class="{ dragging: dragResId === r.id }"
           :title="r.target"
+          draggable="true"
           @click="onLaunch(r)"
           @contextmenu="onResourceContext($event, r)"
+          @dragstart="onResDragStart(r.id)"
+          @dragover.prevent="onResDragOver(r.id)"
+          @dragend="onResDragEnd"
         >
+          <div class="res-actions">
+            <button
+              class="res-action"
+              title="编辑"
+              @click.stop="onEditResource(r)"
+            >
+              <Pencil :size="11" :stroke-width="2" />
+            </button>
+            <button
+              class="res-action del"
+              title="删除"
+              @click.stop="store.removeResource(r.id)"
+            >
+              <Trash2 :size="11" :stroke-width="2" />
+            </button>
+          </div>
           <div
             class="res-icon"
-            :style="{ background: accentOf(r.name).soft }"
+            :style="
+              showImageIcon(r)
+                ? {}
+                : { background: accentOf(r.name).soft }
+            "
           >
+            <img
+              v-if="showImageIcon(r)"
+              class="res-img"
+              :src="iconSrc(r.icon!)"
+              alt=""
+              @error="onIconError(r)"
+            />
             <span
-              v-if="!r.icon"
+              v-else-if="!r.icon"
               class="res-letter"
               :style="{ color: accentOf(r.name).text }"
             >
@@ -258,6 +445,7 @@ function iconText(r: Resource): string {
       :default-group-id="
         activeGroupId === 'all' ? null : (activeGroupId as number)
       "
+      :prefill="prefill"
       @close="resourceDialogVisible = false"
       @submit="onResourceSubmit"
     />
@@ -268,16 +456,29 @@ function iconText(r: Resource): string {
       @close="groupDialog.visible = false"
       @submit="onGroupSubmit"
     />
+
+    <!-- 拖拽导入遮罩 -->
+    <Teleport to="body">
+      <Transition name="drop">
+        <div v-if="dropping" class="drop-overlay">
+          <div class="drop-hint">
+            <FilePlus :size="34" :stroke-width="1.5" />
+            <p>释放以添加本地应用</p>
+            <span>支持 .exe 文件或 .lnk 快捷方式</span>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </section>
 </template>
 
 <style scoped>
 .quicklaunch {
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 20px;
-  min-height: 0;
 }
 .ql-header {
   display: flex;
@@ -343,6 +544,15 @@ function iconText(r: Resource): string {
   background: #f2f2f7;
   color: #1a1a1f;
 }
+.group-tab.dragging {
+  opacity: 0.4;
+}
+.group-tab {
+  cursor: grab;
+}
+.group-tab:active {
+  cursor: grabbing;
+}
 
 /* 资源网格 */
 .ql-body {
@@ -356,6 +566,7 @@ function iconText(r: Resource): string {
   gap: 10px;
 }
 .res-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -370,6 +581,44 @@ function iconText(r: Resource): string {
   transform: translateY(-2px);
   box-shadow: var(--shadow-hover);
 }
+.res-card.dragging {
+  opacity: 0.4;
+  transform: scale(0.96);
+}
+.res-actions {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.res-card:hover .res-actions {
+  opacity: 1;
+}
+.res-action {
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: var(--bg-card);
+  border-radius: 6px;
+  box-shadow: var(--shadow-card);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.res-action:hover {
+  color: var(--brand-500);
+  background: var(--brand-50);
+}
+.res-action.del:hover {
+  color: var(--c-red);
+  background: color-mix(in srgb, var(--c-red) 10%, transparent);
+}
 .res-icon {
   position: relative;
   width: 46px;
@@ -383,6 +632,13 @@ function iconText(r: Resource): string {
 .res-letter {
   font-size: 18px;
   font-weight: 700;
+}
+.res-img {
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  object-fit: contain;
+  background: var(--bg-card);
 }
 .res-kind {
   position: absolute;
@@ -419,5 +675,47 @@ function iconText(r: Resource): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 拖拽导入遮罩 */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  background: color-mix(in srgb, var(--brand-500) 10%, transparent);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.drop-hint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 32px 48px;
+  background: var(--bg-card);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-dock);
+  border: 2px dashed var(--brand-500);
+  color: var(--brand-500);
+}
+.drop-hint p {
+  font-size: 15px;
+  font-weight: 600;
+}
+.drop-hint span {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.drop-enter-active,
+.drop-leave-active {
+  transition: opacity 0.15s ease-out;
+}
+.drop-enter-from,
+.drop-leave-to {
+  opacity: 0;
 }
 </style>

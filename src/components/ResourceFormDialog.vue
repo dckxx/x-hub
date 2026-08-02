@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { Group, Resource } from '../api/tauri'
+import { open } from '@tauri-apps/plugin-dialog'
+import { FolderOpen, ImagePlus } from 'lucide-vue-next'
+import { isTauri, tauriApi, type Group, type Resource } from '../api/tauri'
 
 const props = defineProps<{
   visible: boolean
   groups: readonly Group[]
   editing: Resource | null
   defaultGroupId: number | null
+  prefill: { name?: string; target?: string; icon?: string | null } | null
 }>()
 
 const emit = defineEmits<{
@@ -35,6 +38,9 @@ const error = ref('')
 
 const isEdit = computed(() => props.editing !== null)
 
+// 图标值是否为提取的程序图标文件路径
+const isExtractedIcon = computed(() => /\.(png|jpg|jpeg|ico|gif|webp)$/i.test(icon.value))
+
 watch(
   () => props.visible,
   (v) => {
@@ -54,6 +60,12 @@ watch(
       args.value = ''
       icon.value = ''
       groupId.value = props.defaultGroupId ?? props.groups[0]?.id ?? null
+      // 拖拽导入的预填信息（名称/路径/图标）
+      if (props.prefill) {
+        name.value = props.prefill.name ?? ''
+        target.value = props.prefill.target ?? ''
+        icon.value = props.prefill.icon ?? ''
+      }
     }
   },
 )
@@ -93,6 +105,44 @@ function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') emit('close')
 }
 
+// ---- 文件选择：程序路径（exe/lnk），选择后自动解析名称/图标 ----
+async function pickProgram() {
+  if (!isTauri()) return
+  const file = await open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: '程序', extensions: ['exe', 'lnk'] }],
+  })
+  if (typeof file !== 'string') return
+  target.value = file
+  try {
+    const info = await tauriApi.parseDroppedPath(file)
+    if (!name.value.trim()) name.value = info.name
+    if (!icon.value.trim()) icon.value = info.icon ?? ''
+  } catch {
+    // 解析失败时仅保留手动填写的路径
+  }
+}
+
+// ---- 文件选择：本地图标（ico/png 等），导入后存储为 PNG ----
+async function pickIcon() {
+  if (!isTauri()) return
+  const file = await open({
+    multiple: false,
+    directory: false,
+    filters: [
+      { name: '图标', extensions: ['ico', 'png', 'jpg', 'jpeg', 'webp'] },
+    ],
+  })
+  if (typeof file !== 'string') return
+  try {
+    const imported = await tauriApi.importIconFile(file)
+    if (imported) icon.value = imported
+  } catch (e) {
+    error.value = String(e)
+  }
+}
+
 onMounted(() => window.addEventListener('keydown', onKeydown))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
@@ -100,7 +150,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 <template>
   <Teleport to="body">
     <Transition name="mask">
-      <div v-if="visible" class="modal-mask" @click.self="emit('close')">
+      <div v-if="visible" class="modal-mask">
         <div class="modal-card form-card" role="dialog" aria-label="资源编辑">
           <h2 class="dialog-title">{{ isEdit ? '编辑资源' : '添加资源' }}</h2>
 
@@ -135,15 +185,25 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
           <!-- 目标 -->
           <label class="field-label">{{ kind === 'app' ? '程序路径' : '网址' }}</label>
-          <input
-            v-model="target"
-            class="field-input"
-            type="text"
-            :placeholder="
-              kind === 'app' ? '如：C:\\Program Files\\...\\code.exe' : '如：github.com'
-            "
-            @keydown="onKeydown"
-          />
+          <div class="input-with-btn">
+            <input
+              v-model="target"
+              class="field-input"
+              type="text"
+              :placeholder="
+                kind === 'app' ? '如：C:\\Program Files\\...\\code.exe' : '如：github.com'
+              "
+              @keydown="onKeydown"
+            />
+            <button
+              v-if="kind === 'app'"
+              class="input-btn"
+              title="选择本地程序"
+              @click="pickProgram"
+            >
+              <FolderOpen :size="15" :stroke-width="1.8" />
+            </button>
+          </div>
 
           <!-- 启动参数（仅 app） -->
           <template v-if="kind === 'app'">
@@ -158,15 +218,23 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           </template>
 
           <!-- 图标 -->
-          <label class="field-label">图标（可选，Emoji）</label>
-          <input
-            v-model="icon"
-            class="field-input"
-            type="text"
-            maxlength="8"
-            placeholder="如：🚀（留空则自动生成）"
-            @keydown="onKeydown"
-          />
+          <label class="field-label">图标（可选）</label>
+          <div class="icon-row">
+            <input
+              v-model="icon"
+              class="field-input"
+              type="text"
+              maxlength="260"
+              placeholder="Emoji 或留空自动生成"
+              @keydown="onKeydown"
+            />
+            <button class="input-btn" title="选择本地图标" @click="pickIcon">
+              <ImagePlus :size="15" :stroke-width="1.8" />
+            </button>
+            <span v-if="isExtractedIcon" class="extracted-badge" title="已从文件导入图标">
+              ✓ 已导入
+            </span>
+          </div>
 
           <!-- 分组 -->
           <label class="field-label">分组</label>
@@ -239,6 +307,55 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .field-label {
   margin-top: 14px;
+}
+.icon-row {
+  position: relative;
+}
+.input-with-btn {
+  position: relative;
+}
+.input-with-btn .field-input {
+  padding-right: 40px;
+}
+.input-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: var(--bg-card-soft);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.input-btn:hover {
+  background: var(--brand-50);
+  color: var(--brand-500);
+}
+.icon-row .field-input {
+  padding-right: 88px;
+}
+.icon-row .input-btn {
+  right: 62px;
+}
+.extracted-badge {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--c-green);
+  background: var(--c-green-soft);
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  pointer-events: none;
 }
 .group-pills {
   display: flex;

@@ -49,9 +49,42 @@ fn migrate(conn: &Connection) -> Result<()> {
           updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
         );
 
+        CREATE TABLE IF NOT EXISTS files (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          path TEXT NOT NULL,
+          category TEXT NOT NULL DEFAULT '其他',
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS tags (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS note_tags (
+          note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+          tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+          PRIMARY KEY (note_id, tag_id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_resources_group ON resources(group_id);
         CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_files_category ON files(category);
+        CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
         ",
     )?;
+
+    // 迁移：resources 表补充最近启动时间列（表已存在时 CREATE TABLE 不会加列）
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(resources)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !cols.iter().any(|c| c == "last_launched_at") {
+        conn.execute("ALTER TABLE resources ADD COLUMN last_launched_at TEXT", [])?;
+    }
+
     Ok(())
 }

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Search } from 'lucide-vue-next'
 import type { Note, Resource } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 
@@ -62,13 +63,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 <template>
   <Teleport to="body">
     <Transition name="mask">
-      <div v-if="visible" class="modal-mask" @click.self="emit('close')">
+      <div v-if="visible" class="modal-mask">
         <div class="search-card" role="dialog" aria-label="全局搜索">
           <div class="search-input-row">
-            <svg class="search-icon" width="17" height="17" viewBox="0 0 24 24" fill="none">
-              <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" />
-              <path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-            </svg>
+            <Search class="search-icon" :size="17" :stroke-width="1.8" />
             <input
               ref="inputRef"
               v-model="keyword"

@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { Copy, Minus, Search, Settings, Square, X } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 
 defineEmits<{
@@ -9,7 +11,7 @@ defineEmits<{
 
 const appWindow = isTauri() ? getCurrentWindow() : null
 
-// 无边框窗口拖动：data-tauri-drag-region 只对 mousedown 的精确目标生效，
+// ---- 窗口拖动：data-tauri-drag-region 只对 mousedown 的精确目标生效，
 // 点击标题栏内的子元素（svg/span）时不触发；改用 startDragging 统一处理
 function onDragStart(e: MouseEvent) {
   if (!appWindow || e.button !== 0) return
@@ -17,6 +19,25 @@ function onDragStart(e: MouseEvent) {
   if (target.closest('button')) return
   appWindow.startDragging()
 }
+
+// ---- 最大化状态（切换图标：最大化 ⇄ 还原） ----
+const isMaximized = ref(false)
+let unlistenResize: (() => void) | null = null
+
+async function refreshMaximized() {
+  if (!appWindow) return
+  isMaximized.value = await appWindow.isMaximized()
+}
+
+onMounted(async () => {
+  if (!appWindow) return
+  await refreshMaximized()
+  unlistenResize = await appWindow.onResized(() => refreshMaximized())
+})
+
+onBeforeUnmount(() => {
+  unlistenResize?.()
+})
 
 function minimize() {
   if (isTauri()) tauriApi.minimizeWindow()
@@ -42,32 +63,25 @@ function close() {
     </div>
     <div class="window-controls">
       <button class="tool-btn" title="全局搜索 (Ctrl+K)" @click="$emit('search')">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-          <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.8"/>
-          <path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-        </svg>
+        <Search :size="15" :stroke-width="1.8" />
       </button>
       <button class="tool-btn" title="设置" @click="$emit('settings')">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-        </svg>
+        <Settings :size="15" :stroke-width="1.8" />
       </button>
       <div class="tool-divider"></div>
       <button class="win-btn minimize" title="最小化" @click="minimize">
-        <svg width="46" height="40" viewBox="0 0 46 40" fill="none">
-          <path d="M17 21h12" stroke="var(--text-2)" stroke-width="1.5" stroke-linecap="round"/>
-        </svg>
+        <Minus :size="15" :stroke-width="1.8" color="var(--text-2)" />
       </button>
-      <button class="win-btn maximize" title="最大化/还原" @click="toggleMaximize">
-        <svg width="46" height="40" viewBox="0 0 46 40" fill="none">
-          <rect x="17" y="14" width="12" height="10" rx="1" stroke="var(--text-2)" stroke-width="1.5"/>
-        </svg>
+      <button
+        class="win-btn maximize"
+        :title="isMaximized ? '还原' : '最大化'"
+        @click="toggleMaximize"
+      >
+        <Square v-if="!isMaximized" :size="14" :stroke-width="1.8" color="var(--text-2)" />
+        <Copy v-else :size="14" :stroke-width="1.8" color="var(--text-2)" />
       </button>
       <button class="win-btn close" title="关闭（最小化至托盘）" @click="close">
-        <svg width="46" height="40" viewBox="0 0 46 40" fill="none">
-          <path d="M18 15l10 10M28 15L18 25" stroke="var(--text-2)" stroke-width="1.5" stroke-linecap="round"/>
-        </svg>
+        <X :size="15" :stroke-width="1.8" color="var(--text-2)" />
       </button>
     </div>
   </div>

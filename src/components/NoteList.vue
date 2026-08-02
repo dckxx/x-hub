@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Plus, X } from 'lucide-vue-next'
 import type { Note } from '../api/tauri'
 
 const props = defineProps<{
@@ -44,9 +45,7 @@ function summary(n: Note): string {
     <header class="nl-header">
       <h2 class="nl-title">速记笔记</h2>
       <button class="icon-btn add" title="新建笔记" @click="emit('create')">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-          <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-        </svg>
+        <Plus :size="15" :stroke-width="2.2" />
       </button>
     </header>
 
@@ -68,9 +67,7 @@ function summary(n: Note): string {
           title="删除笔记"
           @click.stop="emit('delete', n.id)"
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-            <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-          </svg>
+          <X :size="13" :stroke-width="2" />
         </button>
       </div>
     </div>

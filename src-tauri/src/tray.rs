@@ -20,17 +20,21 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .tooltip("个人效率工作台")
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => {
-                show_window(app);
+        .on_menu_event(|app, event| {
+            log::info!("托盘菜单点击: {}", event.id.as_ref());
+            match event.id.as_ref() {
+                "show" => {
+                    show_window(app);
+                }
+                "hide" => {
+                    hide_window(app);
+                }
+                "quit" => {
+                    log::info!("托盘退出，应用结束");
+                    app.exit(0);
+                }
+                _ => {}
             }
-            "hide" => {
-                hide_window(app);
-            }
-            "quit" => {
-                app.exit(0);
-            }
-            _ => {}
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
@@ -50,6 +54,7 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+    log::info!("系统托盘初始化完成");
     Ok(())
 }
 

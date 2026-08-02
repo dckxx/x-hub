@@ -44,7 +44,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 <template>
   <Teleport to="body">
     <Transition name="mask">
-      <div v-if="visible" class="modal-mask" @click.self="emit('close')">
+      <div v-if="visible" class="modal-mask">
         <div class="modal-card" role="dialog" :aria-label="title">
           <h2 class="dialog-title">{{ title }}</h2>
           <input

@@ -57,7 +57,7 @@ function close() {
     <div class="window-title">
       <svg width="18" height="18" viewBox="0 0 32 32" fill="none">
         <rect width="32" height="32" rx="6" fill="var(--brand-500)"/>
-        <path d="M8 16h16M16 8v16" stroke="white" stroke-width="3" stroke-linecap="round"/>
+        <path d="M8 16h16M16 8v16" stroke="var(--text-on-accent)" stroke-width="3" stroke-linecap="round"/>
       </svg>
       <span class="title-text">x-hub</span>
     </div>
@@ -89,14 +89,13 @@ function close() {
 
 <style scoped>
 .title-bar {
-  height: 40px;
-  background: var(--bg-card);
+  height: 48px;
+  background: var(--bg-card-solid);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-left: 16px;
+  padding-left: 18px;
   flex-shrink: 0;
-  border-radius: 8px 8px 0 0;
   border-bottom: 1px solid var(--border-soft);
 }
 .window-title {
@@ -105,7 +104,7 @@ function close() {
   gap: 10px;
 }
 .title-text {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--text-1);
   letter-spacing: -0.2px;
@@ -128,11 +127,11 @@ function close() {
   transition: background 0.15s, color 0.15s;
 }
 .tool-btn:hover {
-  background: rgba(0, 0, 0, 0.04);
-  color: var(--text-1);
+  background: var(--brand-50);
+  color: var(--brand-500);
 }
 [data-theme="dark"] .tool-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--brand-50);
   color: var(--text-1);
 }
 .tool-divider {
@@ -153,12 +152,12 @@ function close() {
   transition: background 0.15s;
 }
 .win-btn:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--bg-card-soft);
 }
 .win-btn.close:hover {
-  background: #E81123;
+  background: var(--window-close);
 }
 .win-btn.close:hover svg path {
-  stroke: #fff;
+  stroke: var(--text-on-accent);
 }
 </style>

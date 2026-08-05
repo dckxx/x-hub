@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Plus, X } from 'lucide-vue-next'
+import { Plus, StickyNote, X } from 'lucide-vue-next'
 import type { Note } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 
@@ -70,9 +70,9 @@ function summary(n: Note): string {
     </header>
 
     <!-- 标签筛选（横向滚动） -->
-    <nav v-if="store.state.tags.length > 0" class="tag-filter" aria-label="标签筛选">
+    <nav v-if="store.state.tags.length > 0" class="filter-tabs tag-filter" aria-label="标签筛选">
       <button
-        class="tag-filter-item"
+        class="filter-tab filter-tab--tag"
         :class="{ active: activeTagId === null }"
         @click="activeTagId = null"
       >
@@ -81,7 +81,7 @@ function summary(n: Note): string {
       <button
         v-for="t in store.state.tags"
         :key="t.id"
-        class="tag-filter-item"
+        class="filter-tab filter-tab--tag"
         :class="{ active: activeTagId === t.id }"
         @click="activeTagId = t.id"
       >
@@ -95,7 +95,11 @@ function summary(n: Note): string {
         :key="n.id"
         class="note-item"
         :class="{ active: n.id === activeId }"
+        role="button"
+        tabindex="0"
         @click="emit('select', n.id)"
+        @keydown.enter="emit('select', n.id)"
+        @keydown.space.prevent="emit('select', n.id)"
       >
         <div class="note-item-main">
           <span class="note-title">{{ n.title }}</span>
@@ -113,7 +117,7 @@ function summary(n: Note): string {
     </div>
 
     <div v-else class="empty-state">
-      <span style="font-size: 28px">📝</span>
+      <StickyNote :size="24" :stroke-width="1.7" aria-hidden="true" />
       <p>还没有笔记</p>
       <button class="pill-btn" style="padding: 7px 18px; margin-top: 6px" @click="emit('create')">
         新建笔记
@@ -165,36 +169,8 @@ function summary(n: Note): string {
 
 /* 标签筛选条 */
 .tag-filter {
-  display: flex;
-  gap: 4px;
-  overflow-x: auto;
   padding: 0 4px 8px;
   margin-bottom: 4px;
-  scrollbar-width: none;
-}
-.tag-filter::-webkit-scrollbar {
-  display: none;
-}
-.tag-filter-item {
-  flex-shrink: 0;
-  border: none;
-  background: transparent;
-  padding: 3px 10px;
-  border-radius: var(--radius-pill);
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-3);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.15s, color 0.15s;
-}
-.tag-filter-item:hover {
-  background: var(--brand-50);
-  color: var(--brand-500);
-}
-.tag-filter-item.active {
-  background: var(--brand-500);
-  color: #fff;
 }
 .note-item {
   position: relative;

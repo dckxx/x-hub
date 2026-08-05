@@ -2,7 +2,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { convertFileSrc } from '@tauri-apps/api/core'
-import { FilePlus, FolderPlus, Pencil, Plus, Trash2 } from 'lucide-vue-next'
+import { FilePlus, FolderPlus, Pencil, Plus, Trash2, Wrench } from 'lucide-vue-next'
 import { isTauri, tauriApi, type Group, type Resource } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
@@ -271,14 +271,14 @@ function onGroupSubmit(name: string) {
 
 // ---- 图标配色（按名称 hash 取强调色） ----
 const ACCENTS = [
-  { strong: 'var(--c-yellow)', soft: 'var(--c-yellow-soft)', text: '#8A6D00' },
-  { strong: 'var(--c-red)', soft: 'var(--c-red-soft)', text: '#B91C1C' },
-  { strong: 'var(--c-blue)', soft: 'var(--c-blue-soft)', text: '#1D4ED8' },
-  { strong: 'var(--c-green)', soft: 'var(--c-green-soft)', text: '#15803D' },
-  { strong: 'var(--c-pink)', soft: 'var(--c-pink-soft)', text: '#BE185D' },
-  { strong: 'var(--c-orange)', soft: 'var(--c-orange-soft)', text: '#B45309' },
-  { strong: 'var(--c-purple)', soft: 'var(--c-purple-soft)', text: '#6D28D9' },
-  { strong: 'var(--c-gray)', soft: 'var(--c-gray-soft)', text: '#4B5563' },
+  { strong: 'var(--c-yellow)', soft: 'var(--c-yellow-soft)', text: 'var(--c-yellow-ink)' },
+  { strong: 'var(--c-red)', soft: 'var(--c-red-soft)', text: 'var(--c-red-ink)' },
+  { strong: 'var(--c-blue)', soft: 'var(--c-blue-soft)', text: 'var(--c-blue-ink)' },
+  { strong: 'var(--c-green)', soft: 'var(--c-green-soft)', text: 'var(--c-green-ink)' },
+  { strong: 'var(--c-pink)', soft: 'var(--c-pink-soft)', text: 'var(--c-pink-ink)' },
+  { strong: 'var(--c-orange)', soft: 'var(--c-orange-soft)', text: 'var(--c-orange-ink)' },
+  { strong: 'var(--c-purple)', soft: 'var(--c-purple-soft)', text: 'var(--c-purple-ink)' },
+  { strong: 'var(--c-gray)', soft: 'var(--c-gray-soft)', text: 'var(--c-gray-ink)' },
 ]
 
 function accentOf(name: string) {
@@ -288,7 +288,6 @@ function accentOf(name: string) {
 }
 
 function iconText(r: Resource): string {
-  if (r.icon) return r.icon
   return r.name.charAt(0).toUpperCase()
 }
 
@@ -334,9 +333,9 @@ function showImageIcon(r: Resource): boolean {
     </header>
 
     <!-- 分组 tabs（可拖拽排序，占位模式） -->
-    <nav class="group-tabs" aria-label="资源分组">
+    <nav class="filter-tabs group-tabs" aria-label="资源分组">
       <button
-        class="group-tab"
+        class="filter-tab filter-tab--primary"
         :class="{ active: activeGroupId === 'all' }"
         @click="activeGroupId = 'all'"
       >
@@ -350,7 +349,7 @@ function showImageIcon(r: Resource): boolean {
         ></span>
         <button
           v-else
-          class="group-tab"
+          class="filter-tab filter-tab--primary group-tab"
           :class="{
             active: activeGroupId === g.id,
             dragging: dragGroupId === g.id,
@@ -381,13 +380,18 @@ function showImageIcon(r: Resource): boolean {
             class="res-card"
             :class="{ dragging: dragResId === r.id }"
             :title="r.target"
+            role="button"
+            tabindex="0"
             draggable="true"
             @click="onLaunch(r)"
+            @keydown.enter="onLaunch(r)"
+            @keydown.space.prevent="onLaunch(r)"
             @contextmenu="onResourceContext($event, r)"
             @dragstart="onResDragStart(r.id)"
             @dragover.prevent="onResDragOver($event, r.id)"
             @dragend="onResDragEnd"
           >
+          <span class="res-kind" :class="r.kind">{{ r.kind === 'app' ? '应用' : '网页' }}</span>
           <div class="res-actions">
             <button
               class="res-action"
@@ -426,8 +430,13 @@ function showImageIcon(r: Resource): boolean {
             >
               {{ iconText(r) }}
             </span>
-            <span v-else class="res-emoji">{{ r.icon }}</span>
-            <span class="res-kind" :class="r.kind">·</span>
+             <span
+               v-else
+               class="res-letter"
+               :style="{ color: accentOf(r.name).text }"
+             >
+               {{ iconText(r) }}
+             </span>
           </div>
           <span class="res-name">{{ r.name }}</span>
           </div>
@@ -435,7 +444,7 @@ function showImageIcon(r: Resource): boolean {
       </div>
 
       <div v-else class="empty-state">
-        <span style="font-size: 28px">🧰</span>
+        <Wrench :size="24" :stroke-width="1.7" aria-hidden="true" />
         <p>还没有快捷资源</p>
         <p style="font-size: 12px; color: var(--text-4)">
           添加本地程序或网页书签，一键启动
@@ -496,16 +505,21 @@ function showImageIcon(r: Resource): boolean {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 20px;
+  margin-top: 4px;
+  padding: 8px 0 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 .ql-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
+  margin-bottom: 4px;
 }
 .ql-title {
-  font-size: 16px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -522,46 +536,17 @@ function showImageIcon(r: Resource): boolean {
 }
 .icon-btn.add:hover {
   background: var(--brand-500);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
 /* 分组 tabs */
 .group-tabs {
-  display: flex;
-  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: nowrap;
   overflow-x: auto;
-  padding-bottom: 2px;
-  margin-bottom: 14px;
   scrollbar-width: none;
 }
-.group-tabs::-webkit-scrollbar {
-  display: none;
-}
-.group-tab {
-  flex-shrink: 0;
-  border: none;
-  background: transparent;
-  padding: 5px 12px;
-  border-radius: var(--radius-pill);
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-3);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-  white-space: nowrap;
-}
-.group-tab:hover {
-  background: var(--brand-50);
-  color: var(--brand-500);
-}
-.group-tab.active {
-  background: #1a1a1f;
-  color: #fff;
-}
-[data-theme="dark"] .group-tab.active {
-  background: #f2f2f7;
-  color: #1a1a1f;
-}
+.group-tabs::-webkit-scrollbar { display: none; }
 .group-tab.dragging {
   opacity: 0.4;
 }
@@ -588,24 +573,28 @@ function showImageIcon(r: Resource): boolean {
 }
 .resource-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
+  grid-template-columns: 1fr;
+  gap: 4px;
 }
 .res-card {
   position: relative;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   gap: 8px;
-  padding: 14px 8px 12px;
+  min-height: 36px;
+  padding: 6px 8px;
   background: var(--bg-card-soft);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: transform 0.18s, box-shadow 0.18s;
+  transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
 }
 .res-card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-hover);
+  background: var(--bg-card-solid);
+  transform: translateX(2px);
+  box-shadow: none;
+  border-color: color-mix(in srgb, var(--brand-500) 32%, var(--border-soft));
 }
 .res-card.dragging {
   opacity: 0.4;
@@ -615,7 +604,7 @@ function showImageIcon(r: Resource): boolean {
   border: 2px dashed var(--brand-500);
   background: var(--brand-50);
   opacity: 0.6;
-  min-height: 108px;
+  min-height: 36px;
   cursor: default;
 }
 .res-actions {
@@ -654,53 +643,50 @@ function showImageIcon(r: Resource): boolean {
 }
 .res-icon {
   position: relative;
-  width: 46px;
-  height: 46px;
-  border-radius: 14px;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 12px;
 }
 .res-letter {
   font-size: 18px;
   font-weight: 700;
 }
 .res-img {
-  width: 46px;
-  height: 46px;
-  border-radius: 14px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
   object-fit: contain;
   background: var(--bg-card);
 }
 .res-kind {
-  position: absolute;
-  right: -2px;
-  bottom: -2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--bg-card);
-  box-shadow: var(--shadow-card);
-  font-size: 0;
-  display: flex;
+  position: static;
+  order: 3;
+  margin-left: auto;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
+  min-height: 18px;
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
 }
 .res-kind.app {
-  background: var(--c-blue);
+  background: var(--c-blue-soft);
+  color: var(--c-blue-ink);
 }
 .res-kind.web {
-  background: var(--c-green);
-}
-.res-kind::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #fff;
+  background: var(--c-green-soft);
+  color: var(--c-green-ink);
 }
 .res-name {
+  min-width: 0;
+  flex: 1;
   font-size: 12px;
   font-weight: 500;
   color: var(--text-2);
@@ -709,6 +695,8 @@ function showImageIcon(r: Resource): boolean {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.quicklaunch :deep(.empty-state) { padding: 16px 8px; }
+.quicklaunch :deep(.empty-state > span) { display: none; }
 
 /* 拖拽导入遮罩 */
 .drop-overlay {

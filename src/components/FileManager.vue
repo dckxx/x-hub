@@ -81,6 +81,29 @@ const CATEGORY_ICONS = {
   其他: File,
 } as const
 
+const CATEGORY_ACCENTS = {
+  文件夹: { soft: 'var(--c-yellow-soft)', strong: 'var(--c-yellow)', ink: 'var(--c-yellow-ink)' },
+  文档: { soft: 'var(--c-purple-soft)', strong: 'var(--c-purple)', ink: 'var(--c-purple-ink)' },
+  图片: { soft: 'var(--c-pink-soft)', strong: 'var(--c-pink)', ink: 'var(--c-pink-ink)' },
+  视频: { soft: 'var(--c-blue-soft)', strong: 'var(--c-blue)', ink: 'var(--c-blue-ink)' },
+  音频: { soft: 'var(--c-green-soft)', strong: 'var(--c-green)', ink: 'var(--c-green-ink)' },
+  压缩包: { soft: 'var(--c-orange-soft)', strong: 'var(--c-orange)', ink: 'var(--c-orange-ink)' },
+  其他: { soft: 'var(--c-gray-soft)', strong: 'var(--c-gray)', ink: 'var(--c-gray-ink)' },
+} as const
+
+function accentOf(category: string) {
+  return CATEGORY_ACCENTS[category as keyof typeof CATEGORY_ACCENTS] ?? CATEGORY_ACCENTS.其他
+}
+
+function accentStyle(category: string) {
+  const accent = accentOf(category)
+  return {
+    '--file-accent-soft': accent.soft,
+    '--file-accent': accent.strong,
+    '--file-accent-ink': accent.ink,
+  }
+}
+
 // ---- 分类选中（默认全部） ----
 const activeCategory = ref<string>('全部')
 
@@ -158,9 +181,9 @@ function onFormSubmit(payload: {
     </header>
 
     <!-- 分类 tabs（选中为黑色背景块） -->
-    <nav class="cat-tabs" aria-label="文件分类">
+    <nav class="filter-tabs cat-tabs" aria-label="文件分类">
       <button
-        class="cat-tab"
+        class="filter-tab filter-tab--primary"
         :class="{ active: activeCategory === '全部' }"
         @click="activeCategory = '全部'"
       >
@@ -169,7 +192,7 @@ function onFormSubmit(payload: {
       <button
         v-for="c in CATEGORIES"
         :key="c"
-        class="cat-tab"
+        class="filter-tab filter-tab--primary"
         :class="{ active: activeCategory === c }"
         @click="activeCategory = c"
       >
@@ -185,7 +208,12 @@ function onFormSubmit(payload: {
           :key="f.id"
           class="file-card"
           :title="f.path"
+          role="button"
+          tabindex="0"
+          :style="accentStyle(f.category)"
           @click="onOpen(f)"
+          @keydown.enter="onOpen(f)"
+          @keydown.space.prevent="onOpen(f)"
           @contextmenu="onFileContext($event, f)"
         >
           <div class="file-actions">
@@ -204,19 +232,21 @@ function onFormSubmit(payload: {
               <Trash2 :size="11" :stroke-width="2" />
             </button>
           </div>
-          <component
-            :is="CATEGORY_ICONS[f.category as keyof typeof CATEGORY_ICONS] ?? File"
-            class="file-icon"
-            :size="30"
-            :stroke-width="1.5"
-          />
+          <div class="file-icon-wrap">
+            <component
+              :is="CATEGORY_ICONS[f.category as keyof typeof CATEGORY_ICONS] ?? File"
+              class="file-icon"
+              :size="25"
+              :stroke-width="1.7"
+            />
+          </div>
           <span class="file-name">{{ f.name }}</span>
           <span class="file-cat">{{ f.category }}</span>
         </div>
       </div>
 
       <div v-else class="empty-state">
-        <span style="font-size: 28px">📁</span>
+        <Folder :size="24" :stroke-width="1.7" aria-hidden="true" />
         <p>{{ activeCategory === '全部' ? '还没有文件链接' : `暂无「${activeCategory}」分类文件` }}</p>
         <p style="font-size: 12px; color: var(--text-4)">
           添加文件夹或文件的快捷链接，源文件不会移动
@@ -288,46 +318,12 @@ function onFormSubmit(payload: {
 }
 .icon-btn.add:hover {
   background: var(--brand-500);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
 /* 分类 tabs */
 .cat-tabs {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  padding-bottom: 2px;
   margin-bottom: 14px;
-  scrollbar-width: none;
-}
-.cat-tabs::-webkit-scrollbar {
-  display: none;
-}
-.cat-tab {
-  flex-shrink: 0;
-  border: none;
-  background: transparent;
-  padding: 5px 12px;
-  border-radius: var(--radius-pill);
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-3);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-  white-space: nowrap;
-}
-.cat-tab:hover {
-  background: var(--brand-50);
-  color: var(--brand-500);
-}
-/* 选中：黑色背景块（spec §4.6 Tab） */
-.cat-tab.active {
-  background: #1a1a1f;
-  color: #fff;
-}
-[data-theme="dark"] .cat-tab.active {
-  background: #f2f2f7;
-  color: #1a1a1f;
 }
 
 /* 文件网格 */
@@ -346,8 +342,8 @@ function onFormSubmit(payload: {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 16px 8px 12px;
+  gap: 7px;
+  padding: 15px 8px 12px;
   background: var(--bg-card-soft);
   border-radius: var(--radius-md);
   cursor: pointer;
@@ -357,11 +353,19 @@ function onFormSubmit(payload: {
   transform: translateY(-2px);
   box-shadow: var(--shadow-hover);
 }
-.file-icon {
-  color: var(--brand-500);
+.file-icon-wrap {
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  background: var(--file-accent-soft);
+  color: var(--file-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.18s ease-out, background 0.18s ease-out;
 }
-.file-card:hover .file-icon {
-  color: var(--brand-600);
+.file-card:hover .file-icon-wrap {
+  transform: scale(1.06);
 }
 .file-name {
   font-size: 12px;
@@ -374,10 +378,11 @@ function onFormSubmit(payload: {
 }
 .file-cat {
   font-size: 10px;
-  color: var(--text-4);
-  background: var(--bg-card);
+  font-weight: 600;
+  color: var(--file-accent-ink);
+  background: var(--file-accent-soft);
   border-radius: var(--radius-pill);
-  padding: 1px 8px;
+  padding: 2px 8px;
 }
 
 .file-actions {

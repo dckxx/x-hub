@@ -30,5 +30,7 @@ components.d.ts
 # Tool working directories
 .omo/
 .workbuddy/
+.impeccable/
+.playwright-mcp/
 src-tauri/target/
 

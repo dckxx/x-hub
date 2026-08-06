@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Search } from 'lucide-vue-next'
-import type { FileEntry, Note, Resource } from '../api/tauri'
+import type { Note, Resource } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 
 const props = defineProps<{
@@ -12,16 +12,14 @@ const emit = defineEmits<{
   (e: 'close'): void
   (e: 'openResource', r: Resource): void
   (e: 'openNote', n: Note): void
-  (e: 'openFile', f: FileEntry): void
 }>()
 
 const store = useStore()
 
 const keyword = ref('')
-const results = ref<{ resources: Resource[]; notes: Note[]; files: FileEntry[] }>({
+const results = ref<{ resources: Resource[]; notes: Note[] }>({
   resources: [],
   notes: [],
-  files: [],
 })
 const searched = ref(false)
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -33,7 +31,7 @@ watch(
   (v) => {
     if (v) {
       keyword.value = ''
-      results.value = { resources: [], notes: [], files: [] }
+      results.value = { resources: [], notes: [] }
       searched.value = false
       setTimeout(() => inputRef.value?.focus(), 30)
     }
@@ -44,7 +42,7 @@ watch(keyword, (kw) => {
   if (searchTimer) clearTimeout(searchTimer)
   const trimmed = kw.trim()
   if (!trimmed) {
-    results.value = { resources: [], notes: [], files: [] }
+    results.value = { resources: [], notes: [] }
     searched.value = false
     return
   }
@@ -56,6 +54,12 @@ watch(keyword, (kw) => {
 
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') emit('close')
+}
+
+function kindText(kind: Resource['kind']): string {
+  if (kind === 'app') return '程序'
+  if (kind === 'web') return '网页'
+  return '文件'
 }
 
 onMounted(() => window.addEventListener('keydown', onKeydown))
@@ -83,7 +87,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           <div class="search-results">
             <!-- 资源 -->
             <template v-if="results.resources.length > 0">
-              <p class="result-group-title">快捷资源</p>
+              <p class="result-group-title">速达</p>
               <div
                 v-for="r in results.resources"
                 :key="'r' + r.id"
@@ -91,7 +95,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 @click="emit('openResource', r)"
               >
                 <span class="result-badge" :class="r.kind">
-                  {{ r.kind === 'app' ? '程序' : '网页' }}
+                  {{ kindText(r.kind) }}
                 </span>
                 <span class="result-name">{{ r.name }}</span>
                 <span class="result-sub">{{ r.target }}</span>
@@ -100,7 +104,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
             <!-- 笔记 -->
             <template v-if="results.notes.length > 0">
-              <p class="result-group-title">笔记</p>
+              <p class="result-group-title">速记</p>
               <div
                 v-for="n in results.notes"
                 :key="'n' + n.id"
@@ -115,23 +119,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               </div>
             </template>
 
-            <!-- 文件 -->
-            <template v-if="results.files.length > 0">
-              <p class="result-group-title">文件</p>
-              <div
-                v-for="f in results.files"
-                :key="'f' + f.id"
-                class="result-item"
-                @click="emit('openFile', f)"
-              >
-                <span class="result-badge file-badge">文件</span>
-                <span class="result-name">{{ f.name }}</span>
-                <span class="result-sub">{{ f.path }}</span>
-              </div>
-            </template>
-
             <!-- 状态 -->
-            <div v-if="searched && results.resources.length === 0 && results.notes.length === 0 && results.files.length === 0" class="empty-state">
+            <div v-if="searched && results.resources.length === 0 && results.notes.length === 0" class="empty-state">
               <span style="font-size: 26px">🔍</span>
               <p>未找到「{{ keyword.trim() }}」相关内容</p>
             </div>
@@ -140,7 +129,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               class="empty-state"
               style="padding: 24px 16px"
             >
-              <p style="color: var(--text-4)">输入关键词检索快捷资源、笔记与文件</p>
+              <p style="color: var(--text-4)">输入关键词检索速达资源与速记</p>
               <div class="shortcut-hints">
                 <span><kbd>Ctrl</kbd> + <kbd>K</kbd> 唤起搜索</span>
                 <span><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> 显示/隐藏窗口</span>
@@ -255,12 +244,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .result-badge.web {
   background: var(--c-green);
 }
+.result-badge.file {
+  background: var(--c-purple);
+}
 .note-badge {
   background: var(--c-yellow);
   color: #7c5e00;
-}
-.file-badge {
-  background: var(--c-purple);
 }
 .shortcut-hints {
   display: flex;

@@ -46,8 +46,11 @@ function goToday() {
   <section class="card calendar" aria-label="日历">
     <header class="cal-header">
       <h3 class="cal-title">{{ viewYear }}年{{ viewMonth + 1 }}月</h3>
+      <button class="cal-nav-btn today-btn" title="回到今天" @click="goToday">今</button>
+      <div class="cal-week" aria-hidden="true">
+        <span v-for="w in weekLabels" :key="w" class="cal-week-label">{{ w }}</span>
+      </div>
       <div class="cal-nav">
-        <button class="cal-nav-btn today-btn" title="回到今天" @click="goToday">今</button>
         <button class="cal-nav-btn" title="上个月" @click="prevMonth">
           <ChevronLeft :size="13" :stroke-width="2.2" />
         </button>
@@ -56,10 +59,6 @@ function goToday() {
         </button>
       </div>
     </header>
-
-    <div class="cal-week" aria-hidden="true">
-      <span v-for="w in weekLabels" :key="w" class="cal-week-label">{{ w }}</span>
-    </div>
 
     <div class="cal-grid" role="grid">
       <span
@@ -89,25 +88,26 @@ function goToday() {
 .cal-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
+  gap: 4px;
+  margin-bottom: 8px;
 }
 .cal-title {
-  font-size: 16px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
+  white-space: nowrap;
 }
 .cal-nav {
   display: flex;
-  gap: 4px;
+  gap: 2px;
 }
 .cal-nav-btn {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   border: none;
   background: var(--bg-card-soft);
-  border-radius: 8px;
+  border-radius: 7px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -117,12 +117,10 @@ function goToday() {
 }
 .today-btn {
   width: auto;
-  padding: 0 8px;
-  font-size: 12px;
-  font-weight: 600;
-}
-.today-btn:not(:first-child) {
+  padding: 0 7px;
   margin-left: 2px;
+  font-size: 11px;
+  font-weight: 600;
 }
 .cal-nav-btn:hover {
   background: var(--brand-50);
@@ -133,15 +131,14 @@ function goToday() {
 }
 
 .cal-week {
+  flex: 1;
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  margin-bottom: 4px;
 }
 .cal-week-label {
   text-align: center;
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-3);
-  padding: 4px 0;
 }
 
 .cal-grid {

@@ -2,27 +2,24 @@
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import TitleBar from '../components/TitleBar.vue'
 import CalendarCard from '../components/CalendarCard.vue'
-import QuickLaunch from '../components/QuickLaunch.vue'
+import Suda from '../components/Suda.vue'
 import NoteList from '../components/NoteList.vue'
 import NoteEditor from '../components/NoteEditor.vue'
-import FileManager from '../components/FileManager.vue'
 import GlobalSearch from '../components/GlobalSearch.vue'
 import SettingsDialog from '../components/SettingsDialog.vue'
 import { useStore } from '../stores/workbench'
-import type { FileEntry, Note, Resource } from '../api/tauri'
-import { AppWindow, FileText, FolderOpen, LayoutDashboard, Settings2 } from 'lucide-vue-next'
+import type { Note, Resource } from '../api/tauri'
+import { FileText, FolderOpen, LayoutDashboard, Settings2 } from 'lucide-vue-next'
 
 const store = useStore()
 const todayRef = ref<HTMLElement | null>(null)
 const notesRef = ref<HTMLElement | null>(null)
-const filesRef = ref<HTMLElement | null>(null)
-const quickLaunchRef = ref<HTMLElement | null>(null)
+const sudaRef = ref<HTMLElement | null>(null)
 
 const navigation = [
   { id: 'dashboard', label: '工作台', icon: LayoutDashboard, target: 'today' },
-  { id: 'notes', label: '笔记', icon: FileText, target: 'notes' },
-  { id: 'files', label: '文件', icon: FolderOpen, target: 'files' },
-  { id: 'apps', label: '应用', icon: AppWindow, target: 'quick-launch' },
+  { id: 'notes', label: '速记', icon: FileText, target: 'notes' },
+  { id: 'suda', label: '速达', icon: FolderOpen, target: 'suda' },
 ] as const
 
 const activeNavigation = ref('dashboard')
@@ -32,8 +29,7 @@ function focusPanel(target: (typeof navigation)[number]['target'], id: string) {
   const panel = {
     today: todayRef,
     notes: notesRef,
-    files: filesRef,
-    'quick-launch': quickLaunchRef,
+    suda: sudaRef,
   }[target]
   panel.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   panel.value?.focus({ preventScroll: true })
@@ -105,15 +101,6 @@ function onOpenNote(n: Note) {
   searchVisible.value = false
 }
 
-async function onOpenFile(f: FileEntry) {
-  searchVisible.value = false
-  try {
-    await store.openFile(f.path)
-  } catch (e) {
-    showToast(`无法打开「${f.name}」：${String(e)}`)
-  }
-}
-
 // ---- 轻提示 ----
 const toastMsg = ref('')
 let toastTimer: ReturnType<typeof setTimeout> | null = null
@@ -141,15 +128,6 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 
     <div class="app-body">
       <aside class="sidebar" aria-label="应用侧栏">
-        <div class="sidebar-brand" aria-label="x-hub 工作台">
-          <span class="brand-mark" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 32 32" fill="none">
-              <path d="M8 16h16M16 8v16" stroke="var(--text-on-accent)" stroke-width="3" stroke-linecap="round" />
-            </svg>
-          </span>
-          <span>x-hub</span>
-        </div>
-
         <nav class="sidebar-nav" aria-label="主要导航">
           <button
             v-for="item in navigation"
@@ -165,16 +143,6 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
           </button>
         </nav>
 
-        <section ref="quickLaunchRef" class="sidebar-launch" aria-label="快捷启动">
-          <div class="sidebar-section-label">
-            <span>快捷启动</span>
-            <button class="sidebar-section-action" type="button" title="定位到快捷启动" @click="focusPanel('quick-launch', 'apps')">
-              <AppWindow :size="14" :stroke-width="2" aria-hidden="true" />
-            </button>
-          </div>
-          <QuickLaunch />
-        </section>
-
         <button class="sidebar-status" type="button" aria-label="打开设置" @click="settingsVisible = true">
           <Settings2 :size="15" :stroke-width="2" aria-hidden="true" />
           <span>本地工作台</span>
@@ -184,18 +152,15 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 
       <main class="workspace" aria-label="主工作区">
         <div class="workspace-grid">
-          <section ref="todayRef" class="workspace-panel today-panel" tabindex="-1" aria-labelledby="today-title">
+          <section ref="todayRef" class="workspace-panel today-panel" tabindex="-1" aria-label="日历">
             <header class="workspace-panel-header">
-              <div>
-                <p class="workspace-kicker">今天</p>
-                <h1 id="today-title" class="workspace-title">工作台</h1>
-              </div>
+              <p class="workspace-kicker">今天</p>
               <span class="workspace-date">{{ new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }) }}</span>
             </header>
             <CalendarCard />
           </section>
 
-          <section ref="notesRef" class="workspace-panel notes-panel" tabindex="-1" aria-label="速记笔记">
+          <section ref="notesRef" class="workspace-panel notes-panel" tabindex="-1" aria-label="速记">
             <NoteList
               :notes="store.state.notes"
               :active-id="activeNoteId"
@@ -205,8 +170,8 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
             />
           </section>
 
-          <section ref="filesRef" class="workspace-panel files-panel" tabindex="-1" aria-label="文件管理">
-            <FileManager />
+          <section ref="sudaRef" class="workspace-panel suda-panel" tabindex="-1" aria-label="速达">
+            <Suda />
           </section>
         </div>
       </main>
@@ -224,7 +189,6 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
       @close="searchVisible = false"
       @open-resource="onOpenResource"
       @open-note="onOpenNote"
-      @open-file="onOpenFile"
     />
     <SettingsDialog
       :visible="settingsVisible"
@@ -259,28 +223,10 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  padding: var(--space-5) var(--space-3) var(--space-3);
+  padding: var(--space-3);
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-soft);
   overflow: hidden;
-}
-.sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 0 var(--space-2);
-  color: var(--text-1);
-  font-size: 15px;
-  font-weight: 700;
-}
-.brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--radius-sm);
-  background: var(--brand-500);
 }
 .sidebar-nav {
   display: flex;
@@ -311,41 +257,6 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 .sidebar-nav-item.active {
   font-weight: 700;
 }
-.sidebar-launch {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-}
-.sidebar-section-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 var(--space-2);
-  color: var(--text-3);
-  font-size: 11px;
-  font-weight: 600;
-}
-.sidebar-section-action,
-.sidebar-status {
-  border: 0;
-  cursor: pointer;
-}
-.sidebar-section-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-3);
-}
-.sidebar-section-action:hover {
-  background: var(--brand-50);
-  color: var(--brand-500);
-}
-.sidebar-launch :deep(.ql-title) { display: none; }
 .sidebar-status {
   display: flex;
   align-items: center;
@@ -356,6 +267,8 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   color: var(--text-3);
   font-size: 12px;
   text-align: left;
+  border: 0;
+  cursor: pointer;
 }
 .sidebar-status:hover { color: var(--text-1); }
 .status-dot {
@@ -391,21 +304,14 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 .today-panel { padding: var(--space-5); }
 .workspace-panel-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   margin-bottom: var(--space-3);
 }
 .workspace-kicker {
-  margin-bottom: var(--space-1);
   color: var(--brand-500);
   font-size: 12px;
   font-weight: 700;
-}
-.workspace-title {
-  color: var(--text-1);
-  font-size: 20px;
-  font-weight: 700;
-  line-height: 1.25;
 }
 .workspace-date {
   color: var(--text-3);
@@ -420,12 +326,12 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   background: transparent;
 }
 .notes-panel :deep(.note-list),
-.files-panel :deep(.file-manager) {
+.suda-panel :deep(.suda) {
   border: 0;
   border-radius: 0;
   box-shadow: none;
 }
-.files-panel { grid-column: 1 / -1; }
+.suda-panel { grid-column: 1 / -1; }
 
 @media (max-width: 1100px) {
   .workspace { padding: var(--space-5); }
@@ -435,7 +341,6 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 @media (max-width: 720px) {
   .app-body { grid-template-columns: 1fr; }
   .sidebar { position: relative; max-height: 280px; border-right: 0; border-bottom: 1px solid var(--border-soft); }
-  .sidebar-launch { flex: 0 1 116px; }
   .workspace { padding: var(--space-4); }
   .workspace-grid { display: flex; flex-direction: column; }
   .workspace-panel { min-height: 320px; }

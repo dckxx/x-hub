@@ -1,5 +1,3 @@
-pub mod file;
-pub mod group;
 pub mod note;
 pub mod resource;
 pub mod tag;

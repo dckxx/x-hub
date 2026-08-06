@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
-use crate::models::{FileEntry, Group, Note, Resource, ResourceKind, SearchResult, Tag};
+use crate::models::{Note, Resource, ResourceKind, SearchResult, Tag};
 use crate::process;
-use crate::repo::{file, group, note, resource, tag};
+use crate::repo::{note, resource, tag};
 use rusqlite::Connection;
 use std::sync::Mutex;
 use tauri::{Manager, State};
@@ -11,25 +11,19 @@ pub struct DbState(pub Mutex<Connection>);
 #[tauri::command]
 pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let groups = group::list(&conn).map_err(err_str)?;
     let resources = resource::list_all(&conn).map_err(err_str)?;
     let notes = note::list(&conn).map_err(err_str)?;
-    let files = file::list(&conn).map_err(err_str)?;
     let tags = tag::list(&conn).map_err(err_str)?;
     let config = crate::config::load();
     log::info!(
-        "初始化数据加载完成: groups={} resources={} notes={} files={} tags={}",
-        groups.len(),
+        "初始化数据加载完成: resources={} notes={} tags={}",
         resources.len(),
         notes.len(),
-        files.len(),
         tags.len()
     );
     Ok(InitialData {
-        groups,
         resources,
         notes,
-        files,
         tags,
         config,
     })
@@ -37,57 +31,21 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
 
 #[derive(serde::Serialize)]
 pub struct InitialData {
-    pub groups: Vec<Group>,
     pub resources: Vec<Resource>,
     pub notes: Vec<Note>,
-    pub files: Vec<FileEntry>,
     pub tags: Vec<Tag>,
     pub config: AppConfig,
 }
 
-// ---------- 分组 ----------
-
-#[tauri::command]
-pub fn create_group(state: State<'_, DbState>, name: String) -> Result<Group, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let group = group::create(&conn, &name).map_err(err_str)?;
-    log::info!("创建分组: {} (id={})", group.name, group.id);
-    Ok(group)
-}
-
-#[tauri::command]
-pub fn update_group(state: State<'_, DbState>, id: i64, name: String) -> Result<Group, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let group = group::rename(&conn, id, &name).map_err(err_str)?;
-    log::info!("重命名分组: id={} -> {}", id, group.name);
-    Ok(group)
-}
-
-#[tauri::command]
-pub fn delete_group(state: State<'_, DbState>, id: i64) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    group::delete(&conn, id).map_err(err_str)?;
-    log::info!("删除分组: id={}", id);
-    Ok(())
-}
-
-#[tauri::command]
-pub fn reorder_groups(state: State<'_, DbState>, ids: Vec<i64>) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    group::reorder(&conn, &ids).map_err(err_str)?;
-    log::info!("分组排序更新: {:?}", ids);
-    Ok(())
-}
-
-// ---------- 快捷资源 ----------
+// ---------- 速达资源（应用 / 网页 / 文件合一） ----------
 
 #[tauri::command]
 pub fn create_resource(
     state: State<'_, DbState>,
-    group_id: i64,
     kind: String,
     name: String,
     target: String,
+    category: Option<String>,
     icon: Option<String>,
     args: Option<String>,
 ) -> Result<Resource, String> {
@@ -95,19 +53,19 @@ pub fn create_resource(
     let kind = parse_kind(&kind)?;
     let res = resource::create(
         &conn,
-        group_id,
         kind,
         &name,
         &target,
+        category.as_deref(),
         icon.as_deref(),
         args.as_deref(),
     )
     .map_err(err_str)?;
     log::info!(
-        "添加资源: {} ({:?}) -> group={}",
+        "添加资源: {} ({:?}) category={:?}",
         res.name,
         res.kind,
-        res.group_id
+        res.category
     );
     Ok(res)
 }
@@ -116,10 +74,10 @@ pub fn create_resource(
 pub fn update_resource(
     state: State<'_, DbState>,
     id: i64,
-    group_id: i64,
     kind: String,
     name: String,
     target: String,
+    category: Option<String>,
     icon: Option<String>,
     args: Option<String>,
 ) -> Result<Resource, String> {
@@ -128,10 +86,10 @@ pub fn update_resource(
     let res = resource::update(
         &conn,
         id,
-        group_id,
         kind,
         &name,
         &target,
+        category.as_deref(),
         icon.as_deref(),
         args.as_deref(),
     )
@@ -149,14 +107,10 @@ pub fn delete_resource(state: State<'_, DbState>, id: i64) -> Result<(), String>
 }
 
 #[tauri::command]
-pub fn reorder_resources(
-    state: State<'_, DbState>,
-    group_id: i64,
-    ids: Vec<i64>,
-) -> Result<(), String> {
+pub fn reorder_resources(state: State<'_, DbState>, ids: Vec<i64>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    resource::reorder(&conn, group_id, &ids).map_err(err_str)?;
-    log::info!("资源排序更新: group={} {:?}", group_id, ids);
+    resource::reorder(&conn, &ids).map_err(err_str)?;
+    log::info!("资源排序更新: {:?}", ids);
     Ok(())
 }
 
@@ -184,6 +138,17 @@ pub fn launch_resource(state: State<'_, DbState>, id: i64) -> Result<(), String>
             }
             Err(e) => {
                 log::error!("打开网页失败: {} ({}) -> {}", res.name, res.target, e);
+                Err(e)
+            }
+        },
+        ResourceKind::File => match process::open_path(&res.target) {
+            Ok(()) => {
+                let _ = resource::touch(&conn, id);
+                log::info!("打开文件: {} ({})", res.name, res.target);
+                Ok(())
+            }
+            Err(e) => {
+                log::error!("打开文件失败: {} ({}) -> {}", res.name, res.target, e);
                 Err(e)
             }
         },
@@ -228,19 +193,13 @@ pub fn search_all(state: State<'_, DbState>, keyword: String) -> Result<SearchRe
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let resources = resource::search(&conn, &keyword).map_err(err_str)?;
     let notes = note::search(&conn, &keyword).map_err(err_str)?;
-    let files = file::search(&conn, &keyword).map_err(err_str)?;
     log::debug!(
-        "全局搜索「{}」: 资源 {} 条, 笔记 {} 条, 文件 {} 条",
+        "全局搜索「{}」: 资源 {} 条, 笔记 {} 条",
         keyword,
         resources.len(),
-        notes.len(),
-        files.len()
+        notes.len()
     );
-    Ok(SearchResult {
-        resources,
-        notes,
-        files,
-    })
+    Ok(SearchResult { resources, notes })
 }
 
 /// 笔记-标签全量关联（列表筛选用）
@@ -319,65 +278,6 @@ pub fn hide_to_tray(app: tauri::AppHandle) -> Result<(), String> {
     crate::tray::hide_window(&app);
     log::info!("窗口隐藏至托盘");
     Ok(())
-}
-
-// ---------- 文件管理（仅链接，不复制源文件） ----------
-
-#[tauri::command]
-pub fn list_files(state: State<'_, DbState>) -> Result<Vec<FileEntry>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let files = file::list(&conn).map_err(err_str)?;
-    log::debug!("文件列表加载: {} 条", files.len());
-    Ok(files)
-}
-
-#[tauri::command]
-pub fn create_file_link(
-    state: State<'_, DbState>,
-    name: String,
-    path: String,
-    category: String,
-) -> Result<FileEntry, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let f = file::create(&conn, &name, &path, &category).map_err(err_str)?;
-    log::info!("添加文件链接: {} [{}] -> {}", f.name, f.category, f.path);
-    Ok(f)
-}
-
-#[tauri::command]
-pub fn update_file_link(
-    state: State<'_, DbState>,
-    id: i64,
-    name: String,
-    category: String,
-) -> Result<FileEntry, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let f = file::update(&conn, id, &name, &category).map_err(err_str)?;
-    log::info!("更新文件链接: id={} {} [{}]", id, f.name, f.category);
-    Ok(f)
-}
-
-#[tauri::command]
-pub fn delete_file_link(state: State<'_, DbState>, id: i64) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    file::delete(&conn, id).map_err(err_str)?;
-    log::info!("删除文件链接: id={}", id);
-    Ok(())
-}
-
-/// 打开文件/文件夹链接：文件用系统默认程序，文件夹用资源管理器
-#[tauri::command]
-pub fn open_file_link(path: String) -> Result<(), String> {
-    match process::open_path(&path) {
-        Ok(()) => {
-            log::info!("打开路径: {}", path);
-            Ok(())
-        }
-        Err(e) => {
-            log::error!("打开路径失败: {} -> {}", path, e);
-            Err(e)
-        }
-    }
 }
 
 // ---------- 笔记标签 ----------
@@ -720,6 +620,7 @@ fn parse_kind(kind: &str) -> Result<ResourceKind, String> {
     match kind {
         "app" => Ok(ResourceKind::App),
         "web" => Ok(ResourceKind::Web),
+        "file" => Ok(ResourceKind::File),
         _ => Err(format!("未知资源类型: {}", kind)),
     }
 }

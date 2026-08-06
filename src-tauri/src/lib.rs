@@ -240,10 +240,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_initial_data,
-            commands::create_group,
-            commands::update_group,
-            commands::delete_group,
-            commands::reorder_groups,
             commands::create_resource,
             commands::update_resource,
             commands::delete_resource,
@@ -261,11 +257,6 @@ pub fn run() {
             commands::hide_to_tray,
             commands::parse_dropped_path,
             commands::import_icon_file,
-            commands::list_files,
-            commands::create_file_link,
-            commands::update_file_link,
-            commands::delete_file_link,
-            commands::open_file_link,
             commands::inspect_path,
             commands::list_tags,
             commands::create_tag,

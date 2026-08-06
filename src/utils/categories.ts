@@ -1,4 +1,4 @@
-// 文件管理分类定义（FileManager / FileFormDialog 共享）
+// 文件分类定义（Suda / SudaFormDialog 共享）
 
 export const CATEGORIES = [
   '文件夹',

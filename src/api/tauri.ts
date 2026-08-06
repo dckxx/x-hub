@@ -1,19 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
 
-export interface Group {
-  id: number
-  name: string
-  sort_order: number
-  created_at: string
-  updated_at: string
-}
-
 export interface Resource {
   id: number
-  group_id: number
-  kind: 'app' | 'web'
+  kind: 'app' | 'web' | 'file'
   name: string
   target: string
+  category: string | null
   icon: string | null
   args: string | null
   sort_order: number
@@ -43,15 +35,6 @@ export interface AppConfig {
   window: WindowState
 }
 
-export interface FileEntry {
-  id: number
-  name: string
-  path: string
-  category: string
-  created_at: string
-  updated_at: string
-}
-
 export interface Tag {
   id: number
   name: string
@@ -59,10 +42,8 @@ export interface Tag {
 }
 
 export interface InitialData {
-  groups: Group[]
   resources: Resource[]
   notes: Note[]
-  files: FileEntry[]
   tags: Tag[]
   config: AppConfig
 }
@@ -70,7 +51,6 @@ export interface InitialData {
 export interface SearchResult {
   resources: Resource[]
   notes: Note[]
-  files: FileEntry[]
 }
 
 export interface NoteTagRow {
@@ -88,45 +68,40 @@ export const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS
 
 export const tauriApi = {
   getInitialData: () => invoke<InitialData>('get_initial_data'),
-  createGroup: (name: string) => invoke<Group>('create_group', { name }),
-  updateGroup: (id: number, name: string) => invoke<Group>('update_group', { id, name }),
-  deleteGroup: (id: number) => invoke<void>('delete_group', { id }),
-  reorderGroups: (ids: number[]) => invoke<void>('reorder_groups', { ids }),
   createResource: (payload: {
-    groupId: number
-    kind: 'app' | 'web'
+    kind: 'app' | 'web' | 'file'
     name: string
     target: string
+    category?: string | null
     icon?: string | null
     args?: string | null
   }) => invoke<Resource>('create_resource', {
-    groupId: payload.groupId,
     kind: payload.kind,
     name: payload.name,
     target: payload.target,
+    category: payload.category ?? null,
     icon: payload.icon ?? null,
     args: payload.args ?? null,
   }),
   updateResource: (payload: {
     id: number
-    groupId: number
-    kind: 'app' | 'web'
+    kind: 'app' | 'web' | 'file'
     name: string
     target: string
+    category?: string | null
     icon?: string | null
     args?: string | null
   }) => invoke<Resource>('update_resource', {
     id: payload.id,
-    groupId: payload.groupId,
     kind: payload.kind,
     name: payload.name,
     target: payload.target,
+    category: payload.category ?? null,
     icon: payload.icon ?? null,
     args: payload.args ?? null,
   }),
   deleteResource: (id: number) => invoke<void>('delete_resource', { id }),
-  reorderResources: (groupId: number, ids: number[]) =>
-    invoke<void>('reorder_resources', { groupId, ids }),
+  reorderResources: (ids: number[]) => invoke<void>('reorder_resources', { ids }),
   launchResource: (id: number) => invoke<void>('launch_resource', { id }),
   createNote: (title: string) => invoke<Note>('create_note', { title }),
   updateNote: (id: number, title: string, content: string) =>
@@ -136,17 +111,6 @@ export const tauriApi = {
   parseDroppedPath: (path: string) => invoke<DroppedAppInfo>('parse_dropped_path', { path }),
   importIconFile: (source: string) =>
     invoke<string | null>('import_icon_file', { source }),
-  listFiles: () => invoke<FileEntry[]>('list_files'),
-  createFileLink: (payload: { name: string; path: string; category: string }) =>
-    invoke<FileEntry>('create_file_link', {
-      name: payload.name,
-      path: payload.path,
-      category: payload.category,
-    }),
-  updateFileLink: (id: number, name: string, category: string) =>
-    invoke<FileEntry>('update_file_link', { id, name, category }),
-  deleteFileLink: (id: number) => invoke<void>('delete_file_link', { id }),
-  openFileLink: (path: string) => invoke<void>('open_file_link', { path }),
   inspectPath: (path: string) =>
     invoke<{ name: string; is_dir: boolean }>('inspect_path', { path }),
   listTags: () => invoke<Tag[]>('list_tags'),

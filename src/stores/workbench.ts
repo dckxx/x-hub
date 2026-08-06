@@ -3,28 +3,22 @@ import {
   tauriApi,
   isTauri,
   type AppConfig,
-  type FileEntry,
-  type Group,
   type Note,
   type Resource,
   type Tag,
 } from '../api/tauri'
 
 interface StoreState {
-  groups: Group[]
   resources: Resource[]
   notes: Note[]
-  files: FileEntry[]
   tags: Tag[]
   config: AppConfig
   loaded: boolean
 }
 
 const state = reactive<StoreState>({
-  groups: [],
   resources: [],
   notes: [],
-  files: [],
   tags: [],
   config: {
     theme: 'light',
@@ -43,48 +37,19 @@ export function useStore() {
   async function loadInitialData() {
     if (!isTauri()) return
     const data = await tauriApi.getInitialData()
-    state.groups = data.groups
     state.resources = data.resources
     state.notes = data.notes
-    state.files = data.files
     state.tags = data.tags
     state.config = data.config
     state.loaded = true
   }
 
-  // ---- 分组 ----
-  async function addGroup(name: string) {
-    const g = await tauriApi.createGroup(name)
-    state.groups.push(g)
-    return g
-  }
-
-  async function renameGroup(id: number, name: string) {
-    const g = await tauriApi.updateGroup(id, name)
-    const idx = state.groups.findIndex((x) => x.id === id)
-    if (idx >= 0) state.groups[idx] = g
-    return g
-  }
-
-  async function removeGroup(id: number) {
-    await tauriApi.deleteGroup(id)
-    state.groups = state.groups.filter((x) => x.id !== id)
-    state.resources = state.resources.filter((x) => x.group_id !== id)
-  }
-
-  async function moveGroups(ids: number[]) {
-    await tauriApi.reorderGroups(ids)
-    state.groups = state.groups
-      .slice()
-      .sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id))
-  }
-
-  // ---- 资源 ----
+  // ---- 速达资源 ----
   async function addResource(payload: {
-    groupId: number
-    kind: 'app' | 'web'
+    kind: 'app' | 'web' | 'file'
     name: string
     target: string
+    category?: string | null
     icon?: string | null
     args?: string | null
   }) {
@@ -95,10 +60,10 @@ export function useStore() {
 
   async function editResource(payload: {
     id: number
-    groupId: number
-    kind: 'app' | 'web'
+    kind: 'app' | 'web' | 'file'
     name: string
     target: string
+    category?: string | null
     icon?: string | null
     args?: string | null
   }) {
@@ -113,21 +78,17 @@ export function useStore() {
     state.resources = state.resources.filter((x) => x.id !== id)
   }
 
-  async function moveResources(groupId: number, ids: number[]) {
-    await tauriApi.reorderResources(groupId, ids)
-    const idSet = new Set(ids)
-    state.resources.forEach((r) => {
-      if (idSet.has(r.id)) r.group_id = groupId
-    })
-    const groupResources = state.resources
-      .filter((r) => r.group_id === groupId)
+  async function moveResources(ids: number[]) {
+    await tauriApi.reorderResources(ids)
+    state.resources = state.resources
+      .slice()
       .sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id))
-    const otherResources = state.resources.filter((r) => r.group_id !== groupId)
-    state.resources = groupResources.concat(otherResources)
   }
 
   async function launchResource(id: number) {
     await tauriApi.launchResource(id)
+    const r = state.resources.find((x) => x.id === id)
+    if (r) r.last_launched_at = new Date().toISOString()
   }
 
   // ---- 笔记 ----
@@ -150,32 +111,8 @@ export function useStore() {
   }
 
   async function searchAll(keyword: string) {
-    if (!isTauri())
-      return { resources: [] as Resource[], notes: [] as Note[], files: [] as FileEntry[] }
+    if (!isTauri()) return { resources: [] as Resource[], notes: [] as Note[] }
     return tauriApi.searchAll(keyword)
-  }
-
-  // ---- 文件管理 ----
-  async function addFileLink(payload: { name: string; path: string; category: string }) {
-    const f = await tauriApi.createFileLink(payload)
-    state.files.unshift(f)
-    return f
-  }
-
-  async function editFileLink(id: number, name: string, category: string) {
-    const f = await tauriApi.updateFileLink(id, name, category)
-    const idx = state.files.findIndex((x) => x.id === id)
-    if (idx >= 0) state.files[idx] = f
-    return f
-  }
-
-  async function removeFileLink(id: number) {
-    await tauriApi.deleteFileLink(id)
-    state.files = state.files.filter((x) => x.id !== id)
-  }
-
-  async function openFile(path: string) {
-    await tauriApi.openFileLink(path)
   }
 
   // ---- 标签 ----
@@ -213,10 +150,6 @@ export function useStore() {
   return {
     state: readonly(state),
     loadInitialData,
-    addGroup,
-    renameGroup,
-    removeGroup,
-    moveGroups,
     addResource,
     editResource,
     removeResource,
@@ -226,10 +159,6 @@ export function useStore() {
     saveNote,
     removeNote,
     searchAll,
-    addFileLink,
-    editFileLink,
-    removeFileLink,
-    openFile,
     createTag,
     deleteTag,
     loadNoteTagsMap,

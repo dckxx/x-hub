@@ -63,7 +63,7 @@ function summary(n: Note): string {
 <template>
   <section class="card note-list">
     <header class="nl-header">
-      <h2 class="nl-title">速记笔记</h2>
+      <h2 class="nl-title">速记</h2>
       <button class="icon-btn add" title="新建笔记" @click="emit('create')">
         <Plus :size="15" :stroke-width="2.2" />
       </button>

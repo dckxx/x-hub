@@ -109,6 +109,7 @@ function summary(n: Note): string {
         <button
           class="icon-btn del"
           title="删除笔记"
+          aria-label="删除笔记"
           @click.stop="emit('delete', n.id)"
         >
           <X :size="13" :stroke-width="2" />
@@ -226,12 +227,13 @@ function summary(n: Note): string {
 }
 .del {
   flex-shrink: 0;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   opacity: 0;
   margin-top: -2px;
 }
-.note-item:hover .del {
+.note-item:hover .del,
+.note-item:focus-within .del {
   opacity: 1;
 }
 .del:hover {

@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import { inject, onBeforeUnmount, onMounted, ref } from 'vue'
+import { inject, onBeforeUnmount, onMounted, ref, toRef } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Download, Upload, X } from 'lucide-vue-next'
+import { Download, Lock, Upload, X } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
+import { useFocusTrap } from '../composables/useFocusTrap'
 
-defineProps<{ visible: boolean }>()
+const props = defineProps<{ visible: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
+
+const cardRef = ref<HTMLElement | null>(null)
+useFocusTrap(toRef(props, 'visible'), cardRef)
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') emit('close')
+  if (e.key === 'Escape' && props.visible) emit('close')
 }
 
 onMounted(() => window.addEventListener('keydown', onKeydown))
@@ -59,7 +63,13 @@ async function restoreData() {
   <Teleport to="body">
     <Transition name="mask">
       <div v-if="visible" class="modal-mask">
-        <div class="modal-card" role="dialog" aria-label="设置">
+        <div
+          ref="cardRef"
+          class="modal-card"
+          role="dialog"
+          aria-label="设置"
+          aria-modal="true"
+        >
           <div class="settings-head">
             <h2 class="dialog-title">设置</h2>
             <button class="icon-btn" title="关闭" @click="emit('close')">
@@ -94,7 +104,8 @@ async function restoreData() {
           </div>
 
           <p class="settings-foot">
-            🔒 所有数据默认存储在本地，不会上传云端
+            <Lock :size="12" :stroke-width="2" class="settings-lock" aria-hidden="true" />
+            所有数据默认存储在本地，不会上传云端
           </p>
         </div>
       </div>
@@ -155,6 +166,13 @@ async function restoreData() {
   font-size: 12px;
   color: var(--text-3);
   text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.settings-lock {
+  flex-shrink: 0;
 }
 
 .mask-enter-active,

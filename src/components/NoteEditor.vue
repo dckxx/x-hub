@@ -4,6 +4,7 @@ import { marked } from 'marked'
 import { Eye, Pencil, Tag as TagIcon, Trash2, X } from 'lucide-vue-next'
 import { isTauri, tauriApi, type Note, type Tag } from '../api/tauri'
 import { useStore } from '../stores/workbench'
+import { useFocusTrap } from '../composables/useFocusTrap'
 
 const store = useStore()
 
@@ -21,6 +22,10 @@ const localTitle = ref('')
 const localContent = ref('')
 const dirty = ref(false)
 const syncing = ref(false)
+const cardRef = ref<HTMLElement | null>(null)
+const titleInputRef = ref<HTMLInputElement | null>(null)
+
+useFocusTrap(computed(() => props.note !== null), cardRef, titleInputRef)
 
 // ---- Markdown 编辑/预览 ----
 const mode = ref<'edit' | 'preview'>('edit')
@@ -84,7 +89,7 @@ async function submitTagInput() {
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') emit('close')
+  if (e.key === 'Escape' && props.note) emit('close')
 }
 
 onMounted(() => window.addEventListener('keydown', onKeydown))
@@ -133,9 +138,16 @@ function formatSavedTime(iso: string): string {
   <Teleport to="body">
     <Transition name="mask">
       <div v-if="note" class="modal-mask">
-        <div class="modal-card editor-card" role="dialog" aria-label="笔记编辑">
+        <div
+          ref="cardRef"
+          class="modal-card editor-card"
+          role="dialog"
+          aria-label="笔记编辑"
+          aria-modal="true"
+        >
           <header class="ed-header">
             <input
+              ref="titleInputRef"
               v-model="localTitle"
               class="ed-title-input"
               type="text"
@@ -162,7 +174,12 @@ function formatSavedTime(iso: string): string {
             <button class="icon-btn" title="关闭" @click="emit('close')">
               <X :size="14" :stroke-width="2" />
             </button>
-            <button class="icon-btn del" title="删除笔记" @click="emit('delete', note.id)">
+            <button
+              class="icon-btn del"
+              title="删除笔记"
+              aria-label="删除笔记"
+              @click="emit('delete', note.id)"
+            >
               <Trash2 :size="14" :stroke-width="1.8" />
             </button>
           </header>
@@ -207,6 +224,7 @@ function formatSavedTime(iso: string): string {
               v-else
               class="tag-add"
               title="添加标签"
+              aria-label="添加标签"
               @click="tagInputVisible = true"
             >
               +
@@ -398,8 +416,8 @@ function formatSavedTime(iso: string): string {
   color: var(--c-red);
 }
 .tag-add {
-  width: 20px;
-  height: 20px;
+  width: 26px;
+  height: 26px;
   border: 1px dashed var(--text-4);
   background: transparent;
   border-radius: 50%;

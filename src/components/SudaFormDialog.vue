@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
-import { FolderOpen, ImagePlus } from 'lucide-vue-next'
+import { FolderOpen, ImagePlus, Link } from 'lucide-vue-next'
 import { isTauri, tauriApi, type Resource } from '../api/tauri'
 import { CATEGORIES, categorize } from '../utils/categories'
+import { useFocusTrap } from '../composables/useFocusTrap'
 
 const props = defineProps<{
   visible: boolean
@@ -35,6 +36,10 @@ const icon = ref('')
 const category = ref<string>(CATEGORIES[0])
 const isDir = ref(false)
 const error = ref('')
+const cardRef = ref<HTMLElement | null>(null)
+const nameInputRef = ref<HTMLInputElement | null>(null)
+
+useFocusTrap(toRef(props, 'visible'), cardRef, nameInputRef)
 
 const isEdit = computed(() => props.editing !== null)
 
@@ -169,7 +174,7 @@ function submit() {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') emit('close')
+  if (e.key === 'Escape' && props.visible) emit('close')
 }
 
 onMounted(() => window.addEventListener('keydown', onKeydown))
@@ -180,7 +185,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   <Teleport to="body">
     <Transition name="mask">
       <div v-if="visible" class="modal-mask">
-        <div class="modal-card form-card" role="dialog" aria-label="速达资源编辑">
+        <div
+          ref="cardRef"
+          class="modal-card form-card"
+          role="dialog"
+          aria-label="速达资源编辑"
+          aria-modal="true"
+        >
           <h2 class="dialog-title">{{ isEdit ? '编辑' : '添加' }}</h2>
 
           <!-- 类型切换 -->
@@ -211,6 +222,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           <!-- 名称 -->
           <label class="field-label">名称</label>
           <input
+            ref="nameInputRef"
             v-model="name"
             class="field-input"
             type="text"
@@ -304,7 +316,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 {{ c }}
               </button>
             </div>
-            <p class="link-hint">🔗 仅创建链接，源文件保留在原位置</p>
+            <p class="link-hint">
+              <Link :size="12" :stroke-width="2" class="link-hint-icon" aria-hidden="true" />
+              仅创建链接，源文件保留在原位置
+            </p>
           </template>
 
           <p v-if="error" class="form-error">{{ error }}</p>
@@ -432,7 +447,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   font-size: 12px;
   color: var(--text-2);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 .cat-pill:hover {
   border-color: var(--brand-500);
@@ -441,12 +456,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .cat-pill.active {
   background: var(--brand-500);
   border-color: var(--brand-500);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 .link-hint {
   margin-top: 14px;
   font-size: 12px;
   color: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.link-hint-icon {
+  flex-shrink: 0;
 }
 .form-error {
   margin-top: 10px;

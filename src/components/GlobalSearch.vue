@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
 import { Search } from 'lucide-vue-next'
 import type { Note, Resource } from '../api/tauri'
 import { useStore } from '../stores/workbench'
+import { useFocusTrap } from '../composables/useFocusTrap'
 
 const props = defineProps<{
   visible: boolean
@@ -23,6 +24,65 @@ const results = ref<{ resources: Resource[]; notes: Note[] }>({
 })
 const searched = ref(false)
 const inputRef = ref<HTMLInputElement | null>(null)
+const cardRef = ref<HTMLElement | null>(null)
+
+useFocusTrap(toRef(props, 'visible'), cardRef, inputRef)
+
+interface FlatItem {
+  type: 'resource' | 'note'
+  key: string
+  resource?: Resource
+  note?: Note
+}
+
+const flatResults = computed<FlatItem[]>(() => [
+  ...results.value.resources.map((r) => ({ type: 'resource' as const, key: 'r' + r.id, resource: r })),
+  ...results.value.notes.map((n) => ({ type: 'note' as const, key: 'n' + n.id, note: n })),
+])
+
+const activeIndex = ref(-1)
+
+watch(flatResults, (list) => {
+  activeIndex.value = list.length > 0 ? 0 : -1
+})
+
+function scrollActiveIntoView() {
+  const item = flatResults.value[activeIndex.value]
+  if (!item) return
+  document
+    .querySelector<HTMLElement>(`[data-search-key="${item.key}"]`)
+    ?.scrollIntoView({ block: 'nearest' })
+}
+
+function openActive() {
+  const item = flatResults.value[activeIndex.value]
+  if (!item) return
+  if (item.type === 'resource' && item.resource) emit('openResource', item.resource)
+  else if (item.type === 'note' && item.note) emit('openNote', item.note)
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (!props.visible) return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    emit('close')
+    return
+  }
+  const list = flatResults.value
+  if (list.length === 0) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    activeIndex.value = (activeIndex.value + 1) % list.length
+    scrollActiveIntoView()
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    activeIndex.value = (activeIndex.value - 1 + list.length) % list.length
+    scrollActiveIntoView()
+  } else if (e.key === 'Enter') {
+    e.preventDefault()
+    openActive()
+  }
+}
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -33,7 +93,7 @@ watch(
       keyword.value = ''
       results.value = { resources: [], notes: [] }
       searched.value = false
-      setTimeout(() => inputRef.value?.focus(), 30)
+      activeIndex.value = -1
     }
   },
 )
@@ -52,10 +112,6 @@ watch(keyword, (kw) => {
   }, 300)
 })
 
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') emit('close')
-}
-
 function kindText(kind: Resource['kind']): string {
   if (kind === 'app') return '程序'
   if (kind === 'web') return '网页'
@@ -70,7 +126,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   <Teleport to="body">
     <Transition name="mask">
       <div v-if="visible" class="modal-mask">
-        <div class="search-card" role="dialog" aria-label="全局搜索">
+        <div class="search-card" ref="cardRef" role="dialog" aria-label="全局搜索" aria-modal="true">
           <div class="search-input-row">
             <Search class="search-icon" :size="17" :stroke-width="1.8" />
             <input
@@ -79,20 +135,24 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               class="search-input"
               type="text"
               placeholder="搜索资源与笔记…"
-              @keydown="onKeydown"
             />
             <kbd class="esc-hint">ESC</kbd>
           </div>
 
-          <div class="search-results">
+          <div class="search-results" role="listbox" aria-label="搜索结果">
             <!-- 资源 -->
             <template v-if="results.resources.length > 0">
-              <p class="result-group-title">速达</p>
+              <p class="result-group-title" role="presentation">速达</p>
               <div
-                v-for="r in results.resources"
+                v-for="(r, idx) in results.resources"
                 :key="'r' + r.id"
                 class="result-item"
+                :class="{ active: idx === activeIndex }"
+                :data-search-key="'r' + r.id"
+                role="option"
+                :aria-selected="idx === activeIndex"
                 @click="emit('openResource', r)"
+                @mouseenter="activeIndex = idx"
               >
                 <span class="result-badge" :class="r.kind">
                   {{ kindText(r.kind) }}
@@ -104,12 +164,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
             <!-- 笔记 -->
             <template v-if="results.notes.length > 0">
-              <p class="result-group-title">速记</p>
+              <p class="result-group-title" role="presentation">速记</p>
               <div
-                v-for="n in results.notes"
+                v-for="(n, idx) in results.notes"
                 :key="'n' + n.id"
                 class="result-item"
+                :class="{ active: results.resources.length + idx === activeIndex }"
+                :data-search-key="'n' + n.id"
+                role="option"
+                :aria-selected="results.resources.length + idx === activeIndex"
                 @click="emit('openNote', n)"
+                @mouseenter="activeIndex = results.resources.length + idx"
               >
                 <span class="result-badge note-badge">笔记</span>
                 <span class="result-name">{{ n.title }}</span>
@@ -154,7 +219,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-dock);
   overflow: hidden;
-  animation: card-in 0.2s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  animation: card-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 @keyframes card-in {
   from {
@@ -212,8 +277,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   font-size: 11px;
   font-weight: 600;
   color: var(--text-3);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   padding: 8px 10px 4px;
 }
 .result-item {
@@ -225,7 +288,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   cursor: pointer;
   transition: background 0.12s;
 }
-.result-item:hover {
+.result-item:hover,
+.result-item.active {
   background: var(--brand-50);
 }
 .result-badge {
@@ -234,22 +298,24 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   text-align: center;
   font-size: 10px;
   font-weight: 600;
-  color: #fff;
   border-radius: 6px;
   padding: 3px 0;
 }
 .result-badge.app {
-  background: var(--c-blue);
+  background: var(--c-blue-soft);
+  color: var(--c-blue-ink);
 }
 .result-badge.web {
-  background: var(--c-green);
+  background: var(--c-green-soft);
+  color: var(--c-green-ink);
 }
 .result-badge.file {
-  background: var(--c-purple);
+  background: var(--c-purple-soft);
+  color: var(--c-purple-ink);
 }
 .note-badge {
-  background: var(--c-yellow);
-  color: #7c5e00;
+  background: var(--c-yellow-soft);
+  color: var(--c-yellow-ink);
 }
 .shortcut-hints {
   display: flex;

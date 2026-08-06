@@ -18,6 +18,7 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 
 const menuRef = ref<HTMLElement | null>(null)
 const pos = ref({ x: 0, y: 0 })
+const activeIndex = ref(0)
 
 watch(
   () => props.visible,
@@ -30,8 +31,37 @@ watch(
       x: Math.max(4, Math.min(props.x, window.innerWidth - w - 8)),
       y: Math.max(4, Math.min(props.y, window.innerHeight - h - 8)),
     }
+    activeIndex.value = 0
+    focusItem(0)
   },
 )
+
+function focusItem(i: number) {
+  const btns = menuRef.value?.querySelectorAll<HTMLButtonElement>('.ctx-item') ?? []
+  btns[i]?.focus()
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (!props.visible) return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    emit('close')
+    return
+  }
+  if (props.items.length === 0) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    activeIndex.value = (activeIndex.value + 1) % props.items.length
+    focusItem(activeIndex.value)
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    activeIndex.value = (activeIndex.value - 1 + props.items.length) % props.items.length
+    focusItem(activeIndex.value)
+  } else if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault()
+    onItemClick(props.items[activeIndex.value])
+  }
+}
 
 function globalClose() {
   if (props.visible) emit('close')
@@ -46,12 +76,14 @@ onMounted(() => {
   window.addEventListener('click', globalClose)
   window.addEventListener('contextmenu', globalClose)
   window.addEventListener('resize', globalClose)
+  window.addEventListener('keydown', onKeydown)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('click', globalClose)
   window.removeEventListener('contextmenu', globalClose)
   window.removeEventListener('resize', globalClose)
+  window.removeEventListener('keydown', onKeydown)
 })
 </script>
 
@@ -73,7 +105,9 @@ onBeforeUnmount(() => {
           class="ctx-item"
           :class="{ danger: item.danger }"
           role="menuitem"
+          :tabindex="i === activeIndex ? 0 : -1"
           @click="onItemClick(item)"
+          @mouseenter="activeIndex = i"
         >
           {{ item.label }}
         </button>

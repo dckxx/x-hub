@@ -44,12 +44,12 @@ function goToday() {
 
 <template>
   <section class="card calendar" aria-label="日历">
-    <h3 class="cal-title">{{ viewYear }}年{{ viewMonth + 1 }}月</h3>
-    <div class="cal-controls">
-      <button class="cal-nav-btn today-btn" title="回到今天" @click="goToday">今</button>
+    <header class="cal-header">
       <div class="cal-week" aria-hidden="true">
         <span v-for="w in weekLabels" :key="w" class="cal-week-label">{{ w }}</span>
       </div>
+      <button class="cal-nav-btn today-btn" title="回到今天" @click="goToday">今</button>
+      <h3 class="cal-title">{{ viewYear }}年{{ viewMonth + 1 }}月</h3>
       <div class="cal-nav">
         <button class="cal-nav-btn" title="上个月" @click="prevMonth">
           <ChevronLeft :size="13" :stroke-width="2.2" />
@@ -58,7 +58,7 @@ function goToday() {
           <ChevronRight :size="13" :stroke-width="2.2" />
         </button>
       </div>
-    </div>
+    </header>
 
     <div class="cal-grid" role="grid">
       <span
@@ -85,19 +85,19 @@ function goToday() {
   padding: 16px 16px 12px;
   flex-shrink: 0;
 }
+.cal-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
 .cal-title {
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
   white-space: nowrap;
-  margin-bottom: 8px;
-}
-.cal-controls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 4px;
+  margin: 0;
 }
 .cal-nav {
   display: flex;
@@ -119,7 +119,6 @@ function goToday() {
 .today-btn {
   width: auto;
   padding: 0 7px;
-  margin-left: 2px;
   font-size: 11px;
   font-weight: 600;
 }

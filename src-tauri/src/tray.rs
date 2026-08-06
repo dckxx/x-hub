@@ -19,7 +19,7 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
         .icon(icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("个人效率工作台")
+        .tooltip("x-hub")
         .on_menu_event(|app, event| {
             log::info!("托盘菜单点击: {}", event.id.as_ref());
             match event.id.as_ref() {

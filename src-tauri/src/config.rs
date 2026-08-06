@@ -42,7 +42,7 @@ impl Default for AppConfig {
 pub fn config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("personal-workbench")
+        .join("x-hub")
 }
 
 pub fn config_file() -> PathBuf {

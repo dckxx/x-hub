@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "personal-workbench",
+  "productName": "x-hub",
   "version": "0.1.0",
   "identifier": "x-hub",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "个人效率工作台",
+        "title": "x-hub",
         "width": 1400,
         "height": 900,
         "minWidth": 800,
@@ -34,7 +34,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

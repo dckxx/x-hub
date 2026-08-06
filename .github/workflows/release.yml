@@ -30,20 +30,24 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build & publish installer
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'x-hub ${{ github.ref_name }}'
-          releaseBody: 'See the assets to download this version and install.'
-          releaseDraft: true
-          prerelease: false
+      - name: Build release binary
+        run: npm run tauri:build -- --no-bundle
 
-      - name: Upload portable exe
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          $exe = 'src-tauri/target/release/x-hub.exe'
+          if (-not (Test-Path $exe)) { Write-Error "未找到 $exe" }
+          Compress-Archive -Path $exe -DestinationPath 'x-hub-x86_64-pc-windows-portable.zip' -Force
+
+      - name: Upload portable zip
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: src-tauri/target/release/x-hub.exe
+          release_name: 'x-hub ${{ github.ref_name }}'
+          body: |
+            便携版：解压后双击 `x-hub.exe` 即可运行。
+            需要系统已安装 WebView2 运行时（Windows 10/11 一般自带）。
+          files: x-hub-x86_64-pc-windows-portable.zip
           draft: true
+          prerelease: false

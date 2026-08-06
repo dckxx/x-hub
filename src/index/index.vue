@@ -11,7 +11,7 @@ import SettingsDialog from '../components/SettingsDialog.vue'
 import { useStore } from '../stores/workbench'
 import { isTauri } from '../api/tauri'
 import type { Note, Resource } from '../api/tauri'
-import { FileText, FolderOpen, LayoutDashboard, Moon, Settings2, Sun } from 'lucide-vue-next'
+import { FileText, FolderOpen, LayoutDashboard, Moon, Settings2, Sun, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 
 const store = useStore()
 const todayRef = ref<HTMLElement | null>(null)
@@ -25,6 +25,14 @@ const navigation = [
 ] as const
 
 const activeNavigation = ref('dashboard')
+
+// ---- 侧边栏收起（跨会话记忆） ----
+const sidebarCollapsed = ref(localStorage.getItem('sidebar-collapsed') === '1')
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  localStorage.setItem('sidebar-collapsed', sidebarCollapsed.value ? '1' : '0')
+}
 
 function focusPanel(target: (typeof navigation)[number]['target'], id: string) {
   activeNavigation.value = id
@@ -80,9 +88,19 @@ function onSelectNote(id: number) {
 }
 
 async function onDeleteNote(id: number) {
+  const target = store.state.notes.find((n) => n.id === id)
+  if (!target) return
   await store.removeNote(id)
   if (activeNoteId.value === id) activeNoteId.value = null
-  showToast('笔记已删除')
+  showToast('笔记已删除', {
+    label: '撤销',
+    onClick: async () => {
+      const n = await store.addNote(target.title)
+      await store.saveNote(n.id, target.title, target.content)
+      activeNoteId.value = n.id
+      showToast('已恢复笔记')
+    },
+  })
 }
 
 function onSaveNote(id: number, title: string, content: string) {
@@ -115,15 +133,23 @@ function onOpenNote(n: Note) {
 }
 
 // ---- 轻提示 ----
+interface ToastAction {
+  label: string
+  onClick: () => void
+}
+
 const toastMsg = ref('')
+const toastAction = ref<ToastAction | null>(null)
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 
-function showToast(msg: string) {
+function showToast(msg: string, action?: ToastAction) {
   toastMsg.value = msg
+  toastAction.value = action ?? null
   if (toastTimer) clearTimeout(toastTimer)
   toastTimer = setTimeout(() => {
     toastMsg.value = ''
-  }, 2200)
+    toastAction.value = null
+  }, action ? 5000 : 2200)
 }
 
 provide('showToast', showToast)
@@ -139,8 +165,12 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
       @settings="settingsVisible = true"
     />
 
-    <div class="app-body">
-      <aside class="sidebar" aria-label="应用侧栏">
+    <div class="app-body" :class="{ collapsed: sidebarCollapsed }">
+      <aside
+        class="sidebar"
+        :class="{ collapsed: sidebarCollapsed }"
+        aria-label="应用侧栏"
+      >
         <nav class="sidebar-nav" aria-label="主要导航">
           <button
             v-for="item in navigation"
@@ -169,6 +199,21 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
         >
           <component :is="isDark ? Sun : Moon" :size="15" :stroke-width="2" aria-hidden="true" />
           <span>{{ isDark ? '亮色模式' : '暗色模式' }}</span>
+        </button>
+        <button
+          class="sidebar-status sidebar-collapse"
+          type="button"
+          :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+          :title="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+          @click="toggleSidebar"
+        >
+          <component
+            :is="sidebarCollapsed ? ChevronRight : ChevronLeft"
+            :size="15"
+            :stroke-width="2"
+            aria-hidden="true"
+          />
+          <span v-if="!sidebarCollapsed">收起</span>
         </button>
       </aside>
 
@@ -214,7 +259,17 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
     />
 
     <Transition name="toast">
-      <div v-if="toastMsg" class="toast">{{ toastMsg }}</div>
+      <div v-if="toastMsg" class="toast">
+        <span class="toast-msg">{{ toastMsg }}</span>
+        <button
+          v-if="toastAction"
+          class="toast-action"
+          type="button"
+          @click="toastAction.onClick()"
+        >
+          {{ toastAction.label }}
+        </button>
+      </div>
     </Transition>
   </div>
 </template>
@@ -235,8 +290,13 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   min-height: 0;
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
+  transition: grid-template-columns 0.18s ease-out;
+}
+.app-body.collapsed {
+  grid-template-columns: 56px minmax(0, 1fr);
 }
 .sidebar {
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -245,6 +305,10 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-soft);
   overflow: hidden;
+  transition: padding 0.18s ease-out;
+}
+.sidebar.collapsed {
+  padding: var(--space-3) 8px;
 }
 .sidebar-nav {
   display: flex;
@@ -298,6 +362,35 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   border-radius: 50%;
   background: var(--c-green-ink);
 }
+/* 收起态：只保留图标 */
+.sidebar.collapsed .sidebar-nav-item,
+.sidebar.collapsed .sidebar-status {
+  justify-content: center;
+  padding: 0;
+}
+.sidebar.collapsed .sidebar-nav-item {
+  min-height: 40px;
+  border-radius: var(--radius-md);
+}
+.sidebar.collapsed .sidebar-nav-item:hover {
+  background: color-mix(in srgb, var(--brand-500) 12%, transparent);
+}
+.sidebar.collapsed .sidebar-nav-item.active,
+.sidebar.collapsed .sidebar-nav-item.active:hover {
+  background: color-mix(in srgb, var(--brand-500) 22%, transparent);
+}
+.sidebar.collapsed .sidebar-nav-item span,
+.sidebar.collapsed .sidebar-status span,
+.sidebar.collapsed .status-dot {
+  display: none;
+}
+.sidebar.collapsed .sidebar-status {
+  min-height: 34px;
+}
+.sidebar.collapsed .sidebar-nav {
+  align-items: center;
+  gap: 6px;
+}
 .workspace {
   min-width: 0;
   min-height: 0;
@@ -318,12 +411,12 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   overflow: hidden;
   background: var(--bg-card-solid);
   border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
 }
 .workspace-panel:focus-visible { box-shadow: var(--shadow-focus); }
 .today-panel { padding: var(--space-5); }
 .today-panel :deep(.calendar) {
-  padding: var(--space-3) 0 0;
+  padding: 0 0 var(--space-3);
   border: 0;
   border-radius: 0;
   box-shadow: none;
@@ -344,7 +437,19 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 
 @media (max-width: 720px) {
   .app-body { grid-template-columns: 1fr; }
+  .app-body.collapsed { grid-template-columns: 1fr; }
   .sidebar { position: relative; max-height: 280px; border-right: 0; border-bottom: 1px solid var(--border-soft); }
+  .sidebar.collapsed { padding: var(--space-3); }
+  .sidebar.collapsed .sidebar-nav-item,
+  .sidebar.collapsed .sidebar-status {
+    justify-content: flex-start;
+    padding: 0 var(--space-3);
+  }
+  .sidebar.collapsed .sidebar-nav-item span,
+  .sidebar.collapsed .sidebar-status span,
+  .sidebar.collapsed .status-dot {
+    display: initial;
+  }
   .workspace { padding: var(--space-4); }
   .workspace-grid { display: flex; flex-direction: column; }
   .workspace-panel { min-height: 320px; }
@@ -357,6 +462,9 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   left: 50%;
   transform: translateX(-50%);
   z-index: 500;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   background: var(--text-1);
   color: var(--bg-card);
   font-size: 13px;
@@ -368,7 +476,26 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  pointer-events: none;
+  pointer-events: auto;
+}
+.toast-msg {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toast-action {
+  flex-shrink: 0;
+  border: none;
+  background: color-mix(in srgb, var(--bg-card) 22%, transparent);
+  color: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.toast-action:hover {
+  background: color-mix(in srgb, var(--bg-card) 38%, transparent);
 }
 .toast-enter-active,
 .toast-leave-active {

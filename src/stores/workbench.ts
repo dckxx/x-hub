@@ -78,13 +78,6 @@ export function useStore() {
     state.resources = state.resources.filter((x) => x.id !== id)
   }
 
-  async function moveResources(ids: number[]) {
-    await tauriApi.reorderResources(ids)
-    state.resources = state.resources
-      .slice()
-      .sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id))
-  }
-
   async function launchResource(id: number) {
     await tauriApi.launchResource(id)
     const r = state.resources.find((x) => x.id === id)
@@ -153,7 +146,6 @@ export function useStore() {
     addResource,
     editResource,
     removeResource,
-    moveResources,
     launchResource,
     addNote,
     saveNote,

@@ -6,12 +6,6 @@ const today = new Date()
 const viewYear = ref(today.getFullYear())
 const viewMonth = ref(today.getMonth()) // 0-based
 
-const todayDate = today.toLocaleDateString('zh-CN', {
-  month: 'long',
-  day: 'numeric',
-  weekday: 'short',
-})
-
 const weekLabels = ['日', '一', '二', '三', '四', '五', '六']
 
 const daysInMonth = computed(() => new Date(viewYear.value, viewMonth.value + 1, 0).getDate())
@@ -51,13 +45,9 @@ function goToday() {
 <template>
   <section class="card calendar" aria-label="日历">
     <header class="cal-header">
-      <span class="cal-date">{{ todayDate }}</span>
-      <div class="cal-week" aria-hidden="true">
-        <span v-for="w in weekLabels" :key="w" class="cal-week-label">{{ w }}</span>
-      </div>
-      <button class="cal-nav-btn today-btn" title="回到今天" @click="goToday">今</button>
       <h3 class="cal-title">{{ viewYear }}年{{ viewMonth + 1 }}月</h3>
       <div class="cal-nav">
+        <button class="cal-nav-btn today-btn" title="回到今天" @click="goToday">今</button>
         <button class="cal-nav-btn" title="上个月" @click="prevMonth">
           <ChevronLeft :size="13" :stroke-width="2.2" />
         </button>
@@ -66,6 +56,10 @@ function goToday() {
         </button>
       </div>
     </header>
+
+    <div class="cal-week" aria-hidden="true">
+      <span v-for="w in weekLabels" :key="w" class="cal-week-label">{{ w }}</span>
+    </div>
 
     <div class="cal-grid" role="grid">
       <span
@@ -95,30 +89,25 @@ function goToday() {
 .cal-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
+  justify-content: space-between;
+  padding: 0 4px;
+  margin-bottom: 12px;
 }
 .cal-title {
-  font-size: 13px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
   white-space: nowrap;
   margin: 0;
 }
-.cal-date {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-3);
-  white-space: nowrap;
-}
 .cal-nav {
   display: flex;
-  gap: 2px;
+  gap: 3px;
 }
 .cal-nav-btn {
-  width: 24px;
-  height: 24px;
+  width: 30px;
+  height: 30px;
   border: none;
   background: var(--bg-card-soft);
   border-radius: 7px;
@@ -144,9 +133,9 @@ function goToday() {
 }
 
 .cal-week {
-  flex: 1;
   display: grid;
   grid-template-columns: repeat(7, 1fr);
+  margin-bottom: 4px;
 }
 .cal-week-label {
   text-align: center;
@@ -167,12 +156,6 @@ function goToday() {
   font-size: 13px;
   color: var(--text-2);
   border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, transform 0.15s;
-}
-.cal-cell:not(.empty):hover {
-  background: var(--brand-50);
-  color: var(--brand-500);
 }
 .cal-cell.today {
   background: var(--brand-500);

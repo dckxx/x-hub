@@ -23,7 +23,10 @@ import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 import SudaFormDialog from './SudaFormDialog.vue'
 
 const store = useStore()
-const showToast = inject<(msg: string) => void>('showToast', () => {})
+const showToast = inject<(msg: string, action?: { label: string; onClick: () => void }) => void>(
+  'showToast',
+  () => {},
+)
 const rootRef = ref<HTMLElement | null>(null)
 
 // ---- 拖拽导入：exe/lnk 预填为应用，其他文件/文件夹直接建链接 ----
@@ -87,9 +90,10 @@ async function handleDrop(file: string) {
 }
 
 // ---- 分类筛选 ----
-type FilterKey = '全部' | '常用' | '应用' | '网页' | (typeof CATEGORIES)[number]
+type FilterKey = '全部' | '常用' | '应用' | '网页' | '文件'
 
 const activeFilter = ref<FilterKey>('全部')
+const activeCategory = ref<string | null>(null)
 
 const visibleResources = computed<Resource[]>(() => {
   const all = store.state.resources
@@ -105,16 +109,46 @@ const visibleResources = computed<Resource[]>(() => {
   }
   if (activeFilter.value === '应用') return all.filter((r) => r.kind === 'app')
   if (activeFilter.value === '网页') return all.filter((r) => r.kind === 'web')
-  return all.filter((r) => r.kind === 'file' && r.category === activeFilter.value)
+  return all.filter(
+    (r) =>
+      r.kind === 'file' &&
+      (activeCategory.value === null || r.category === activeCategory.value),
+  )
 })
 
-const FILTER_TABS: FilterKey[] = ['全部', '常用', '应用', '网页', ...CATEGORIES]
+const FILTER_TABS: FilterKey[] = ['全部', '常用', '应用', '网页', '文件']
+
+const emptyTitle = computed(() => {
+  if (activeFilter.value === '全部') return '还没有速达资源'
+  if (activeFilter.value === '文件' && activeCategory.value) {
+    return `暂无「${activeCategory.value}」分类资源`
+  }
+  return `暂无「${activeFilter.value}」资源`
+})
 
 // ---- 右键菜单 ----
 const menu = ref({ visible: false, x: 0, y: 0, items: [] as ContextMenuItem[] })
 
 function openMenu(e: MouseEvent, items: ContextMenuItem[]) {
   menu.value = { visible: true, x: e.clientX, y: e.clientY, items }
+}
+
+async function onDeleteResource(r: Resource) {
+  await store.removeResource(r.id)
+  showToast(`已删除「${r.name}」`, {
+    label: '撤销',
+    onClick: async () => {
+      await store.addResource({
+        kind: r.kind,
+        name: r.name,
+        target: r.target,
+        category: r.category,
+        icon: r.icon,
+        args: r.args,
+      })
+      showToast('已恢复')
+    },
+  })
 }
 
 function onResourceContext(e: MouseEvent, r: Resource) {
@@ -134,7 +168,7 @@ function onResourceContext(e: MouseEvent, r: Resource) {
     {
       label: '删除',
       danger: true,
-      onClick: () => store.removeResource(r.id),
+      onClick: () => void onDeleteResource(r),
     },
   ])
 }
@@ -287,6 +321,26 @@ function fileIconOf(r: Resource) {
       </button>
     </nav>
 
+    <!-- 文件二级分类（仅文件视图） -->
+    <nav v-if="activeFilter === '文件'" class="filter-tabs suda-cat-tabs" aria-label="文件分类">
+      <button
+        class="filter-tab filter-tab--tag"
+        :class="{ active: activeCategory === null }"
+        @click="activeCategory = null"
+      >
+        全部文件
+      </button>
+      <button
+        v-for="c in CATEGORIES"
+        :key="c"
+        class="filter-tab filter-tab--tag"
+        :class="{ active: activeCategory === c }"
+        @click="activeCategory = c"
+      >
+        {{ c }}
+      </button>
+    </nav>
+
     <!-- 资源网格（5 列） -->
     <div class="suda-body">
       <div v-if="visibleResources.length > 0" class="suda-grid">
@@ -308,6 +362,7 @@ function fileIconOf(r: Resource) {
             <button
               class="suda-action"
               title="编辑"
+              aria-label="编辑"
               @click.stop="editing = r; formVisible = true"
             >
               <Pencil :size="11" :stroke-width="2" />
@@ -315,7 +370,8 @@ function fileIconOf(r: Resource) {
             <button
               class="suda-action del"
               title="删除"
-              @click.stop="store.removeResource(r.id)"
+              aria-label="删除"
+              @click.stop="onDeleteResource(r)"
             >
               <Trash2 :size="11" :stroke-width="2" />
             </button>
@@ -357,7 +413,7 @@ function fileIconOf(r: Resource) {
 
       <div v-else class="empty-state">
         <Wrench :size="24" :stroke-width="1.7" aria-hidden="true" />
-        <p>{{ activeFilter === '全部' ? '还没有速达资源' : `暂无「${activeFilter}」资源` }}</p>
+        <p>{{ emptyTitle }}</p>
         <p style="font-size: 12px; color: var(--text-4)">
           添加本地程序、网页书签或文件快捷链接
         </p>
@@ -433,7 +489,12 @@ function fileIconOf(r: Resource) {
 }
 
 .suda-tabs {
+  margin-bottom: 10px;
+}
+.suda-cat-tabs {
   margin-bottom: 14px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-soft);
 }
 
 .suda-body {
@@ -530,19 +591,20 @@ function fileIconOf(r: Resource) {
   top: 5px;
   right: 5px;
   display: flex;
-  gap: 2px;
+  gap: 4px;
   opacity: 0;
   transition: opacity 0.15s;
 }
-.suda-card:hover .suda-actions {
+.suda-card:hover .suda-actions,
+.suda-card:focus-within .suda-actions {
   opacity: 1;
 }
 .suda-action {
-  width: 20px;
-  height: 20px;
+  width: 28px;
+  height: 28px;
   border: none;
   background: var(--bg-card);
-  border-radius: 6px;
+  border-radius: 7px;
   box-shadow: var(--shadow-card);
   display: flex;
   align-items: center;
@@ -566,7 +628,6 @@ function fileIconOf(r: Resource) {
   inset: 0;
   z-index: 250;
   background: color-mix(in srgb, var(--brand-500) 10%, transparent);
-  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;

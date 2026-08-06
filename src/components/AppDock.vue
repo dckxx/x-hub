@@ -20,14 +20,14 @@ const appResources = computed(() =>
 )
 
 const ACCENTS = [
-  { soft: 'var(--c-yellow-soft)', text: '#8A6D00' },
-  { soft: 'var(--c-red-soft)', text: '#B91C1C' },
-  { soft: 'var(--c-blue-soft)', text: '#1D4ED8' },
-  { soft: 'var(--c-green-soft)', text: '#15803D' },
-  { soft: 'var(--c-pink-soft)', text: '#BE185D' },
-  { soft: 'var(--c-orange-soft)', text: '#B45309' },
-  { soft: 'var(--c-purple-soft)', text: '#6D28D9' },
-  { soft: 'var(--c-gray-soft)', text: '#4B5563' },
+  { soft: 'var(--c-yellow-soft)', text: 'var(--c-yellow-ink)' },
+  { soft: 'var(--c-red-soft)', text: 'var(--c-red-ink)' },
+  { soft: 'var(--c-blue-soft)', text: 'var(--c-blue-ink)' },
+  { soft: 'var(--c-green-soft)', text: 'var(--c-green-ink)' },
+  { soft: 'var(--c-pink-soft)', text: 'var(--c-pink-ink)' },
+  { soft: 'var(--c-orange-soft)', text: 'var(--c-orange-ink)' },
+  { soft: 'var(--c-purple-soft)', text: 'var(--c-purple-ink)' },
+  { soft: 'var(--c-gray-soft)', text: 'var(--c-gray-ink)' },
 ]
 
 function accentOf(name: string) {

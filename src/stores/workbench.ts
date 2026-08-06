@@ -29,8 +29,8 @@ const state = reactive<StoreState>({
   config: {
     theme: 'light',
     window: {
-      width: 1100,
-      height: 760,
+      width: 1400,
+      height: 900,
       x: null,
       y: null,
       always_on_top: false,

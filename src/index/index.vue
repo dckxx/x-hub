@@ -175,9 +175,6 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
       <main class="workspace" aria-label="主工作区">
         <div class="workspace-grid">
           <section ref="todayRef" class="workspace-panel today-panel" tabindex="-1" aria-label="日历">
-            <header class="workspace-panel-header">
-              <span class="workspace-date">{{ new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }) }}</span>
-            </header>
             <CalendarCard />
           </section>
 
@@ -325,22 +322,6 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 }
 .workspace-panel:focus-visible { box-shadow: var(--shadow-focus); }
 .today-panel { padding: var(--space-5); }
-.workspace-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  margin-bottom: var(--space-3);
-}
-.workspace-kicker {
-  color: var(--brand-500);
-  font-size: 12px;
-  font-weight: 700;
-}
-.workspace-date {
-  color: var(--text-3);
-  font-size: 12px;
-  font-weight: 500;
-}
 .today-panel :deep(.calendar) {
   padding: var(--space-3) 0 0;
   border: 0;

@@ -1,13 +1,22 @@
 <script setup lang="ts">
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { Copy, Minus, Search, Settings, Square, X } from 'lucide-vue-next'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { Copy, Minus, Pin, PinOff, Search, Settings, Square, X } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
+import { useStore } from '../stores/workbench'
+
+const store = useStore()
 
 defineEmits<{
   (e: 'search'): void
   (e: 'settings'): void
 }>()
+
+const alwaysOnTop = computed(() => store.state.config.window.always_on_top)
+
+function toggleAlwaysOnTop() {
+  void store.setAlwaysOnTop(!alwaysOnTop.value)
+}
 
 const appWindow = isTauri() ? getCurrentWindow() : null
 
@@ -69,6 +78,15 @@ function close() {
         <Settings :size="15" :stroke-width="1.8" />
       </button>
       <div class="tool-divider"></div>
+      <button
+        class="win-btn top-btn"
+        :class="{ active: alwaysOnTop }"
+        :title="alwaysOnTop ? '取消窗口置顶' : '窗口置顶'"
+        @click="toggleAlwaysOnTop"
+      >
+        <Pin v-if="!alwaysOnTop" :size="14" :stroke-width="1.8" color="var(--text-2)" />
+        <PinOff v-else :size="14" :stroke-width="1.8" color="var(--brand-500)" />
+      </button>
       <button class="win-btn minimize" title="最小化" @click="minimize">
         <Minus :size="15" :stroke-width="1.8" color="var(--text-2)" />
       </button>
@@ -153,6 +171,12 @@ function close() {
 }
 .win-btn:hover {
   background: var(--bg-card-soft);
+}
+.win-btn.top-btn.active {
+  background: var(--brand-50);
+}
+.win-btn.top-btn.active:hover {
+  background: var(--brand-50);
 }
 .win-btn.close:hover {
   background: var(--window-close);

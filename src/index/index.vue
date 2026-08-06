@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import TitleBar from '../components/TitleBar.vue'
 import CalendarCard from '../components/CalendarCard.vue'
 import Suda from '../components/Suda.vue'
@@ -8,8 +9,9 @@ import NoteEditor from '../components/NoteEditor.vue'
 import GlobalSearch from '../components/GlobalSearch.vue'
 import SettingsDialog from '../components/SettingsDialog.vue'
 import { useStore } from '../stores/workbench'
+import { isTauri } from '../api/tauri'
 import type { Note, Resource } from '../api/tauri'
-import { FileText, FolderOpen, LayoutDashboard, Settings2 } from 'lucide-vue-next'
+import { FileText, FolderOpen, LayoutDashboard, Moon, Settings2, Sun } from 'lucide-vue-next'
 
 const store = useStore()
 const todayRef = ref<HTMLElement | null>(null)
@@ -37,6 +39,7 @@ function focusPanel(target: (typeof navigation)[number]['target'], id: string) {
 
 // ---- 主题（跟随配置，持久化） ----
 const theme = computed(() => store.state.config.theme)
+const isDark = computed(() => theme.value === 'dark')
 watch(
   theme,
   (t) => {
@@ -45,10 +48,20 @@ watch(
   { immediate: true },
 )
 
-// ---- 启动加载 ----
-onMounted(() => {
-  store.loadInitialData()
+function toggleTheme() {
+  store.setTheme(isDark.value ? 'light' : 'dark')
+}
+
+// ---- 启动加载：数据就绪后显示窗口，避免长时间空白 ----
+onMounted(async () => {
+  store.loadInitialData().then(() => revealWindow())
+  // 兜底：无论数据是否加载成功，最多 1.5s 后显示窗口，避免一直不可见
+  setTimeout(revealWindow, 1500)
 })
+
+function revealWindow() {
+  if (isTauri()) getCurrentWindow().show()
+}
 
 // ---- 笔记选中与操作 ----
 const activeNoteId = ref<number | null>(null)
@@ -148,13 +161,21 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
           <span>本地工作台</span>
           <span class="status-dot" aria-hidden="true"></span>
         </button>
+        <button
+          class="sidebar-status sidebar-theme"
+          type="button"
+          :aria-label="isDark ? '切换到亮色模式' : '切换到暗色模式'"
+          @click="toggleTheme"
+        >
+          <component :is="isDark ? Sun : Moon" :size="15" :stroke-width="2" aria-hidden="true" />
+          <span>{{ isDark ? '亮色模式' : '暗色模式' }}</span>
+        </button>
       </aside>
 
       <main class="workspace" aria-label="主工作区">
         <div class="workspace-grid">
           <section ref="todayRef" class="workspace-panel today-panel" tabindex="-1" aria-label="日历">
             <header class="workspace-panel-header">
-              <p class="workspace-kicker">今天</p>
               <span class="workspace-date">{{ new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }) }}</span>
             </header>
             <CalendarCard />
@@ -270,6 +291,8 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   border: 0;
   cursor: pointer;
 }
+.sidebar-status.sidebar-theme { margin-top: var(--space-1); }
+.sidebar-nav + .sidebar-status { margin-top: auto; }
 .sidebar-status:hover { color: var(--text-1); }
 .status-dot {
   width: 6px;
@@ -305,7 +328,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 .workspace-panel-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   margin-bottom: var(--space-3);
 }
 .workspace-kicker {

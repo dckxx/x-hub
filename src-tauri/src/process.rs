@@ -1,5 +1,11 @@
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
+fn no_console_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+}
+
 pub fn launch_program(path: &str, args: Option<&str>) -> Result<(), String> {
     let target = std::path::Path::new(path);
     let mut cmd = if target.is_file() {
@@ -13,8 +19,11 @@ pub fn launch_program(path: &str, args: Option<&str>) -> Result<(), String> {
         #[cfg(target_os = "windows")]
         let mut c = Command::new("cmd");
         #[cfg(target_os = "windows")]
-        // 引号包裹路径，兼容含空格路径
-        c.arg("/C").arg(format!("\"{}\"", path));
+        {
+            // 引号包裹路径，兼容含空格路径；隐藏控制台窗口
+            c.arg("/C").arg(format!("\"{}\"", path));
+            no_console_window(&mut c);
+        }
         #[cfg(not(target_os = "windows"))]
         let mut c = Command::new("sh");
         #[cfg(not(target_os = "windows"))]
@@ -50,6 +59,8 @@ fn launch_elevated(path: &str, args: Option<&str>) -> Result<(), String> {
     let mut cmd = std::process::Command::new("powershell");
     cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
         .env("XHUB_PATH", path);
+    #[cfg(target_os = "windows")]
+    no_console_window(&mut cmd);
     if has_args {
         cmd.env("XHUB_ARGS", args.unwrap_or(""));
     }

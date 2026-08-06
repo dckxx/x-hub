@@ -479,11 +479,22 @@ pub fn parse_dropped_path(
     })
 }
 
+/// 创建隐藏窗口的 powershell 命令：避免 GUI 应用调用时弹出黑色控制台窗口
+fn powershell() -> std::process::Command {
+    let mut cmd = std::process::Command::new("powershell");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 /// 通过 PowerShell COM（WScript.Shell）解析 .lnk 快捷方式的目标路径
 /// 注意：-Command 模式下 $args 参数传递不可靠，路径通过环境变量传入
 fn resolve_lnk_target(lnk_path: &str) -> Result<String, String> {
     let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:XHUB_LNK).TargetPath; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Write-Output $s";
-    let output = std::process::Command::new("powershell")
+    let output = powershell()
         .args(["-NoProfile", "-Command", script])
         .env("XHUB_LNK", lnk_path)
         .output()
@@ -520,7 +531,7 @@ fn extract_app_icon(app: &tauri::AppHandle, source: &str) -> Option<String> {
     }
 
     let script = "Add-Type -AssemblyName System.Drawing; $i=[System.Drawing.Icon]::ExtractAssociatedIcon($env:XHUB_SRC); if($i -ne $null){$i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'}";
-    let output = match std::process::Command::new("powershell")
+    let output = match powershell()
         .args(["-NoProfile", "-Command", script])
         .env("XHUB_SRC", source)
         .env("XHUB_OUT", output_path.to_str().unwrap_or(""))
@@ -579,7 +590,7 @@ pub fn import_icon_file(
 
     if ext == "ico" {
         let script = "Add-Type -AssemblyName System.Drawing; $i=New-Object System.Drawing.Icon($env:XHUB_SRC); $i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'";
-        let output = std::process::Command::new("powershell")
+        let output = powershell()
             .args(["-NoProfile", "-Command", script])
             .env("XHUB_SRC", &source)
             .env("XHUB_OUT", output_path.to_str().unwrap_or(""))

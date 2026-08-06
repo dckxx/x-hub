@@ -15,8 +15,8 @@ pub struct WindowState {
 impl Default for WindowState {
     fn default() -> Self {
         Self {
-            width: 1100.0,
-            height: 760.0,
+            width: 1400.0,
+            height: 900.0,
             x: None,
             y: None,
             always_on_top: false,

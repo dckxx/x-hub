@@ -33,24 +33,25 @@ jobs:
       - name: Build release binary
         run: npm run tauri:build -- --no-bundle
 
-      - name: Package portable zip
+      - name: Package win-x64 zip
         id: package
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME -replace '^v',''
           $exe = 'src-tauri/target/release/x-hub.exe'
           if (-not (Test-Path $exe)) { Write-Error "未找到 $exe" }
-          $zip = "x-hub-$version-win-x64-portable.zip"
+          $zip = "x-hub-$version-win-x64.zip"
           Compress-Archive -Path $exe -DestinationPath $zip -Force
           Write-Output "zip_name=$zip" >> $env:GITHUB_OUTPUT
 
-      - name: Upload portable zip
+      - name: Upload win-x64 zip
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           release_name: 'x-hub ${{ github.ref_name }}'
           body: |
-            便携版：解压后双击 `x-hub.exe` 即可运行。
+            免安装版：解压后双击 `x-hub.exe` 即可运行。
+            注意：数据存放在用户目录（%APPDATA%\x-hub），非便携版。
             需要系统已安装 WebView2 运行时（Windows 10/11 一般自带）。
           files: ${{ steps.package.outputs.zip_name }}
           draft: true

@@ -271,14 +271,35 @@ pub fn set_global_shortcut(app: tauri::AppHandle, value: String) -> Result<Strin
     }
 
     if crate::shortcut::is_shortcut_registered(&app, shortcut) {
-        return Err(format!("快捷键已被占用: {}", shortcut));
+        return Err("快捷键冲突".into());
     }
 
-    crate::shortcut::unregister_toggle_shortcut(&app, &previous)?;
-    crate::shortcut::register_toggle_shortcut(&app, shortcut)?;
+    if let Err(e) = crate::shortcut::unregister_toggle_shortcut(&app, &previous) {
+        if !crate::shortcut::is_conflict_error(&e) {
+            return Err(e);
+        }
+        return Err("快捷键冲突".into());
+    }
+
+    if let Err(e) = crate::shortcut::register_toggle_shortcut(&app, shortcut) {
+        let mapped = crate::shortcut::format_shortcut_error(&e);
+        if !mapped.eq(&e) {
+            let _ = crate::shortcut::register_toggle_shortcut(&app, &previous);
+        }
+        return Err(mapped);
+    }
     config.global_shortcut = shortcut.to_string();
     crate::config::save(&config)?;
     Ok(config.global_shortcut)
+}
+
+#[tauri::command]
+pub fn log_client_error(message: String, detail: Option<String>) -> Result<(), String> {
+    match detail {
+        Some(detail) if !detail.trim().is_empty() => log::error!("{} | {}", message, detail),
+        _ => log::error!("{}", message),
+    }
+    Ok(())
 }
 
 // ---------- 窗口控制 ----------

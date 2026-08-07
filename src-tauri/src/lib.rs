@@ -254,6 +254,7 @@ pub fn run() {
             commands::set_always_on_top_config,
             commands::get_global_shortcut,
             commands::set_global_shortcut,
+            commands::log_client_error,
             commands::minimize_window,
             commands::toggle_maximize,
             commands::hide_to_tray,

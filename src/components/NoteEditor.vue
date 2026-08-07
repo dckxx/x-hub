@@ -131,7 +131,7 @@ watch(
 function formatSavedTime(iso: string): string {
   const t = new Date(parseTimestamp(iso))
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(t.getHours())}:${pad(t.getMinutes())}`
+  return `${t.getFullYear()}年${t.getMonth() + 1}月${t.getDate()}日${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`
 }
 </script>
 

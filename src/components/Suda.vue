@@ -9,6 +9,7 @@ import {
   FileText,
   Film,
   Folder,
+  Globe,
   Image,
   Music,
   Pencil,
@@ -19,6 +20,7 @@ import {
 import { isTauri, tauriApi, type Resource } from '../api/tauri'
 import { CATEGORIES, categorize } from '../utils/categories'
 import { useStore } from '../stores/workbench'
+import { reportClientError } from '../utils/error-report'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 import SudaFormDialog from './SudaFormDialog.vue'
 
@@ -28,6 +30,7 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
   () => {},
 )
 const rootRef = ref<HTMLElement | null>(null)
+const hasOverlayModal = computed(() => formVisible.value || menu.value.visible)
 
 // ---- 拖拽导入：只预填弹窗，用户确认后才真正添加 ----
 const dropping = ref(false)
@@ -56,7 +59,10 @@ onMounted(async () => {
   const webview = getCurrentWebview()
   unlistenDrop = await webview.onDragDropEvent((event) => {
     const ev = event.payload
+    if (hasOverlayModal.value) return
     if (ev.type === 'enter' || ev.type === 'over') {
+      if (ev.type === 'over') return
+      if (!ev.paths.length) return
       dropping.value = isInside(ev.position)
     } else if (ev.type === 'leave') {
       dropping.value = false
@@ -94,6 +100,7 @@ async function handleDrop(file: string) {
     formVisible.value = true
     showToast(`已识别「${info.name}」，请点击添加确认`)
   } catch (e) {
+    void reportClientError('速达拖拽解析失败', e)
     showToast(String(e))
   }
 }
@@ -276,6 +283,10 @@ function showImageIcon(r: Resource): boolean {
   return isImageIcon(r.icon) && !failedIcons.value.has(r.id)
 }
 
+function showWebFallbackIcon(r: Resource): boolean {
+  return r.kind === 'web' && !showImageIcon(r)
+}
+
 function iconText(r: Resource): string {
   return r.name.charAt(0).toUpperCase()
 }
@@ -388,12 +399,13 @@ function fileIconOf(r: Resource) {
               <Trash2 :size="11" :stroke-width="2" />
             </button>
           </div>
-          <div
-            class="suda-icon"
-            :style="
-              showImageIcon(r)
-                ? {}
-                : { background: 'var(--suda-accent-soft)' }
+            <div
+              class="suda-icon"
+              :class="{ 'web-default': showWebFallbackIcon(r) }"
+              :style="
+                showImageIcon(r)
+                  ? {}
+                  : { background: 'var(--suda-accent-soft)' }
             "
           >
             <img
@@ -402,6 +414,13 @@ function fileIconOf(r: Resource) {
               :src="iconSrc(r.icon!)"
               alt=""
               @error="onIconError(r)"
+            />
+            <Globe
+              v-else-if="showWebFallbackIcon(r)"
+              class="suda-file-icon"
+              :size="25"
+              :stroke-width="1.7"
+              :style="{ color: 'var(--c-green-ink)' }"
             />
             <component
               v-else-if="r.kind === 'file'"
@@ -515,8 +534,8 @@ function fileIconOf(r: Resource) {
   overflow-y: auto;
 }
 .suda-grid {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }
 .suda-card {
@@ -525,6 +544,8 @@ function fileIconOf(r: Resource) {
   flex-direction: column;
   align-items: center;
   gap: 7px;
+  width: 124px;
+  min-width: 0;
   padding: 15px 8px 12px;
   background: var(--bg-card-soft);
   border-radius: var(--radius-md);
@@ -549,6 +570,9 @@ function fileIconOf(r: Resource) {
 }
 .suda-file-icon {
   background: transparent;
+}
+.suda-icon.web-default {
+  background: var(--c-green-soft);
 }
 .suda-letter {
   font-size: 20px;
@@ -632,6 +656,10 @@ function fileIconOf(r: Resource) {
 .suda-action.del:hover {
   color: var(--c-red);
   background: color-mix(in srgb, var(--c-red) 10%, transparent);
+}
+
+.suda-icon.web-default {
+  background: var(--c-green-soft);
 }
 
 /* 拖拽导入遮罩 */

@@ -6,13 +6,13 @@ pub const DEFAULT_TOGGLE_SHORTCUT: &str = "CommandOrControl+Shift+Space";
 pub fn register_toggle_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), String> {
     app.global_shortcut()
         .register(shortcut)
-        .map_err(|e| format!("全局快捷键注册失败: {}", e))
+        .map_err(|e| format!("{}", e))
 }
 
 pub fn unregister_toggle_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), String> {
     app.global_shortcut()
         .unregister(shortcut)
-        .map_err(|e| format!("全局快捷键取消失败: {}", e))
+        .map_err(|e| format!("{}", e))
 }
 
 pub fn is_shortcut_registered(app: &AppHandle, shortcut: &str) -> bool {
@@ -38,4 +38,16 @@ pub fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         log::warn!("{}", e);
     }
     Ok(())
+}
+
+pub fn format_shortcut_error(err: &str) -> String {
+    if err.contains("HotKey") || err.contains("already") || err.contains("occupied") {
+        "快捷键冲突".to_string()
+    } else {
+        err.to_string()
+    }
+}
+
+pub fn is_conflict_error(err: &str) -> bool {
+    err.contains("HotKey") || err.contains("already") || err.contains("occupied")
 }

@@ -53,6 +53,7 @@ useFocusTrap(toRef(props, 'visible'), cardRef, nameInputRef)
 const isEdit = computed(() => props.editing !== null)
 
 const isExtractedIcon = computed(() => /\.(png|jpg|jpeg|ico|gif|webp)$/i.test(icon.value))
+const showWebIconInput = computed(() => kind.value !== 'web')
 
 const targetLabel = computed(() => {
   if (kind.value === 'file') return isDir.value ? '文件夹路径' : '文件路径'
@@ -344,8 +345,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           <!-- 图标（app/web） -->
           <template v-if="kind !== 'file'">
             <label class="field-label">图标（可选）</label>
-            <div class="icon-row">
+            <div class="icon-row" :class="{ 'icon-row--web': kind === 'web' }">
               <input
+                v-if="showWebIconInput"
                 v-model="icon"
                 class="field-input"
                 type="text"
@@ -353,11 +355,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 placeholder="Emoji 或留空自动生成"
                 @keydown="onKeydown"
               />
-              <button class="input-btn" title="选择本地图标" @click="pickIcon">
+              <button v-if="showWebIconInput" class="input-btn" title="选择本地图标" @click="pickIcon">
                 <ImagePlus :size="15" :stroke-width="1.8" />
               </button>
               <span v-if="isExtractedIcon" class="extracted-badge" title="已从文件导入图标">
                 ✓ 已导入
+              </span>
+              <span v-else-if="kind === 'web'" class="web-icon-hint">
+                图标将自动抓取当前网站 favicon
               </span>
             </div>
           </template>
@@ -440,6 +445,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .icon-row {
   position: relative;
 }
+.icon-row--web {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.icon-row--web .field-input {
+  padding-right: 12px;
+}
 .input-with-btn {
   position: relative;
 }
@@ -471,6 +484,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .web-target-wrap .input-btn {
   right: 46px;
+}
+.web-icon-hint {
+  font-size: 12px;
+  color: var(--text-3);
 }
 .input-btn {
   position: absolute;

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, onMounted, ref, toRef } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, toRef } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Download, Keyboard, Lock, Upload, X } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { useStore } from '../stores/workbench'
+import { reportClientError } from '../utils/error-report'
 
 const props = defineProps<{ visible: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -18,6 +19,8 @@ const store = useStore()
 const shortcut = ref(store.state.config.global_shortcut)
 const shortcutBusy = ref(false)
 const shortcutError = ref('')
+const shortcutListening = ref(false)
+const shortcutInputRef = ref<HTMLInputElement | null>(null)
 const shortcutNormalized = computed(() => shortcut.value.trim())
 
 onMounted(async () => {
@@ -81,9 +84,45 @@ async function saveShortcut() {
   } catch (e) {
     shortcutError.value = String(e)
     showToast(`快捷键设置失败：${String(e)}`)
+    void reportClientError('设置全局快捷键失败', e)
   } finally {
     shortcutBusy.value = false
   }
+}
+
+function startListeningShortcut() {
+  shortcutListening.value = true
+  shortcut.value = ''
+  void nextTick(() => shortcutInputRef.value?.focus())
+}
+
+function stopListeningShortcut() {
+  shortcutListening.value = false
+}
+
+function formatShortcutDisplay(e: KeyboardEvent) {
+  const parts: string[] = []
+  if (e.ctrlKey || e.metaKey) parts.push('CommandOrControl')
+  if (e.altKey) parts.push('Alt')
+  if (e.shiftKey) parts.push('Shift')
+
+  const key = e.key.length === 1 ? e.key.toUpperCase() : e.key
+  if (!['Control', 'Shift', 'Alt', 'Meta'].includes(key)) parts.push(key)
+  return parts.join('+')
+}
+
+function onShortcutKeydown(e: KeyboardEvent) {
+  if (!shortcutListening.value) return
+  e.preventDefault()
+  e.stopPropagation()
+  if (e.key === 'Escape') {
+    stopListeningShortcut()
+    return
+  }
+  const display = formatShortcutDisplay(e)
+  if (!display) return
+  shortcut.value = display
+  stopListeningShortcut()
 }
 </script>
 
@@ -134,18 +173,25 @@ async function saveShortcut() {
           <div class="setting-row shortcut-row">
             <div class="setting-info">
               <span class="setting-name">全局快捷键</span>
-              <span class="setting-desc">启动窗口显隐快捷键，保存前会检查冲突</span>
+              <span class="setting-desc">支持手动输入或按键录入，保存前会检查冲突</span>
             </div>
             <div class="shortcut-edit">
               <div class="shortcut-input-wrap">
                 <Keyboard :size="14" :stroke-width="2" class="shortcut-icon" />
                 <input
+                  ref="shortcutInputRef"
                   v-model="shortcut"
                   class="shortcut-input"
                   type="text"
                   spellcheck="false"
+                  :readonly="shortcutListening"
                   placeholder="CommandOrControl+Shift+Space"
+                  @keydown="onShortcutKeydown"
+                  @blur="stopListeningShortcut"
                 />
+                <button class="shortcut-record-btn" type="button" @click="startListeningShortcut">
+                  {{ shortcutListening ? '按下组合键…' : '录入快捷键' }}
+                </button>
               </div>
               <button class="ghost-btn data-btn" :disabled="shortcutBusy" @click="saveShortcut">
                 {{ shortcutBusy ? '保存中' : '保存快捷键' }}
@@ -241,12 +287,28 @@ async function saveShortcut() {
   color: var(--text-1);
   font-size: 13px;
   font-family: inherit;
-  padding: 9px 12px 9px 32px;
+  padding: 9px 116px 9px 32px;
   outline: none;
 }
 .shortcut-input:focus {
   border-color: var(--brand-500);
   box-shadow: var(--shadow-focus);
+}
+.shortcut-record-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--brand-50);
+  color: var(--brand-500);
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.shortcut-record-btn:hover {
+  background: color-mix(in srgb, var(--brand-500) 14%, transparent);
 }
 .shortcut-error {
   margin-top: -8px;

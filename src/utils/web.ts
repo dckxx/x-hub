@@ -20,7 +20,7 @@ export function joinWebTarget(scheme: WebScheme, value: string): string {
 export function deriveFaviconUrl(target: string): string | null {
   try {
     const url = new URL(target)
-    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(url.hostname)}&sz=64`
+    return `${url.origin}/favicon.ico`
   } catch {
     return null
   }

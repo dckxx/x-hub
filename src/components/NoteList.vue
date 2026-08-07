@@ -49,10 +49,17 @@ function formatTime(iso: string): string {
   if (diffMin < 1) return '刚刚'
   if (diffMin < 60) return `${diffMin} 分钟前`
   const diffHour = Math.floor(diffMin / 60)
-  if (diffHour < 24 && now.getDate() === t.getDate()) return `${diffHour} 小时前`
-  const y = t.getFullYear()
-  if (y === now.getFullYear()) return `${t.getMonth() + 1}月${t.getDate()}日`
-  return `${y}年${t.getMonth() + 1}月${t.getDate()}日`
+  if (diffHour < 24 && sameDay(now, t)) return `${diffHour} 小时前`
+  if (sameYear(now, t)) return `${t.getMonth() + 1}月${t.getDate()}日`
+  return `${t.getFullYear()}年${t.getMonth() + 1}月${t.getDate()}日`
+}
+
+function sameDay(a: Date, b: Date) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+}
+
+function sameYear(a: Date, b: Date) {
+  return a.getFullYear() === b.getFullYear()
 }
 
 function summary(n: Note): string {

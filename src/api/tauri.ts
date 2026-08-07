@@ -36,6 +36,11 @@ export interface AppConfig {
   global_shortcut: string
 }
 
+export interface ClientErrorPayload {
+  message: string
+  detail: string | null
+}
+
 export interface Tag {
   id: number
   name: string
@@ -130,6 +135,8 @@ export const tauriApi = {
     invoke<void>('set_always_on_top_config', { value }),
   getGlobalShortcut: () => invoke<string>('get_global_shortcut'),
   setGlobalShortcut: (value: string) => invoke<string>('set_global_shortcut', { value }),
+  logClientError: (payload: ClientErrorPayload) =>
+    invoke<void>('log_client_error', { message: payload.message, detail: payload.detail }),
   minimizeWindow: () => invoke<void>('minimize_window'),
   toggleMaximize: () => invoke<void>('toggle_maximize'),
   hideToTray: () => invoke<void>('hide_to_tray'),

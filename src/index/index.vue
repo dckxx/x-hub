@@ -181,7 +181,9 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
             type="button"
             @click="focusPanel(item.target, item.id)"
           >
-            <component :is="item.icon" :size="16" :stroke-width="2" aria-hidden="true" />
+            <span class="sidebar-nav-icon" aria-hidden="true">
+              <component :is="item.icon" :size="16" :stroke-width="2" />
+            </span>
             <span>{{ item.label }}</span>
           </button>
         </nav>
@@ -332,23 +334,6 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   cursor: pointer;
   transition: background 150ms ease-out, color 150ms ease-out;
 }
-.sidebar-nav-item::before {
-  content: '';
-  position: absolute;
-  left: 14px;
-  top: 50%;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  transform: translateY(-50%) scale(0.72);
-  background: transparent;
-  transition: background 150ms ease-out, box-shadow 150ms ease-out, transform 150ms ease-out;
-}
-.sidebar-nav-item.active::before {
-  background: color-mix(in srgb, var(--brand-500) 34%, #ffffff);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand-500) 10%, transparent);
-  transform: translateY(-50%) scale(1);
-}
 .sidebar-nav-item:hover,
 .sidebar-nav-item.active {
   background: var(--brand-50);
@@ -356,6 +341,16 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 }
 .sidebar-nav-item.active {
   font-weight: 700;
+}
+.sidebar-nav-icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background 150ms ease-out, color 150ms ease-out, box-shadow 150ms ease-out;
 }
 .sidebar-status {
   display: flex;
@@ -386,25 +381,21 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   justify-content: center;
   padding: 0;
 }
-.sidebar.collapsed .sidebar-nav-item::before {
-  left: 50%;
-  top: auto;
-  bottom: 5px;
-  transform: translateX(-50%) scale(0.72);
-}
-.sidebar.collapsed .sidebar-nav-item.active::before {
-  transform: translateX(-50%) scale(1);
-}
 .sidebar.collapsed .sidebar-nav-item {
+  width: 40px;
   min-height: 40px;
-  border-radius: var(--radius-md);
+  border-radius: 50%;
 }
 .sidebar.collapsed .sidebar-nav-item:hover {
-  background: color-mix(in srgb, var(--brand-500) 12%, transparent);
+  background: color-mix(in srgb, var(--brand-500) 8%, transparent);
 }
 .sidebar.collapsed .sidebar-nav-item.active,
 .sidebar.collapsed .sidebar-nav-item.active:hover {
-  background: color-mix(in srgb, var(--brand-500) 22%, transparent);
+  background: color-mix(in srgb, var(--brand-500) 10%, transparent);
+}
+.sidebar.collapsed .sidebar-nav-item.active .sidebar-nav-icon {
+  background: color-mix(in srgb, var(--brand-500) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand-500) 10%, transparent);
 }
 .sidebar.collapsed .sidebar-nav-item span,
 .sidebar.collapsed .sidebar-status span,

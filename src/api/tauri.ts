@@ -33,6 +33,7 @@ export interface WindowState {
 export interface AppConfig {
   theme: string
   window: WindowState
+  global_shortcut: string
 }
 
 export interface Tag {
@@ -127,6 +128,8 @@ export const tauriApi = {
     invoke<void>('set_window_always_on_top', { value }),
   setAlwaysOnTopConfig: (value: boolean) =>
     invoke<void>('set_always_on_top_config', { value }),
+  getGlobalShortcut: () => invoke<string>('get_global_shortcut'),
+  setGlobalShortcut: (value: string) => invoke<string>('set_global_shortcut', { value }),
   minimizeWindow: () => invoke<void>('minimize_window'),
   toggleMaximize: () => invoke<void>('toggle_maximize'),
   hideToTray: () => invoke<void>('hide_to_tray'),

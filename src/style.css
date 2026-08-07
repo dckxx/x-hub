@@ -149,6 +149,27 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .filter-tab--primary.active { background: var(--brand-500); color: var(--text-on-accent); font-weight: 600; }
 .filter-tab--tag { padding: 4px 10px; font-size: 11px; }
 .filter-tab--tag.active { background: var(--brand-50); color: var(--brand-500); font-weight: 600; }
+.sidebar-nav-item {
+  position: relative;
+  padding-left: 32px;
+}
+.sidebar-nav-item::before {
+  content: '';
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transform: translateY(-50%) scale(0.72);
+  background: transparent;
+  transition: background .18s, box-shadow .18s, transform .18s;
+}
+.sidebar-nav-item.active::before {
+  background: color-mix(in srgb, var(--brand-500) 34%, #ffffff);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand-500) 10%, transparent);
+  transform: translateY(-50%) scale(1);
+}
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; } }
 .modal-mask { position: fixed; inset: 0; z-index: 100; background: color-mix(in srgb, var(--text-1) 48%, transparent); display: flex; align-items: center; justify-content: center; animation: mask-in .18s ease-out; }
 @keyframes mask-in { from { opacity: 0; } to { opacity: 1; } }

@@ -29,6 +29,7 @@ const state = reactive<StoreState>({
       y: null,
       always_on_top: false,
     },
+    global_shortcut: 'CommandOrControl+Shift+Space',
   },
   loaded: false,
 })
@@ -140,6 +141,14 @@ export function useStore() {
     await tauriApi.setWindowAlwaysOnTop(value)
   }
 
+  async function setGlobalShortcut(value: string) {
+    state.config.global_shortcut = value
+    if (!isTauri()) return value
+    const saved = await tauriApi.setGlobalShortcut(value)
+    state.config.global_shortcut = saved
+    return saved
+  }
+
   return {
     state: readonly(state),
     loadInitialData,
@@ -156,5 +165,6 @@ export function useStore() {
     loadNoteTagsMap,
     setTheme,
     setAlwaysOnTop,
+    setGlobalShortcut,
   }
 }

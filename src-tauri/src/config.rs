@@ -25,9 +25,11 @@ impl Default for WindowState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     pub theme: String,
     pub window: WindowState,
+    pub global_shortcut: String,
 }
 
 impl Default for AppConfig {
@@ -35,6 +37,7 @@ impl Default for AppConfig {
         Self {
             theme: "light".to_string(),
             window: WindowState::default(),
+            global_shortcut: crate::shortcut::DEFAULT_TOGGLE_SHORTCUT.to_string(),
         }
     }
 }
@@ -96,8 +99,9 @@ mod tests {
     fn default_config() {
         let c = AppConfig::default();
         assert_eq!(c.theme, "light");
-        assert_eq!(c.window.width, 1100.0);
+        assert_eq!(c.window.width, 1400.0);
         assert!(!c.window.always_on_top);
+        assert_eq!(c.global_shortcut, crate::shortcut::DEFAULT_TOGGLE_SHORTCUT);
     }
 
     #[test]

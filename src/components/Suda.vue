@@ -29,9 +29,16 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
 )
 const rootRef = ref<HTMLElement | null>(null)
 
-// ---- 拖拽导入：exe/lnk 预填为应用，其他文件/文件夹直接建链接 ----
+// ---- 拖拽导入：只预填弹窗，用户确认后才真正添加 ----
 const dropping = ref(false)
-const prefill = ref<{ name?: string; target?: string; icon?: string | null; kind?: 'app' | 'web' } | null>(null)
+const prefill = ref<{
+  name?: string
+  target?: string
+  icon?: string | null
+  kind?: 'app' | 'web' | 'file'
+  category?: string | null
+  isDir?: boolean
+} | null>(null)
 let unlistenDrop: (() => void) | null = null
 
 function isInside(e: { x: number; y: number }): boolean {
@@ -82,8 +89,10 @@ async function handleDrop(file: string) {
   try {
     const info = await tauriApi.inspectPath(file)
     const category = categorize(file, info.is_dir)
-    await store.addResource({ kind: 'file', name: info.name, target: file, category })
-    showToast(`已添加「${info.name}」`)
+    prefill.value = { name: info.name, target: file, kind: 'file', category, isDir: info.is_dir }
+    editing.value = null
+    formVisible.value = true
+    showToast(`已识别「${info.name}」，请点击添加确认`)
   } catch (e) {
     showToast(String(e))
   }
@@ -195,9 +204,11 @@ function onFormSubmit(payload: {
   args?: string | null
 }) {
   if (payload.id != null) {
-    store.editResource({ ...payload, id: payload.id })
+    void store.editResource({ ...payload, id: payload.id })
+    showToast(`已更新「${payload.name}」`)
   } else {
-    store.addResource(payload)
+    void store.addResource(payload)
+    showToast(`已添加「${payload.name}」`)
   }
   prefill.value = null
 }
@@ -247,10 +258,11 @@ function fileAccentOf(category: string) {
 const IMAGE_ICON_RE = /\.(png|jpg|jpeg|ico|gif|webp)$/i
 
 function isImageIcon(icon: string | null): boolean {
-  return !!icon && IMAGE_ICON_RE.test(icon)
+  return !!icon && (/^https?:\/\//i.test(icon) || IMAGE_ICON_RE.test(icon))
 }
 
 function iconSrc(icon: string): string {
+  if (/^https?:\/\//i.test(icon)) return icon
   return isTauri() ? convertFileSrc(icon) : ''
 }
 

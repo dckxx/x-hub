@@ -1,12 +1,23 @@
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-pub const TOGGLE_SHORTCUT: &str = "CommandOrControl+Shift+Space";
+pub const DEFAULT_TOGGLE_SHORTCUT: &str = "CommandOrControl+Shift+Space";
 
-pub fn register_toggle_shortcut(app: &AppHandle) -> Result<(), String> {
+pub fn register_toggle_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), String> {
     app.global_shortcut()
-        .register(TOGGLE_SHORTCUT)
+        .register(shortcut)
         .map_err(|e| format!("全局快捷键注册失败: {}", e))
+}
+
+pub fn unregister_toggle_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), String> {
+    app.global_shortcut()
+        .unregister(shortcut)
+        .map_err(|e| format!("全局快捷键取消失败: {}", e))
+}
+
+pub fn is_shortcut_registered(app: &AppHandle, shortcut: &str) -> bool {
+    app.global_shortcut()
+        .is_registered(shortcut)
 }
 
 pub fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -21,8 +32,9 @@ pub fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             .build(),
     )?;
 
+    let shortcut = crate::config::load().global_shortcut;
     // 注册默认快捷键，注册失败仅记录日志不阻塞启动
-    if let Err(e) = register_toggle_shortcut(&handle) {
+    if let Err(e) = register_toggle_shortcut(&handle, &shortcut) {
         log::warn!("{}", e);
     }
     Ok(())

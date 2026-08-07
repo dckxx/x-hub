@@ -252,6 +252,8 @@ pub fn run() {
             commands::save_config,
             commands::set_window_always_on_top,
             commands::set_always_on_top_config,
+            commands::get_global_shortcut,
+            commands::set_global_shortcut,
             commands::minimize_window,
             commands::toggle_maximize,
             commands::hide_to_tray,

@@ -252,6 +252,35 @@ pub fn set_always_on_top_config(value: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub fn get_global_shortcut() -> Result<String, String> {
+    Ok(crate::config::load().global_shortcut)
+}
+
+#[tauri::command]
+pub fn set_global_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    let shortcut = value.trim();
+    if shortcut.is_empty() {
+        return Err("快捷键不能为空".into());
+    }
+
+    let mut config = crate::config::load();
+    let previous = config.global_shortcut.clone();
+    if previous == shortcut {
+        return Ok(config.global_shortcut);
+    }
+
+    if crate::shortcut::is_shortcut_registered(&app, shortcut) {
+        return Err(format!("快捷键已被占用: {}", shortcut));
+    }
+
+    crate::shortcut::unregister_toggle_shortcut(&app, &previous)?;
+    crate::shortcut::register_toggle_shortcut(&app, shortcut)?;
+    config.global_shortcut = shortcut.to_string();
+    crate::config::save(&config)?;
+    Ok(config.global_shortcut)
+}
+
 // ---------- 窗口控制 ----------
 
 #[tauri::command]

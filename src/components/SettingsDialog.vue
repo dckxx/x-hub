@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { inject, onBeforeUnmount, onMounted, ref, toRef } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, toRef } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Download, Lock, Upload, X } from 'lucide-vue-next'
+import { Download, Keyboard, Lock, Upload, X } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useFocusTrap } from '../composables/useFocusTrap'
+import { useStore } from '../stores/workbench'
 
 const props = defineProps<{ visible: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -12,6 +13,17 @@ const cardRef = ref<HTMLElement | null>(null)
 useFocusTrap(toRef(props, 'visible'), cardRef)
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
+const store = useStore()
+
+const shortcut = ref(store.state.config.global_shortcut)
+const shortcutBusy = ref(false)
+const shortcutError = ref('')
+const shortcutNormalized = computed(() => shortcut.value.trim())
+
+onMounted(async () => {
+  if (!isTauri()) return
+  shortcut.value = await tauriApi.getGlobalShortcut()
+})
 
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape' && props.visible) emit('close')
@@ -55,6 +67,22 @@ async function restoreData() {
     showToast('恢复已暂存，重启应用后生效')
   } catch (e) {
     showToast(`恢复失败：${String(e)}`)
+  }
+}
+
+async function saveShortcut() {
+  if (!isTauri()) return
+  shortcutError.value = ''
+  shortcutBusy.value = true
+  try {
+    const saved = await store.setGlobalShortcut(shortcutNormalized.value)
+    shortcut.value = saved
+    showToast(`快捷键已更新为 ${saved}`)
+  } catch (e) {
+    shortcutError.value = String(e)
+    showToast(`快捷键设置失败：${String(e)}`)
+  } finally {
+    shortcutBusy.value = false
   }
 }
 </script>
@@ -102,6 +130,29 @@ async function restoreData() {
               {{ confirmRestore ? '确认恢复？' : '恢复' }}
             </button>
           </div>
+
+          <div class="setting-row shortcut-row">
+            <div class="setting-info">
+              <span class="setting-name">全局快捷键</span>
+              <span class="setting-desc">启动窗口显隐快捷键，保存前会检查冲突</span>
+            </div>
+            <div class="shortcut-edit">
+              <div class="shortcut-input-wrap">
+                <Keyboard :size="14" :stroke-width="2" class="shortcut-icon" />
+                <input
+                  v-model="shortcut"
+                  class="shortcut-input"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="CommandOrControl+Shift+Space"
+                />
+              </div>
+              <button class="ghost-btn data-btn" :disabled="shortcutBusy" @click="saveShortcut">
+                {{ shortcutBusy ? '保存中' : '保存快捷键' }}
+              </button>
+            </div>
+          </div>
+          <p v-if="shortcutError" class="shortcut-error">{{ shortcutError }}</p>
 
           <p class="settings-foot">
             <Lock :size="12" :stroke-width="2" class="settings-lock" aria-hidden="true" />
@@ -159,6 +210,48 @@ async function restoreData() {
 .data-btn.confirm:hover {
   background: color-mix(in srgb, var(--c-red) 85%, #000);
   color: #fff;
+}
+
+.shortcut-row {
+  align-items: flex-start;
+}
+.shortcut-edit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  min-width: 220px;
+}
+.shortcut-input-wrap {
+  width: 100%;
+  position: relative;
+}
+.shortcut-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-4);
+}
+.shortcut-input {
+  width: 100%;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--bg-card-soft);
+  color: var(--text-1);
+  font-size: 13px;
+  font-family: inherit;
+  padding: 9px 12px 9px 32px;
+  outline: none;
+}
+.shortcut-input:focus {
+  border-color: var(--brand-500);
+  box-shadow: var(--shadow-focus);
+}
+.shortcut-error {
+  margin-top: -8px;
+  font-size: 12px;
+  color: var(--c-red);
 }
 
 .settings-foot {

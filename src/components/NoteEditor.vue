@@ -5,6 +5,7 @@ import { Eye, Pencil, Tag as TagIcon, Trash2, X } from 'lucide-vue-next'
 import { isTauri, tauriApi, type Note, type Tag } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useFocusTrap } from '../composables/useFocusTrap'
+import { parseTimestamp } from '../utils/time'
 
 const store = useStore()
 
@@ -128,7 +129,7 @@ watch(
 )
 
 function formatSavedTime(iso: string): string {
-  const t = new Date(iso)
+  const t = new Date(parseTimestamp(iso))
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${pad(t.getHours())}:${pad(t.getMinutes())}`
 }
@@ -338,6 +339,12 @@ function formatSavedTime(iso: string): string {
 .md-preview :deep(ol) {
   padding-left: 22px;
   margin: 8px 0;
+}
+.md-preview :deep(ol) {
+  list-style: decimal;
+}
+.md-preview :deep(ol > li) {
+  display: list-item;
 }
 .md-preview :deep(code) {
   background: var(--bg-card);

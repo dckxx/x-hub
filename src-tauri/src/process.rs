@@ -95,8 +95,24 @@ pub fn open_url(url: &str) -> Result<(), String> {
     opener::open(url).map_err(|e| format!("打开链接失败: {}", e))
 }
 
-/// 打开本地路径：文件用系统默认程序打开，文件夹由资源管理器打开
+/// 打开本地路径：文件用系统默认程序打开，文件夹由资源管理器/文件管理器打开
 pub fn open_path(path: &str) -> Result<(), String> {
+    let target = std::path::Path::new(path);
+    if target.is_dir() {
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("explorer")
+                .arg(path)
+                .spawn()
+                .map_err(|e| format!("打开文件夹失败: {}", e))?;
+            return Ok(());
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            opener::open(path).map_err(|e| format!("打开文件夹失败: {}", e))?;
+            return Ok(());
+        }
+    }
     opener::open(path).map_err(|e| format!("打开路径失败: {}", e))
 }
 

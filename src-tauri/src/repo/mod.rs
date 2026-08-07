@@ -1,6 +1,7 @@
 pub mod note;
 pub mod resource;
 pub mod tag;
+pub mod todo;
 
 /// 生成纳秒精度的 UTC 时间戳，用于保证排序唯一性
 pub fn now() -> String {

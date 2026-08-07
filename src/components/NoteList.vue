@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { Plus, StickyNote, X } from 'lucide-vue-next'
 import type { Note } from '../api/tauri'
 import { useStore } from '../stores/workbench'
+import { parseTimestamp } from '../utils/time'
 
 const props = defineProps<{
   notes: readonly Note[]
@@ -34,14 +35,14 @@ onMounted(async () => {
 
 const sortedNotes = computed(() => {
   const list = [...props.notes].sort(
-    (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+    (a, b) => parseTimestamp(b.updated_at) - parseTimestamp(a.updated_at),
   )
   if (activeTagId.value === null) return list
   return list.filter((n) => tagMap.value.get(n.id)?.includes(activeTagId.value!))
 })
 
 function formatTime(iso: string): string {
-  const t = new Date(iso)
+  const t = new Date(parseTimestamp(iso))
   const now = new Date()
   const diffMs = now.getTime() - t.getTime()
   const diffMin = Math.floor(diffMs / 60000)

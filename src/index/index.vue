@@ -316,11 +316,12 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   gap: var(--space-1);
 }
 .sidebar-nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-2);
   min-height: 36px;
-  padding: 0 var(--space-3);
+  padding: 0 var(--space-3) 0 32px;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -330,6 +331,23 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   text-align: left;
   cursor: pointer;
   transition: background 150ms ease-out, color 150ms ease-out;
+}
+.sidebar-nav-item::before {
+  content: '';
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transform: translateY(-50%) scale(0.72);
+  background: transparent;
+  transition: background 150ms ease-out, box-shadow 150ms ease-out, transform 150ms ease-out;
+}
+.sidebar-nav-item.active::before {
+  background: color-mix(in srgb, var(--brand-500) 34%, #ffffff);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand-500) 10%, transparent);
+  transform: translateY(-50%) scale(1);
 }
 .sidebar-nav-item:hover,
 .sidebar-nav-item.active {
@@ -367,6 +385,15 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 .sidebar.collapsed .sidebar-status {
   justify-content: center;
   padding: 0;
+}
+.sidebar.collapsed .sidebar-nav-item::before {
+  left: 50%;
+  top: auto;
+  bottom: 5px;
+  transform: translateX(-50%) scale(0.72);
+}
+.sidebar.collapsed .sidebar-nav-item.active::before {
+  transform: translateX(-50%) scale(1);
 }
 .sidebar.collapsed .sidebar-nav-item {
   min-height: 40px;

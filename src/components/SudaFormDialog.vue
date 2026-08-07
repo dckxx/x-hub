@@ -5,11 +5,19 @@ import { FolderOpen, ImagePlus, Link } from 'lucide-vue-next'
 import { isTauri, tauriApi, type Resource } from '../api/tauri'
 import { CATEGORIES, categorize } from '../utils/categories'
 import { useFocusTrap } from '../composables/useFocusTrap'
+import { deriveFaviconUrl, joinWebTarget, splitWebTarget, type WebScheme } from '../utils/web'
 
 const props = defineProps<{
   visible: boolean
   editing: Resource | null
-  prefill: { name?: string; target?: string; icon?: string | null; kind?: 'app' | 'web' } | null
+  prefill: {
+    name?: string
+    target?: string
+    icon?: string | null
+    kind?: 'app' | 'web' | 'file'
+    category?: string | null
+    isDir?: boolean
+  } | null
 }>()
 
 const emit = defineEmits<{
@@ -31,6 +39,7 @@ const emit = defineEmits<{
 const kind = ref<'app' | 'web' | 'file'>('app')
 const name = ref('')
 const target = ref('')
+const webScheme = ref<WebScheme>('https')
 const args = ref('')
 const icon = ref('')
 const category = ref<string>(CATEGORIES[0])
@@ -65,7 +74,13 @@ watch(
     if (props.editing) {
       kind.value = props.editing.kind === 'file' ? 'file' : props.editing.kind
       name.value = props.editing.name
-      target.value = props.editing.target
+      if (props.editing.kind === 'web') {
+        const split = splitWebTarget(props.editing.target)
+        webScheme.value = split.scheme
+        target.value = split.value
+      } else {
+        target.value = props.editing.target
+      }
       args.value = props.editing.args ?? ''
       icon.value = props.editing.icon ?? ''
       category.value = props.editing.category ?? '其他'
@@ -78,11 +93,21 @@ watch(
       icon.value = ''
       category.value = '其他'
       isDir.value = false
+      webScheme.value = 'https'
       if (props.prefill) {
         kind.value = props.prefill.kind ?? 'app'
         name.value = props.prefill.name ?? ''
-        target.value = props.prefill.target ?? ''
-        icon.value = props.prefill.icon ?? ''
+        if (kind.value === 'web') {
+          const split = splitWebTarget(props.prefill.target ?? '')
+          webScheme.value = split.scheme
+          target.value = split.value
+          icon.value = props.prefill.icon ?? deriveFaviconUrl(joinWebTarget(split.scheme, split.value)) ?? ''
+        } else {
+          target.value = props.prefill.target ?? ''
+          icon.value = props.prefill.icon ?? ''
+        }
+        category.value = props.prefill.category ?? '其他'
+        isDir.value = props.prefill.isDir ?? false
       }
     }
   },
@@ -123,6 +148,14 @@ async function pickTarget() {
     } catch {
       // 解析失败时仅保留手动填写的路径
     }
+    return
+  }
+  if (kind.value === 'web') {
+    const normalized = joinWebTarget(webScheme.value, target.value)
+    target.value = splitWebTarget(normalized).value
+    if (!icon.value.trim()) {
+      icon.value = deriveFaviconUrl(normalized) ?? ''
+    }
   }
 }
 
@@ -157,9 +190,8 @@ function submit() {
     else error.value = '请输入网址'
     return
   }
-  // web 类型自动补全协议
-  if (kind.value === 'web' && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmedTarget)) {
-    trimmedTarget = 'https://' + trimmedTarget
+  if (kind.value === 'web') {
+    trimmedTarget = joinWebTarget(webScheme.value, trimmedTarget)
   }
   emit('submit', {
     id: props.editing?.id,
@@ -171,6 +203,15 @@ function submit() {
     args: kind.value === 'app' ? (args.value.trim() || null) : null,
   })
   emit('close')
+}
+
+function normalizeWebTarget() {
+  if (kind.value !== 'web') return
+  const split = splitWebTarget(target.value)
+  webScheme.value = split.scheme
+  target.value = split.value
+  const normalized = joinWebTarget(split.scheme, split.value)
+  if (!icon.value.trim()) icon.value = deriveFaviconUrl(normalized) ?? ''
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -233,7 +274,26 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
           <!-- 目标 -->
           <label class="field-label">{{ targetLabel }}</label>
-          <div class="input-with-btn">
+          <div v-if="kind === 'web'" class="web-input-row">
+            <select v-model="webScheme" class="scheme-select" aria-label="网址协议">
+              <option value="http">http://</option>
+              <option value="https">https://</option>
+            </select>
+            <div class="input-with-btn web-target-wrap">
+              <input
+                v-model="target"
+                class="field-input web-target-input"
+                type="text"
+                :placeholder="targetPlaceholder"
+                @keydown="onKeydown"
+                @blur="normalizeWebTarget"
+              />
+              <button class="input-btn" title="自动抓取图标" @click="pickTarget">
+                <FolderOpen :size="15" :stroke-width="1.8" />
+              </button>
+            </div>
+          </div>
+          <div v-else class="input-with-btn">
             <input
               v-model="target"
               class="field-input"
@@ -244,7 +304,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             />
             <button
               class="input-btn"
-              :title="kind === 'web' ? '手动输入网址' : '选择'"
+              title="选择"
               @click="pickTarget"
             >
               <FolderOpen :size="15" :stroke-width="1.8" />
@@ -386,6 +446,32 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .input-with-btn .field-input {
   padding-right: 40px;
 }
+.web-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.scheme-select {
+  flex-shrink: 0;
+  width: 92px;
+  height: 38px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--bg-card-soft);
+  color: var(--text-2);
+  font-size: 13px;
+  padding: 0 10px;
+  outline: none;
+}
+.web-target-wrap {
+  flex: 1;
+}
+.web-target-input {
+  padding-right: 82px;
+}
+.web-target-wrap .input-btn {
+  right: 46px;
+}
 .input-btn {
   position: absolute;
   right: 6px;
@@ -412,6 +498,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .icon-row .input-btn {
   right: 62px;
+}
+.icon-row .field-input {
+  text-align: left;
+}
+.icon-row .field-input::placeholder {
+  text-align: left;
 }
 .extracted-badge {
   position: absolute;

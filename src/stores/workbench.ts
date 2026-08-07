@@ -123,16 +123,35 @@ export function useStore() {
   }
 
   async function toggleTodo(id: number) {
-    const updated = isTauri() ? await tauriApi.toggleTodo(id) : null
     const i = state.todos.findIndex((t) => t.id === id)
-    if (i >= 0) state.todos[i] = updated ?? state.todos[i]
-    return updated
+    if (i < 0) return null
+    if (isTauri()) {
+      const updated = await tauriApi.toggleTodo(id)
+      state.todos[i] = updated
+      return updated
+    }
+    const cur = state.todos[i]
+    const flipped = {
+      ...cur,
+      done: !cur.done,
+      completed_at: cur.done ? null : new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }
+    state.todos[i] = flipped
+    return flipped
   }
 
   async function updateTodo(id: number, title: string, priority: number) {
-    const updated = isTauri() ? await tauriApi.updateTodo(id, title, priority) : null
     const i = state.todos.findIndex((t) => t.id === id)
-    if (i >= 0 && updated) state.todos[i] = updated
+    if (i < 0) return null
+    if (isTauri()) {
+      const updated = await tauriApi.updateTodo(id, title, priority)
+      state.todos[i] = updated
+      return updated
+    }
+    const cur = state.todos[i]
+    const updated = { ...cur, title, priority, updated_at: new Date().toISOString() }
+    state.todos[i] = updated
     return updated
   }
 

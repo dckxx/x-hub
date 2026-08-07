@@ -6,11 +6,13 @@ import {
   type Note,
   type Resource,
   type Tag,
+  type Todo,
 } from '../api/tauri'
 
 interface StoreState {
   resources: Resource[]
   notes: Note[]
+  todos: Todo[]
   tags: Tag[]
   config: AppConfig
   loaded: boolean
@@ -19,6 +21,7 @@ interface StoreState {
 const state = reactive<StoreState>({
   resources: [],
   notes: [],
+  todos: [],
   tags: [],
   config: {
     theme: 'light',
@@ -40,6 +43,7 @@ export function useStore() {
     const data = await tauriApi.getInitialData()
     state.resources = data.resources
     state.notes = data.notes
+    state.todos = data.todos
     state.tags = data.tags
     state.config = data.config
     state.loaded = true
@@ -105,8 +109,36 @@ export function useStore() {
   }
 
   async function searchAll(keyword: string) {
-    if (!isTauri()) return { resources: [] as Resource[], notes: [] as Note[] }
+    if (!isTauri()) return { resources: [] as Resource[], notes: [] as Note[], todos: [] as Todo[] }
     return tauriApi.searchAll(keyword)
+  }
+
+  // ---- 待办 ----
+  async function createTodo(title: string) {
+    const t = isTauri()
+      ? await tauriApi.createTodo(title)
+      : { id: Date.now(), title, done: false, priority: 0, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), completed_at: null }
+    state.todos.push(t)
+    return t
+  }
+
+  async function toggleTodo(id: number) {
+    const updated = isTauri() ? await tauriApi.toggleTodo(id) : null
+    const i = state.todos.findIndex((t) => t.id === id)
+    if (i >= 0) state.todos[i] = updated ?? state.todos[i]
+    return updated
+  }
+
+  async function updateTodo(id: number, title: string, priority: number) {
+    const updated = isTauri() ? await tauriApi.updateTodo(id, title, priority) : null
+    const i = state.todos.findIndex((t) => t.id === id)
+    if (i >= 0 && updated) state.todos[i] = updated
+    return updated
+  }
+
+  async function deleteTodo(id: number) {
+    if (isTauri()) await tauriApi.deleteTodo(id)
+    state.todos = state.todos.filter((t) => t.id !== id)
   }
 
   // ---- 标签 ----
@@ -160,6 +192,10 @@ export function useStore() {
     saveNote,
     removeNote,
     searchAll,
+    createTodo,
+    toggleTodo,
+    updateTodo,
+    deleteTodo,
     createTag,
     deleteTag,
     loadNoteTagsMap,

@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import TitleBar from '../components/TitleBar.vue'
-import CalendarCard from '../components/CalendarCard.vue'
+import TodoCard from '../components/TodoCard.vue'
 import Suda from '../components/Suda.vue'
 import NoteList from '../components/NoteList.vue'
 import NoteEditor from '../components/NoteEditor.vue'
@@ -10,7 +10,7 @@ import GlobalSearch from '../components/GlobalSearch.vue'
 import SettingsDialog from '../components/SettingsDialog.vue'
 import { useStore } from '../stores/workbench'
 import { isTauri } from '../api/tauri'
-import type { Note, Resource } from '../api/tauri'
+import type { Note, Resource, Todo } from '../api/tauri'
 import { FileText, FolderOpen, LayoutDashboard, Moon, Settings2, Sun, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 
 const store = useStore()
@@ -73,6 +73,7 @@ function revealWindow() {
 
 // ---- 笔记选中与操作 ----
 const activeNoteId = ref<number | null>(null)
+const highlightTodoId = ref<number | null>(null)
 
 const activeNote = computed(
   () => store.state.notes.find((n) => n.id === activeNoteId.value) ?? null,
@@ -110,6 +111,13 @@ function onSaveNote(id: number, title: string, content: string) {
 // ---- 全局搜索 / 设置 ----
 const searchVisible = ref(false)
 const settingsVisible = ref(false)
+
+function onOpenTodo(t: Todo) {
+  searchVisible.value = false
+  highlightTodoId.value = t.id
+  todayRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  todayRef.value?.focus({ preventScroll: true })
+}
 
 function onSearchKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -222,7 +230,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
       <main class="workspace" aria-label="主工作区">
         <div class="workspace-grid">
           <section ref="todayRef" class="workspace-panel today-panel" tabindex="-1" aria-label="日历">
-            <CalendarCard />
+            <TodoCard :highlight-id="highlightTodoId" />
           </section>
 
           <section ref="notesRef" class="workspace-panel notes-panel" tabindex="-1" aria-label="速记">
@@ -254,6 +262,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
       @close="searchVisible = false"
       @open-resource="onOpenResource"
       @open-note="onOpenNote"
+      @open-todo="onOpenTodo"
     />
     <SettingsDialog
       :visible="settingsVisible"

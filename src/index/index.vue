@@ -449,6 +449,13 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   box-shadow: none;
   background: transparent;
 }
+.today-panel :deep(.todo-card) {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
 .notes-panel :deep(.note-list),
 .suda-panel :deep(.suda) {
   border: 0;

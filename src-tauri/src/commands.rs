@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::models::{Note, Resource, ResourceKind, SearchResult, Tag};
+use crate::models::{Note, Resource, ResourceKind, SearchResult, Tag, Todo};
 use crate::process;
 use crate::repo::{note, resource, tag};
 use rusqlite::Connection;
@@ -16,15 +16,17 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
     let tags = tag::list(&conn).map_err(err_str)?;
     let config = crate::config::load();
     log::info!(
-        "初始化数据加载完成: resources={} notes={} tags={}",
+        "初始化数据加载完成: resources={} notes={} tags={} todos={}",
         resources.len(),
         notes.len(),
-        tags.len()
+        tags.len(),
+        0
     );
     Ok(InitialData {
         resources,
         notes,
         tags,
+        todos: Vec::new(),
         config,
     })
 }
@@ -34,6 +36,7 @@ pub struct InitialData {
     pub resources: Vec<Resource>,
     pub notes: Vec<Note>,
     pub tags: Vec<Tag>,
+    pub todos: Vec<Todo>,
     pub config: AppConfig,
 }
 
@@ -199,7 +202,11 @@ pub fn search_all(state: State<'_, DbState>, keyword: String) -> Result<SearchRe
         resources.len(),
         notes.len()
     );
-    Ok(SearchResult { resources, notes })
+    Ok(SearchResult {
+        resources,
+        notes,
+        todos: Vec::new(),
+    })
 }
 
 /// 笔记-标签全量关联（列表筛选用）

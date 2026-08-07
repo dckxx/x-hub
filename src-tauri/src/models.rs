@@ -36,6 +36,18 @@ pub struct Note {
 pub struct SearchResult {
     pub resources: Vec<Resource>,
     pub notes: Vec<Note>,
+    pub todos: Vec<Todo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Todo {
+    pub id: i64,
+    pub title: String,
+    pub done: bool,
+    pub priority: i64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
 }
 
 /// 笔记标签

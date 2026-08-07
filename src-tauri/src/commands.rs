@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
 use crate::models::{Note, Resource, ResourceKind, SearchResult, Tag, Todo};
 use crate::process;
-use crate::repo::{note, resource, tag};
+use crate::repo::{note, resource, tag, todo};
 use rusqlite::Connection;
 use std::sync::Mutex;
 use tauri::{Manager, State};
@@ -14,19 +14,20 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
     let resources = resource::list_all(&conn).map_err(err_str)?;
     let notes = note::list(&conn).map_err(err_str)?;
     let tags = tag::list(&conn).map_err(err_str)?;
+    let todos = todo::list(&conn).map_err(err_str)?;
     let config = crate::config::load();
     log::info!(
         "初始化数据加载完成: resources={} notes={} tags={} todos={}",
         resources.len(),
         notes.len(),
         tags.len(),
-        0
+        todos.len()
     );
     Ok(InitialData {
         resources,
         notes,
         tags,
-        todos: Vec::new(),
+        todos,
         config,
     })
 }
@@ -189,6 +190,64 @@ pub fn delete_note(state: State<'_, DbState>, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- 待办清单 ----------
+
+#[tauri::command]
+pub fn list_todos(state: State<'_, DbState>) -> Result<Vec<Todo>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let todos = todo::list(&conn).map_err(err_str)?;
+    log::debug!("加载待办清单: {} 条", todos.len());
+    Ok(todos)
+}
+
+#[tauri::command]
+pub fn create_todo(state: State<'_, DbState>, title: String) -> Result<Todo, String> {
+    let t = title.trim();
+    if t.is_empty() {
+        return Err("标题不能为空".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let todo = todo::create(&conn, t).map_err(err_str)?;
+    log::info!("添加待办: id={} {}", todo.id, todo.title);
+    Ok(todo)
+}
+
+#[tauri::command]
+pub fn toggle_todo(state: State<'_, DbState>, id: i64) -> Result<Todo, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let todo = todo::toggle(&conn, id).map_err(err_str)?;
+    log::info!("切换待办状态: id={} done={}", todo.id, todo.done);
+    Ok(todo)
+}
+
+#[tauri::command]
+pub fn update_todo(
+    state: State<'_, DbState>,
+    id: i64,
+    title: String,
+    priority: i64,
+) -> Result<Todo, String> {
+    if !(0..=2).contains(&priority) {
+        return Err("优先级取值 0-2".into());
+    }
+    let t = title.trim();
+    if t.is_empty() {
+        return Err("标题不能为空".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let todo = todo::update(&conn, id, t, priority).map_err(err_str)?;
+    log::info!("更新待办: id={} {} (优先级 {})", todo.id, todo.title, todo.priority);
+    Ok(todo)
+}
+
+#[tauri::command]
+pub fn delete_todo(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    todo::delete(&conn, id).map_err(err_str)?;
+    log::info!("删除待办: id={}", id);
+    Ok(())
+}
+
 // ---------- 全局搜索 ----------
 
 #[tauri::command]
@@ -196,16 +255,18 @@ pub fn search_all(state: State<'_, DbState>, keyword: String) -> Result<SearchRe
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let resources = resource::search(&conn, &keyword).map_err(err_str)?;
     let notes = note::search(&conn, &keyword).map_err(err_str)?;
+    let todos = todo::search(&conn, &keyword).map_err(err_str)?;
     log::debug!(
-        "全局搜索「{}」: 资源 {} 条, 笔记 {} 条",
+        "全局搜索「{}」: 资源 {} 条, 笔记 {} 条, 待办 {} 条",
         keyword,
         resources.len(),
-        notes.len()
+        notes.len(),
+        todos.len()
     );
     Ok(SearchResult {
         resources,
         notes,
-        todos: Vec::new(),
+        todos,
     })
 }
 

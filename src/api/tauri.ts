@@ -22,6 +22,16 @@ export interface Note {
   updated_at: string
 }
 
+export interface Todo {
+  id: number
+  title: string
+  done: boolean
+  priority: number
+  created_at: string
+  updated_at: string
+  completed_at: string | null
+}
+
 export interface WindowState {
   width: number
   height: number
@@ -50,6 +60,7 @@ export interface Tag {
 export interface InitialData {
   resources: Resource[]
   notes: Note[]
+  todos: Todo[]
   tags: Tag[]
   config: AppConfig
 }
@@ -57,6 +68,7 @@ export interface InitialData {
 export interface SearchResult {
   resources: Resource[]
   notes: Note[]
+  todos: Todo[]
 }
 
 export interface NoteTagRow {
@@ -114,6 +126,12 @@ export const tauriApi = {
     invoke<Note>('update_note', { id, title, content }),
   deleteNote: (id: number) => invoke<void>('delete_note', { id }),
   searchAll: (keyword: string) => invoke<SearchResult>('search_all', { keyword }),
+  listTodos: () => invoke<Todo[]>('list_todos'),
+  createTodo: (title: string) => invoke<Todo>('create_todo', { title }),
+  toggleTodo: (id: number) => invoke<Todo>('toggle_todo', { id }),
+  updateTodo: (id: number, title: string, priority: number) =>
+    invoke<Todo>('update_todo', { id, title, priority }),
+  deleteTodo: (id: number) => invoke<void>('delete_todo', { id }),
   parseDroppedPath: (path: string) => invoke<DroppedAppInfo>('parse_dropped_path', { path }),
   importIconFile: (source: string) =>
     invoke<string | null>('import_icon_file', { source }),

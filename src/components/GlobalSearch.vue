@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
 import { Search } from 'lucide-vue-next'
-import type { Note, Resource } from '../api/tauri'
+import type { Note, Resource, Todo } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useFocusTrap } from '../composables/useFocusTrap'
 
@@ -13,14 +13,16 @@ const emit = defineEmits<{
   (e: 'close'): void
   (e: 'openResource', r: Resource): void
   (e: 'openNote', n: Note): void
+  (e: 'openTodo', t: Todo): void
 }>()
 
 const store = useStore()
 
 const keyword = ref('')
-const results = ref<{ resources: Resource[]; notes: Note[] }>({
+const results = ref<{ resources: Resource[]; notes: Note[]; todos: Todo[] }>({
   resources: [],
   notes: [],
+  todos: [],
 })
 const searched = ref(false)
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -29,15 +31,17 @@ const cardRef = ref<HTMLElement | null>(null)
 useFocusTrap(toRef(props, 'visible'), cardRef, inputRef)
 
 interface FlatItem {
-  type: 'resource' | 'note'
+  type: 'resource' | 'note' | 'todo'
   key: string
   resource?: Resource
   note?: Note
+  todo?: Todo
 }
 
 const flatResults = computed<FlatItem[]>(() => [
   ...results.value.resources.map((r) => ({ type: 'resource' as const, key: 'r' + r.id, resource: r })),
   ...results.value.notes.map((n) => ({ type: 'note' as const, key: 'n' + n.id, note: n })),
+  ...results.value.todos.map((t) => ({ type: 'todo' as const, key: 't' + t.id, todo: t })),
 ])
 
 const activeIndex = ref(-1)
@@ -59,6 +63,7 @@ function openActive() {
   if (!item) return
   if (item.type === 'resource' && item.resource) emit('openResource', item.resource)
   else if (item.type === 'note' && item.note) emit('openNote', item.note)
+  else if (item.type === 'todo' && item.todo) emit('openTodo', item.todo)
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -91,7 +96,7 @@ watch(
   (v) => {
     if (v) {
       keyword.value = ''
-      results.value = { resources: [], notes: [] }
+      results.value = { resources: [], notes: [], todos: [] }
       searched.value = false
       activeIndex.value = -1
     }
@@ -102,7 +107,7 @@ watch(keyword, (kw) => {
   if (searchTimer) clearTimeout(searchTimer)
   const trimmed = kw.trim()
   if (!trimmed) {
-    results.value = { resources: [], notes: [] }
+    results.value = { resources: [], notes: [], todos: [] }
     searched.value = false
     return
   }
@@ -184,8 +189,28 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               </div>
             </template>
 
+            <!-- 待办 -->
+            <template v-if="results.todos.length > 0">
+              <p class="result-group-title" role="presentation">待办</p>
+              <div
+                v-for="(t, idx) in results.todos"
+                :key="'t' + t.id"
+                class="result-item"
+                :class="{ active: results.resources.length + results.notes.length + idx === activeIndex }"
+                :data-search-key="'t' + t.id"
+                role="option"
+                :aria-selected="results.resources.length + results.notes.length + idx === activeIndex"
+                @click="emit('openTodo', t)"
+                @mouseenter="activeIndex = results.resources.length + results.notes.length + idx"
+              >
+                <span class="result-badge todo-badge">{{ t.done ? '已完成' : '待完成' }}</span>
+                <span class="result-name">{{ t.title }}</span>
+                <span class="result-sub">{{ ['普通', '重要', '紧急'][t.priority] ?? '普通' }}优先级</span>
+              </div>
+            </template>
+
             <!-- 状态 -->
-            <div v-if="searched && results.resources.length === 0 && results.notes.length === 0" class="empty-state">
+            <div v-if="searched && results.resources.length === 0 && results.notes.length === 0 && results.todos.length === 0" class="empty-state">
               <span style="font-size: 26px">🔍</span>
               <p>未找到「{{ keyword.trim() }}」相关内容</p>
             </div>
@@ -194,7 +219,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               class="empty-state"
               style="padding: 24px 16px"
             >
-              <p style="color: var(--text-4)">输入关键词检索速达资源与速记</p>
+              <p style="color: var(--text-4)">输入关键词检索速达资源、速记与待办</p>
               <div class="shortcut-hints">
                 <span><kbd>Ctrl</kbd> + <kbd>K</kbd> 唤起搜索</span>
                 <span><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> 显示/隐藏窗口</span>
@@ -316,6 +341,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .note-badge {
   background: var(--c-yellow-soft);
   color: var(--c-yellow-ink);
+}
+.todo-badge {
+  background: var(--c-gray-soft);
+  color: var(--c-gray-ink);
 }
 .shortcut-hints {
   display: flex;

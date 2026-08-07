@@ -14,7 +14,10 @@ const input = ref('')
 // 编辑状态
 const editingId = ref<number | null>(null)
 const editText = ref('')
-const editInput = ref<HTMLInputElement | null>(null)
+const editInputRef = ref<HTMLInputElement | null>(null)
+function setEditInput(el: HTMLInputElement | null) {
+  editInputRef.value = el
+}
 
 // 全局搜索跳转高亮
 const highlight = ref<number | null>(null)
@@ -57,7 +60,7 @@ async function remove(t: Todo) {
 function startEdit(t: Todo) {
   editingId.value = t.id
   editText.value = t.title
-  nextTick(() => editInput.value?.focus())
+  nextTick(() => editInputRef.value?.focus())
 }
 
 function cancelEdit() {
@@ -171,7 +174,7 @@ watch(
 
         <template v-if="editingId === t.id">
           <input
-            ref="editInput"
+            :ref="setEditInput"
             v-model="editText"
             class="todo-edit"
             :aria-label="'编辑待办：' + t.title"

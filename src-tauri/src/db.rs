@@ -65,8 +65,19 @@ fn migrate(conn: &Connection) -> Result<()> {
           PRIMARY KEY (note_id, tag_id)
         );
 
+        CREATE TABLE IF NOT EXISTS todos (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          done INTEGER NOT NULL DEFAULT 0,
+          priority INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+          completed_at TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
+        CREATE INDEX IF NOT EXISTS idx_todos_created ON todos(created_at DESC);
         ",
     )?;
 

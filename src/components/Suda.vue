@@ -87,6 +87,7 @@ async function handleDrop(file: string) {
       prefill.value = { name: info.name, target: info.target, icon: info.icon, kind: 'app' }
       editing.value = null
       formVisible.value = true
+      showToast(`已识别「${info.name}」，请点击添加确认`)
     } catch (e) {
       showToast(String(e))
     }
@@ -552,6 +553,10 @@ function fileIconOf(r: Resource) {
   cursor: pointer;
   transition: transform 0.18s, box-shadow 0.18s;
 }
+.suda-card:hover .suda-kind,
+.suda-card:focus-within .suda-kind {
+  color: var(--text-1);
+}
 .suda-card:hover {
   transform: translateY(-2px);
   box-shadow: var(--shadow-hover);
@@ -600,25 +605,20 @@ function fileIconOf(r: Resource) {
   left: 6px;
   display: inline-flex;
   align-items: center;
-  min-height: 18px;
-  padding: 2px 7px;
-  border-radius: var(--radius-pill);
+  min-height: 0;
+  padding: 0;
   font-size: 10px;
   font-weight: 600;
   line-height: 1;
-  background: var(--bg-card);
   color: var(--text-3);
 }
 .suda-kind.app {
-  background: var(--c-blue-soft);
   color: var(--c-blue-ink);
 }
 .suda-kind.web {
-  background: var(--c-green-soft);
   color: var(--c-green-ink);
 }
 .suda-kind.file {
-  background: var(--c-purple-soft);
   color: var(--c-purple-ink);
 }
 
@@ -627,6 +627,7 @@ function fileIconOf(r: Resource) {
   top: 5px;
   right: 5px;
   display: flex;
+  flex-direction: column;
   gap: 4px;
   opacity: 0;
   transition: opacity 0.15s;
@@ -656,10 +657,6 @@ function fileIconOf(r: Resource) {
 .suda-action.del:hover {
   color: var(--c-red);
   background: color-mix(in srgb, var(--c-red) 10%, transparent);
-}
-
-.suda-icon.web-default {
-  background: var(--c-green-soft);
 }
 
 /* 拖拽导入遮罩 */

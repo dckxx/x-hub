@@ -323,7 +323,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   align-items: center;
   gap: var(--space-2);
   min-height: 36px;
-  padding: 0 var(--space-3) 0 32px;
+  padding: 0 var(--space-2);
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -397,7 +397,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   background: color-mix(in srgb, var(--brand-500) 10%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand-500) 10%, transparent);
 }
-.sidebar.collapsed .sidebar-nav-item span,
+.sidebar.collapsed .sidebar-nav-item > span:not(.sidebar-nav-icon),
 .sidebar.collapsed .sidebar-status span,
 .sidebar.collapsed .status-dot {
   display: none;

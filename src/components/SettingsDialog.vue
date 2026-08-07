@@ -21,6 +21,7 @@ const shortcutBusy = ref(false)
 const shortcutError = ref('')
 const shortcutListening = ref(false)
 const shortcutInputRef = ref<HTMLInputElement | null>(null)
+const pressedShortcutKeys = ref(new Set<string>())
 const shortcutNormalized = computed(() => shortcut.value.trim())
 
 onMounted(async () => {
@@ -93,21 +94,30 @@ async function saveShortcut() {
 function startListeningShortcut() {
   shortcutListening.value = true
   shortcut.value = ''
+  pressedShortcutKeys.value = new Set()
   void nextTick(() => shortcutInputRef.value?.focus())
 }
 
 function stopListeningShortcut() {
   shortcutListening.value = false
+  pressedShortcutKeys.value = new Set()
 }
 
-function formatShortcutDisplay(e: KeyboardEvent) {
-  const parts: string[] = []
-  if (e.ctrlKey || e.metaKey) parts.push('CommandOrControl')
-  if (e.altKey) parts.push('Alt')
-  if (e.shiftKey) parts.push('Shift')
+function normalizeShortcutKey(e: KeyboardEvent) {
+  if (e.ctrlKey || e.metaKey || e.key === 'Control' || e.key === 'Meta') return 'CommandOrControl'
+  if (e.key === 'Alt') return 'Alt'
+  if (e.key === 'Shift') return 'Shift'
+  return e.key.length === 1 ? e.key.toUpperCase() : e.key
+}
 
-  const key = e.key.length === 1 ? e.key.toUpperCase() : e.key
-  if (!['Control', 'Shift', 'Alt', 'Meta'].includes(key)) parts.push(key)
+function formatShortcutDisplay(keys: Set<string>) {
+  const parts: string[] = []
+  if (keys.has('CommandOrControl')) parts.push('CommandOrControl')
+  if (keys.has('Alt')) parts.push('Alt')
+  if (keys.has('Shift')) parts.push('Shift')
+  for (const key of keys) {
+    if (!['CommandOrControl', 'Alt', 'Shift'].includes(key)) parts.push(key)
+  }
   return parts.join('+')
 }
 
@@ -119,10 +129,15 @@ function onShortcutKeydown(e: KeyboardEvent) {
     stopListeningShortcut()
     return
   }
-  const display = formatShortcutDisplay(e)
+  if (['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) {
+    pressedShortcutKeys.value.add(normalizeShortcutKey(e))
+    shortcut.value = formatShortcutDisplay(pressedShortcutKeys.value)
+    return
+  }
+  pressedShortcutKeys.value.add(normalizeShortcutKey(e))
+  const display = formatShortcutDisplay(pressedShortcutKeys.value)
   if (!display) return
   shortcut.value = display
-  stopListeningShortcut()
 }
 </script>
 
@@ -287,7 +302,7 @@ function onShortcutKeydown(e: KeyboardEvent) {
   color: var(--text-1);
   font-size: 13px;
   font-family: inherit;
-  padding: 9px 116px 9px 32px;
+  padding: 9px 84px 9px 32px;
   outline: none;
 }
 .shortcut-input:focus {
@@ -306,6 +321,9 @@ function onShortcutKeydown(e: KeyboardEvent) {
   font-size: 12px;
   padding: 5px 10px;
   cursor: pointer;
+}
+.shortcut-record-btn:disabled {
+  opacity: 0.9;
 }
 .shortcut-record-btn:hover {
   background: color-mix(in srgb, var(--brand-500) 14%, transparent);

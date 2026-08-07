@@ -53,8 +53,6 @@ useFocusTrap(toRef(props, 'visible'), cardRef, nameInputRef)
 const isEdit = computed(() => props.editing !== null)
 
 const isExtractedIcon = computed(() => /\.(png|jpg|jpeg|ico|gif|webp)$/i.test(icon.value))
-const showWebIconInput = computed(() => kind.value !== 'web')
-
 const targetLabel = computed(() => {
   if (kind.value === 'file') return isDir.value ? '文件夹路径' : '文件路径'
   if (kind.value === 'app') return '程序路径'
@@ -65,6 +63,11 @@ const targetPlaceholder = computed(() => {
   if (kind.value === 'file') return '选择要链接的文件或文件夹'
   if (kind.value === 'app') return '如：C:\\Program Files\\...\\code.exe'
   return '如：github.com'
+})
+
+const iconPlaceholder = computed(() => {
+  if (kind.value === 'web') return '留空使用当前网站 favicon'
+  return 'Emoji 或留空自动生成'
 })
 
 watch(
@@ -215,6 +218,18 @@ function normalizeWebTarget() {
   if (!icon.value.trim()) icon.value = deriveFaviconUrl(normalized) ?? ''
 }
 
+function onKindChange(nextKind: 'app' | 'web' | 'file') {
+  kind.value = nextKind
+  if (nextKind === 'web' && target.value.trim() && !icon.value.trim()) normalizeWebTarget()
+}
+
+function onIconInputBlur() {
+  if (kind.value === 'web') {
+    const normalized = joinWebTarget(webScheme.value, target.value)
+    if (!icon.value.trim()) icon.value = deriveFaviconUrl(normalized) ?? ''
+  }
+}
+
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape' && props.visible) emit('close')
 }
@@ -241,21 +256,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             <button
               class="kind-pill"
               :class="{ active: kind === 'app' }"
-              @click="kind = 'app'"
+              @click="onKindChange('app')"
             >
               本地程序
             </button>
             <button
               class="kind-pill"
               :class="{ active: kind === 'web' }"
-              @click="kind = 'web'"
+              @click="onKindChange('web')"
             >
               网页书签
             </button>
             <button
               class="kind-pill"
               :class="{ active: kind === 'file' }"
-              @click="kind = 'file'"
+              @click="onKindChange('file')"
             >
               文件/文件夹
             </button>
@@ -345,24 +360,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           <!-- 图标（app/web） -->
           <template v-if="kind !== 'file'">
             <label class="field-label">图标（可选）</label>
-            <div class="icon-row" :class="{ 'icon-row--web': kind === 'web' }">
+            <div class="icon-row">
               <input
-                v-if="showWebIconInput"
                 v-model="icon"
                 class="field-input"
                 type="text"
                 maxlength="260"
-                placeholder="Emoji 或留空自动生成"
+                :placeholder="iconPlaceholder"
                 @keydown="onKeydown"
+                @blur="onIconInputBlur"
               />
-              <button v-if="showWebIconInput" class="input-btn" title="选择本地图标" @click="pickIcon">
+              <button class="input-btn" title="选择本地图标" @click="pickIcon">
                 <ImagePlus :size="15" :stroke-width="1.8" />
               </button>
               <span v-if="isExtractedIcon" class="extracted-badge" title="已从文件导入图标">
                 ✓ 已导入
-              </span>
-              <span v-else-if="kind === 'web'" class="web-icon-hint">
-                图标将自动抓取当前网站 favicon
               </span>
             </div>
           </template>
@@ -445,14 +457,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .icon-row {
   position: relative;
 }
-.icon-row--web {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.icon-row--web .field-input {
-  padding-right: 12px;
-}
 .input-with-btn {
   position: relative;
 }
@@ -479,15 +483,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .web-target-wrap {
   flex: 1;
 }
-.web-target-input {
-  padding-right: 82px;
-}
 .web-target-wrap .input-btn {
-  right: 46px;
+  right: 6px;
 }
-.web-icon-hint {
-  font-size: 12px;
-  color: var(--text-3);
+.web-target-input {
+  padding-right: 44px;
 }
 .input-btn {
   position: absolute;
@@ -511,10 +511,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   color: var(--brand-500);
 }
 .icon-row .field-input {
-  padding-right: 88px;
-}
-.icon-row .input-btn {
-  right: 62px;
+  padding-right: 44px;
 }
 .icon-row .field-input {
   text-align: left;

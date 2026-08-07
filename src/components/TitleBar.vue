@@ -64,12 +64,26 @@ function close() {
 <template>
   <div class="title-bar" @mousedown="onDragStart">
     <div class="window-title">
+      <!-- 品牌 Logo：与 public/favicon.svg 及 src-tauri/icons 图标同源（渐变紫底 + 白 X） -->
       <svg width="18" height="18" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-        <rect width="32" height="32" rx="8" fill="var(--brand-500)"/>
-        <circle cx="16" cy="16" r="10" fill="var(--text-on-accent)" opacity="0.12"/>
-        <path d="M10.5 10.5L21.5 21.5" stroke="var(--text-on-accent)" stroke-width="3" stroke-linecap="round"/>
-        <path d="M21.5 10.5L10.5 21.5" stroke="var(--text-on-accent)" stroke-width="3" stroke-linecap="round"/>
-        <circle cx="16" cy="16" r="2.4" fill="var(--bg-card-solid)"/>
+        <defs>
+          <linearGradient id="tbar-bg" x1="5.75" y1="3.75" x2="26.5" y2="28" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#6E6EFF"/>
+            <stop offset="0.55" stop-color="#5B5BF5"/>
+            <stop offset="1" stop-color="#4242C9"/>
+          </linearGradient>
+          <linearGradient id="tbar-x" x1="8.5" y1="8.5" x2="23.5" y2="23.5" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#FFFFFF"/>
+            <stop offset="1" stop-color="#EDEEFF"/>
+          </linearGradient>
+        </defs>
+        <rect width="32" height="32" rx="8" fill="url(#tbar-bg)"/>
+        <rect x="3.75" y="3.75" width="24.5" height="24.5" rx="6.75" fill="#FFFFFF" opacity="0.06"/>
+        <circle cx="16" cy="16" r="7.875" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="1"/>
+        <path d="M10.25 10.25L21.75 21.75" stroke="url(#tbar-x)" stroke-width="3.625" stroke-linecap="round"/>
+        <path d="M21.75 10.25L10.25 21.75" stroke="url(#tbar-x)" stroke-width="3.625" stroke-linecap="round"/>
+        <circle cx="16" cy="16" r="1.875" fill="#F4F5F8"/>
+        <circle cx="16" cy="16" r="0.75" fill="#5B5BF5"/>
       </svg>
       <span class="title-text">x-hub</span>
     </div>

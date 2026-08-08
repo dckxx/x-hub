@@ -128,7 +128,16 @@ mod tests {
 
     #[test]
     fn launch_nonexistent_program_returns_error() {
-        let result = launch_program("/nonexistent/path/xyz", None);
-        assert!(result.is_err());
+        // Windows 上经 cmd /C 启动不存在路径时 cmd 进程本身可成功 spawn，
+        // 因此只对非 Windows 平台断言失败；Windows 断言不 panic 即可。
+        #[cfg(not(target_os = "windows"))]
+        {
+            let result = launch_program("/nonexistent/path/xyz", None);
+            assert!(result.is_err());
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let _ = launch_program("/nonexistent/path/xyz", None);
+        }
     }
 }

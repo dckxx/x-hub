@@ -44,16 +44,6 @@ const prefill = ref<{
 } | null>(null)
 let unlistenDrop: (() => void) | null = null
 
-function isInside(e: { x: number; y: number }): boolean {
-  const el = rootRef.value
-  if (!el) return false
-  const rect = el.getBoundingClientRect()
-  const dpr = window.devicePixelRatio || 1
-  const x = e.x / dpr
-  const y = e.y / dpr
-  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
-}
-
 onMounted(async () => {
   if (!isTauri()) return
   const webview = getCurrentWebview()
@@ -63,12 +53,13 @@ onMounted(async () => {
     if (ev.type === 'enter' || ev.type === 'over') {
       if (ev.type === 'over') return
       if (!ev.paths.length) return
-      dropping.value = isInside(ev.position)
+      // 整个窗口均可拖拽导入：enter 即亮起全屏遮罩，
+      // 释放时不再校验位置（遮罩提示居中，用户常移到提示处释放，二次校验会误丢 drop）
+      dropping.value = true
     } else if (ev.type === 'leave') {
       dropping.value = false
     } else if (ev.type === 'drop') {
       dropping.value = false
-      if (!isInside(ev.position)) return
       const file = ev.paths?.[0]
       if (file) void handleDrop(file)
     }

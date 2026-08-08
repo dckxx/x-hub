@@ -43,6 +43,8 @@ pub fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 pub fn format_shortcut_error(err: &str) -> String {
     if err.contains("HotKey") || err.contains("already") || err.contains("occupied") {
         "快捷键冲突".to_string()
+    } else if err.contains("UnsupportedKey") || err.contains("InvalidFormat") || err.contains("EmptyToken") {
+        "快捷键格式无效，请重新录入（修饰键在前、单个主键，如 Ctrl+Shift+K）".to_string()
     } else {
         err.to_string()
     }

@@ -24,13 +24,18 @@ const shortcutInputRef = ref<HTMLInputElement | null>(null)
 const pressedShortcutKeys = ref(new Set<string>())
 const shortcutNormalized = computed(() => shortcut.value.trim())
 
+// macOS 上 Meta 键 = Cmd（映射 CommandOrControl）；Windows 上 = Win 键（必须用 Super）
+const IS_MAC =
+  navigator.userAgentData?.platform === 'macOS' || /Mac|iPhone|iPad/.test(navigator.platform)
+
 onMounted(async () => {
   if (!isTauri()) return
   shortcut.value = await tauriApi.getGlobalShortcut()
 })
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && props.visible) emit('close')
+  // 录制快捷键时按 Escape 是"取消录制"，不应关闭弹窗
+  if (e.key === 'Escape' && props.visible && !shortcutListening.value) emit('close')
 }
 
 onMounted(() => window.addEventListener('keydown', onKeydown))
@@ -104,19 +109,34 @@ function stopListeningShortcut() {
 }
 
 function normalizeShortcutKey(e: KeyboardEvent) {
-  if (e.ctrlKey || e.metaKey || e.key === 'Control' || e.key === 'Meta') return 'CommandOrControl'
-  if (e.key === 'Alt') return 'Alt'
-  if (e.key === 'Shift') return 'Shift'
-  return e.key.length === 1 ? e.key.toUpperCase() : e.key
+  // 仅依据 e.key 判断修饰键，切勿使用 e.ctrlKey / e.metaKey 状态判断，
+  // 否则组合键中的普通键（如 Ctrl 下的 K）会被误判为修饰键导致主键丢失
+  switch (e.key) {
+    case 'Control':
+      return 'CommandOrControl'
+    case 'Meta':
+      // macOS: Cmd；Windows: Win 键（插件在 Windows 上 Super 才映射 Win）
+      return IS_MAC ? 'CommandOrControl' : 'Super'
+    case 'Alt':
+      return 'Alt'
+    case 'Shift':
+      return 'Shift'
+    case ' ':
+      return 'Space' // 插件只认 "SPACE"，不认空格字符
+    default:
+      return e.key.length === 1 ? e.key.toUpperCase() : e.key
+  }
 }
+
+const MODIFIER_ORDER = ['CommandOrControl', 'Super', 'Alt', 'Shift']
 
 function formatShortcutDisplay(keys: Set<string>) {
   const parts: string[] = []
-  if (keys.has('CommandOrControl')) parts.push('CommandOrControl')
-  if (keys.has('Alt')) parts.push('Alt')
-  if (keys.has('Shift')) parts.push('Shift')
+  for (const mod of MODIFIER_ORDER) {
+    if (keys.has(mod)) parts.push(mod)
+  }
   for (const key of keys) {
-    if (!['CommandOrControl', 'Alt', 'Shift'].includes(key)) parts.push(key)
+    if (!MODIFIER_ORDER.includes(key)) parts.push(key)
   }
   return parts.join('+')
 }
@@ -134,10 +154,12 @@ function onShortcutKeydown(e: KeyboardEvent) {
     shortcut.value = formatShortcutDisplay(pressedShortcutKeys.value)
     return
   }
+  // 主键按下即完成录制（一个快捷键只有一个主键），避免后续按键污染组合
   pressedShortcutKeys.value.add(normalizeShortcutKey(e))
   const display = formatShortcutDisplay(pressedShortcutKeys.value)
   if (!display) return
   shortcut.value = display
+  stopListeningShortcut()
 }
 </script>
 

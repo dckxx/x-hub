@@ -8,23 +8,28 @@ import NoteList from '../components/NoteList.vue'
 import NoteEditor from '../components/NoteEditor.vue'
 import GlobalSearch from '../components/GlobalSearch.vue'
 import SettingsDialog from '../components/SettingsDialog.vue'
+import TokenStatsCard from '../components/TokenStatsCard.vue'
+import UsageView from '../components/UsageView.vue'
 import { useStore } from '../stores/workbench'
 import { isTauri } from '../api/tauri'
 import type { Note, Resource, Todo } from '../api/tauri'
-import { FileText, FolderOpen, LayoutDashboard, Moon, Settings2, Sun, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { FileText, FolderOpen, Gauge, LayoutDashboard, Moon, Settings2, Sun, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 
 const store = useStore()
 const todayRef = ref<HTMLElement | null>(null)
 const notesRef = ref<HTMLElement | null>(null)
 const sudaRef = ref<HTMLElement | null>(null)
+const usageRef = ref<HTMLElement | null>(null)
 
 const navigation = [
   { id: 'dashboard', label: '工作台', icon: LayoutDashboard, target: 'today' },
   { id: 'notes', label: '速记', icon: FileText, target: 'notes' },
   { id: 'suda', label: '速达', icon: FolderOpen, target: 'suda' },
+  { id: 'usage', label: '用量', icon: Gauge, target: 'usage' },
 ] as const
 
 const activeNavigation = ref('dashboard')
+const activeView = ref<'dashboard' | 'usage'>('dashboard')
 
 // ---- 侧边栏收起（跨会话记忆） ----
 const sidebarCollapsed = ref(localStorage.getItem('sidebar-collapsed') === '1')
@@ -36,13 +41,29 @@ function toggleSidebar() {
 
 function focusPanel(target: (typeof navigation)[number]['target'], id: string) {
   activeNavigation.value = id
+  if (id === 'usage') {
+    activeView.value = 'usage'
+    return
+  }
+  activeView.value = 'dashboard'
   const panel = {
     today: todayRef,
     notes: notesRef,
     suda: sudaRef,
+    usage: usageRef,
   }[target]
   panel.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   panel.value?.focus({ preventScroll: true })
+}
+
+function openUsageDetail() {
+  activeView.value = 'usage'
+  activeNavigation.value = 'usage'
+}
+
+function closeUsage() {
+  activeView.value = 'dashboard'
+  activeNavigation.value = 'dashboard'
 }
 
 // ---- 主题（跟随配置，持久化） ----
@@ -228,9 +249,15 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
       </aside>
 
       <main class="workspace" aria-label="主工作区">
-        <div class="workspace-grid">
-          <section ref="todayRef" class="workspace-panel today-panel" tabindex="-1" aria-label="日历">
+        <UsageView v-if="activeView === 'usage'" @back="closeUsage" />
+
+        <div v-else class="workspace-grid">
+          <section ref="todayRef" class="workspace-panel today-panel" tabindex="-1" aria-label="待办">
             <TodoCard :highlight-id="highlightTodoId" />
+          </section>
+
+          <section class="workspace-panel usage-panel" tabindex="-1" aria-label="Token 统计">
+            <TokenStatsCard :on-open-detail="openUsageDetail" />
           </section>
 
           <section ref="notesRef" class="workspace-panel notes-panel" tabindex="-1" aria-label="速记">
@@ -462,7 +489,17 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   border-radius: 0;
   box-shadow: none;
 }
-.suda-panel { grid-column: 1 / -1; }
+.usage-panel :deep(.token-stats) {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.usage-panel {
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
 
 @media (max-width: 1100px) {
   .workspace { padding: var(--space-5); }

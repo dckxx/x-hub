@@ -448,16 +448,16 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 .workspace {
   min-width: 0;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   padding: var(--space-6);
   background: var(--bg-page);
 }
 .workspace-grid {
   display: grid;
-  grid-template-columns: minmax(300px, 0.8fr) minmax(420px, 1.2fr);
-  grid-template-rows: minmax(320px, 360px) minmax(240px, 1fr);
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--space-4);
-  min-height: 100%;
+  height: 100%;
 }
 .workspace-panel {
   min-width: 0;
@@ -503,7 +503,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 
 @media (max-width: 1100px) {
   .workspace { padding: var(--space-5); }
-  .workspace-grid { grid-template-columns: minmax(280px, 0.78fr) minmax(380px, 1.22fr); }
+  .workspace-grid { grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.22fr); }
 }
 
 @media (max-width: 720px) {
@@ -521,9 +521,9 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   .sidebar.collapsed .status-dot {
     display: initial;
   }
-  .workspace { padding: var(--space-4); }
-  .workspace-grid { display: flex; flex-direction: column; }
-  .workspace-panel { min-height: 320px; }
+  .workspace { padding: var(--space-4); overflow-y: auto; }
+  .workspace-grid { display: flex; flex-direction: column; gap: var(--space-4); }
+  .workspace-panel { min-height: 300px; flex: none; }
 }
 
 /* 轻提示 */

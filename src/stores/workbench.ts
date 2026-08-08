@@ -5,8 +5,11 @@ import {
   type AppConfig,
   type Note,
   type Resource,
+  type SyncResult,
   type Tag,
   type Todo,
+  type UsageDetail,
+  type UsageSummary,
 } from '../api/tauri'
 
 interface StoreState {
@@ -15,6 +18,9 @@ interface StoreState {
   todos: Todo[]
   tags: Tag[]
   config: AppConfig
+  usageSummary: UsageSummary | null
+  usageDetail: UsageDetail | null
+  usageListening: boolean
   loaded: boolean
 }
 
@@ -34,6 +40,9 @@ const state = reactive<StoreState>({
     },
     global_shortcut: 'CommandOrControl+Shift+Space',
   },
+  usageSummary: null,
+  usageDetail: null,
+  usageListening: false,
   loaded: false,
 })
 
@@ -45,6 +54,7 @@ export function useStore() {
     state.notes = data.notes
     state.todos = data.todos
     state.tags = data.tags
+    state.usageSummary = data.usage_summary
     state.config = data.config
     state.loaded = true
   }
@@ -200,6 +210,30 @@ export function useStore() {
     return saved
   }
 
+  // ---- AI 用量 ----
+  async function refreshUsage(path?: string): Promise<SyncResult> {
+    if (!isTauri()) {
+      return { inserted: 0, cursor: 0, listening: false, path: null }
+    }
+    const result = await tauriApi.syncAiUsage(path)
+    state.usageListening = result.listening
+    if (result.listening) {
+      state.usageSummary = await tauriApi.getUsageSummary()
+    }
+    return result
+  }
+
+  async function loadUsageSummary() {
+    if (!isTauri()) return
+    state.usageSummary = await tauriApi.getUsageSummary()
+  }
+
+  async function loadUsageDetail(days = 7, limit = 50, offset = 0) {
+    if (!isTauri()) return null
+    state.usageDetail = await tauriApi.getUsageDetail(days, limit, offset)
+    return state.usageDetail
+  }
+
   return {
     state: readonly(state),
     loadInitialData,
@@ -221,5 +255,8 @@ export function useStore() {
     setTheme,
     setAlwaysOnTop,
     setGlobalShortcut,
+    refreshUsage,
+    loadUsageSummary,
+    loadUsageDetail,
   }
 }

@@ -62,6 +62,7 @@ export interface InitialData {
   notes: Note[]
   todos: Todo[]
   tags: Tag[]
+  usage_summary: UsageSummary
   config: AppConfig
 }
 
@@ -74,6 +75,72 @@ export interface SearchResult {
 export interface NoteTagRow {
   note_id: number
   tag_id: number
+}
+
+export interface UsageRecord {
+  session_id: string
+  provider: string | null
+  model: string | null
+  tokens_input: number
+  tokens_cache_read: number
+  tokens_output: number
+  tokens_reasoning: number
+  tokens_cache_write: number
+  cost: number
+  time_created: number
+  source: string
+}
+
+export interface UsageSummary {
+  today_input: number
+  today_cache_input: number
+  today_output: number
+  today_cost: number
+  seven_day_input: number
+  seven_day_cache_input: number
+  seven_day_output: number
+  seven_day_cost: number
+  month_input: number
+  month_cache_input: number
+  month_output: number
+  month_cost: number
+  total_input: number
+  total_cache_input: number
+  total_output: number
+  total_cost: number
+  record_count: number
+  last_sync_at: number | null
+}
+
+export interface UsageDaily {
+  date: string
+  input: number
+  cache_input: number
+  output: number
+  cost: number
+}
+
+export interface UsageProvider {
+  provider: string
+  count: number
+  input: number
+  cache_input: number
+  output: number
+  cost: number
+}
+
+export interface UsageDetail {
+  daily: UsageDaily[]
+  providers: UsageProvider[]
+  records: UsageRecord[]
+  total: number
+}
+
+export interface SyncResult {
+  inserted: number
+  cursor: number
+  listening: boolean
+  path: string | null
 }
 
 export interface DroppedAppInfo {
@@ -158,4 +225,8 @@ export const tauriApi = {
   minimizeWindow: () => invoke<void>('minimize_window'),
   toggleMaximize: () => invoke<void>('toggle_maximize'),
   hideToTray: () => invoke<void>('hide_to_tray'),
+  syncAiUsage: (path?: string) => invoke<SyncResult>('sync_ai_usage', { path: path ?? null }),
+  getUsageSummary: () => invoke<UsageSummary>('get_usage_summary'),
+  getUsageDetail: (days: number, limit: number, offset: number) =>
+    invoke<UsageDetail>('get_usage_detail', { days, limit, offset }),
 }

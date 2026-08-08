@@ -30,6 +30,7 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
   () => {},
 )
 const rootRef = ref<HTMLElement | null>(null)
+void rootRef
 const hasOverlayModal = computed(() => formVisible.value || menu.value.visible)
 
 // ---- 拖拽导入：只预填弹窗，用户确认后才真正添加 ----

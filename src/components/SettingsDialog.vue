@@ -26,7 +26,7 @@ const shortcutNormalized = computed(() => shortcut.value.trim())
 
 // macOS 上 Meta 键 = Cmd（映射 CommandOrControl）；Windows 上 = Win 键（必须用 Super）
 const IS_MAC =
-  navigator.userAgentData?.platform === 'macOS' || /Mac|iPhone|iPad/.test(navigator.platform)
+  /Mac|iPhone|iPad/.test(navigator.userAgent) || /Mac|iPhone|iPad/.test(navigator.platform)
 
 onMounted(async () => {
   if (!isTauri()) return

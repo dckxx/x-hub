@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, type ComponentPublicInstance, watch } from 'vue'
 import { Check, Trash2 } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Todo } from '../api/tauri'
@@ -15,8 +15,8 @@ const input = ref('')
 const editingId = ref<number | null>(null)
 const editText = ref('')
 const editInputRef = ref<HTMLInputElement | null>(null)
-function setEditInput(el: HTMLInputElement | null) {
-  editInputRef.value = el
+function setEditInput(el: Element | ComponentPublicInstance | null) {
+  editInputRef.value = el instanceof HTMLInputElement ? el : null
 }
 
 // 全局搜索跳转高亮

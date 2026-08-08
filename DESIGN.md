@@ -83,9 +83,16 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 ### Workspace panel
 
 - **Structure**: 标题行、工具动作、内容区。
-- **Variants**: today、notes、files。
+- **Variants**: today（待办）、notes、files。
 - **States**: default、hover、active、focus、empty、error/drop target。
 - **Depth**: tonal shift + subtle border；不同时使用厚边框和大阴影。
+
+### Todo card
+
+- **Structure**: 标题行 + 视图分段（待办/已完成）、添加输入行、待办列表。
+- **States**: 待办项 default、hover、done（删除线 + 降透明度）、highlight（全局搜索直达后 3s 高亮）。
+- **Interactions**: 勾选切换完成；优先级圆点循环切换（普通→重要→紧急）；双击行内编辑；删除按钮 hover 显现。
+- **Accessibility**: 分段使用 `role="tablist"`，优先级圆点可键盘触发，勾选/删除带 `aria-label`。
 
 ### Compact control
 

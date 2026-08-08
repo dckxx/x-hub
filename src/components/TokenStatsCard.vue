@@ -10,6 +10,7 @@ const detecting = ref(false)
 
 const summary = computed(() => store.state.usageSummary)
 const listening = computed(() => store.state.usageListening)
+const daily = computed(() => store.state.usageDetail?.daily ?? [])
 
 // 人类可读格式化：1234567 → 1.2M
 function fmt(n: number | null | undefined): string {
@@ -18,6 +19,12 @@ function fmt(n: number | null | undefined): string {
   if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + 'M'
   if (v >= 1_000) return (v / 1_000).toFixed(1) + 'K'
   return String(v)
+}
+
+function dailyHeight(d: { input: number; cache_input: number; output: number }): number {
+  const total = d.input + d.cache_input + d.output
+  const max = Math.max(1, ...daily.value.map((x) => x.input + x.cache_input + x.output))
+  return Math.max(8, Math.round((total / max) * 100))
 }
 
 function fmtCost(c: number | null | undefined): string {
@@ -44,6 +51,7 @@ const metrics = computed(() => [
 
 onMounted(async () => {
   if (!store.state.usageSummary) await onDetect()
+  await store.loadUsageDetail(7, 7, 0)
 })
 </script>
 
@@ -72,6 +80,12 @@ onMounted(async () => {
         <div v-for="m in metrics" :key="m.label" class="ts-metric">
           <span class="ts-metric-value" :style="{ color: m.color }">{{ m.value }}</span>
           <span class="ts-metric-label">{{ m.label }}</span>
+        </div>
+      </div>
+      <div v-if="daily.length" class="ts-chart" aria-hidden="true">
+        <div v-for="d in daily" :key="d.date" class="ts-chart-col">
+          <div class="ts-chart-bar" :style="{ height: dailyHeight(d) + '%' }" :title="`${d.date} ${fmt(d.input + d.cache_input + d.output)}`"></div>
+          <span class="ts-chart-date">{{ d.date.slice(5) }}</span>
         </div>
       </div>
       <div class="ts-footer">
@@ -184,6 +198,34 @@ onMounted(async () => {
   gap: 12px;
   font-size: 11px;
   color: var(--text-3);
+}
+.ts-chart {
+  flex: 1;
+  min-height: 48px;
+  margin-top: 12px;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+.ts-chart-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.ts-chart-bar {
+  width: 100%;
+  max-width: 26px;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: linear-gradient(180deg, var(--brand-500), var(--brand-600));
+  opacity: 0.85;
+  transition: height 0.3s;
+}
+.ts-chart-date {
+  font-size: 9px;
+  color: var(--text-4);
 }
 .ts-foot-item {
   white-space: nowrap;

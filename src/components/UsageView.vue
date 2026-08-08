@@ -117,43 +117,44 @@ onMounted(() => load())
       </div>
     </div>
 
-    <!-- 近 7 日趋势 -->
-    <section class="uv-section">
-      <h3 class="uv-section-title">近 7 日趋势</h3>
-      <div v-if="daily.length" class="uv-chart">
-        <div v-for="d in daily" :key="d.date" class="uv-chart-col">
-          <div class="uv-chart-bar" :style="{ height: dailyHeight(d) + '%' }" :title="`${d.date} 输入 ${fmt(d.input)} · 缓存 ${fmt(d.cache_input)} · 输出 ${fmt(d.output)}`">
-            <span class="uv-chart-val">{{ fmt(d.input + d.cache_input + d.output) }}</span>
-          </div>
-          <span class="uv-chart-date">{{ d.date.slice(5) }}</span>
-        </div>
-      </div>
-      <p v-else class="uv-empty">暂无数据</p>
-    </section>
-
-    <!-- Provider 排行 -->
-    <section class="uv-section">
-      <h3 class="uv-section-title">Provider 排行</h3>
-      <div v-if="(detail?.providers ?? []).length" class="uv-providers">
-        <div v-for="p in (detail?.providers ?? []) as UsageProvider[]" :key="p.provider" class="uv-provider">
-          <div class="uv-provider-top">
-            <span class="uv-provider-name">{{ p.provider }}</span>
-            <span class="uv-provider-nums">
-              {{ fmt(p.input + p.cache_input) }} 输入 · {{ fmt(p.output) }} 输出 · {{ fmtCost(p.cost) }}
-            </span>
-          </div>
-          <div class="uv-provider-bar">
-            <div class="uv-provider-fill" :style="{ width: ((p.input + p.cache_input + p.output) / maxProvider) * 100 + '%' }"></div>
+    <div class="uv-main">
+      <!-- 近 7 日趋势 -->
+      <section class="uv-section uv-trend">
+        <h3 class="uv-section-title">近 7 日趋势</h3>
+        <div v-if="daily.length" class="uv-chart">
+          <div v-for="d in daily" :key="d.date" class="uv-chart-col">
+            <div class="uv-chart-bar" :style="{ height: dailyHeight(d) + '%' }" :title="`${d.date} 输入 ${fmt(d.input)} · 缓存 ${fmt(d.cache_input)} · 输出 ${fmt(d.output)}`">
+              <span class="uv-chart-val">{{ fmt(d.input + d.cache_input + d.output) }}</span>
+            </div>
+            <span class="uv-chart-date">{{ d.date.slice(5) }}</span>
           </div>
         </div>
-      </div>
-      <p v-else class="uv-empty">暂无数据</p>
-    </section>
+        <p v-else class="uv-empty">暂无数据</p>
+      </section>
 
-    <!-- 明细列表 -->
-    <section class="uv-section">
-      <h3 class="uv-section-title">明细（共 {{ detail?.total ?? 0 }} 条）</h3>
-      <div v-if="(detail?.records ?? []).length" class="uv-table-wrap">
+      <!-- Provider 排行 -->
+      <section class="uv-section uv-providers-sec">
+        <h3 class="uv-section-title">Provider 排行</h3>
+        <div v-if="(detail?.providers ?? []).length" class="uv-providers">
+          <div v-for="p in (detail?.providers ?? []) as UsageProvider[]" :key="p.provider" class="uv-provider">
+            <div class="uv-provider-top">
+              <span class="uv-provider-name">{{ p.provider }}</span>
+              <span class="uv-provider-nums">
+                {{ fmt(p.input + p.cache_input) }} 输入 · {{ fmt(p.output) }} 输出 · {{ fmtCost(p.cost) }}
+              </span>
+            </div>
+            <div class="uv-provider-bar">
+              <div class="uv-provider-fill" :style="{ width: ((p.input + p.cache_input + p.output) / maxProvider) * 100 + '%' }"></div>
+            </div>
+          </div>
+        </div>
+        <p v-else class="uv-empty">暂无数据</p>
+      </section>
+
+      <!-- 明细列表 -->
+      <section class="uv-section uv-detail">
+        <h3 class="uv-section-title">明细（共 {{ detail?.total ?? 0 }} 条）</h3>
+        <div v-if="(detail?.records ?? []).length" class="uv-table-wrap">
         <table class="uv-table">
           <thead>
             <tr>
@@ -191,19 +192,21 @@ onMounted(() => load())
           </button>
         </div>
       </div>
-      <p v-else class="uv-empty">暂无数据</p>
-    </section>
+        <p v-else class="uv-empty">暂无数据</p>
+      </section>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .usage-view {
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
   padding: var(--space-5);
-  min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
 }
 .uv-header {
   display: flex;
@@ -224,6 +227,7 @@ onMounted(() => load())
   to { transform: rotate(360deg); }
 }
 .uv-cards {
+  flex-shrink: 0;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: var(--space-3);
@@ -257,6 +261,54 @@ onMounted(() => load())
   font-size: 11px;
   color: var(--text-4);
 }
+.uv-main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-4);
+}
+.uv-trend {
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.uv-trend .uv-chart {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding-top: 8px;
+}
+.uv-providers-sec {
+  grid-column: 1;
+  grid-row: 2;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.uv-providers-sec .uv-providers {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+.uv-detail {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.uv-detail .uv-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: auto;
+}
 .uv-section {
   background: var(--bg-card);
   border: 1px solid var(--border-soft);
@@ -274,7 +326,6 @@ onMounted(() => load())
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  height: 140px;
 }
 .uv-chart-col {
   flex: 1;
@@ -381,6 +432,10 @@ onMounted(() => load())
   color: var(--text-3);
 }
 .uv-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   text-align: center;
   color: var(--text-4);
   font-size: 13px;

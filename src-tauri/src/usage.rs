@@ -384,4 +384,25 @@ mod tests {
             (None, None)
         );
     }
+
+    /// 真实 opencode.db 端到端验证（本机路径，默认忽略）
+    #[test]
+    #[ignore]
+    fn sync_real_opencode_db() {
+        let path = r"C:\Users\Administrator\.local\share\opencode\opencode.db";
+        let own = init_in_memory().unwrap();
+        let r = sync_from_opencode(&own, path, 0).unwrap();
+        assert!(r.inserted > 0, "真实库应同步到记录");
+        let s = query_summary(&own).unwrap();
+        assert!(s.total_input > 0);
+        let d = query_detail(&own, 7, 20, 0).unwrap();
+        assert!(d.total == r.inserted);
+        eprintln!(
+            "REAL_OK inserted={} total_input={} cache_read={} providers={}",
+            r.inserted,
+            s.total_input,
+            s.total_cache_input,
+            d.providers.len()
+        );
+    }
 }

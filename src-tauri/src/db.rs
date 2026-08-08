@@ -75,9 +75,25 @@ fn migrate(conn: &Connection) -> Result<()> {
           completed_at TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS ai_usage (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL UNIQUE,
+          provider TEXT,
+          model TEXT,
+          tokens_input INTEGER NOT NULL DEFAULT 0,
+          tokens_output INTEGER NOT NULL DEFAULT 0,
+          tokens_reasoning INTEGER NOT NULL DEFAULT 0,
+          tokens_cache_read INTEGER NOT NULL DEFAULT 0,
+          tokens_cache_write INTEGER NOT NULL DEFAULT 0,
+          cost REAL NOT NULL DEFAULT 0,
+          time_created INTEGER NOT NULL DEFAULT 0,
+          source TEXT NOT NULL DEFAULT 'remote'
+        );
+
         CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
         CREATE INDEX IF NOT EXISTS idx_todos_created ON todos(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_ai_usage_time ON ai_usage(time_created);
         ",
     )?;
 

@@ -30,6 +30,10 @@ pub struct AppConfig {
     pub theme: String,
     pub window: WindowState,
     pub global_shortcut: String,
+    /// AI 用量同步游标（opencode time_updated 毫秒时间戳）
+    pub usage_sync_cursor: i64,
+    /// 手动指定的 opencode.db 路径
+    pub usage_db_path: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -38,6 +42,8 @@ impl Default for AppConfig {
             theme: "light".to_string(),
             window: WindowState::default(),
             global_shortcut: crate::shortcut::DEFAULT_TOGGLE_SHORTCUT.to_string(),
+            usage_sync_cursor: 0,
+            usage_db_path: None,
         }
     }
 }

@@ -6,6 +6,7 @@ mod process;
 mod repo;
 mod shortcut;
 mod tray;
+mod usage;
 
 use commands::DbState;
 use rusqlite::Connection;
@@ -274,6 +275,9 @@ pub fn run() {
             commands::list_note_tags,
             commands::backup_data,
             commands::restore_data,
+            commands::sync_ai_usage,
+            commands::get_usage_summary,
+            commands::get_usage_detail,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,17 +1,10 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
-import { convertFileSrc } from '@tauri-apps/api/core'
 import {
-  Archive,
-  File,
   FilePlus,
-  FileText,
-  Film,
-  Folder,
   Globe,
-  Image,
-  Music,
+  Loader2,
   Pencil,
   Plus,
   Trash2,
@@ -21,6 +14,7 @@ import { isTauri, tauriApi, type Resource } from '../api/tauri'
 import { CATEGORIES, categorize } from '../utils/categories'
 import { useStore } from '../stores/workbench'
 import { reportClientError } from '../utils/error-report'
+import { accentOf, fileAccentOf, iconSrc, useResourceIcon } from '../composables/useResourceIcon'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 import SudaFormDialog from './SudaFormDialog.vue'
 
@@ -32,9 +26,13 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
 const rootRef = ref<HTMLElement | null>(null)
 void rootRef
 const hasOverlayModal = computed(() => formVisible.value || menu.value.visible)
+const { onIconError, showImageIcon, showWebFallbackIcon, iconText, fileIconOf } =
+  useResourceIcon()
 
 // ---- 拖拽导入：只预填弹窗，用户确认后才真正添加 ----
 const dropping = ref(false)
+// 程序解析期间的文件名（exe/lnk 解析需启动 PowerShell，期间保持遮罩提示正在识别）
+const parsing = ref<string | null>(null)
 const prefill = ref<{
   name?: string
   target?: string
@@ -50,7 +48,7 @@ onMounted(async () => {
   const webview = getCurrentWebview()
   unlistenDrop = await webview.onDragDropEvent((event) => {
     const ev = event.payload
-    if (hasOverlayModal.value) return
+    if (hasOverlayModal.value || parsing.value) return
     if (ev.type === 'enter' || ev.type === 'over') {
       if (ev.type === 'over') return
       if (!ev.paths.length) return
@@ -62,7 +60,14 @@ onMounted(async () => {
     } else if (ev.type === 'drop') {
       dropping.value = false
       const file = ev.paths?.[0]
-      if (file) void handleDrop(file)
+      if (file) {
+        // 程序解析耗时较长：立刻切到“正在识别”遮罩，避免无反馈空白期
+        const ext = file.split('.').pop()?.toLowerCase()
+        if (ext === 'exe' || ext === 'lnk') {
+          parsing.value = file.split(/[\\/]/).pop() ?? file
+        }
+        void handleDrop(file)
+      }
     }
   })
 })
@@ -74,6 +79,7 @@ onBeforeUnmount(() => {
 async function handleDrop(file: string) {
   const ext = file.split('.').pop()?.toLowerCase()
   if (ext === 'exe' || ext === 'lnk') {
+    parsing.value ||= file.split(/[\\/]/).pop() ?? file
     try {
       const info = await tauriApi.parseDroppedPath(file)
       prefill.value = { name: info.name, target: info.target, icon: info.icon, kind: 'app' }
@@ -82,6 +88,8 @@ async function handleDrop(file: string) {
       showToast(`已识别「${info.name}」，请点击添加确认`)
     } catch (e) {
       showToast(String(e))
+    } finally {
+      parsing.value = null
     }
     return
   }
@@ -213,76 +221,7 @@ function onFormSubmit(payload: {
   prefill.value = null
 }
 
-// ---- 图标渲染 ----
-const CATEGORY_ICONS = {
-  文件夹: Folder,
-  文档: FileText,
-  图片: Image,
-  视频: Film,
-  音频: Music,
-  压缩包: Archive,
-  其他: File,
-} as const
-
-const CATEGORY_ACCENTS = {
-  文件夹: { soft: 'var(--c-yellow-soft)', strong: 'var(--c-yellow)', ink: 'var(--c-yellow-ink)' },
-  文档: { soft: 'var(--c-purple-soft)', strong: 'var(--c-purple)', ink: 'var(--c-purple-ink)' },
-  图片: { soft: 'var(--c-pink-soft)', strong: 'var(--c-pink)', ink: 'var(--c-pink-ink)' },
-  视频: { soft: 'var(--c-blue-soft)', strong: 'var(--c-blue)', ink: 'var(--c-blue-ink)' },
-  音频: { soft: 'var(--c-green-soft)', strong: 'var(--c-green)', ink: 'var(--c-green-ink)' },
-  压缩包: { soft: 'var(--c-orange-soft)', strong: 'var(--c-orange)', ink: 'var(--c-orange-ink)' },
-  其他: { soft: 'var(--c-gray-soft)', strong: 'var(--c-gray)', ink: 'var(--c-gray-ink)' },
-} as const
-
-const ACCENTS = [
-  { strong: 'var(--c-yellow)', soft: 'var(--c-yellow-soft)', text: 'var(--c-yellow-ink)' },
-  { strong: 'var(--c-red)', soft: 'var(--c-red-soft)', text: 'var(--c-red-ink)' },
-  { strong: 'var(--c-blue)', soft: 'var(--c-blue-soft)', text: 'var(--c-blue-ink)' },
-  { strong: 'var(--c-green)', soft: 'var(--c-green-soft)', text: 'var(--c-green-ink)' },
-  { strong: 'var(--c-pink)', soft: 'var(--c-pink-soft)', text: 'var(--c-pink-ink)' },
-  { strong: 'var(--c-orange)', soft: 'var(--c-orange-soft)', text: 'var(--c-orange-ink)' },
-  { strong: 'var(--c-purple)', soft: 'var(--c-purple-soft)', text: 'var(--c-purple-ink)' },
-  { strong: 'var(--c-gray)', soft: 'var(--c-gray-soft)', text: 'var(--c-gray-ink)' },
-]
-
-function accentOf(name: string) {
-  let h = 0
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0
-  return ACCENTS[h % ACCENTS.length]
-}
-
-function fileAccentOf(category: string) {
-  return CATEGORY_ACCENTS[category as keyof typeof CATEGORY_ACCENTS] ?? CATEGORY_ACCENTS.其他
-}
-
-const IMAGE_ICON_RE = /\.(png|jpg|jpeg|ico|gif|webp)$/i
-
-function isImageIcon(icon: string | null): boolean {
-  return !!icon && (/^https?:\/\//i.test(icon) || IMAGE_ICON_RE.test(icon))
-}
-
-function iconSrc(icon: string): string {
-  if (/^https?:\/\//i.test(icon)) return icon
-  return isTauri() ? convertFileSrc(icon) : ''
-}
-
-const failedIcons = ref(new Set<number>())
-
-function onIconError(r: Resource) {
-  failedIcons.value.add(r.id)
-}
-
-function showImageIcon(r: Resource): boolean {
-  return isImageIcon(r.icon) && !failedIcons.value.has(r.id)
-}
-
-function showWebFallbackIcon(r: Resource): boolean {
-  return r.kind === 'web' && !showImageIcon(r)
-}
-
-function iconText(r: Resource): string {
-  return r.name.charAt(0).toUpperCase()
-}
+// ---- 图标渲染（统一在 useResourceIcon composable） ----
 
 function kindLabel(r: Resource): string {
   if (r.kind === 'file') return r.category ?? '文件'
@@ -304,10 +243,6 @@ function cardAccentStyle(r: Resource) {
     '--suda-accent': a.strong,
     '--suda-accent-ink': a.text,
   }
-}
-
-function fileIconOf(r: Resource) {
-  return CATEGORY_ICONS[(r.category ?? '其他') as keyof typeof CATEGORY_ICONS] ?? File
 }
 </script>
 
@@ -439,7 +374,7 @@ function fileIconOf(r: Resource) {
         <Wrench :size="24" :stroke-width="1.7" aria-hidden="true" />
         <p>{{ emptyTitle }}</p>
         <p style="font-size: 12px; color: var(--text-4)">
-          添加本地程序、网页书签或文件快捷链接
+          拖拽本地文件/程序到窗口，或手动添加快捷链接
         </p>
         <button
           class="pill-btn"
@@ -466,14 +401,17 @@ function fileIconOf(r: Resource) {
       @submit="onFormSubmit"
     />
 
-    <!-- 拖拽导入遮罩 -->
+    <!-- 拖拽导入遮罩（dropping = 拖拽中；parsing = 正在识别程序） -->
     <Teleport to="body">
       <Transition name="drop">
-        <div v-if="dropping" class="drop-overlay">
+        <div v-if="dropping || parsing" class="drop-overlay">
           <div class="drop-hint">
-            <FilePlus :size="34" :stroke-width="1.5" />
-            <p>释放以添加</p>
-            <span>支持本地程序 / 网页 / 任意文件或文件夹</span>
+            <Loader2 v-if="parsing" :size="34" :stroke-width="1.5" class="spin" />
+            <FilePlus v-else :size="34" :stroke-width="1.5" />
+            <p v-if="parsing">正在识别…</p>
+            <p v-else>释放以添加</p>
+            <span v-if="parsing">{{ parsing }}</span>
+            <span v-else>支持本地程序 / 网页 / 任意文件或文件夹</span>
           </div>
         </div>
       </Transition>
@@ -681,6 +619,18 @@ function fileIconOf(r: Resource) {
 .drop-hint span {
   font-size: 12px;
   color: var(--text-3);
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spin {
+  animation: drop-spin 0.9s linear infinite;
+}
+@keyframes drop-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .drop-enter-active,

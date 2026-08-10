@@ -1,5 +1,6 @@
 pub mod note;
 pub mod resource;
+pub mod sticky;
 pub mod tag;
 pub mod todo;
 

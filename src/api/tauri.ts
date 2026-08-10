@@ -32,6 +32,14 @@ export interface Todo {
   completed_at: string | null
 }
 
+export interface Sticky {
+  id: number
+  slot: number
+  content: string
+  created_at: string
+  updated_at: string
+}
+
 export interface WindowState {
   width: number
   height: number
@@ -61,6 +69,7 @@ export interface InitialData {
   resources: Resource[]
   notes: Note[]
   todos: Todo[]
+  stickies: Sticky[]
   tags: Tag[]
   usage_summary: UsageSummary
   config: AppConfig
@@ -149,6 +158,13 @@ export interface DroppedAppInfo {
   icon: string | null
 }
 
+export interface SystemInfo {
+  cpuUsage: number
+  memUsedMb: number
+  memTotalMb: number
+  memPercent: number
+}
+
 export const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 export const tauriApi = {
@@ -199,6 +215,9 @@ export const tauriApi = {
   updateTodo: (id: number, title: string, priority: number) =>
     invoke<Todo>('update_todo', { id, title, priority }),
   deleteTodo: (id: number) => invoke<void>('delete_todo', { id }),
+  listStickies: () => invoke<Sticky[]>('list_stickies'),
+  saveSticky: (slot: number, content: string) =>
+    invoke<Sticky>('save_sticky', { slot, content }),
   parseDroppedPath: (path: string) => invoke<DroppedAppInfo>('parse_dropped_path', { path }),
   importIconFile: (source: string) =>
     invoke<string | null>('import_icon_file', { source }),
@@ -229,4 +248,5 @@ export const tauriApi = {
   getUsageSummary: () => invoke<UsageSummary>('get_usage_summary'),
   getUsageDetail: (days: number, limit: number, offset: number) =>
     invoke<UsageDetail>('get_usage_detail', { days, limit, offset }),
+  getSystemInfo: () => invoke<SystemInfo>('get_system_info'),
 }

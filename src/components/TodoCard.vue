@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, type ComponentPublicInstance, watch } from 'vue'
-import { Check, Trash2 } from 'lucide-vue-next'
+import { computed, inject, nextTick, ref, type ComponentPublicInstance, watch } from 'vue'
+import { Check, ListTodo, Trash2 } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Todo } from '../api/tauri'
 
 const props = defineProps<{ highlightId?: number | null }>()
 
 const store = useStore()
+const showToast = inject<(msg: string, action?: { label: string; onClick: () => void }) => void>(
+  'showToast',
+  () => {},
+)
 
 const view = ref<'pending' | 'done'>('pending')
 const input = ref('')
@@ -23,8 +27,12 @@ function setEditInput(el: Element | ComponentPublicInstance | null) {
 const highlight = ref<number | null>(null)
 let highlightTimer: ReturnType<typeof setTimeout> | null = null
 
-const PRIORITY_COLORS = ['var(--c-gray)', 'var(--c-yellow)', 'var(--c-red)'] as const
 const PRIORITY_LABELS = ['普通', '重要', '紧急'] as const
+const PRIORITY_BADGE = [
+  { bg: 'var(--c-gray-soft)', text: 'var(--c-gray-ink)' },
+  { bg: 'var(--c-yellow-soft)', text: 'var(--c-yellow-ink)' },
+  { bg: 'var(--c-red-soft)', text: 'var(--c-red-ink)' },
+] as const
 
 const pendingTodos = computed(() =>
   store.state.todos
@@ -55,6 +63,15 @@ async function cyclePriority(t: Todo) {
 
 async function remove(t: Todo) {
   await store.deleteTodo(t.id)
+  showToast('待办已删除', {
+    label: '撤销',
+    onClick: async () => {
+      const n = await store.createTodo(t.title)
+      if (t.priority !== 0) await store.updateTodo(n.id, t.title, t.priority)
+      if (t.done) await store.toggleTodo(n.id)
+      showToast('已恢复待办')
+    },
+  })
 }
 
 function startEdit(t: Todo) {
@@ -104,7 +121,10 @@ watch(
 <template>
   <section class="card todo-card" aria-label="待办">
     <header class="todo-header">
-      <h3 class="todo-title">待办</h3>
+      <h3 class="todo-title">
+        <ListTodo :size="15" :stroke-width="2" aria-hidden="true" />
+        <span>待办</span>
+      </h3>
       <div class="filter-tabs todo-seg" role="tablist" aria-label="视图切换">
         <button
           class="filter-tab filter-tab--primary"
@@ -161,16 +181,15 @@ watch(
           <Check v-if="t.done" :size="11" :stroke-width="3" />
         </button>
 
-        <span
+        <button
           class="todo-priority"
-          :style="{ background: PRIORITY_COLORS[t.priority] }"
-          :title="'优先级：' + PRIORITY_LABELS[t.priority]"
-          role="button"
-          tabindex="0"
+          :style="{ background: PRIORITY_BADGE[t.priority].bg, color: PRIORITY_BADGE[t.priority].text }"
+          :title="'优先级：' + PRIORITY_LABELS[t.priority] + '，点击切换'"
           aria-label="循环切换优先级"
           @click="cyclePriority(t)"
-          @keydown.enter.prevent="cyclePriority(t)"
-        />
+        >
+          {{ t.priority + 1 }}
+        </button>
 
         <template v-if="editingId === t.id">
           <input
@@ -217,6 +236,9 @@ watch(
   margin-bottom: 10px;
 }
 .todo-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 16px;
   font-weight: 600;
   color: var(--text-1);
@@ -229,7 +251,7 @@ watch(
   flex-shrink: 0;
 }
 .todo-seg .filter-tab {
-  padding: 4px 10px;
+  padding: 4px 8px;
   font-size: 11px;
 }
 
@@ -309,14 +331,26 @@ watch(
 
 .todo-priority {
   flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-pill);
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
-  transition: transform 0.18s;
+  transition: transform 0.18s, filter 0.18s;
 }
 .todo-priority:hover {
-  transform: scale(1.35);
+  transform: scale(1.12);
+  filter: brightness(0.97);
+}
+.todo-priority:active {
+  transform: scale(0.92);
 }
 
 .todo-label {

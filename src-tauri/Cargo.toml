@@ -29,6 +29,7 @@ opener = "0.7"
 rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 dirs = "6"
 chrono = "0.4"
+sysinfo = "0.32"
 
 [dev-dependencies]
 tempfile = "3"

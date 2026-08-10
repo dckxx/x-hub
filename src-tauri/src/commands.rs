@@ -1,9 +1,10 @@
 use crate::config::AppConfig;
 use crate::models::{
-    Note, Resource, ResourceKind, SearchResult, SyncResult, Tag, Todo, UsageDetail, UsageSummary,
+    Note, Resource, ResourceKind, SearchResult, Sticky, SyncResult, Tag, Todo, UsageDetail,
+    UsageSummary,
 };
 use crate::process;
-use crate::repo::{note, resource, tag, todo};
+use crate::repo::{note, resource, sticky, tag, todo};
 use crate::usage;
 use rusqlite::Connection;
 use std::sync::Mutex;
@@ -18,20 +19,23 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
     let notes = note::list(&conn).map_err(err_str)?;
     let tags = tag::list(&conn).map_err(err_str)?;
     let todos = todo::list(&conn).map_err(err_str)?;
+    let stickies = sticky::list(&conn).map_err(err_str)?;
     let usage_summary = usage::query_summary(&conn).map_err(err_str)?;
     let config = crate::config::load();
     log::info!(
-        "初始化数据加载完成: resources={} notes={} tags={} todos={}",
+        "初始化数据加载完成: resources={} notes={} tags={} todos={} stickies={}",
         resources.len(),
         notes.len(),
         tags.len(),
-        todos.len()
+        todos.len(),
+        stickies.len()
     );
     Ok(InitialData {
         resources,
         notes,
         tags,
         todos,
+        stickies,
         usage_summary,
         config,
     })
@@ -43,6 +47,7 @@ pub struct InitialData {
     pub notes: Vec<Note>,
     pub tags: Vec<Tag>,
     pub todos: Vec<Todo>,
+    pub stickies: Vec<Sticky>,
     pub usage_summary: UsageSummary,
     pub config: AppConfig,
 }
@@ -252,6 +257,31 @@ pub fn delete_todo(state: State<'_, DbState>, id: i64) -> Result<(), String> {
     todo::delete(&conn, id).map_err(err_str)?;
     log::info!("删除待办: id={}", id);
     Ok(())
+}
+
+// ---------- 便签 ----------
+
+#[tauri::command]
+pub fn list_stickies(state: State<'_, DbState>) -> Result<Vec<Sticky>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let stickies = sticky::list(&conn).map_err(err_str)?;
+    log::debug!("加载便签: {} 条", stickies.len());
+    Ok(stickies)
+}
+
+#[tauri::command]
+pub fn save_sticky(
+    state: State<'_, DbState>,
+    slot: i64,
+    content: String,
+) -> Result<Sticky, String> {
+    if !(1..=2).contains(&slot) {
+        return Err("便签槽位取值 1-2".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let sticky = sticky::upsert(&conn, slot, &content).map_err(err_str)?;
+    log::debug!("保存便签: slot={} 内容 {} 字", slot, content.chars().count());
+    Ok(sticky)
 }
 
 // ---------- AI 用量统计 ----------
@@ -643,14 +673,16 @@ pub fn parse_dropped_path(
         .and_then(|e| e.to_str())
         .map(|s| s.to_lowercase())
         .unwrap_or_default();
-    let (name, target) = match ext.as_str() {
+    let (name, target, icon) = match ext.as_str() {
         "exe" => {
             let name = p
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("本地应用")
                 .to_string();
-            (name, path.clone())
+            let target = path.clone();
+            let icon = extract_app_icon(&app, &target);
+            (name, target, icon)
         }
         "lnk" => {
             let name = p
@@ -658,15 +690,14 @@ pub fn parse_dropped_path(
                 .and_then(|s| s.to_str())
                 .unwrap_or("快捷方式")
                 .to_string();
-            let target = resolve_lnk_target(&path)?;
-            (name, target)
+            let (target, icon) = resolve_lnk_target_and_icon(&app, &path)?;
+            (name, target, icon)
         }
         _ => {
             log::warn!("拖入文件不支持: {}", path);
             return Err("仅支持 .exe 文件或 .lnk 快捷方式".into());
         }
     };
-    let icon = extract_app_icon(&app, &target);
     log::info!("拖入解析成功: {} -> {} (图标: {})", name, target, if icon.is_some() { "有" } else { "无" });
     Ok(DroppedAppInfo {
         name,
@@ -686,25 +717,73 @@ fn powershell() -> std::process::Command {
     cmd
 }
 
-/// 通过 PowerShell COM（WScript.Shell）解析 .lnk 快捷方式的目标路径
-/// 注意：-Command 模式下 $args 参数传递不可靠，路径通过环境变量传入
-fn resolve_lnk_target(lnk_path: &str) -> Result<String, String> {
-    let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:XHUB_LNK).TargetPath; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Write-Output $s";
+/// 单次 PowerShell 进程内解析 .lnk 目标并提取图标
+/// （原两段式需要先后启动两次 PowerShell，合并为一次调用可省约一半耗时）
+/// 图标仍按「目标路径」命名缓存，与 .exe 导入共用缓存键
+fn resolve_lnk_target_and_icon(
+    app: &tauri::AppHandle,
+    lnk_path: &str,
+) -> Result<(String, Option<String>), String> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法获取数据目录: {}", e))?
+        .join("icons");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    // 先用 lnk 路径生成临时输出路径；解析出目标后再按目标路径（既有缓存键）重命名
+    let mut tmp_hasher = DefaultHasher::new();
+    lnk_path.hash(&mut tmp_hasher);
+    let tmp_path = dir.join(format!("{:016x}.png", tmp_hasher.finish()));
+
+    let script = "Add-Type -AssemblyName System.Drawing; $sh=New-Object -ComObject WScript.Shell; $t=$sh.CreateShortcut($env:XHUB_LNK).TargetPath; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Write-Output ('TARGET='+$t); if($t -ne ''){$i=[System.Drawing.Icon]::ExtractAssociatedIcon($t); if($i -ne $null){$i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png)}}";
     let output = powershell()
         .args(["-NoProfile", "-Command", script])
         .env("XHUB_LNK", lnk_path)
+        .env("XHUB_OUT", tmp_path.to_str().unwrap_or(""))
         .output()
         .map_err(|e| {
             log::error!("解析快捷方式失败（PowerShell 执行错误）: {}", e);
             format!("解析快捷方式失败: {}", e)
         })?;
-    let target = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if target.is_empty() {
-        log::error!("解析快捷方式失败（目标为空）: {}", lnk_path);
-        Err("无法解析快捷方式目标路径".into())
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let target = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("TARGET="))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::error!(
+                "解析快捷方式失败（目标为空）: {} {}",
+                lnk_path,
+                stderr.trim()
+            );
+            "无法解析快捷方式目标路径".to_string()
+        })?;
+
+    // 图标按目标路径命名：与 .exe 拖入/已缓存图标共用缓存键，避免重复提取
+    let icon = if tmp_path.exists() {
+        let mut final_hasher = DefaultHasher::new();
+        target.hash(&mut final_hasher);
+        let final_path = dir.join(format!("{:016x}.png", final_hasher.finish()));
+        if final_path != tmp_path {
+            if final_path.exists() {
+                let _ = std::fs::remove_file(&tmp_path);
+            } else {
+                let _ = std::fs::rename(&tmp_path, &final_path);
+            }
+        }
+        Some(final_path.to_string_lossy().into_owned())
     } else {
-        Ok(target)
-    }
+        None
+    };
+
+    Ok((target, icon))
 }
 
 /// 提取程序图标（System.Drawing.ExtractAssociatedIcon），保存 PNG 到 app_data_dir/icons/

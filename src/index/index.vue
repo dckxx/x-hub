@@ -9,27 +9,28 @@ import NoteEditor from '../components/NoteEditor.vue'
 import GlobalSearch from '../components/GlobalSearch.vue'
 import SettingsDialog from '../components/SettingsDialog.vue'
 import TokenStatsCard from '../components/TokenStatsCard.vue'
+import SysMonitorCard from '../components/SysMonitorCard.vue'
 import UsageView from '../components/UsageView.vue'
+import RecentBar from '../components/RecentBar.vue'
+import ClockCard from '../components/ClockCard.vue'
+import StickyCard from '../components/StickyCard.vue'
 import { useStore } from '../stores/workbench'
 import { isTauri } from '../api/tauri'
 import type { Note, Resource, Todo } from '../api/tauri'
 import { FileText, FolderOpen, Gauge, LayoutDashboard, Moon, Settings2, Sun, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 
 const store = useStore()
-const todayRef = ref<HTMLElement | null>(null)
-const notesRef = ref<HTMLElement | null>(null)
-const sudaRef = ref<HTMLElement | null>(null)
-const usageRef = ref<HTMLElement | null>(null)
 
+// ---- 视图切换（统一导航范式：每个侧栏项 = 一个独立视图） ----
 const navigation = [
-  { id: 'dashboard', label: '工作台', icon: LayoutDashboard, target: 'today' },
-  { id: 'notes', label: '速记', icon: FileText, target: 'notes' },
-  { id: 'suda', label: '速达', icon: FolderOpen, target: 'suda' },
-  { id: 'usage', label: '用量', icon: Gauge, target: 'usage' },
+  { id: 'dashboard', label: '工作台', icon: LayoutDashboard },
+  { id: 'notes', label: '速记', icon: FileText },
+  { id: 'suda', label: '速达', icon: FolderOpen },
+  { id: 'usage', label: '用量', icon: Gauge },
 ] as const
 
-const activeNavigation = ref('dashboard')
-const activeView = ref<'dashboard' | 'usage'>('dashboard')
+type ViewId = (typeof navigation)[number]['id']
+const activeView = ref<ViewId>('dashboard')
 
 // ---- 侧边栏收起（跨会话记忆） ----
 const sidebarCollapsed = ref(localStorage.getItem('sidebar-collapsed') === '1')
@@ -39,31 +40,12 @@ function toggleSidebar() {
   localStorage.setItem('sidebar-collapsed', sidebarCollapsed.value ? '1' : '0')
 }
 
-function focusPanel(target: (typeof navigation)[number]['target'], id: string) {
-  activeNavigation.value = id
-  if (id === 'usage') {
-    activeView.value = 'usage'
-    return
-  }
-  activeView.value = 'dashboard'
-  const panel = {
-    today: todayRef,
-    notes: notesRef,
-    suda: sudaRef,
-    usage: usageRef,
-  }[target]
-  panel.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  panel.value?.focus({ preventScroll: true })
-}
-
 function openUsageDetail() {
   activeView.value = 'usage'
-  activeNavigation.value = 'usage'
 }
 
 function closeUsage() {
   activeView.value = 'dashboard'
-  activeNavigation.value = 'dashboard'
 }
 
 // ---- 主题（跟随配置，持久化） ----
@@ -136,8 +118,7 @@ const settingsVisible = ref(false)
 function onOpenTodo(t: Todo) {
   searchVisible.value = false
   highlightTodoId.value = t.id
-  todayRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  todayRef.value?.focus({ preventScroll: true })
+  activeView.value = 'dashboard'
 }
 
 function onSearchKeydown(e: KeyboardEvent) {
@@ -158,6 +139,7 @@ async function onOpenResource(r: Resource) {
 
 function onOpenNote(n: Note) {
   activeNoteId.value = n.id
+  activeView.value = 'notes'
   searchVisible.value = false
 }
 
@@ -205,10 +187,10 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
             v-for="item in navigation"
             :key="item.id"
             class="sidebar-nav-item"
-            :class="{ active: activeNavigation === item.id }"
-            :aria-current="activeNavigation === item.id ? 'page' : undefined"
+            :class="{ active: activeView === item.id }"
+            :aria-current="activeView === item.id ? 'page' : undefined"
             type="button"
-            @click="focusPanel(item.target, item.id)"
+            @click="activeView = item.id"
           >
             <span class="sidebar-nav-icon" aria-hidden="true">
               <component :is="item.icon" :size="16" :stroke-width="2" />
@@ -249,31 +231,41 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
       </aside>
 
       <main class="workspace" aria-label="主工作区">
-        <UsageView v-if="activeView === 'usage'" @back="closeUsage" />
-
-        <div v-else class="workspace-grid">
-          <section ref="todayRef" class="workspace-panel today-panel" tabindex="-1" aria-label="待办">
-            <TodoCard :highlight-id="highlightTodoId" />
-          </section>
-
-          <section class="workspace-panel usage-panel" tabindex="-1" aria-label="Token 统计">
-            <TokenStatsCard :on-open-detail="openUsageDetail" />
-          </section>
-
-          <section ref="notesRef" class="workspace-panel notes-panel" tabindex="-1" aria-label="速记">
-            <NoteList
-              :notes="store.state.notes"
-              :active-id="activeNoteId"
-              @select="onSelectNote"
-              @create="onCreateNote"
-              @delete="onDeleteNote"
-            />
-          </section>
-
-          <section ref="sudaRef" class="workspace-panel suda-panel" tabindex="-1" aria-label="速达">
-            <Suda />
-          </section>
+        <!-- 工作台：时钟/便签 + Token 统计 + 待办 + 最近使用 -->
+        <div v-if="activeView === 'dashboard'" class="dash-grid">
+          <div class="dash-panel dash-left">
+            <ClockCard class="dash-clock" />
+            <div class="dash-stickies">
+              <StickyCard :slot="1" />
+              <StickyCard :slot="2" />
+            </div>
+          </div>
+          <TokenStatsCard class="dash-panel dash-usage" :on-open-detail="openUsageDetail" />
+          <SysMonitorCard class="dash-panel dash-sysmon" />
+          <TodoCard class="dash-panel dash-todo" :highlight-id="highlightTodoId" />
+          <RecentBar class="dash-panel dash-recent" @go-suda="activeView = 'suda'" />
         </div>
+
+        <!-- 速记：独立视图 -->
+        <section v-else-if="activeView === 'notes'" class="view view-notes" tabindex="-1" aria-label="速记">
+          <NoteList
+            :notes="store.state.notes"
+            :active-id="activeNoteId"
+            @select="onSelectNote"
+            @create="onCreateNote"
+            @delete="onDeleteNote"
+          />
+        </section>
+
+        <!-- 速达：独立视图 -->
+        <section v-else-if="activeView === 'suda'" class="view view-suda" tabindex="-1" aria-label="速达">
+          <Suda />
+        </section>
+
+        <!-- 用量：独立视图 -->
+        <section v-else class="view view-usage" tabindex="-1" aria-label="用量">
+          <UsageView @back="closeUsage" />
+        </section>
       </main>
     </div>
 
@@ -445,65 +437,84 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   align-items: center;
   gap: 6px;
 }
+
+/* 主工作区 */
 .workspace {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
   padding: var(--space-6);
-  background: var(--bg-page);
+  background: transparent;
 }
-.workspace-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-  gap: var(--space-4);
+
+/* 工作台布局：三列（时钟/便签 | Token | 待办）+ 底部最近使用通栏 */
+.dash-grid {
   height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.8fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: var(--space-4);
 }
-.workspace-panel {
+.dash-panel {
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
-  background: var(--bg-card-solid);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-lg);
 }
-.workspace-panel:focus-visible { box-shadow: var(--shadow-focus); }
-.today-panel { padding: var(--space-5); }
-.today-panel :deep(.calendar) {
-  padding: 0 0 var(--space-3);
+.dash-left {
+  grid-column: 1;
+  grid-row: 1 / 3;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+}
+.dash-left .dash-clock {
+  flex-shrink: 0;
+}
+.dash-stickies {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+.dash-usage { grid-column: 2; grid-row: 1; }
+.dash-sysmon { grid-column: 2; grid-row: 2; }
+.dash-todo { grid-column: 3; grid-row: 1 / 3; }
+.dash-recent { grid-column: 1 / -1; grid-row: 3; }
+
+/* 独立视图 */
+.view {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.view-notes :deep(.note-list),
+.view-suda :deep(.suda) {
   border: 0;
   border-radius: 0;
   box-shadow: none;
-  background: transparent;
 }
-.today-panel :deep(.todo-card) {
+.view-usage :deep(.usage-view) {
   padding: 0;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  background: transparent;
-}
-.notes-panel :deep(.note-list),
-.suda-panel :deep(.suda) {
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
-.usage-panel :deep(.token-stats) {
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
-.usage-panel {
-  background: var(--bg-card-solid);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
 }
 
 @media (max-width: 1100px) {
   .workspace { padding: var(--space-5); }
-  .workspace-grid { grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.22fr); }
+}
+
+/* 960px 以下：三列改两列（左：时钟+便签；右：Token+待办） */
+@media (max-width: 960px) {
+  .dash-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+  }
+  .dash-left { grid-column: 1; grid-row: 1 / 3; }
+  .dash-usage { grid-column: 2; grid-row: 1; }
+  .dash-sysmon { grid-column: 2; grid-row: 2; }
+  .dash-todo { grid-column: 1; grid-row: 3; }
+  .dash-recent { grid-column: 1 / -1; grid-row: 4; }
 }
 
 @media (max-width: 720px) {
@@ -522,8 +533,13 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
     display: initial;
   }
   .workspace { padding: var(--space-4); overflow-y: auto; }
-  .workspace-grid { display: flex; flex-direction: column; gap: var(--space-4); }
-  .workspace-panel { min-height: 300px; flex: none; }
+  .dash-grid { display: flex; flex-direction: column; gap: var(--space-4); }
+  .dash-panel { flex: none; }
+  .dash-clock { min-height: 120px; }
+  .dash-stickies { min-height: 220px; }
+  .dash-todo { min-height: 320px; }
+  .dash-usage { min-height: 260px; }
+  .dash-recent { flex: none; }
 }
 
 /* 轻提示 */

@@ -5,6 +5,7 @@ mod models;
 mod process;
 mod repo;
 mod shortcut;
+mod sysmon;
 mod tray;
 mod usage;
 
@@ -254,6 +255,8 @@ pub fn run() {
             commands::toggle_todo,
             commands::update_todo,
             commands::delete_todo,
+            commands::list_stickies,
+            commands::save_sticky,
             commands::search_all,
             commands::save_config,
             commands::set_window_always_on_top,
@@ -278,6 +281,7 @@ pub fn run() {
             commands::sync_ai_usage,
             commands::get_usage_summary,
             commands::get_usage_detail,
+            sysmon::get_system_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -5,7 +5,9 @@ import {
   type AppConfig,
   type Note,
   type Resource,
+  type Sticky,
   type SyncResult,
+  type SystemInfo,
   type Tag,
   type Todo,
   type UsageDetail,
@@ -16,11 +18,13 @@ interface StoreState {
   resources: Resource[]
   notes: Note[]
   todos: Todo[]
+  stickies: Sticky[]
   tags: Tag[]
   config: AppConfig
   usageSummary: UsageSummary | null
   usageDetail: UsageDetail | null
   usageListening: boolean
+  systemInfo: SystemInfo | null
   loaded: boolean
 }
 
@@ -28,6 +32,7 @@ const state = reactive<StoreState>({
   resources: [],
   notes: [],
   todos: [],
+  stickies: [],
   tags: [],
   config: {
     theme: 'light',
@@ -43,6 +48,7 @@ const state = reactive<StoreState>({
   usageSummary: null,
   usageDetail: null,
   usageListening: false,
+  systemInfo: null,
   loaded: false,
 })
 
@@ -53,6 +59,7 @@ export function useStore() {
     state.resources = data.resources
     state.notes = data.notes
     state.todos = data.todos
+    state.stickies = data.stickies
     state.tags = data.tags
     state.usageSummary = data.usage_summary
     state.config = data.config
@@ -170,6 +177,32 @@ export function useStore() {
     state.todos = state.todos.filter((t) => t.id !== id)
   }
 
+  // ---- 便签 ----
+  async function saveSticky(slot: number, content: string) {
+    if (!isTauri()) {
+      const existing = state.stickies.find((s) => s.slot === slot)
+      if (existing) {
+        existing.content = content
+        existing.updated_at = new Date().toISOString()
+        return existing
+      }
+      const created: Sticky = {
+        id: Date.now(),
+        slot,
+        content,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+      state.stickies.push(created)
+      return created
+    }
+    const s = await tauriApi.saveSticky(slot, content)
+    const i = state.stickies.findIndex((x) => x.slot === s.slot)
+    if (i >= 0) state.stickies[i] = s
+    else state.stickies.push(s)
+    return s
+  }
+
   // ---- 标签 ----
   async function createTag(name: string) {
     const t = await tauriApi.createTag(name)
@@ -234,6 +267,13 @@ export function useStore() {
     return state.usageDetail
   }
 
+  // ---- 系统资源 ----
+  async function refreshSystemInfo() {
+    if (!isTauri()) return null
+    state.systemInfo = await tauriApi.getSystemInfo()
+    return state.systemInfo
+  }
+
   return {
     state: readonly(state),
     loadInitialData,
@@ -249,6 +289,7 @@ export function useStore() {
     toggleTodo,
     updateTodo,
     deleteTodo,
+    saveSticky,
     createTag,
     deleteTag,
     loadNoteTagsMap,
@@ -258,5 +299,6 @@ export function useStore() {
     refreshUsage,
     loadUsageSummary,
     loadUsageDetail,
+    refreshSystemInfo,
   }
 }

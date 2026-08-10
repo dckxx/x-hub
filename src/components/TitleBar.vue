@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Copy, Minus, Pin, PinOff, Search, Settings, Square, X } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 
 const store = useStore()
+const showToast = inject<(msg: string, action?: { label: string; onClick: () => void }) => void>(
+  'showToast',
+  () => {},
+)
 
 defineEmits<{
   (e: 'search'): void
@@ -57,7 +61,14 @@ function toggleMaximize() {
 }
 
 function close() {
-  if (isTauri()) tauriApi.hideToTray()
+  if (isTauri()) {
+    tauriApi.hideToTray()
+    // 首次关闭时提示已最小化到托盘，避免用户误以为应用退出了
+    if (!localStorage.getItem('tray-hint-shown')) {
+      localStorage.setItem('tray-hint-shown', '1')
+      showToast('已最小化到系统托盘，右键托盘图标可退出')
+    }
+  }
 }
 </script>
 

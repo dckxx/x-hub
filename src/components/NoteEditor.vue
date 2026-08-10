@@ -205,10 +205,17 @@ function formatSavedTime(iso: string): string {
               v-for="t in noteTags"
               :key="t.id"
               class="tag-chip"
-              :title="`移除标签「${t.name}」`"
-              @click="removeTag(t.id)"
             >
-              {{ t.name }} ✕
+              {{ t.name }}
+              <button
+                class="tag-chip-x"
+                type="button"
+                :title="`移除标签「${t.name}」`"
+                :aria-label="`移除标签「${t.name}」`"
+                @click="removeTag(t.id)"
+              >
+                ✕
+              </button>
             </span>
             <template v-if="tagInputVisible">
               <input
@@ -408,18 +415,32 @@ function formatSavedTime(iso: string): string {
 .tag-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   font-size: 11px;
   font-weight: 500;
   color: var(--brand-500);
   background: var(--brand-50);
   border-radius: var(--radius-pill);
-  padding: 3px 9px;
+  padding: 3px 6px 3px 9px;
+}
+.tag-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 10px;
+  line-height: 1;
+  padding: 0;
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
 }
-.tag-chip:hover {
-  background: color-mix(in srgb, var(--c-red) 12%, transparent);
+.tag-chip-x:hover {
+  background: color-mix(in srgb, var(--c-red) 14%, transparent);
   color: var(--c-red);
 }
 .tag-add {

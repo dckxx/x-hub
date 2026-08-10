@@ -50,6 +50,16 @@ pub struct Todo {
     pub completed_at: Option<String>,
 }
 
+/// 便签（工作台左上，slot 1/2 两张卡，每卡一条多行文本）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Sticky {
+    pub id: i64,
+    pub slot: i64,
+    pub content: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// 笔记标签
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tag {

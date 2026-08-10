@@ -32,5 +32,10 @@ components.d.ts
 .workbuddy/
 .impeccable/
 .playwright-mcp/
+.agents/
+.codegraph/
+.opencode/
+skills-lock.json
+screenshot-dashboard.png
 src-tauri/target/
 

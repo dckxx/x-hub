@@ -28,14 +28,113 @@ fn open_readonly(path: &str) -> Result<Connection> {
 }
 
 /// 从 opencode.db 增量同步到本库。
-/// `cursor` 为上次同步到的 `time_updated`（毫秒时间戳，epoch ms）。
-/// 返回 (新增条数, 新游标, 最新 time_updated 或 0)
+/// 新 schema 按 `message` 粒度：每条带 token 数据的消息记一行，`time_created` 取消息真实产生时间，
+/// 避免长会话跨天时把后续几天的用量全部归到会话创建当天。
+/// `cursor` 为上次同步到的 message.time_created（毫秒时间戳，epoch ms）。
 pub fn sync_from_opencode(
     own: &Connection,
     opencode_path: &str,
     cursor: i64,
 ) -> Result<SyncResult> {
     let src = open_readonly(opencode_path)?;
+    // opencode 新库用 message 表（每条消息 data JSON 内嵌 tokens），旧库只有 session 汇总
+    let has_message_table = src
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='message'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+
+    if has_message_table {
+        sync_from_messages(own, &src, cursor)
+    } else {
+        sync_from_session(own, &src, cursor, opencode_path)
+    }
+}
+
+/// 从 message 表同步（当前 opencode 版本）：data JSON 形如
+/// {"role":"assistant","cost":0,"tokens":{"input":..,"output":..,"reasoning":..,"cache":{"read":..,"write":..}},
+///  "modelID":"..","providerID":"..","time":{"created":..}}
+fn sync_from_messages(own: &Connection, src: &Connection, cursor: i64) -> Result<SyncResult> {
+    let mut stmt = src.prepare(
+        "SELECT id, session_id, time_created, data
+         FROM message
+         WHERE time_created > ?1
+         ORDER BY time_created ASC",
+    )?;
+    let rows: Vec<(String, Option<String>, i64, String)> = stmt
+        .query_map(params![cursor], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut inserted: i64 = 0;
+    let mut last_created: i64 = cursor;
+    for (message_id, session_id, time_created, data) in rows {
+        let Some(usage) = parse_message_usage(&data) else { continue };
+        own.execute(
+            "INSERT OR REPLACE INTO ai_usage
+               (message_id, session_id, provider, model, tokens_input, tokens_output,
+                tokens_reasoning, tokens_cache_read, tokens_cache_write, cost, time_created, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'remote')",
+            params![message_id, session_id, usage.provider, usage.model,
+                    usage.input, usage.output, usage.reasoning,
+                    usage.cache_read, usage.cache_write, usage.cost, time_created],
+        )?;
+        inserted += 1;
+        if time_created > last_created {
+            last_created = time_created;
+        }
+    }
+    Ok(SyncResult {
+        inserted,
+        cursor: last_created,
+        listening: true,
+        path: None,
+    })
+}
+
+/// 解析 message.data JSON → 用量（无 tokens 字段或全 0 则返回 None）
+fn parse_message_usage(data: &str) -> Option<MessageUsage> {
+    let v: serde_json::Value = serde_json::from_str(data).ok()?;
+    let tokens = v.get("tokens")?;
+    let input = tokens.get("input").and_then(|x| x.as_i64()).unwrap_or(0);
+    let output = tokens.get("output").and_then(|x| x.as_i64()).unwrap_or(0);
+    let reasoning = tokens.get("reasoning").and_then(|x| x.as_i64()).unwrap_or(0);
+    let cache = tokens.get("cache")?;
+    let cache_read = cache.get("read").and_then(|x| x.as_i64()).unwrap_or(0);
+    let cache_write = cache.get("write").and_then(|x| x.as_i64()).unwrap_or(0);
+    if input == 0 && output == 0 && reasoning == 0 && cache_read == 0 && cache_write == 0 {
+        return None;
+    }
+    Some(MessageUsage {
+        provider: v
+            .get("providerID")
+            .and_then(|p| p.as_str())
+            .map(|s| s.to_string()),
+        model: v.get("modelID").and_then(|m| m.as_str()).map(|s| s.to_string()),
+        input,
+        output,
+        reasoning,
+        cache_read,
+        cache_write,
+        cost: v.get("cost").and_then(|c| c.as_f64()).unwrap_or(0.0),
+    })
+}
+
+/// 旧库（只有 session 汇总，无 message 表）：按会话同步
+fn sync_from_session(
+    own: &Connection,
+    src: &Connection,
+    cursor: i64,
+    opencode_path: &str,
+) -> Result<SyncResult> {
     // 只同步有 token 数据的会话；游标按 time_updated 增量推进
     let mut stmt = src.prepare(
         "SELECT id, tokens_input, tokens_output, tokens_reasoning,
@@ -64,13 +163,14 @@ pub fn sync_from_opencode(
     let mut last_updated: i64 = cursor;
     for (session_id, input, output, reasoning, cache_read, cache_write, cost, created, updated, model) in rows {
         let (provider, model_name) = parse_model(&model);
+        // 旧库无 message_id，用 session_id 占位保证唯一
         own.execute(
             "INSERT OR REPLACE INTO ai_usage
-               (session_id, provider, model, tokens_input, tokens_output, tokens_reasoning,
+               (message_id, session_id, provider, model, tokens_input, tokens_output, tokens_reasoning,
                 tokens_cache_read, tokens_cache_write, cost, time_created, source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'remote')",
-            params![session_id, provider, model_name, input, output, reasoning,
-                    cache_read, cache_write, cost, created],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'remote')",
+            params![format!("session:{}", session_id), session_id, provider, model_name,
+                    input, output, reasoning, cache_read, cache_write, cost, created],
         )?;
         inserted += 1;
         if updated > last_updated {
@@ -83,6 +183,17 @@ pub fn sync_from_opencode(
         listening: true,
         path: Some(opencode_path.to_string()),
     })
+}
+
+struct MessageUsage {
+    provider: Option<String>,
+    model: Option<String>,
+    input: i64,
+    output: i64,
+    reasoning: i64,
+    cache_read: i64,
+    cache_write: i64,
+    cost: f64,
 }
 
 /// 解析 opencode 的 model JSON 字段 → (provider, model)
@@ -277,20 +388,11 @@ mod tests {
     use super::*;
     use crate::db::init_in_memory;
 
-    fn insert_session(
-        conn: &Connection,
-        id: &str,
-        input: i64,
-        output: i64,
-        updated: i64,
-        created: i64,
-        model: &str,
-    ) {
+    fn insert_message(conn: &Connection, id: &str, session_id: &str, time_created: i64, data: &str) {
         conn.execute(
-            "INSERT INTO session (id, tokens_input, tokens_output, tokens_reasoning,
-                 tokens_cache_read, tokens_cache_write, cost, time_created, time_updated, model)
-             VALUES (?1, ?2, ?3, 0, ?4, 0, 0.1, ?5, ?6, ?7)",
-            params![id, input, output, input / 2, created, updated, model],
+            "INSERT INTO message (id, session_id, time_created, data)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![id, session_id, time_created, data],
         )
         .unwrap();
     }
@@ -303,16 +405,22 @@ mod tests {
         let src_file = Connection::open(&src_path).unwrap();
         src_file
             .execute_batch(
-                "CREATE TABLE session (
+                "CREATE TABLE message (
                     id TEXT PRIMARY KEY,
-                    tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER,
-                    tokens_cache_read INTEGER, tokens_cache_write INTEGER, cost REAL,
-                    time_created INTEGER, time_updated INTEGER, model TEXT
+                    session_id TEXT,
+                    time_created INTEGER,
+                    data TEXT
                 );",
             )
             .unwrap();
-        insert_session(&src_file, "s1", 1000, 100, 1000, 900, r#"{"id":"m1","providerID":"deepseek"}"#);
-        insert_session(&src_file, "s2", 2000, 200, 2000, 1800, r#"{"id":"m2","providerID":"longcat"}"#);
+        let data = |input: i64, cache: i64, created: i64| {
+            format!(
+                r#"{{"role":"assistant","tokens":{{"input":{},"output":10,"reasoning":0,"cache":{{"read":{},"write":0}}}},"modelID":"m1","providerID":"deepseek","cost":0.1,"time":{{"created":{}}}}}"#,
+                input, cache, created
+            )
+        };
+        insert_message(&src_file, "m1", "s1", 1000, &data(1000, 500, 1000));
+        insert_message(&src_file, "m2", "s2", 2000, &data(2000, 1000, 2000));
 
         let own = init_in_memory().unwrap();
         let r1 = sync_from_opencode(&own, src_path.to_str().unwrap(), 0).unwrap();
@@ -325,7 +433,7 @@ mod tests {
         assert_eq!(r2.inserted, 0);
 
         // 增量：新增一条 → 只同步新的
-        insert_session(&src_file, "s3", 500, 50, 3000, 2900, r#"{"id":"m3","providerID":"deepseek"}"#);
+        insert_message(&src_file, "m3", "s3", 3000, &data(3000, 1500, 3000));
         let r3 = sync_from_opencode(&own, src_path.to_str().unwrap(), r1.cursor).unwrap();
         assert_eq!(r3.inserted, 1);
         assert_eq!(r3.cursor, 3000);
@@ -341,10 +449,10 @@ mod tests {
         let yesterday = (Local::now() - Duration::days(1)).timestamp_millis();
         for (i, (input, created)) in [(1000, now), (2000, yesterday)].iter().enumerate() {
             conn.execute(
-                "INSERT INTO ai_usage (session_id, provider, model, tokens_input, tokens_output,
+                "INSERT INTO ai_usage (message_id, session_id, provider, model, tokens_input, tokens_output,
                      tokens_reasoning, tokens_cache_read, tokens_cache_write, cost, time_created, source)
-                 VALUES (?1, 'deepseek', 'm1', ?2, 100, 0, ?3, 0, 0.5, ?4, 'remote')",
-                params![format!("s{}", i), input, input / 2, created],
+                 VALUES (?1, ?2, 'deepseek', 'm1', ?3, 100, 0, ?4, 0, 0.5, ?5, 'remote')",
+                params![format!("m{}", i), format!("s{}", i), input, input / 2, created],
             )
             .unwrap();
         }

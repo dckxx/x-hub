@@ -23,11 +23,6 @@ function fmt(n: number | null | undefined): string {
   return String(v)
 }
 
-function fmtCost(c: number | null | undefined): string {
-  const v = c ?? 0
-  return '$' + (v >= 100 ? v.toFixed(0) : v.toFixed(2))
-}
-
 async function onDetect() {
   detecting.value = true
   try {
@@ -84,7 +79,15 @@ onUnmounted(() => {
           aria-hidden="true"
         ></span>
       </h3>
-      <div class="ts-actions">
+      <button class="ts-more" type="button" @click="props.onOpenDetail?.()">
+        查看详情
+        <ArrowRight :size="13" :stroke-width="2" aria-hidden="true" />
+      </button>
+    </header>
+
+    <template v-if="hasData">
+      <div class="ts-date-row">
+        <span class="ts-date-label">今日用量</span>
         <button
           class="ts-refresh"
           type="button"
@@ -95,19 +98,10 @@ onUnmounted(() => {
         >
           <RefreshCw :size="13" :stroke-width="2" aria-hidden="true" :class="{ spinning: detecting }" />
         </button>
-        <button class="ts-more" type="button" @click="props.onOpenDetail?.()">
-          查看详情
-          <ArrowRight :size="13" :stroke-width="2" aria-hidden="true" />
-        </button>
       </div>
-    </header>
-
-    <template v-if="hasData">
-      <p class="ts-date-label">今日用量</p>
       <div class="ts-total">
         <span class="ts-total-value">{{ fmt(todayTotal) }}</span>
         <span class="ts-total-suffix">tokens</span>
-        <span class="ts-total-cost">≈ {{ fmtCost(summary?.today_cost) }}</span>
       </div>
       <div class="ts-split" aria-hidden="true">
         <div
@@ -177,11 +171,6 @@ onUnmounted(() => {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.25; }
 }
-.ts-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-}
 .ts-refresh {
   display: inline-flex;
   align-items: center;
@@ -227,8 +216,14 @@ onUnmounted(() => {
 .ts-more:hover {
   color: var(--brand-500);
 }
+.ts-date-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
 .ts-date-label {
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 11px;
   color: var(--text-4);
 }
@@ -249,11 +244,6 @@ onUnmounted(() => {
 .ts-total-suffix {
   font-size: 12px;
   color: var(--text-4);
-}
-.ts-total-cost {
-  margin-left: auto;
-  font-size: 12px;
-  color: var(--text-3);
 }
 .ts-split {
   display: flex;

@@ -14,6 +14,14 @@ import {
   type UsageSummary,
 } from '../api/tauri'
 
+// 浏览器预览环境的兜底默认值；真实默认由 Rust 端 shortcut.rs 决定
+const IS_MAC_PREVIEW =
+  typeof navigator !== 'undefined' &&
+  (/Mac|iPhone|iPad/.test(navigator.userAgent) || /Mac|iPhone|iPad/.test(navigator.platform))
+const DEFAULT_GLOBAL_SHORTCUT = IS_MAC_PREVIEW
+  ? 'CommandOrControl+Shift+Space'
+  : 'Ctrl+Shift+Space'
+
 interface StoreState {
   resources: Resource[]
   notes: Note[]
@@ -43,7 +51,7 @@ const state = reactive<StoreState>({
       y: null,
       always_on_top: false,
     },
-    global_shortcut: 'CommandOrControl+Shift+Space',
+    global_shortcut: DEFAULT_GLOBAL_SHORTCUT,
   },
   usageSummary: null,
   usageDetail: null,

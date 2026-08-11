@@ -446,6 +446,14 @@ pub fn set_global_shortcut(app: tauri::AppHandle, value: String) -> Result<Strin
         return Ok(config.global_shortcut);
     }
 
+    // 同一物理按键组合仅换了写法（如 Windows 上 CommandOrControl→Ctrl），
+    // 无需重新注册，直接更新存储的字符串
+    if crate::shortcut::same_hotkey(&previous, shortcut) {
+        config.global_shortcut = shortcut.to_string();
+        crate::config::save(&config)?;
+        return Ok(config.global_shortcut);
+    }
+
     if crate::shortcut::is_shortcut_registered(&app, shortcut) {
         return Err("快捷键冲突".into());
     }

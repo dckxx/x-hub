@@ -16,7 +16,18 @@ useFocusTrap(toRef(props, 'visible'), cardRef)
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
 
-const shortcut = ref(store.state.config.global_shortcut)
+const IS_MAC =
+  /Mac|iPhone|iPad/.test(navigator.userAgent) || /Mac|iPhone|iPad/.test(navigator.platform)
+
+function normalizeShortcutDisplay(s: string): string {
+  if (IS_MAC) return s
+  return s
+    .split('+')
+    .map((p) => (p === 'CommandOrControl' ? 'Ctrl' : p))
+    .join('+')
+}
+
+const shortcut = ref(normalizeShortcutDisplay(store.state.config.global_shortcut))
 const shortcutBusy = ref(false)
 const shortcutError = ref('')
 const shortcutListening = ref(false)
@@ -24,13 +35,9 @@ const shortcutInputRef = ref<HTMLInputElement | null>(null)
 const pressedShortcutKeys = ref(new Set<string>())
 const shortcutNormalized = computed(() => shortcut.value.trim())
 
-// macOS 上 Meta 键 = Cmd（映射 CommandOrControl）；Windows 上 = Win 键（必须用 Super）
-const IS_MAC =
-  /Mac|iPhone|iPad/.test(navigator.userAgent) || /Mac|iPhone|iPad/.test(navigator.platform)
-
 onMounted(async () => {
   if (!isTauri()) return
-  shortcut.value = await tauriApi.getGlobalShortcut()
+  shortcut.value = normalizeShortcutDisplay(await tauriApi.getGlobalShortcut())
 })
 
 function onKeydown(e: KeyboardEvent) {
@@ -85,7 +92,7 @@ async function saveShortcut() {
   shortcutBusy.value = true
   try {
     const saved = await store.setGlobalShortcut(shortcutNormalized.value)
-    shortcut.value = saved
+    shortcut.value = normalizeShortcutDisplay(saved)
     showToast(`快捷键已更新为 ${saved}`)
   } catch (e) {
     shortcutError.value = String(e)
@@ -113,7 +120,7 @@ function normalizeShortcutKey(e: KeyboardEvent) {
   // 否则组合键中的普通键（如 Ctrl 下的 K）会被误判为修饰键导致主键丢失
   switch (e.key) {
     case 'Control':
-      return 'CommandOrControl'
+      return IS_MAC ? 'CommandOrControl' : 'Ctrl'
     case 'Meta':
       // macOS: Cmd；Windows: Win 键（插件在 Windows 上 Super 才映射 Win）
       return IS_MAC ? 'CommandOrControl' : 'Super'
@@ -128,7 +135,7 @@ function normalizeShortcutKey(e: KeyboardEvent) {
   }
 }
 
-const MODIFIER_ORDER = ['CommandOrControl', 'Super', 'Alt', 'Shift']
+const MODIFIER_ORDER = ['CommandOrControl', 'Ctrl', 'Super', 'Alt', 'Shift']
 
 function formatShortcutDisplay(keys: Set<string>) {
   const parts: string[] = []
@@ -222,7 +229,7 @@ function onShortcutKeydown(e: KeyboardEvent) {
                   type="text"
                   spellcheck="false"
                   :readonly="shortcutListening"
-                  placeholder="CommandOrControl+Shift+Space"
+                  placeholder="Ctrl+Shift+Space"
                   @keydown="onShortcutKeydown"
                   @blur="stopListeningShortcut"
                 />

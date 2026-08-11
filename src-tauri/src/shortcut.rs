@@ -1,7 +1,20 @@
+use std::str::FromStr;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
+#[cfg(target_os = "macos")]
 pub const DEFAULT_TOGGLE_SHORTCUT: &str = "CommandOrControl+Shift+Space";
+#[cfg(not(target_os = "macos"))]
+pub const DEFAULT_TOGGLE_SHORTCUT: &str = "Ctrl+Shift+Space";
+
+/// 判断两个快捷键字符串是否代表同一个物理按键组合
+/// （如 Windows 上 CommandOrControl 与 Ctrl 是同一个键，仅写法不同）
+pub fn same_hotkey(a: &str, b: &str) -> bool {
+    match (Shortcut::from_str(a), Shortcut::from_str(b)) {
+        (Ok(x), Ok(y)) => x.id() == y.id(),
+        _ => false,
+    }
+}
 
 pub fn register_toggle_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), String> {
     app.global_shortcut()

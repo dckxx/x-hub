@@ -29,9 +29,9 @@ let highlightTimer: ReturnType<typeof setTimeout> | null = null
 
 const PRIORITY_LABELS = ['普通', '重要', '紧急'] as const
 const PRIORITY_BADGE = [
-  { bg: 'var(--c-gray-soft)', text: 'var(--c-gray-ink)' },
-  { bg: 'var(--c-yellow-soft)', text: 'var(--c-yellow-ink)' },
-  { bg: 'var(--c-red-soft)', text: 'var(--c-red-ink)' },
+  { bg: 'var(--c-gray-soft)' },
+  { bg: 'var(--c-yellow-soft)' },
+  { bg: 'var(--c-red-soft)' },
 ] as const
 
 const pendingTodos = computed(() =>
@@ -183,13 +183,11 @@ watch(
 
         <button
           class="todo-priority"
-          :style="{ background: PRIORITY_BADGE[t.priority].bg, color: PRIORITY_BADGE[t.priority].text }"
+          :style="{ background: PRIORITY_BADGE[t.priority].bg }"
           :title="'优先级：' + PRIORITY_LABELS[t.priority] + '，点击切换'"
-          aria-label="循环切换优先级"
+          :aria-label="'优先级：' + PRIORITY_LABELS[t.priority] + '，点击切换'"
           @click="cyclePriority(t)"
-        >
-          {{ t.priority + 1 }}
-        </button>
+        ></button>
 
         <template v-if="editingId === t.id">
           <input
@@ -331,22 +329,16 @@ watch(
 
 .todo-priority {
   flex-shrink: 0;
-  width: 18px;
-  height: 18px;
+  width: 10px;
+  height: 10px;
   border: none;
   border-radius: 50%;
-  display: grid;
-  place-items: center;
   padding: 0;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
   cursor: pointer;
   transition: transform 0.18s, filter 0.18s;
 }
 .todo-priority:hover {
-  transform: scale(1.12);
+  transform: scale(1.35);
   filter: brightness(0.97);
 }
 .todo-priority:active {

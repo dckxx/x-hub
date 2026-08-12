@@ -136,13 +136,12 @@ function close() {
 <style scoped>
 .title-bar {
   height: 48px;
-  background: var(--bg-card-solid);
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding-left: 18px;
   flex-shrink: 0;
-  border-bottom: 1px solid var(--border-soft);
 }
 .window-title {
   display: flex;

@@ -10,6 +10,8 @@ import GlobalSearch from '../components/GlobalSearch.vue'
 import SettingsDialog from '../components/SettingsDialog.vue'
 import TokenStatsCard from '../components/TokenStatsCard.vue'
 import SysMonitorCard from '../components/SysMonitorCard.vue'
+import PromptBoxCard from '../components/PromptBoxCard.vue'
+import PromptManageDialog from '../components/PromptManageDialog.vue'
 import UsageView from '../components/UsageView.vue'
 import RecentBar from '../components/RecentBar.vue'
 import ClockCard from '../components/ClockCard.vue'
@@ -32,20 +34,19 @@ const navigation = [
 type ViewId = (typeof navigation)[number]['id']
 const activeView = ref<ViewId>('dashboard')
 
-// ---- 侧边栏收起（跨会话记忆） ----
-const sidebarCollapsed = ref(localStorage.getItem('sidebar-collapsed') === '1')
+// ---- 侧边栏收起（每次打开软件默认收起，会话内可手动展开） ----
+const sidebarCollapsed = ref(true)
 
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value
-  localStorage.setItem('sidebar-collapsed', sidebarCollapsed.value ? '1' : '0')
 }
 
 function openUsageDetail() {
   activeView.value = 'usage'
 }
 
-function closeUsage() {
-  activeView.value = 'dashboard'
+function openPromptManage() {
+  promptManageVisible.value = true
 }
 
 // ---- 主题（跟随配置，持久化） ----
@@ -114,6 +115,7 @@ function onSaveNote(id: number, title: string, content: string) {
 // ---- 全局搜索 / 设置 ----
 const searchVisible = ref(false)
 const settingsVisible = ref(false)
+const promptManageVisible = ref(false)
 
 function onOpenTodo(t: Todo) {
   searchVisible.value = false
@@ -189,6 +191,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
             class="sidebar-nav-item"
             :class="{ active: activeView === item.id }"
             :aria-current="activeView === item.id ? 'page' : undefined"
+            :data-tip="item.label"
             type="button"
             @click="activeView = item.id"
           >
@@ -199,7 +202,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
           </button>
         </nav>
 
-        <button class="sidebar-status" type="button" aria-label="打开设置" @click="settingsVisible = true">
+        <button class="sidebar-status" type="button" aria-label="打开设置" data-tip="设置" @click="settingsVisible = true">
           <Settings2 :size="15" :stroke-width="2" aria-hidden="true" />
           <span>本地工作台</span>
           <span class="status-dot" aria-hidden="true"></span>
@@ -208,6 +211,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
           class="sidebar-status sidebar-theme"
           type="button"
           :aria-label="isDark ? '切换到亮色模式' : '切换到暗色模式'"
+          :data-tip="isDark ? '亮色模式' : '暗色模式'"
           @click="toggleTheme"
         >
           <component :is="isDark ? Sun : Moon" :size="15" :stroke-width="2" aria-hidden="true" />
@@ -217,7 +221,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
           class="sidebar-status sidebar-collapse"
           type="button"
           :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
-          :title="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+          :data-tip="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
           @click="toggleSidebar"
         >
           <component
@@ -231,17 +235,18 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
       </aside>
 
       <main class="workspace" aria-label="主工作区">
-        <!-- 工作台：时钟/便签 + Token 统计 + 待办 + 最近使用 -->
+        <!-- 工作台：时钟/系统/便签 + Token 统计/提示词 + 待办 + 最近使用 -->
         <div v-if="activeView === 'dashboard'" class="dash-grid">
           <div class="dash-panel dash-left">
             <ClockCard class="dash-clock" />
+            <SysMonitorCard class="dash-sysmon" />
             <div class="dash-stickies">
               <StickyCard :slot="1" />
               <StickyCard :slot="2" />
             </div>
           </div>
           <TokenStatsCard class="dash-panel dash-usage" :on-open-detail="openUsageDetail" />
-          <SysMonitorCard class="dash-panel dash-sysmon" />
+          <PromptBoxCard class="dash-panel dash-prompts" :on-open-manage="openPromptManage" />
           <TodoCard class="dash-panel dash-todo" :highlight-id="highlightTodoId" />
           <RecentBar class="dash-panel dash-recent" @go-suda="activeView = 'suda'" />
         </div>
@@ -264,7 +269,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 
         <!-- 用量：独立视图 -->
         <section v-else class="view view-usage" tabindex="-1" aria-label="用量">
-          <UsageView @back="closeUsage" />
+          <UsageView />
         </section>
       </main>
     </div>
@@ -286,6 +291,10 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
     <SettingsDialog
       :visible="settingsVisible"
       @close="settingsVisible = false"
+    />
+    <PromptManageDialog
+      :visible="promptManageVisible"
+      @close="promptManageVisible = false"
     />
 
     <Transition name="toast">
@@ -331,14 +340,14 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  padding: var(--space-3);
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--border-soft);
+  /* 顶部贴齐标题栏下沿，菜单与内容卡片头部对齐 */
+  padding: 0 var(--space-3) var(--space-3);
+  background: transparent;
   overflow: hidden;
   transition: padding 0.18s ease-out;
 }
 .sidebar.collapsed {
-  padding: var(--space-3) 8px;
+  padding: 0 8px var(--space-3);
 }
 .sidebar-nav {
   display: flex;
@@ -438,16 +447,50 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   gap: 6px;
 }
 
+/* 收起态：hover 图标时在右侧显示名称气泡 */
+.sidebar.collapsed {
+  overflow: visible;
+}
+.sidebar.collapsed .sidebar-status {
+  position: relative;
+}
+.sidebar.collapsed [data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--text-1);
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease-out;
+  z-index: 60;
+}
+.sidebar.collapsed [data-tip]:hover::after {
+  opacity: 1;
+  transition-delay: 0.3s;
+}
+
 /* 主工作区 */
 .workspace {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  padding: var(--space-6);
+  padding: 0 var(--space-6) var(--space-6) 0;
   background: transparent;
 }
 
-/* 工作台布局：三列（时钟/便签 | Token | 待办）+ 底部最近使用通栏 */
+/* 工作台布局：三列（时钟/系统/便签 | Token/提示词 | 待办）+ 底部最近使用通栏 */
 .dash-grid {
   height: 100%;
   display: grid;
@@ -470,15 +513,19 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 .dash-left .dash-clock {
   flex-shrink: 0;
 }
+.dash-left .dash-sysmon {
+  flex-shrink: 0;
+}
 .dash-stickies {
   flex: 1;
   min-height: 0;
+  max-height: 440px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-4);
 }
 .dash-usage { grid-column: 2; grid-row: 1; }
-.dash-sysmon { grid-column: 2; grid-row: 2; }
+.dash-prompts { grid-column: 2; grid-row: 2; }
 .dash-todo { grid-column: 3; grid-row: 1 / 3; }
 .dash-recent { grid-column: 1 / -1; grid-row: 3; }
 
@@ -490,21 +537,16 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   flex-direction: column;
   overflow: hidden;
 }
-.view-notes :deep(.note-list),
-.view-suda :deep(.suda) {
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
+/* 速记/速达视图：保留 .card 的边框/圆角/阴影，与其他卡片一致 */
 .view-usage :deep(.usage-view) {
   padding: 0;
 }
 
 @media (max-width: 1100px) {
-  .workspace { padding: var(--space-5); }
+  .workspace { padding: 0 var(--space-5) var(--space-5) 0; }
 }
 
-/* 960px 以下：三列改两列（左：时钟+便签；右：Token+待办） */
+/* 960px 以下：三列改两列（左：时钟+系统+便签；右：Token+提示词/待办） */
 @media (max-width: 960px) {
   .dash-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -512,7 +554,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   }
   .dash-left { grid-column: 1; grid-row: 1 / 3; }
   .dash-usage { grid-column: 2; grid-row: 1; }
-  .dash-sysmon { grid-column: 2; grid-row: 2; }
+  .dash-prompts { grid-column: 2; grid-row: 2; }
   .dash-todo { grid-column: 1; grid-row: 3; }
   .dash-recent { grid-column: 1 / -1; grid-row: 4; }
 }
@@ -520,8 +562,8 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 @media (max-width: 720px) {
   .app-body { grid-template-columns: 1fr; }
   .app-body.collapsed { grid-template-columns: 1fr; }
-  .sidebar { position: relative; max-height: 280px; border-right: 0; border-bottom: 1px solid var(--border-soft); }
-  .sidebar.collapsed { padding: var(--space-3); }
+  .sidebar { position: relative; max-height: 280px; }
+  .sidebar.collapsed { padding: 0 var(--space-3) var(--space-3); }
   .sidebar.collapsed .sidebar-nav-item,
   .sidebar.collapsed .sidebar-status {
     justify-content: flex-start;
@@ -532,13 +574,15 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   .sidebar.collapsed .status-dot {
     display: initial;
   }
-  .workspace { padding: var(--space-4); overflow-y: auto; }
+  .workspace { padding: 0 var(--space-4) var(--space-4) 0; overflow-y: auto; }
   .dash-grid { display: flex; flex-direction: column; gap: var(--space-4); }
   .dash-panel { flex: none; }
   .dash-clock { min-height: 120px; }
+  .dash-sysmon { min-height: 110px; }
   .dash-stickies { min-height: 220px; }
   .dash-todo { min-height: 320px; }
   .dash-usage { min-height: 260px; }
+  .dash-prompts { min-height: 280px; }
   .dash-recent { flex: none; }
 }
 

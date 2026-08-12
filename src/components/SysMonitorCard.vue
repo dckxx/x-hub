@@ -1,40 +1,17 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import { Cpu, MemoryStick } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 
 const store = useStore()
 
 const POLL_INTERVAL = 2000
-const TREND_POINTS = 30
 let timer: ReturnType<typeof setInterval> | null = null
-
-const cpuTrend = ref<number[]>([])
-const memTrend = ref<number[]>([])
 
 const info = () => store.state.systemInfo
 
-function pushTrend(arr: number[], v: number, cap: number) {
-  arr.push(v)
-  if (arr.length > cap) arr.shift()
-}
-
 async function poll() {
-  const r = await store.refreshSystemInfo()
-  if (!r) return
-  pushTrend(cpuTrend.value, r.cpuUsage, TREND_POINTS)
-  pushTrend(memTrend.value, r.memPercent, TREND_POINTS)
-}
-
-function pathOf(data: number[]): string {
-  const n = data.length
-  if (n < 2) return ''
-  const w = 100
-  const h = 100
-  const max = Math.max(100, ...data)
-  return data
-    .map((v, i) => `${i === 0 ? 'M' : 'L'}${(i / (n - 1)) * w},${h - (v / max) * h}`)
-    .join(' ')
+  await store.refreshSystemInfo()
 }
 
 const cpuPct = () => Math.round(info()?.cpuUsage ?? 0)
@@ -60,7 +37,7 @@ onUnmounted(() => {
   <section class="card sys-monitor" aria-label="系统资源">
     <header class="sm-header">
       <h3 class="sm-title">
-        <Cpu :size="15" :stroke-width="2" aria-hidden="true" />
+        <Cpu :size="14" :stroke-width="2" aria-hidden="true" />
         <span>系统资源</span>
         <span class="sm-live-dot" aria-hidden="true"></span>
       </h3>
@@ -70,7 +47,7 @@ onUnmounted(() => {
       <div class="sm-item">
         <div class="sm-item-top">
           <span class="sm-item-name">
-            <Cpu :size="13" :stroke-width="2" aria-hidden="true" />
+            <Cpu :size="12" :stroke-width="2" aria-hidden="true" />
             CPU
           </span>
           <span class="sm-item-value">{{ cpuPct() }}<em>%</em></span>
@@ -78,15 +55,12 @@ onUnmounted(() => {
         <div class="sm-bar">
           <div class="sm-bar-fill" :style="{ transform: 'scaleX(' + cpuPct() / 100 + ')' }"></div>
         </div>
-        <svg class="sm-trend" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-          <path v-if="cpuTrend.length >= 2" class="sm-trend-line" :d="pathOf(cpuTrend)" />
-        </svg>
       </div>
 
       <div class="sm-item">
         <div class="sm-item-top">
           <span class="sm-item-name">
-            <MemoryStick :size="13" :stroke-width="2" aria-hidden="true" />
+            <MemoryStick :size="12" :stroke-width="2" aria-hidden="true" />
             内存
           </span>
           <span class="sm-item-value">{{ memPct() }}<em>%</em></span>
@@ -95,41 +69,37 @@ onUnmounted(() => {
           <div class="sm-bar-fill" :style="{ transform: 'scaleX(' + memPct() / 100 + ')' }"></div>
         </div>
         <p class="sm-mem-label">{{ memLabel() }}</p>
-        <svg class="sm-trend" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-          <path v-if="memTrend.length >= 2" class="sm-trend-line" :d="pathOf(memTrend)" />
-        </svg>
       </div>
     </div>
   </section>
 </template>
 
 <style scoped>
+/* 紧凑版：约 110px 总高，无趋势图 */
 .sys-monitor {
-  height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 16px;
-  min-height: 0;
+  padding: 12px;
 }
 .sm-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 .sm-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 16px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
   margin: 0;
 }
 .sm-live-dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: var(--radius-pill);
   background: var(--c-green);
   animation: sm-blink 1.6s ease-in-out infinite;
@@ -140,17 +110,14 @@ onUnmounted(() => {
   50% { opacity: 0.3; }
 }
 .sm-body {
-  flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 18px;
+  gap: 8px;
 }
 .sm-item {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
 }
 .sm-item-top {
   display: flex;
@@ -166,7 +133,7 @@ onUnmounted(() => {
   color: var(--text-2);
 }
 .sm-item-value {
-  font-size: 20px;
+  font-size: 15px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
@@ -175,7 +142,7 @@ onUnmounted(() => {
 }
 .sm-item-value em {
   font-style: normal;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
   color: var(--text-3);
   margin-left: 2px;
@@ -194,22 +161,10 @@ onUnmounted(() => {
   transform-origin: left center;
   transition: transform 0.5s ease-out;
 }
-.sm-trend {
-  width: 100%;
-  height: 26px;
-  display: block;
-}
-.sm-trend-line {
-  fill: none;
-  stroke: var(--c-green);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
-}
 .sm-mem-label {
   margin: 0;
-  font-size: 11px;
+  font-size: 10px;
+  line-height: 1.2;
   color: var(--text-3);
 }
 </style>

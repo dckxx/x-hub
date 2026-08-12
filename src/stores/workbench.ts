@@ -5,6 +5,7 @@ import {
   type AppConfig,
   type Note,
   type Resource,
+  type Snippet,
   type Sticky,
   type SyncResult,
   type SystemInfo,
@@ -27,6 +28,7 @@ interface StoreState {
   notes: Note[]
   todos: Todo[]
   stickies: Sticky[]
+  snippets: Snippet[]
   tags: Tag[]
   config: AppConfig
   usageSummary: UsageSummary | null
@@ -41,6 +43,7 @@ const state = reactive<StoreState>({
   notes: [],
   todos: [],
   stickies: [],
+  snippets: [],
   tags: [],
   config: {
     theme: 'light',
@@ -63,7 +66,11 @@ const state = reactive<StoreState>({
 export function useStore() {
   async function loadInitialData() {
     if (!isTauri()) return
-    const data = await tauriApi.getInitialData()
+    // get_initial_data 不含 snippets，并行单独拉取；后端命令未就绪时兜底为空列表
+    const [data, snippets] = await Promise.all([
+      tauriApi.getInitialData(),
+      tauriApi.listSnippets().catch(() => [] as Snippet[]),
+    ])
     state.resources = data.resources
     state.notes = data.notes
     state.todos = data.todos
@@ -71,7 +78,94 @@ export function useStore() {
     state.tags = data.tags
     state.usageSummary = data.usage_summary
     state.config = data.config
+    state.snippets = snippets
     state.loaded = true
+  }
+
+  // ---- 提示词百宝箱 ----
+  // 与后端 repo/snippet.rs 排序一致：置顶 → 复制次数 → 最近复制 → id 倒序
+  function sortSnippets() {
+    state.snippets.sort((a, b) => {
+      if (a.is_pinned !== b.is_pinned) return a.is_pinned ? -1 : 1
+      if (a.copy_count !== b.copy_count) return b.copy_count - a.copy_count
+      if (a.last_copied_at !== b.last_copied_at) {
+        return b.last_copied_at.localeCompare(a.last_copied_at)
+      }
+      return b.id - a.id
+    })
+  }
+
+  function replaceSnippet(updated: Snippet) {
+    const idx = state.snippets.findIndex((x) => x.id === updated.id)
+    if (idx >= 0) state.snippets[idx] = updated
+    else state.snippets.push(updated)
+    sortSnippets()
+  }
+
+  function localSnippet(title: string, content: string): Snippet {
+    const now = new Date().toISOString()
+    return {
+      id: Date.now(),
+      title,
+      content,
+      is_pinned: false,
+      copy_count: 0,
+      last_copied_at: '',
+      created_at: now,
+      updated_at: now,
+    }
+  }
+
+  async function loadSnippets() {
+    if (!isTauri()) return
+    state.snippets = await tauriApi.listSnippets()
+  }
+
+  async function addSnippet(title: string, content: string) {
+    const s = isTauri()
+      ? await tauriApi.createSnippet(title, content)
+      : localSnippet(title, content)
+    state.snippets.push(s)
+    sortSnippets()
+    return s
+  }
+
+  async function editSnippet(id: number, title: string, content: string) {
+    const s = isTauri()
+      ? await tauriApi.updateSnippet(id, title, content)
+      : { ...(state.snippets.find((x) => x.id === id) ?? localSnippet(title, content)), title, content, updated_at: new Date().toISOString() }
+    replaceSnippet(s)
+    return s
+  }
+
+  async function removeSnippet(id: number) {
+    if (isTauri()) await tauriApi.deleteSnippet(id)
+    state.snippets = state.snippets.filter((x) => x.id !== id)
+  }
+
+  async function toggleSnippetPin(id: number) {
+    if (!isTauri()) {
+      const cur = state.snippets.find((x) => x.id === id)
+      if (!cur) return null
+      replaceSnippet({ ...cur, is_pinned: !cur.is_pinned, updated_at: new Date().toISOString() })
+      return state.snippets.find((x) => x.id === id) ?? null
+    }
+    const updated = await tauriApi.toggleSnippetPin(id)
+    replaceSnippet(updated)
+    return updated
+  }
+
+  async function recordSnippetCopy(id: number) {
+    if (!isTauri()) {
+      const cur = state.snippets.find((x) => x.id === id)
+      if (!cur) return null
+      const now = new Date().toISOString()
+      replaceSnippet({ ...cur, copy_count: cur.copy_count + 1, last_copied_at: now, updated_at: now })
+      return state.snippets.find((x) => x.id === id) ?? null
+    }
+    const updated = await tauriApi.recordSnippetCopy(id)
+    replaceSnippet(updated)
+    return updated
   }
 
   // ---- 速达资源 ----
@@ -285,6 +379,12 @@ export function useStore() {
   return {
     state: readonly(state),
     loadInitialData,
+    loadSnippets,
+    addSnippet,
+    editSnippet,
+    removeSnippet,
+    toggleSnippetPin,
+    recordSnippetCopy,
     addResource,
     editResource,
     removeResource,

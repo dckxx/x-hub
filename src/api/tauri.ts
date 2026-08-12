@@ -40,6 +40,17 @@ export interface Sticky {
   updated_at: string
 }
 
+export interface Snippet {
+  id: number
+  title: string
+  content: string
+  is_pinned: boolean
+  copy_count: number
+  last_copied_at: string
+  created_at: string
+  updated_at: string
+}
+
 export interface WindowState {
   width: number
   height: number
@@ -105,6 +116,8 @@ export interface UsageSummary {
   today_cache_input: number
   today_output: number
   today_cost: number
+  /** 今日调用（消息）条数 */
+  today_count: number
   seven_day_input: number
   seven_day_cache_input: number
   seven_day_output: number
@@ -249,4 +262,12 @@ export const tauriApi = {
   getUsageDetail: (days: number, limit: number, offset: number) =>
     invoke<UsageDetail>('get_usage_detail', { days, limit, offset }),
   getSystemInfo: () => invoke<SystemInfo>('get_system_info'),
+  listSnippets: () => invoke<Snippet[]>('list_snippets'),
+  createSnippet: (title: string, content: string) =>
+    invoke<Snippet>('create_snippet', { title, content }),
+  updateSnippet: (id: number, title: string, content: string) =>
+    invoke<Snippet>('update_snippet', { id, title, content }),
+  deleteSnippet: (id: number) => invoke<void>('delete_snippet', { id }),
+  toggleSnippetPin: (id: number) => invoke<Snippet>('toggle_snippet_pin', { id }),
+  recordSnippetCopy: (id: number) => invoke<Snippet>('record_snippet_copy', { id }),
 }

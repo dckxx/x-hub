@@ -231,9 +231,9 @@ pub fn query_summary(conn: &Connection) -> Result<UsageSummary> {
     let month_start = now.with_day(1).unwrap().date_naive().and_hms_opt(0, 0, 0).unwrap();
     let month_ms = Local.from_local_datetime(&month_start).unwrap().timestamp_millis();
 
-    let summarize = |conn: &Connection, since_ms: i64| -> Result<(i64, i64, i64, f64)> {
+    let summarize = |conn: &Connection, since_ms: i64| -> Result<(i64, i64, i64, i64, f64)> {
         conn.query_row(
-            "SELECT COALESCE(SUM(tokens_input),0), COALESCE(SUM(tokens_cache_read),0),
+            "SELECT COUNT(*), COALESCE(SUM(tokens_input),0), COALESCE(SUM(tokens_cache_read),0),
                     COALESCE(SUM(tokens_output),0), COALESCE(SUM(cost),0)
              FROM ai_usage WHERE time_created >= ?1",
             params![since_ms],
@@ -242,16 +242,17 @@ pub fn query_summary(conn: &Connection) -> Result<UsageSummary> {
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
-                    row.get::<_, f64>(3)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, f64>(4)?,
                 ))
             },
         )
     };
 
-    let (ti, tc, to, tcost) = summarize(conn, today)?;
-    let (si, sc, so, scost) = summarize(conn, seven)?;
-    let (mi, mc, mo, mcost) = summarize(conn, month_ms)?;
-    let (ai, ac, ao, acost) = summarize(conn, 0)?;
+    let (tn, ti, tc, to, tcost) = summarize(conn, today)?;
+    let (_, si, sc, so, scost) = summarize(conn, seven)?;
+    let (_, mi, mc, mo, mcost) = summarize(conn, month_ms)?;
+    let (_, ai, ac, ao, acost) = summarize(conn, 0)?;
 
     let record_count = conn.query_row(
         "SELECT COUNT(*) FROM ai_usage",
@@ -271,6 +272,7 @@ pub fn query_summary(conn: &Connection) -> Result<UsageSummary> {
         today_cache_input: tc,
         today_output: to,
         today_cost: tcost,
+        today_count: tn,
         seven_day_input: si,
         seven_day_cache_input: sc,
         seven_day_output: so,
@@ -462,6 +464,7 @@ mod tests {
         assert_eq!(s.today_input, 1000);
         assert_eq!(s.today_cache_input, 500);
         assert_eq!(s.today_output, 100);
+        assert_eq!(s.today_count, 1);
         // 7 日含昨天
         assert_eq!(s.seven_day_input, 3000);
         assert_eq!(s.record_count, 2);

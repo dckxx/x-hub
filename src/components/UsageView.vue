@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ArrowLeft, RefreshCw } from 'lucide-vue-next'
+import { RefreshCw } from 'lucide-vue-next'
 import type { UsageDaily, UsageProvider, UsageRecord } from '../api/tauri'
 import { useStore } from '../stores/workbench'
-
-const emit = defineEmits<{ (e: 'back'): void }>()
 
 const store = useStore()
 const loading = ref(false)
@@ -30,7 +28,7 @@ const today = computed(() => [
   { label: '今日输入', value: fmt(summary.value?.today_input), sub: '非缓存' },
   { label: '今日缓存', value: fmt(summary.value?.today_cache_input), sub: '缓存输入' },
   { label: '今日输出', value: fmt(summary.value?.today_output), sub: '生成' },
-  { label: '今日费用', value: fmtCost(summary.value?.today_cost), sub: 'USD' },
+  { label: '今日调用次数', value: fmt(summary.value?.today_count), sub: '条' },
 ])
 
 const daily = computed<UsageDaily[]>(() => [...(detail.value?.daily ?? [])])
@@ -98,10 +96,6 @@ onMounted(() => load())
 <template>
   <div class="usage-view">
     <header class="uv-header">
-      <button class="ghost-btn" type="button" @click="emit('back')">
-        <ArrowLeft :size="14" :stroke-width="2" aria-hidden="true" />
-        返回工作台
-      </button>
       <h2 class="uv-title">AI 用量统计</h2>
       <button class="ghost-btn" type="button" :disabled="loading" @click="onRefresh">
         <RefreshCw :size="14" :stroke-width="2" aria-hidden="true" :class="{ spinning: loading }" />
@@ -164,7 +158,6 @@ onMounted(() => load())
               <th class="num">输入</th>
               <th class="num">缓存</th>
               <th class="num">输出</th>
-              <th class="num">费用</th>
             </tr>
           </thead>
           <tbody>
@@ -175,7 +168,6 @@ onMounted(() => load())
               <td class="num">{{ fmt(r.tokens_input) }}</td>
               <td class="num">{{ fmt(r.tokens_cache_read) }}</td>
               <td class="num">{{ fmt(r.tokens_output) }}</td>
-              <td class="num">{{ fmtCost(r.cost) }}</td>
             </tr>
           </tbody>
         </table>

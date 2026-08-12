@@ -60,6 +60,19 @@ pub struct Sticky {
     pub updated_at: String,
 }
 
+/// 提示词百宝箱单条（可置顶、统计复制次数）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Snippet {
+    pub id: i64,
+    pub title: String,
+    pub content: String,
+    pub is_pinned: bool,
+    pub copy_count: i64,
+    pub last_copied_at: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// 笔记标签
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tag {
@@ -91,6 +104,8 @@ pub struct UsageSummary {
     pub today_cache_input: i64,
     pub today_output: i64,
     pub today_cost: f64,
+    /// 今日调用（消息）条数
+    pub today_count: i64,
     pub seven_day_input: i64,
     pub seven_day_cache_input: i64,
     pub seven_day_output: i64,

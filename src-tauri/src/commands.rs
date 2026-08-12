@@ -1,10 +1,10 @@
 use crate::config::AppConfig;
 use crate::models::{
-    Note, Resource, ResourceKind, SearchResult, Sticky, SyncResult, Tag, Todo, UsageDetail,
-    UsageSummary,
+    Note, Resource, ResourceKind, SearchResult, Snippet, Sticky, SyncResult, Tag, Todo,
+    UsageDetail, UsageSummary,
 };
 use crate::process;
-use crate::repo::{note, resource, sticky, tag, todo};
+use crate::repo::{note, resource, snippet, sticky, tag, todo};
 use crate::usage;
 use rusqlite::Connection;
 use std::sync::Mutex;
@@ -282,6 +282,81 @@ pub fn save_sticky(
     let sticky = sticky::upsert(&conn, slot, &content).map_err(err_str)?;
     log::debug!("保存便签: slot={} 内容 {} 字", slot, content.chars().count());
     Ok(sticky)
+}
+
+// ---------- 提示词百宝箱 ----------
+
+#[tauri::command]
+pub fn list_snippets(state: State<'_, DbState>) -> Result<Vec<Snippet>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let snippets = snippet::list(&conn).map_err(err_str)?;
+    log::debug!("加载提示词百宝箱: {} 条", snippets.len());
+    Ok(snippets)
+}
+
+#[tauri::command]
+pub fn create_snippet(
+    state: State<'_, DbState>,
+    title: String,
+    content: String,
+) -> Result<Snippet, String> {
+    let t = title.trim();
+    if t.is_empty() {
+        return Err("标题不能为空".into());
+    }
+    let c = content.trim();
+    if c.is_empty() {
+        return Err("内容不能为空".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let snippet = snippet::create(&conn, t, c).map_err(err_str)?;
+    log::info!("添加提示词: id={} {}", snippet.id, snippet.title);
+    Ok(snippet)
+}
+
+#[tauri::command]
+pub fn update_snippet(
+    state: State<'_, DbState>,
+    id: i64,
+    title: String,
+    content: String,
+) -> Result<Snippet, String> {
+    let t = title.trim();
+    if t.is_empty() {
+        return Err("标题不能为空".into());
+    }
+    let c = content.trim();
+    if c.is_empty() {
+        return Err("内容不能为空".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let snippet = snippet::update(&conn, id, t, c).map_err(err_str)?;
+    log::info!("更新提示词: id={} {}", snippet.id, snippet.title);
+    Ok(snippet)
+}
+
+#[tauri::command]
+pub fn delete_snippet(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    snippet::delete(&conn, id).map_err(err_str)?;
+    log::info!("删除提示词: id={}", id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn toggle_snippet_pin(state: State<'_, DbState>, id: i64) -> Result<Snippet, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let snippet = snippet::toggle_pin(&conn, id).map_err(err_str)?;
+    log::info!("切换提示词置顶: id={} pinned={}", snippet.id, snippet.is_pinned);
+    Ok(snippet)
+}
+
+#[tauri::command]
+pub fn record_snippet_copy(state: State<'_, DbState>, id: i64) -> Result<Snippet, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let snippet = snippet::record_copy(&conn, id).map_err(err_str)?;
+    log::debug!("提示词已复制: id={} 累计 {} 次", snippet.id, snippet.copy_count);
+    Ok(snippet)
 }
 
 // ---------- AI 用量统计 ----------

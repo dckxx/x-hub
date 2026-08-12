@@ -83,6 +83,17 @@ fn migrate(conn: &Connection) -> Result<()> {
           updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
         );
 
+        CREATE TABLE IF NOT EXISTS snippets (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          is_pinned INTEGER NOT NULL DEFAULT 0,
+          copy_count INTEGER NOT NULL DEFAULT 0,
+          last_copied_at TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS ai_usage (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           message_id TEXT NOT NULL UNIQUE,

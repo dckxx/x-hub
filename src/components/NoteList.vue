@@ -128,7 +128,7 @@ function summary(n: Note): string {
     <div v-else class="empty-state">
       <StickyNote :size="24" :stroke-width="1.7" aria-hidden="true" />
       <p>还没有笔记</p>
-      <button class="pill-btn" style="padding: 7px 18px; margin-top: 6px" @click="emit('create')">
+      <button class="pill-btn" style="margin-top: 6px" @click="emit('create')">
         新建笔记
       </button>
     </div>

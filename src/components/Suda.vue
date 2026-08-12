@@ -378,7 +378,7 @@ function cardAccentStyle(r: Resource) {
         </p>
         <button
           class="pill-btn"
-          style="padding: 7px 18px; margin-top: 6px"
+          style="margin-top: 6px"
           @click="editing = null; prefill = null; formVisible = true"
         >
           添加
@@ -478,7 +478,10 @@ function cardAccentStyle(r: Resource) {
   width: 124px;
   min-width: 0;
   padding: 15px 8px 12px;
-  background: var(--bg-card-soft);
+  /* 比外层玻璃面板更实的底 + 描边 + 投影，与面板拉开层次 */
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-card);
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: transform 0.18s, box-shadow 0.18s;

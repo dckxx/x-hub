@@ -597,7 +597,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   align-items: center;
   gap: 12px;
   background: var(--text-1);
-  color: var(--bg-card);
+  color: var(--text-on-accent);
   font-size: 13px;
   font-weight: 500;
   padding: 9px 18px;
@@ -616,7 +616,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 .toast-action {
   flex-shrink: 0;
   border: none;
-  background: color-mix(in srgb, var(--bg-card) 22%, transparent);
+  background: color-mix(in srgb, var(--text-on-accent) 10%, transparent);
   color: inherit;
   font-size: 12px;
   font-weight: 700;
@@ -626,7 +626,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   transition: background 0.15s;
 }
 .toast-action:hover {
-  background: color-mix(in srgb, var(--bg-card) 38%, transparent);
+  background: color-mix(in srgb, var(--text-on-accent) 14%, transparent);
 }
 .toast-enter-active,
 .toast-leave-active {

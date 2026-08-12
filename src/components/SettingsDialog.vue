@@ -28,9 +28,11 @@ function normalizeShortcutDisplay(s: string): string {
 }
 
 const shortcut = ref(normalizeShortcutDisplay(store.state.config.global_shortcut))
-const shortcutBusy = ref(false)
+const savedShortcut = ref(shortcut.value)
 const shortcutError = ref('')
 const shortcutListening = ref(false)
+const shortcutSaving = ref(false)
+const previousShortcut = ref('')
 const shortcutInputRef = ref<HTMLInputElement | null>(null)
 const pressedShortcutKeys = ref(new Set<string>())
 const shortcutNormalized = computed(() => shortcut.value.trim())
@@ -86,33 +88,46 @@ async function restoreData() {
   }
 }
 
-async function saveShortcut() {
-  if (!isTauri()) return
+// 自动保存：输入回车/失焦或录入完成后调用，无异常即生效，冲突或非法仅行内提示
+async function commitShortcut() {
+  if (!isTauri() || shortcutSaving.value) return
+  const value = shortcutNormalized.value
+  if (!value || value === savedShortcut.value) {
+    shortcutError.value = ''
+    return
+  }
+  shortcutSaving.value = true
   shortcutError.value = ''
-  shortcutBusy.value = true
   try {
-    const saved = await store.setGlobalShortcut(shortcutNormalized.value)
-    shortcut.value = normalizeShortcutDisplay(saved)
+    const saved = await store.setGlobalShortcut(value)
+    savedShortcut.value = normalizeShortcutDisplay(saved)
+    shortcut.value = savedShortcut.value
     showToast(`快捷键已更新为 ${saved}`)
   } catch (e) {
     shortcutError.value = String(e)
-    showToast(`快捷键设置失败：${String(e)}`)
     void reportClientError('设置全局快捷键失败', e)
   } finally {
-    shortcutBusy.value = false
+    shortcutSaving.value = false
   }
 }
 
 function startListeningShortcut() {
+  previousShortcut.value = shortcut.value
   shortcutListening.value = true
   shortcut.value = ''
   pressedShortcutKeys.value = new Set()
   void nextTick(() => shortcutInputRef.value?.focus())
 }
 
-function stopListeningShortcut() {
-  shortcutListening.value = false
-  pressedShortcutKeys.value = new Set()
+function onShortcutBlur() {
+  if (shortcutListening.value) {
+    // 录制中焦点离开：取消录制并恢复原值
+    shortcutListening.value = false
+    pressedShortcutKeys.value = new Set()
+    shortcut.value = previousShortcut.value
+    return
+  }
+  void commitShortcut()
 }
 
 function normalizeShortcutKey(e: KeyboardEvent) {
@@ -153,7 +168,9 @@ function onShortcutKeydown(e: KeyboardEvent) {
   e.preventDefault()
   e.stopPropagation()
   if (e.key === 'Escape') {
-    stopListeningShortcut()
+    shortcutListening.value = false
+    pressedShortcutKeys.value = new Set()
+    shortcut.value = previousShortcut.value
     return
   }
   if (['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) {
@@ -161,12 +178,14 @@ function onShortcutKeydown(e: KeyboardEvent) {
     shortcut.value = formatShortcutDisplay(pressedShortcutKeys.value)
     return
   }
-  // 主键按下即完成录制（一个快捷键只有一个主键），避免后续按键污染组合
+  // 主键按下即完成录制（一个快捷键只有一个主键），避免后续按键污染组合，随后自动保存
   pressedShortcutKeys.value.add(normalizeShortcutKey(e))
   const display = formatShortcutDisplay(pressedShortcutKeys.value)
   if (!display) return
   shortcut.value = display
-  stopListeningShortcut()
+  shortcutListening.value = false
+  pressedShortcutKeys.value = new Set()
+  void commitShortcut()
 }
 </script>
 
@@ -217,7 +236,7 @@ function onShortcutKeydown(e: KeyboardEvent) {
           <div class="setting-row shortcut-row">
             <div class="setting-info">
               <span class="setting-name">全局快捷键</span>
-              <span class="setting-desc">支持手动输入或按键录入，保存前会检查冲突</span>
+              <span class="setting-desc">支持手动输入或按键录入，无冲突自动保存</span>
             </div>
             <div class="shortcut-edit">
               <div class="shortcut-input-wrap">
@@ -231,15 +250,13 @@ function onShortcutKeydown(e: KeyboardEvent) {
                   :readonly="shortcutListening"
                   placeholder="Ctrl+Shift+Space"
                   @keydown="onShortcutKeydown"
-                  @blur="stopListeningShortcut"
+                  @keydown.enter="commitShortcut"
+                  @blur="onShortcutBlur"
                 />
                 <button class="shortcut-record-btn" type="button" @click="startListeningShortcut">
-                  {{ shortcutListening ? '按下组合键…' : '录入快捷键' }}
+                  {{ shortcutListening ? '按下组合键…' : '录入' }}
                 </button>
               </div>
-              <button class="ghost-btn data-btn" :disabled="shortcutBusy" @click="saveShortcut">
-                {{ shortcutBusy ? '保存中' : '保存快捷键' }}
-              </button>
             </div>
           </div>
           <p v-if="shortcutError" class="shortcut-error">{{ shortcutError }}</p>
@@ -255,6 +272,12 @@ function onShortcutKeydown(e: KeyboardEvent) {
 </template>
 
 <style scoped>
+/* 设置项较多，覆盖全局 modal-card 的 400px，给行内容更舒展的空间 */
+.modal-card {
+  width: 520px;
+  padding: 28px;
+}
+
 .settings-head {
   display: flex;
   align-items: center;
@@ -306,11 +329,7 @@ function onShortcutKeydown(e: KeyboardEvent) {
   align-items: flex-start;
 }
 .shortcut-edit {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
-  min-width: 220px;
+  min-width: 240px;
 }
 .shortcut-input-wrap {
   width: 100%;

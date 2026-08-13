@@ -53,7 +53,11 @@ onUnmounted(() => {
           <span class="sm-item-value">{{ cpuPct() }}<em>%</em></span>
         </div>
         <div class="sm-bar">
-          <div class="sm-bar-fill" :style="{ transform: 'scaleX(' + cpuPct() / 100 + ')' }"></div>
+          <div
+            class="sm-bar-fill"
+            :class="{ warn: cpuPct() >= 85 }"
+            :style="{ width: cpuPct() + '%' }"
+          ></div>
         </div>
       </div>
 
@@ -66,7 +70,11 @@ onUnmounted(() => {
           <span class="sm-item-value">{{ memPct() }}<em>%</em></span>
         </div>
         <div class="sm-bar">
-          <div class="sm-bar-fill" :style="{ transform: 'scaleX(' + memPct() / 100 + ')' }"></div>
+          <div
+            class="sm-bar-fill"
+            :class="{ warn: memPct() >= 85 }"
+            :style="{ width: memPct() + '%' }"
+          ></div>
         </div>
         <p class="sm-mem-label">{{ memLabel() }}</p>
       </div>
@@ -154,12 +162,14 @@ onUnmounted(() => {
   overflow: hidden;
 }
 .sm-bar-fill {
-  width: 100%;
   height: 100%;
+  min-width: 0;
   border-radius: var(--radius-pill);
-  background: var(--brand-500);
-  transform-origin: left center;
-  transition: transform 0.5s ease-out;
+  background: linear-gradient(90deg, var(--brand-600), var(--brand-500));
+  transition: width 0.5s ease-out;
+}
+.sm-bar-fill.warn {
+  background: linear-gradient(90deg, var(--c-orange), var(--c-red));
 }
 .sm-mem-label {
   margin: 0;

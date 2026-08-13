@@ -141,7 +141,7 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 
 - **Structure**: 标题行 + 分段（待办/已完成）、添加输入行、待办列表。
 - **States**: default、hover、done（删除线 + 降透明度）、highlight（全局搜索直达后 3s 高亮）。
-- **Interactions**: 勾选切换完成；**优先级圆点**（10px 纯色点：灰/黄/红 = 普通/重要/紧急，点击循环，hover 放大）；双击行内编辑；删除按钮 hover 显现；删除可撤销。
+- **Interactions**: 勾选切换完成；**优先级圆点**（10px 纯色点：中性灰 `--todo-pri-default`（亮 `#c6cad4` / 暗 `#52525f`）/ 黄 / 红 = 普通/重要/紧急，点击循环，hover 放大）；**多行显示**（自动换行，最多 5 行截断，超过时 hover 悬浮全文）；双击行内编辑；删除按钮 hover 显现；删除可撤销。
 - **Accessibility**: 分段使用 `role="tablist"`，优先级圆点可键盘触发，勾选/删除带 `aria-label`。
 
 ### 其他卡片组件
@@ -149,7 +149,7 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 | 组件 | 说明 |
 |---|---|
 | ClockCard | 时间 HH:mm + 日期星期，30s 轮询 |
-| SysMonitorCard | CPU/内存进度条 + 2s 轮询（sysinfo 后端） |
+| SysMonitorCard | CPU/内存进度条（品牌渐变，≥85% 红色警示渐变）+ 2s 轮询（sysinfo 后端） |
 | StickyCard | 便签 x2（slot 1/2），600ms 防抖自动保存 |
 | TokenStatsCard | 用量三指标 + 近 7 日迷你趋势，5min 自动刷新 + 手动刷新 |
 | PromptBoxCard | 提示词列表卡，点击复制 + 置顶标 + 管理入口 |

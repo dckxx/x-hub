@@ -486,7 +486,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  padding: 0 var(--space-6) var(--space-6) 0;
+  padding: 0 var(--space-3) var(--space-3) 0;
   background: transparent;
 }
 
@@ -543,7 +543,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 }
 
 @media (max-width: 1100px) {
-  .workspace { padding: 0 var(--space-5) var(--space-5) 0; }
+  .workspace { padding: 0 10px 10px 0; }
 }
 
 /* 960px 以下：三列改两列（左：时钟+系统+便签；右：Token+提示词/待办） */
@@ -574,7 +574,7 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
   .sidebar.collapsed .status-dot {
     display: initial;
   }
-  .workspace { padding: 0 var(--space-4) var(--space-4) 0; overflow-y: auto; }
+  .workspace { padding: 0 var(--space-2) var(--space-2) 0; overflow-y: auto; }
   .dash-grid { display: flex; flex-direction: column; gap: var(--space-4); }
   .dash-panel { flex: none; }
   .dash-clock { min-height: 120px; }

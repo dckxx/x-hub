@@ -143,16 +143,21 @@ watch(
         >
           <div class="pm-head">
             <h2 class="dialog-title">提示词管理</h2>
-            <button class="icon-btn" title="关闭" @click="emit('close')">
-              <X :size="14" :stroke-width="2" />
-            </button>
-          </div>
-
-          <div class="pm-add-bar">
-            <button class="ghost-btn pm-add-btn" type="button" @click="openAdd">
-              <Plus :size="14" :stroke-width="2" />
-              新增
-            </button>
+            <div class="pm-head-actions">
+              <button
+                v-if="!adding"
+                class="icon-btn pm-head-add"
+                type="button"
+                title="新增提示词"
+                aria-label="新增提示词"
+                @click="openAdd"
+              >
+                <Plus :size="15" :stroke-width="2" />
+              </button>
+              <button class="icon-btn" title="关闭" aria-label="关闭" @click="emit('close')">
+                <X :size="14" :stroke-width="2" />
+              </button>
+            </div>
           </div>
 
           <!-- 新增表单 -->
@@ -259,7 +264,7 @@ watch(
           </div>
 
           <div v-else-if="!adding" class="pm-empty">
-            <p>暂无提示词，点击「新增」添加第一条</p>
+            <p>暂无提示词，点击右上角 ＋ 添加第一条</p>
           </div>
         </div>
       </div>
@@ -286,13 +291,17 @@ watch(
   font-weight: 600;
   color: var(--text-1);
 }
-.pm-add-bar {
+.pm-head-actions {
   display: flex;
-  justify-content: flex-end;
-  margin-bottom: 12px;
+  align-items: center;
+  gap: 2px;
 }
-.pm-add-btn {
-  padding: 6px 14px;
+.pm-head-add {
+  width: 28px;
+  height: 28px;
+}
+.pm-head-add:hover {
+  color: var(--brand-500);
 }
 .pm-form {
   display: flex;

@@ -29,10 +29,36 @@ let highlightTimer: ReturnType<typeof setTimeout> | null = null
 
 const PRIORITY_LABELS = ['普通', '重要', '紧急'] as const
 const PRIORITY_BADGE = [
-  { bg: 'var(--c-gray-soft)' },
+  { bg: 'var(--todo-pri-default)' },
   { bg: 'var(--c-yellow-soft)' },
   { bg: 'var(--c-red-soft)' },
 ] as const
+
+// ---- 长待办悬浮全文（超过 5 行截断时展示） ----
+const tip = ref<{ visible: boolean; title: string; x: number; y: number }>({
+  visible: false,
+  title: '',
+  x: 0,
+  y: 0,
+})
+
+function showTip(e: MouseEvent, title: string) {
+  const el = e.currentTarget as HTMLElement
+  if (!el) return
+  // 仅当内容被截断（scrollHeight > clientHeight）时才需要悬浮全文
+  if (el.scrollHeight <= el.clientHeight + 2) return
+  const rect = el.getBoundingClientRect()
+  tip.value = {
+    visible: true,
+    title,
+    x: rect.left,
+    y: rect.bottom + 6,
+  }
+}
+
+function hideTip() {
+  tip.value.visible = false
+}
 
 const pendingTodos = computed(() =>
   store.state.todos
@@ -200,7 +226,15 @@ watch(
             @blur="commitEdit(t.id)"
           />
         </template>
-        <span v-else class="todo-label" :class="{ done: t.done }" @dblclick="startEdit(t)">
+        <span
+          v-else
+          class="todo-label"
+          :class="{ done: t.done }"
+          :data-tip="t.title"
+          @dblclick="startEdit(t)"
+          @mouseenter="showTip($event, t.title)"
+          @mouseleave="hideTip"
+        >
           {{ t.title }}
         </span>
 
@@ -215,6 +249,19 @@ watch(
         </div>
       </template>
     </div>
+
+    <Teleport to="body">
+      <Transition name="tip">
+        <div
+          v-if="tip.visible"
+          class="todo-tip"
+          :style="{ left: tip.x + 'px', top: tip.y + 'px' }"
+          role="tooltip"
+        >
+          {{ tip.title }}
+        </div>
+      </Transition>
+    </Teleport>
   </section>
 </template>
 
@@ -225,6 +272,10 @@ watch(
   flex-direction: column;
   padding: 16px;
   min-height: 0;
+  --todo-pri-default: #c6cad4;
+}
+[data-theme='dark'] .todo-card {
+  --todo-pri-default: #52525f;
 }
 .todo-header {
   display: flex;
@@ -349,10 +400,14 @@ watch(
   flex: 1;
   min-width: 0;
   font-size: 13px;
+  line-height: 1.45;
   color: var(--text-1);
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  word-break: break-word;
+  cursor: text;
 }
 .todo-label.done {
   text-decoration: line-through;
@@ -409,5 +464,32 @@ watch(
   font-size: 13px;
   font-weight: 600;
   color: var(--text-3);
+}
+
+.todo-tip {
+  position: fixed;
+  z-index: 900;
+  max-width: 340px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-dock);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+  pointer-events: none;
+  transform: translateY(0);
+}
+.tip-enter-active,
+.tip-leave-active {
+  transition: opacity 0.15s ease-out, transform 0.15s ease-out;
+}
+.tip-enter-from,
+.tip-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 </style>

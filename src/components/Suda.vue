@@ -465,8 +465,9 @@ function cardAccentStyle(r: Resource) {
   overflow-y: auto;
 }
 .suda-grid {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, 124px);
+  justify-content: center;
   gap: 10px;
 }
 .suda-card {

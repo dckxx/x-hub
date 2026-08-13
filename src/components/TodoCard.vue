@@ -337,7 +337,7 @@ watch(
 
 .todo-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 6px;
   border-radius: var(--radius-sm);
@@ -382,6 +382,7 @@ watch(
   flex-shrink: 0;
   width: 10px;
   height: 10px;
+  margin-top: 4px;
   border: none;
   border-radius: 50%;
   padding: 0;
@@ -430,6 +431,7 @@ watch(
 
 .todo-del {
   flex-shrink: 0;
+  align-self: center;
   width: 22px;
   height: 22px;
   border: none;

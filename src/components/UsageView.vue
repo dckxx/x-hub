@@ -19,11 +19,6 @@ function fmt(n: number | null | undefined): string {
   return String(v)
 }
 
-function fmtCost(c: number | null | undefined): string {
-  const v = c ?? 0
-  return '$' + (v >= 100 ? v.toFixed(0) : v.toFixed(2))
-}
-
 const today = computed(() => [
   { label: '今日输入', value: fmt(summary.value?.today_input), sub: '非缓存' },
   { label: '今日缓存', value: fmt(summary.value?.today_cache_input), sub: '缓存输入' },
@@ -134,7 +129,7 @@ onMounted(() => load())
             <div class="uv-provider-top">
               <span class="uv-provider-name">{{ p.provider }}</span>
               <span class="uv-provider-nums">
-                {{ fmt(p.input + p.cache_input) }} 输入 · {{ fmt(p.output) }} 输出 · {{ fmtCost(p.cost) }}
+                {{ fmt(p.input + p.cache_input) }} 输入 · {{ fmt(p.output) }} 输出
               </span>
             </div>
             <div class="uv-provider-bar">

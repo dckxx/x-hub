@@ -10,7 +10,7 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-6.x-3178c6?logo=typescript&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-1.77+-dea584?logo=rust&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-local-003b57?logo=sqlite&logoColor=white)
-![Version](https://img.shields.io/badge/version-0.1.9-blue)
+![Version](https://img.shields.io/badge/version-0.1.10-blue)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 </div>

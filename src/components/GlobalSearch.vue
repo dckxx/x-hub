@@ -240,7 +240,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   max-height: calc(100vh - 120px);
   display: flex;
   flex-direction: column;
-  background: var(--bg-card);
+  background: var(--bg-card-solid);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-dock);
   overflow: hidden;

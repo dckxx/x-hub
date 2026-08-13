@@ -142,8 +142,8 @@ watch(
           aria-modal="true"
         >
           <div class="pm-head">
-            <h2 class="dialog-title">提示词管理</h2>
-            <div class="pm-head-actions">
+            <div class="pm-head-title">
+              <h2 class="dialog-title">提示词管理</h2>
               <button
                 v-if="!adding"
                 class="icon-btn pm-head-add"
@@ -154,10 +154,10 @@ watch(
               >
                 <Plus :size="15" :stroke-width="2" />
               </button>
-              <button class="icon-btn" title="关闭" aria-label="关闭" @click="emit('close')">
-                <X :size="14" :stroke-width="2" />
-              </button>
             </div>
+            <button class="icon-btn" title="关闭" aria-label="关闭" @click="emit('close')">
+              <X :size="14" :stroke-width="2" />
+            </button>
           </div>
 
           <!-- 新增表单 -->
@@ -291,14 +291,14 @@ watch(
   font-weight: 600;
   color: var(--text-1);
 }
-.pm-head-actions {
+.pm-head-title {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 6px;
 }
 .pm-head-add {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
 }
 .pm-head-add:hover {
   color: var(--brand-500);

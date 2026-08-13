@@ -313,7 +313,7 @@ watch(
   width: 100%;
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
-  background: var(--bg-card-soft);
+  background: var(--input-bg);
   color: var(--text-1);
   font-size: 13px;
   font-family: inherit;
@@ -326,7 +326,7 @@ watch(
 .pm-textarea:focus {
   border-color: var(--brand-500);
   box-shadow: var(--shadow-focus);
-  background: var(--bg-card-solid);
+  background: color-mix(in srgb, var(--input-bg) 88%, #fff);
 }
 .pm-textarea::placeholder {
   color: var(--text-4);

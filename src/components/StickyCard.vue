@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
-import { StickyNote } from 'lucide-vue-next'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { PanelTopClose, StickyNote } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 
 const props = defineProps<{ slot: 1 | 2 }>()
@@ -8,6 +8,11 @@ const props = defineProps<{ slot: 1 | 2 }>()
 const store = useStore()
 const content = ref('')
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+// 是否已脱离为浮窗（决定 icon 是「脱离」还是「聚焦」）
+const detached = computed(() =>
+  store.state.detached.some((d) => d.slot === props.slot),
+)
 
 // 外部数据（初始加载 / 保存回显）同步到本地
 watch(
@@ -30,6 +35,27 @@ watch(content, () => {
 onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer)
 })
+
+// 脱离/聚焦切换：未脱离 → 脱离；已脱离 → 聚焦已有浮窗
+async function onDetachClick() {
+  if (detached.value) {
+    await store.focusDetachedSticky(props.slot)
+  } else {
+    // 先落盘当前输入，避免防抖缓存丢字
+    if (saveTimer) {
+      clearTimeout(saveTimer)
+      saveTimer = null
+      await store.saveSticky(props.slot, content.value)
+    }
+    try {
+      await store.detachSticky(props.slot)
+    } catch (e) {
+      // 后端已存在浮窗（并发场景），转为聚焦
+      await store.focusDetachedSticky(props.slot)
+      console.warn('detach sticky fallback to focus:', e)
+    }
+  }
+}
 </script>
 
 <template>
@@ -39,6 +65,16 @@ onBeforeUnmount(() => {
         <StickyNote :size="14" :stroke-width="2" aria-hidden="true" />
         <span>便签</span>
       </h3>
+      <button
+        class="icon-btn sticky-detach"
+        :class="{ active: detached }"
+        :title="detached ? '便签已脱离，点击聚焦浮窗' : '脱离为悬浮便签'"
+        :aria-label="detached ? '聚焦悬浮便签' : '脱离为悬浮便签'"
+        type="button"
+        @click="onDetachClick"
+      >
+        <PanelTopClose :size="14" :stroke-width="2" aria-hidden="true" />
+      </button>
     </header>
     <textarea
       v-model="content"
@@ -60,6 +96,7 @@ onBeforeUnmount(() => {
 .sticky-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   margin-bottom: 8px;
   flex-shrink: 0;
 }
@@ -76,12 +113,30 @@ onBeforeUnmount(() => {
 .sticky-title :deep(svg) {
   color: var(--brand-500);
 }
+.sticky-detach {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+.sticky-detach:hover {
+  color: var(--brand-500);
+  background: var(--brand-50);
+}
+.sticky-detach.active {
+  color: var(--brand-500);
+  background: var(--brand-50);
+}
+.sticky-detach.active svg {
+  stroke: var(--brand-500);
+  fill: color-mix(in srgb, var(--brand-500) 18%, transparent);
+}
 .sticky-input {
   flex: 1;
   min-height: 0;
   width: 100%;
   border: 1px solid var(--border-soft);
-  background: var(--bg-card-soft);
+  background: var(--input-bg);
   border-radius: var(--radius-md);
   resize: none;
   outline: none;
@@ -95,7 +150,7 @@ onBeforeUnmount(() => {
 .sticky-input:focus {
   border-color: var(--brand-500);
   box-shadow: var(--shadow-focus);
-  background: var(--bg-card-solid);
+  background: color-mix(in srgb, var(--input-bg) 88%, #fff);
 }
 .sticky-input::placeholder {
   color: var(--text-4);

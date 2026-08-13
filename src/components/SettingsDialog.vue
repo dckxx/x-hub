@@ -3,6 +3,7 @@ import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, toRef } fr
 import { open } from '@tauri-apps/plugin-dialog'
 import { Download, Keyboard, Lock, Upload, X } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
+import AppSelect from './AppSelect.vue'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { useStore } from '../stores/workbench'
 import { reportClientError } from '../utils/error-report'
@@ -49,6 +50,21 @@ function onKeydown(e: KeyboardEvent) {
 
 onMounted(() => window.addEventListener('keydown', onKeydown))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+
+// ---- 主页面「中上区块」显示内容（Token 统计 / 速记统计 / 待办概览 / 速达数量） ----
+const DASH_MID_OPTIONS = [
+  { value: 'token', label: 'Token 统计' },
+  { value: 'notes', label: '速记统计' },
+  { value: 'todo', label: '待办概览' },
+  { value: 'resources', label: '速达数量' },
+] as const
+
+function onDashboardMidChange(value: string) {
+  void store.setDashboardMidContent(value)
+  showToast(`主页面中上区块已切换为 ${
+    DASH_MID_OPTIONS.find((o) => o.value === value)?.label ?? value
+  }`)
+}
 
 // ---- 数据备份 / 恢复 ----
 const confirmRestore = ref(false)
@@ -233,6 +249,20 @@ function onShortcutKeydown(e: KeyboardEvent) {
             </button>
           </div>
 
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">工作台中上区块</span>
+              <span class="setting-desc">主页面中部展示的卡片内容（默认 Token 统计）</span>
+            </div>
+            <AppSelect
+              class="setting-select"
+              :model-value="store.state.config.dashboard_mid_content"
+              :options="DASH_MID_OPTIONS"
+              aria-label="主页面中上区块显示内容"
+              @update:model-value="onDashboardMidChange"
+            />
+          </div>
+
           <div class="setting-row shortcut-row">
             <div class="setting-info">
               <span class="setting-name">全局快捷键</span>
@@ -313,10 +343,13 @@ function onShortcutKeydown(e: KeyboardEvent) {
   color: var(--text-3);
 }
 
+.setting-select {
+  min-width: 150px;
+}
+
 .data-btn {
   padding: 7px 14px;
-}
-.data-btn.confirm {
+}.data-btn.confirm {
   background: var(--c-red);
   color: #fff;
 }
@@ -346,7 +379,7 @@ function onShortcutKeydown(e: KeyboardEvent) {
   width: 100%;
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
-  background: var(--bg-card-soft);
+  background: var(--input-bg);
   color: var(--text-1);
   font-size: 13px;
   font-family: inherit;

@@ -83,6 +83,17 @@ fn migrate(conn: &Connection) -> Result<()> {
           updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
         );
 
+        CREATE TABLE IF NOT EXISTS detached_stickies (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          slot INTEGER NOT NULL UNIQUE CHECK (slot IN (1, 2)),
+          content TEXT NOT NULL DEFAULT '',
+          x REAL,
+          y REAL,
+          always_on_top INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+        );
+
         CREATE TABLE IF NOT EXISTS snippets (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           title TEXT NOT NULL,

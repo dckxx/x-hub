@@ -40,6 +40,17 @@ export interface Sticky {
   updated_at: string
 }
 
+export interface DetachedSticky {
+  id: number
+  slot: number
+  content: string
+  x: number | null
+  y: number | null
+  always_on_top: boolean
+  created_at: string
+  updated_at: string
+}
+
 export interface Snippet {
   id: number
   title: string
@@ -63,6 +74,7 @@ export interface AppConfig {
   theme: string
   window: WindowState
   global_shortcut: string
+  dashboard_mid_content: string
 }
 
 export interface ClientErrorPayload {
@@ -81,6 +93,7 @@ export interface InitialData {
   notes: Note[]
   todos: Todo[]
   stickies: Sticky[]
+  detached: DetachedSticky[]
   tags: Tag[]
   usage_summary: UsageSummary
   config: AppConfig
@@ -229,8 +242,20 @@ export const tauriApi = {
     invoke<Todo>('update_todo', { id, title, priority }),
   deleteTodo: (id: number) => invoke<void>('delete_todo', { id }),
   listStickies: () => invoke<Sticky[]>('list_stickies'),
+  getDetachedStickies: () => invoke<DetachedSticky[]>('get_detached_stickies'),
   saveSticky: (slot: number, content: string) =>
     invoke<Sticky>('save_sticky', { slot, content }),
+  detachSticky: (slot: number) => invoke<DetachedSticky>('detach_sticky', { slot }),
+  focusDetachedSticky: (slot: number) =>
+    invoke<boolean>('focus_detached_sticky', { slot }),
+  saveDetachedSticky: (slot: number, content: string) =>
+    invoke<void>('save_detached_sticky', { slot, content }),
+  toggleDetachedStickyPin: (slot: number, alwaysOnTop: boolean) =>
+    invoke<void>('toggle_detached_sticky_pin', { slot, alwaysOnTop }),
+  restoreDetachedSticky: (slot: number) =>
+    invoke<number>('restore_detached_sticky', { slot }),
+  deleteDetachedSticky: (slot: number) =>
+    invoke<void>('delete_detached_sticky', { slot }),
   parseDroppedPath: (path: string) => invoke<DroppedAppInfo>('parse_dropped_path', { path }),
   importIconFile: (source: string) =>
     invoke<string | null>('import_icon_file', { source }),

@@ -34,6 +34,9 @@ pub struct AppConfig {
     pub usage_sync_cursor: i64,
     /// 手动指定的 opencode.db 路径
     pub usage_db_path: Option<String>,
+    /// 主页面「中上区块」显示内容：
+    /// token(默认 Token 统计) / notes(速记统计) / todo(待办概览) / resources(速达数量)
+    pub dashboard_mid_content: String,
 }
 
 impl Default for AppConfig {
@@ -44,6 +47,7 @@ impl Default for AppConfig {
             global_shortcut: crate::shortcut::DEFAULT_TOGGLE_SHORTCUT.to_string(),
             usage_sync_cursor: 0,
             usage_db_path: None,
+            dashboard_mid_content: "token".to_string(),
         }
     }
 }
@@ -108,6 +112,7 @@ mod tests {
         assert_eq!(c.window.width, 1400.0);
         assert!(!c.window.always_on_top);
         assert_eq!(c.global_shortcut, crate::shortcut::DEFAULT_TOGGLE_SHORTCUT);
+        assert_eq!(c.dashboard_mid_content, "token");
     }
 
     #[test]

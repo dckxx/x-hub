@@ -241,6 +241,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   display: flex;
   flex-direction: column;
   background: var(--bg-card-solid);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--border-soft);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-dock);
   overflow: hidden;

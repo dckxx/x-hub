@@ -4,6 +4,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { FolderOpen, ImagePlus, Link } from 'lucide-vue-next'
 import { isTauri, tauriApi, type Resource } from '../api/tauri'
 import { CATEGORIES, categorize } from '../utils/categories'
+import AppSelect from './AppSelect.vue'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { deriveFaviconUrl, joinWebTarget, splitWebTarget, type WebScheme } from '../utils/web'
 
@@ -40,6 +41,10 @@ const kind = ref<'app' | 'web' | 'file'>('app')
 const name = ref('')
 const target = ref('')
 const webScheme = ref<WebScheme>('https')
+const WEB_SCHEME_OPTIONS: { value: WebScheme; label: string }[] = [
+  { value: 'http', label: 'http://' },
+  { value: 'https', label: 'https://' },
+]
 const args = ref('')
 const icon = ref('')
 const category = ref<string>(CATEGORIES[0])
@@ -291,10 +296,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           <!-- 目标 -->
           <label class="field-label">{{ targetLabel }}</label>
           <div v-if="kind === 'web'" class="web-input-row">
-            <select v-model="webScheme" class="scheme-select" aria-label="网址协议">
-              <option value="http">http://</option>
-              <option value="https">https://</option>
-            </select>
+            <AppSelect
+              class="scheme-select"
+              :model-value="webScheme"
+              :options="WEB_SCHEME_OPTIONS"
+              aria-label="网址协议"
+              @update:model-value="webScheme = $event as WebScheme"
+            />
             <div class="input-with-btn web-target-wrap">
               <input
                 v-model="target"
@@ -472,13 +480,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   flex-shrink: 0;
   width: 92px;
   height: 38px;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
-  background: var(--bg-card-soft);
-  color: var(--text-2);
-  font-size: 13px;
-  padding: 0 10px;
-  outline: none;
 }
 .web-target-wrap {
   flex: 1;

@@ -60,6 +60,19 @@ pub struct Sticky {
     pub updated_at: String,
 }
 
+/// 脱离为系统级浮窗的便签（slot 对应来源卡片，一卡最多一个浮窗）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetachedSticky {
+    pub id: i64,
+    pub slot: i64,
+    pub content: String,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub always_on_top: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// 提示词百宝箱单条（可置顶、统计复制次数）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snippet {

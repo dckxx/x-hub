@@ -1,14 +1,14 @@
 use crate::config::AppConfig;
 use crate::models::{
-    Note, Resource, ResourceKind, SearchResult, Snippet, Sticky, SyncResult, Tag, Todo,
-    UsageDetail, UsageSummary,
+    DetachedSticky, Note, Resource, ResourceKind, SearchResult, Snippet, Sticky, SyncResult, Tag,
+    Todo, UsageDetail, UsageSummary,
 };
 use crate::process;
-use crate::repo::{note, resource, snippet, sticky, tag, todo};
+use crate::repo::{detached_sticky, note, resource, snippet, sticky, tag, todo};
 use crate::usage;
 use rusqlite::Connection;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 pub struct DbState(pub Mutex<Connection>);
 
@@ -20,15 +20,17 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
     let tags = tag::list(&conn).map_err(err_str)?;
     let todos = todo::list(&conn).map_err(err_str)?;
     let stickies = sticky::list(&conn).map_err(err_str)?;
+    let detached = detached_sticky::list(&conn).map_err(err_str)?;
     let usage_summary = usage::query_summary(&conn).map_err(err_str)?;
     let config = crate::config::load();
     log::info!(
-        "初始化数据加载完成: resources={} notes={} tags={} todos={} stickies={}",
+        "初始化数据加载完成: resources={} notes={} tags={} todos={} stickies={} detached={}",
         resources.len(),
         notes.len(),
         tags.len(),
         todos.len(),
-        stickies.len()
+        stickies.len(),
+        detached.len()
     );
     Ok(InitialData {
         resources,
@@ -36,6 +38,7 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
         tags,
         todos,
         stickies,
+        detached,
         usage_summary,
         config,
     })
@@ -48,6 +51,7 @@ pub struct InitialData {
     pub tags: Vec<Tag>,
     pub todos: Vec<Todo>,
     pub stickies: Vec<Sticky>,
+    pub detached: Vec<DetachedSticky>,
     pub usage_summary: UsageSummary,
     pub config: AppConfig,
 }
@@ -282,6 +286,164 @@ pub fn save_sticky(
     let sticky = sticky::upsert(&conn, slot, &content).map_err(err_str)?;
     log::debug!("保存便签: slot={} 内容 {} 字", slot, content.chars().count());
     Ok(sticky)
+}
+
+// ---------- 便签脱离浮窗 ----------
+
+/// 列出所有已脱离的浮窗便签（启动恢复 / 前端同步用）
+#[tauri::command]
+pub fn get_detached_stickies(state: State<'_, DbState>) -> Result<Vec<DetachedSticky>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    detached_sticky::list(&conn).map_err(err_str)
+}
+
+/// 将便签卡脱离为系统级浮窗：
+/// 复制原卡内容到 detached_stickies → 清空原卡 → 创建浮窗。
+/// 若该卡已有浮窗则改为聚焦已有浮窗（每卡最多一个）。
+/// 必须 async：同步命令运行在主线程，会与 WebviewWindow 创建互相阻塞（死锁）。
+#[tauri::command]
+pub async fn detach_sticky(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    slot: i64,
+) -> Result<DetachedSticky, String> {
+    if !(1..=2).contains(&slot) {
+        return Err("便签槽位取值 1-2".into());
+    }
+    // 已存在浮窗：聚焦并直接返回
+    if let Some(existing) = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        detached_sticky::get_by_slot(&conn, slot).map_err(err_str)?
+    } {
+        crate::sticky_window::focus(&app, slot);
+        return Ok(existing);
+    }
+
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let origin = sticky::get_by_slot(&conn, slot).map_err(err_str)?;
+    let content = origin.map(|s| s.content).unwrap_or_default();
+
+    let saved = detached_sticky::upsert(&conn, slot, &content, None, None, true).map_err(err_str)?;
+    // 脱离 = 复制并清空原卡，之后各自独立
+    sticky::upsert(&conn, slot, "").map_err(err_str)?;
+    drop(conn);
+
+    let win = crate::sticky_window::create_or_focus(&app, slot, saved.x, saved.y, true)
+        .map_err(|e| format!("创建浮窗失败: {}", e))?;
+    log::info!("便签脱离浮窗: slot={} 内容 {} 字", slot, content.chars().count());
+    drop(win);
+
+    Ok(saved)
+}
+
+/// 再次点击脱离 icon 时聚焦已有浮窗（无浮窗则返回 false）
+#[tauri::command]
+pub async fn focus_detached_sticky(app: tauri::AppHandle, slot: i64) -> Result<bool, String> {
+    if !(1..=2).contains(&slot) {
+        return Err("便签槽位取值 1-2".into());
+    }
+    Ok(crate::sticky_window::focus(&app, slot))
+}
+
+/// 浮窗内容随输入保存（防抖由前端处理）
+#[tauri::command]
+pub fn save_detached_sticky(
+    state: State<'_, DbState>,
+    slot: i64,
+    content: String,
+) -> Result<(), String> {
+    if !(1..=2).contains(&slot) {
+        return Err("便签槽位取值 1-2".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    detached_sticky::update_content(&conn, slot, &content).map_err(err_str)?;
+    log::debug!("保存浮窗便签: slot={} 内容 {} 字", slot, content.chars().count());
+    Ok(())
+}
+
+/// 切换浮窗置顶（默认置顶，点击可切换）
+#[tauri::command]
+pub async fn toggle_detached_sticky_pin(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    slot: i64,
+    always_on_top: bool,
+) -> Result<(), String> {
+    if !(1..=2).contains(&slot) {
+        return Err("便签槽位取值 1-2".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    detached_sticky::update_pin(&conn, slot, always_on_top).map_err(err_str)?;
+    drop(conn);
+    if let Some(win) = app.get_webview_window(&crate::sticky_window::window_label(slot)) {
+        let _ = win.set_always_on_top(always_on_top);
+    }
+    log::info!("浮窗置顶切换: slot={} 置顶={}", slot, always_on_top);
+    Ok(())
+}
+
+/// 还原浮窗到主面板：写入空闲槽（slot1/2 哪个空写哪个），
+/// 两个槽都有内容则失败（由前端改为询问删除）。还原成功后浮窗数据删除（收回）。
+#[tauri::command]
+pub async fn restore_detached_sticky(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    slot: i64,
+) -> Result<i64, String> {
+    if !(1..=2).contains(&slot) {
+        return Err("便签槽位取值 1-2".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let detached = detached_sticky::get_by_slot(&conn, slot)
+        .map_err(err_str)?
+        .ok_or_else(|| "浮窗便签不存在".to_string())?;
+
+    // 找空闲槽：优先原槽（脱离时已清空），否则另一个槽
+    let occupied = |s: i64| -> bool {
+        sticky::get_by_slot(&conn, s)
+            .ok()
+            .flatten()
+            .map(|x| !x.content.trim().is_empty())
+            .unwrap_or(false)
+    };
+    let target_slot = if !occupied(slot) {
+        slot
+    } else if !occupied(3 - slot) {
+        3 - slot
+    } else {
+        return Err("两个便签槽都有内容，无法还原，只能删除".into());
+    };
+
+    let content = detached.content.clone();
+    sticky::upsert(&conn, target_slot, &content).map_err(err_str)?;
+    detached_sticky::delete_by_slot(&conn, slot).map_err(err_str)?;
+    drop(conn);
+
+    crate::sticky_window::destroy(&app, slot);
+    log::info!("浮窗便签还原: slot={} -> 主面板槽位 {}", slot, target_slot);
+
+    // 通知主窗口刷新便签数据
+    let _ = app.emit("stickies-changed", ());
+    Ok(target_slot)
+}
+
+/// 删除浮窗便签（浮窗数据彻底删除）
+#[tauri::command]
+pub async fn delete_detached_sticky(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    slot: i64,
+) -> Result<(), String> {
+    if !(1..=2).contains(&slot) {
+        return Err("便签槽位取值 1-2".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    detached_sticky::delete_by_slot(&conn, slot).map_err(err_str)?;
+    drop(conn);
+
+    crate::sticky_window::destroy(&app, slot);
+    log::info!("删除浮窗便签: slot={}", slot);
+    Ok(())
 }
 
 // ---------- 提示词百宝箱 ----------

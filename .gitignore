@@ -39,3 +39,6 @@ skills-lock.json
 screenshot-dashboard.png
 src-tauri/target/
 
+# Build artifacts
+x-hub-*.zip
+

@@ -5,6 +5,7 @@ mod models;
 mod process;
 mod repo;
 mod shortcut;
+mod sticky_window;
 mod sysmon;
 mod tray;
 mod usage;
@@ -207,6 +208,15 @@ pub fn run() {
 
             restore_window_state(app);
 
+            // 恢复上次已脱离的浮窗便签（位置/置顶/内容均持久化）
+            {
+                let state = app.state::<DbState>();
+                let conn = state.0.lock().map_err(|e| e.to_string())?;
+                let detached = crate::repo::detached_sticky::list(&conn).unwrap_or_default();
+                drop(conn);
+                sticky_window::restore_all(app.handle(), &detached);
+            }
+
             // 关闭事件：拦截默认关闭，改为隐藏至托盘
             if let Some(window) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
@@ -257,6 +267,13 @@ pub fn run() {
             commands::delete_todo,
             commands::list_stickies,
             commands::save_sticky,
+            commands::get_detached_stickies,
+            commands::detach_sticky,
+            commands::focus_detached_sticky,
+            commands::save_detached_sticky,
+            commands::toggle_detached_sticky_pin,
+            commands::restore_detached_sticky,
+            commands::delete_detached_sticky,
             commands::list_snippets,
             commands::create_snippet,
             commands::update_snippet,

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { listen } from '@tauri-apps/api/event'
 import TitleBar from '../components/TitleBar.vue'
 import TodoCard from '../components/TodoCard.vue'
 import Suda from '../components/Suda.vue'
@@ -9,6 +10,9 @@ import NoteEditor from '../components/NoteEditor.vue'
 import GlobalSearch from '../components/GlobalSearch.vue'
 import SettingsDialog from '../components/SettingsDialog.vue'
 import TokenStatsCard from '../components/TokenStatsCard.vue'
+import NotesOverviewCard from '../components/NotesOverviewCard.vue'
+import TodoOverviewCard from '../components/TodoOverviewCard.vue'
+import ResourcesOverviewCard from '../components/ResourcesOverviewCard.vue'
 import SysMonitorCard from '../components/SysMonitorCard.vue'
 import PromptBoxCard from '../components/PromptBoxCard.vue'
 import PromptManageDialog from '../components/PromptManageDialog.vue'
@@ -49,6 +53,46 @@ function openPromptManage() {
   promptManageVisible.value = true
 }
 
+// ---- 主页面「中上区块」内容（Token 统计 / 速记统计 / 待办概览 / 速达数量，设置中切换） ----
+const dashMidContent = computed(() => store.state.config.dashboard_mid_content)
+const dashMidCard = computed(() => {
+  switch (dashMidContent.value) {
+    case 'notes':
+      return NotesOverviewCard
+    case 'todo':
+      return TodoOverviewCard
+    case 'resources':
+      return ResourcesOverviewCard
+    default:
+      return TokenStatsCard
+  }
+})
+const dashMidProps = computed(() => {
+  switch (dashMidContent.value) {
+    case 'token':
+      return { onOpenDetail: openUsageDetail }
+    case 'notes':
+      return { onOpenDetail: openNotes }
+    case 'todo':
+      return { onOpenDetail: openTodo }
+    case 'resources':
+      return { onOpenDetail: openSuda }
+    default:
+      return { onOpenDetail: openUsageDetail }
+  }
+})
+
+function openNotes() {
+  activeView.value = 'notes'
+}
+function openSuda() {
+  activeView.value = 'suda'
+}
+// 待办概览卡的「去待办」：待办卡就在工作台，直接切回工作台即可
+function openTodo() {
+  activeView.value = 'dashboard'
+}
+
 // ---- 主题（跟随配置，持久化） ----
 const theme = computed(() => store.state.config.theme)
 const isDark = computed(() => theme.value === 'dark')
@@ -69,6 +113,20 @@ onMounted(async () => {
   store.loadInitialData().then(() => revealWindow())
   // 兜底：无论数据是否加载成功，最多 1.5s 后显示窗口，避免一直不可见
   setTimeout(revealWindow, 1500)
+  // 浮窗便签还原/删除后，主窗口实时同步便签与脱离状态
+  if (isTauri()) {
+    unlistenStickies = await listen('stickies-changed', () => {
+      store.refreshStickies()
+    })
+  }
+  window.addEventListener('keydown', onSearchKeydown)
+})
+
+let unlistenStickies: (() => void) | null = null
+
+onUnmounted(() => {
+  unlistenStickies?.()
+  window.removeEventListener('keydown', onSearchKeydown)
 })
 
 function revealWindow() {
@@ -167,8 +225,6 @@ function showToast(msg: string, action?: ToastAction) {
 
 provide('showToast', showToast)
 
-onMounted(() => window.addEventListener('keydown', onSearchKeydown))
-onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
 </script>
 
 <template>
@@ -245,7 +301,11 @@ onUnmounted(() => window.removeEventListener('keydown', onSearchKeydown))
               <StickyCard :slot="2" />
             </div>
           </div>
-          <TokenStatsCard class="dash-panel dash-usage" :on-open-detail="openUsageDetail" />
+          <component
+            :is="dashMidCard"
+            class="dash-panel dash-usage"
+            :on-open-detail="dashMidProps.onOpenDetail"
+          />
           <PromptBoxCard class="dash-panel dash-prompts" :on-open-manage="openPromptManage" />
           <TodoCard class="dash-panel dash-todo" :highlight-id="highlightTodoId" />
           <RecentBar class="dash-panel dash-recent" @go-suda="activeView = 'suda'" />

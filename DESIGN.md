@@ -16,7 +16,8 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 | Sidebar | `--bg-sidebar` | `rgba(255,255,255,.42)` | `rgba(255,255,255,.05)` | 固定导航栏 |
 | Surface | `--bg-card` | `rgba(255,255,255,.52)` | `rgba(255,255,255,.06)` | 主面板玻璃卡 |
 | Surface solid | `--bg-card-solid` | `rgba(255,255,255,.75)` | `rgba(255,255,255,.10)` | 弹窗、浮层 |
-| Surface soft | `--bg-card-soft` | `rgba(255,255,255,.40)` | `rgba(255,255,255,.07)` | 控件、列表 hover |
+| Surface soft | `--bg-card-soft` | `rgba(255,255,255,.40)` | `rgba(255,255,255,.07)` | 列表 hover |
+| Input field | `--input-bg` | `rgba(255,255,255,.72)` | `#1a1b24` | 输入框、下拉框背景（暗色下不透明，避免 color-scheme 退化透出原生白色层） |
 | Text primary | `--text-1` | `#26231d` | `#f2efe8` | 标题、正文 |
 | Text secondary | `--text-2` | `#57524a` | `#ccc8bf` | 辅助信息 |
 | Text muted | `--text-3` | `#8d877d` | `#9b968c` | 元数据、图标 |

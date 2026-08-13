@@ -3,6 +3,7 @@ import {
   tauriApi,
   isTauri,
   type AppConfig,
+  type DetachedSticky,
   type Note,
   type Resource,
   type Snippet,
@@ -28,6 +29,7 @@ interface StoreState {
   notes: Note[]
   todos: Todo[]
   stickies: Sticky[]
+  detached: DetachedSticky[]
   snippets: Snippet[]
   tags: Tag[]
   config: AppConfig
@@ -43,6 +45,7 @@ const state = reactive<StoreState>({
   notes: [],
   todos: [],
   stickies: [],
+  detached: [],
   snippets: [],
   tags: [],
   config: {
@@ -55,6 +58,7 @@ const state = reactive<StoreState>({
       always_on_top: false,
     },
     global_shortcut: DEFAULT_GLOBAL_SHORTCUT,
+    dashboard_mid_content: 'token',
   },
   usageSummary: null,
   usageDetail: null,
@@ -75,6 +79,7 @@ export function useStore() {
     state.notes = data.notes
     state.todos = data.todos
     state.stickies = data.stickies
+    state.detached = data.detached
     state.tags = data.tags
     state.usageSummary = data.usage_summary
     state.config = data.config
@@ -305,6 +310,61 @@ export function useStore() {
     return s
   }
 
+  // ---- 便签脱离浮窗 ----
+  /** 脱离：复制内容到浮窗并清空原卡；该卡已有浮窗则聚焦 */
+  async function detachSticky(slot: number) {
+    const d = await tauriApi.detachSticky(slot)
+    const i = state.detached.findIndex((x) => x.slot === slot)
+    if (i >= 0) state.detached[i] = d
+    else state.detached.push(d)
+    // 原卡已被清空，同步本地状态
+    const si = state.stickies.findIndex((x) => x.slot === slot)
+    if (si >= 0) state.stickies[si].content = ''
+    return d
+  }
+
+  async function focusDetachedSticky(slot: number) {
+    if (!isTauri()) return false
+    return tauriApi.focusDetachedSticky(slot)
+  }
+
+  /** 浮窗输入保存（600ms 防抖由浮窗组件处理） */
+  async function saveDetachedSticky(slot: number, content: string) {
+    if (!isTauri()) return
+    await tauriApi.saveDetachedSticky(slot, content)
+  }
+
+  async function toggleDetachedStickyPin(slot: number, value: boolean) {
+    if (!isTauri()) return
+    await tauriApi.toggleDetachedStickyPin(slot, value)
+    const d = state.detached.find((x) => x.slot === slot)
+    if (d) d.always_on_top = value
+  }
+
+  /** 还原到主面板：返回写入的槽位 */
+  async function restoreDetachedSticky(slot: number) {
+    const target = await tauriApi.restoreDetachedSticky(slot)
+    state.detached = state.detached.filter((x) => x.slot !== slot)
+    return target
+  }
+
+  /** 删除浮窗便签 */
+  async function deleteDetachedSticky(slot: number) {
+    if (isTauri()) await tauriApi.deleteDetachedSticky(slot)
+    state.detached = state.detached.filter((x) => x.slot !== slot)
+  }
+
+  /** 收到后端 stickies-changed 事件时刷新（还原/删除后主窗口同步） */
+  async function refreshStickies() {
+    if (!isTauri()) return
+    const [stickies, detached] = await Promise.all([
+      tauriApi.listStickies(),
+      tauriApi.getDetachedStickies().catch(() => [] as DetachedSticky[]),
+    ])
+    state.stickies = stickies
+    state.detached = detached
+  }
+
   // ---- 标签 ----
   async function createTag(name: string) {
     const t = await tauriApi.createTag(name)
@@ -343,6 +403,13 @@ export function useStore() {
     const saved = await tauriApi.setGlobalShortcut(value)
     state.config.global_shortcut = saved
     return saved
+  }
+
+  /** 主页面「中上区块」显示内容：token/notes/todo/resources */
+  async function setDashboardMidContent(value: string) {
+    state.config.dashboard_mid_content = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
   }
 
   // ---- AI 用量 ----
@@ -398,12 +465,20 @@ export function useStore() {
     updateTodo,
     deleteTodo,
     saveSticky,
+    detachSticky,
+    focusDetachedSticky,
+    saveDetachedSticky,
+    toggleDetachedStickyPin,
+    restoreDetachedSticky,
+    deleteDetachedSticky,
+    refreshStickies,
     createTag,
     deleteTag,
     loadNoteTagsMap,
     setTheme,
     setAlwaysOnTop,
     setGlobalShortcut,
+    setDashboardMidContent,
     refreshUsage,
     loadUsageSummary,
     loadUsageDetail,

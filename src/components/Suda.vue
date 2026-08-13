@@ -466,8 +466,8 @@ function cardAccentStyle(r: Resource) {
 }
 .suda-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, 124px);
-  justify-content: center;
+  grid-template-columns: repeat(auto-fill, 124px);
+  justify-content: space-between;
   gap: 10px;
 }
 .suda-card {

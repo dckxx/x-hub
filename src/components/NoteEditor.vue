@@ -270,7 +270,7 @@ function formatSavedTime(iso: string): string {
   flex: 1;
   min-width: 0;
   border: 1px solid var(--border-soft);
-  background: var(--bg-card-soft);
+  background: var(--input-bg);
   border-radius: var(--radius-md);
   font-size: 16px;
   font-weight: 600;
@@ -302,7 +302,7 @@ function formatSavedTime(iso: string): string {
   min-height: 0;
   width: 100%;
   border: 1px solid var(--border-soft);
-  background: var(--bg-card-soft);
+  background: var(--input-bg);
   border-radius: var(--radius-md);
   resize: none;
   outline: none;
@@ -464,7 +464,7 @@ function formatSavedTime(iso: string): string {
 .tag-input {
   width: 130px;
   border: 1px solid var(--border-soft);
-  background: var(--bg-card-soft);
+  background: var(--input-bg);
   border-radius: var(--radius-sm);
   color: var(--text-1);
   font-size: 12px;

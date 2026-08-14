@@ -1,6 +1,6 @@
 # x-hub (个人效率工作台)
 
-**生成:** 2026-08-13 | **分支:** master | **版本:** 0.1.11
+**生成:** 2026-08-13 | **分支:** master | **版本:** 0.1.12
 
 ## 概述
 
@@ -74,7 +74,7 @@ x-hub/
 
 - **设计令牌**：全部定义在 `src/style.css`（CSS 变量，亮色 `:root` + 暗色 `[data-theme="dark"]` 覆盖），组件一律引用变量，禁止硬编码色值
 - **主色**：品牌靛紫 `#5B5BF5`（`--brand-500`，暗色 `#8b8bff`），仅用于强调态（选中、激活、焦点环）
-- **玻璃卡片**：半透明底 `--bg-card` + `--shadow-card` + `--radius-lg`(12px)，内部控件 8px
+- **玻璃卡片**：常驻表面用 `--frost-surface`（静态烘焙渐变伪毛玻璃）+ `--frost-edge` 顶部高光 + `--shadow-card` + `--radius-lg`(12px)，内部控件 8px；真 `backdrop-filter` 仅用于弹窗/菜单/下拉等瞬态表面（性能策略见 DESIGN.md §7）
 - **强调色**：`--c-yellow/red/blue/green/pink/orange/purple/gray` 8 色 + ink/soft 变体，资源图标按名称 hash 取色（`useResourceIcon`）
 - **字体层级**：Section title 16/650、Body 13、Caption 12、Micro 11（见 DESIGN.md §3）
 - **布局**：`app-body` 两栏 Grid（220px 侧栏 / 56px 收起态）；工作台为三列 Bento 网格；速记/速达/用量为独立视图
@@ -122,6 +122,7 @@ x-hub/
 16. **文件选择：** 已集成 tauri-plugin-dialog（`dialog:allow-open` 权限）；SudaFormDialog 路径/图标输入框右侧有选择按钮，选 exe/lnk 自动解析名称与图标，选图标文件经 `import_icon_file` 存入 icons 目录
 17. **AI 用量：** `usage.rs` 从 opencode 数据库按 message 粒度同步到 `ai_usage` 表（游标 `usage_sync_cursor` 持久化在 config），避免长会话跨天归因错误；`sync_ai_usage`/`get_usage_summary`/`get_usage_detail` 三命令；汇总含今日/7日/月/累计与今日调用次数
 18. **系统监视：** `sysmon.rs` 用 sysinfo crate 返回 CPU/内存，2s 轮询（SysMonitorCard.vue）
+19. **GPU 性能约束（v0.1.12）：** 常驻卡片禁用 `backdrop-filter`，一律用 `--frost-surface` 静态烘焙渐变模拟毛玻璃；`backdrop-filter` 只允许出现在瞬态层（弹窗/菜单/下拉/tooltip）；周期性更新的进度条用 `transform: scaleX` 而非 `width`，避免触发布局重排
 
 ## 命令速查
 

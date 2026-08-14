@@ -1,6 +1,6 @@
 # x-hub Design System
 
-> 版本对齐：v0.1.8。本文档为当前实现的唯一设计基线，UI 改动以本文件 + `src/style.css` 为准。
+> 版本对齐：v0.1.12。本文档为当前实现的唯一设计基线，UI 改动以本文件 + `src/style.css` 为准。
 
 ## 1. Atmosphere & Identity
 
@@ -13,11 +13,13 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 | Role | Token | Light | Dark | Usage |
 |---|---|---|---|---|
 | Page | `--bg-page` | `#eceff6` | `#12131b` | 工作区底色 |
-| Sidebar | `--bg-sidebar` | `rgba(255,255,255,.42)` | `rgba(255,255,255,.05)` | 固定导航栏 |
-| Surface | `--bg-card` | `rgba(255,255,255,.52)` | `rgba(255,255,255,.06)` | 主面板玻璃卡 |
-| Surface solid | `--bg-card-solid` | `rgba(255,255,255,.75)` | `rgba(255,255,255,.10)` | 弹窗、浮层 |
-| Surface soft | `--bg-card-soft` | `rgba(255,255,255,.40)` | `rgba(255,255,255,.07)` | 列表 hover |
-| Input field | `--input-bg` | `rgba(255,255,255,.72)` | `#1a1b24` | 输入框、下拉框背景（暗色下不透明，避免 color-scheme 退化透出原生白色层） |
+| Sidebar | `--bg-sidebar` | `rgba(255,255,255,.62)` | `rgba(255,255,255,.08)` | 固定导航栏 |
+| Surface | `--bg-card` | `rgba(255,255,255,.74)` | `rgba(255,255,255,.12)` | 主面板玻璃卡 |
+| Surface solid | `--bg-card-solid` | `rgba(255,255,255,.88)` | `rgba(255,255,255,.20)` | 弹窗、浮层 |
+| Surface soft | `--bg-card-soft` | `rgba(255,255,255,.55)` | `rgba(255,255,255,.10)` | 列表 hover |
+| Input field | `--input-bg` | `rgba(255,255,255,.86)` | `#1d1e29` | 输入框、下拉框背景（暗色下不透明，避免 color-scheme 退化透出原生白色层） |
+| Frost surface | `--frost-surface` | 靛蓝/粉/蓝三色径向渐变 + 半透明白基底 | 同构暗色版 | 常驻卡片伪毛玻璃底色（静态烘焙，见 §7） |
+| Frost edge | `--frost-edge` | `inset 0 1px 0 rgba(255,255,255,.55)` | `inset 0 1px 0 rgba(255,255,255,.10)` | 卡片顶部玻璃反光高光 |
 | Text primary | `--text-1` | `#26231d` | `#f2efe8` | 标题、正文 |
 | Text secondary | `--text-2` | `#57524a` | `#ccc8bf` | 辅助信息 |
 | Text muted | `--text-3` | `#8d877d` | `#9b968c` | 元数据、图标 |
@@ -47,7 +49,7 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 ### Rules
 
 - 采用 restrained palette；靛紫只表达当前选择、可执行主操作和键盘焦点。
-- 卡片使用半透明玻璃底色 + 阴影分层，不使用纯色装饰条或渐变。
+- 卡片使用「半透明玻璃底色 + 静态烘焙渐变 + 阴影分层」实现磨砂观感（见 §7），不使用纯色装饰条或实时渐变动画。
 - 状态不能只依靠颜色：当前导航同时使用背景、字重和图标位置变化。
 
 ## 3. Typography
@@ -135,8 +137,9 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 
 ### Glass card（基础卡片）
 
-- 半透明玻璃底色（`--bg-card`）+ `--shadow-card` + `--radius-lg`(12px)，内部控件 `--radius-md`(8px)。
+- 常驻表面统一使用 `--frost-surface` 伪毛玻璃底色（烘焙渐变 + 半透明基底）+ `--frost-edge` 顶部高光 + `--shadow-card` + `--radius-lg`(12px)，内部控件 `--radius-md`(8px)。
 - 所有工作台卡片同一高度语义；标题行（icon + 标题 + 右侧动作）统一 16px/650。
+- 真 `backdrop-filter` 仅保留给弹窗、右键菜单、下拉、tooltip 等瞬态表面（一次性打开成本），常驻卡片不启用（详见 §7）。
 
 ### Todo card
 
@@ -150,7 +153,7 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 | 组件 | 说明 |
 |---|---|
 | ClockCard | 时间 HH:mm + 日期星期，30s 轮询 |
-| SysMonitorCard | CPU/内存进度条（品牌渐变，≥85% 红色警示渐变）+ 2s 轮询（sysinfo 后端） |
+| SysMonitorCard | CPU/内存进度条（品牌渐变，≥85% 红色警示渐变）+ 2s 轮询（sysinfo 后端）；进度条用 `transform: scaleX` 动画（走合成器，不触发布局重排） |
 | StickyCard | 便签 x2（slot 1/2），600ms 防抖自动保存 |
 | TokenStatsCard | 用量三指标 + 近 7 日迷你趋势，5min 自动刷新 + 手动刷新 |
 | PromptBoxCard | 提示词列表卡，点击复制 + 置顶标 + 管理入口 |
@@ -174,3 +177,12 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 ## 7. Depth & Surface
 
 采用 mixed strategy：页面、侧栏和面板使用 tonal shift（玻璃半透明）；弹窗和拖拽目标保留轻量阴影/边框。主面板圆角 12px，内部控件圆角 8px，禁止 24px 以上的卡片圆角。背景保持稳定，层次来自明度与间距，而非玻璃装饰。
+
+### 玻璃拟态与性能（v0.1.12 起）
+
+为把 GPU 占用压到低位，毛玻璃效果按「常驻 / 瞬态」分两层实现：
+
+- **常驻表面（卡片 `.card`、用量卡 `.uv-card` / `.uv-section`）= 伪毛玻璃**：页面背景是静态渐变（`body` 的 radial/linear），因此把"背景被模糊后的柔和晕染"直接烘焙成卡片自身的多层静态渐变（`--frost-surface`，靛蓝/粉/蓝三色低透明径向斑 + 半透明基底），加 `--frost-edge` 顶部内高光模拟玻璃反光。这些层只绘制一次、之后零计算。
+- **瞬态表面（`.modal-card` / `.ctx-menu` / 下拉 / tooltip / 关闭确认遮罩）= 真 `backdrop-filter`**：弹窗、菜单、下拉这类"打开一下就消失"的层保留真实背景模糊，一次性打开成本，不影响常驻开销。
+- **不动画布局属性**：进度条等周期性刷新一律用 `transform`（走合成器），禁用 `width/height` 这类触发布局重排的属性。
+- 收益：磨砂观感保留（透出背景色 + 玻璃边缘反光），但常驻卡片的 GPU 重采样成本归零，整体占用从 ~26% 明显回落。

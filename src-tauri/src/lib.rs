@@ -176,6 +176,15 @@ fn persist_window_state(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 单实例：重复双击 exe 时不另起新进程（避免再冷启动一个 WebView2、窗口出现在后台），
+        // 而是直接把已运行实例的主窗口唤起并置前
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
@@ -207,6 +216,27 @@ pub fn run() {
             shortcut::setup(app)?;
 
             restore_window_state(app);
+
+            // 主窗口启动时隐藏（tauri.conf.json visible:false），等前端内容可绘制后再 show，
+            // 避免 WebView2 冷启动期间出现空白/白屏等待窗口；这里先铺上主题底色，
+            // 若 show 早于首帧绘制，也只会闪主题色而非纯白
+            let theme = config::load().theme;
+            let bg = if theme == "dark" {
+                tauri::window::Color(18, 19, 27, 255) // --bg-page 暗色 #12131b
+            } else {
+                tauri::window::Color(236, 239, 246, 255) // --bg-page 亮色 #eceff6
+            };
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_background_color(Some(bg));
+                // 启动即前台：避免窗口偶尔出现在其他窗口后面；稍等再补一次焦点，
+                // 绕开 Windows 前台锁定的瞬时限制
+                let _ = window.set_focus();
+                let handle = window.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    let _ = handle.set_focus();
+                });
+            }
 
             // 恢复上次已脱离的浮窗便签（位置/置顶/内容均持久化）
             {

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.11"
+version = "0.1.12"
 description = "本地个人效率工作台"
 authors = ["you"]
 license = ""
@@ -22,6 +22,7 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.3", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-single-instance = "2"
 tauri-plugin-log = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-dialog = "2"

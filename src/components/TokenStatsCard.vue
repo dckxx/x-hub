@@ -55,10 +55,25 @@ const split = computed(() => {
   ]
 })
 
-onMounted(async () => {
-  if (!store.state.usageSummary) await onDetect()
+onMounted(() => {
+  // 首次同步延迟到首帧之后执行：sync_ai_usage 会长时间持有共享数据库锁
+  // （读 opencode.db + 逐条写入），若与 loadInitialData 的 get_initial_data 抢锁，
+  // 会拖慢窗口首次显示。先出首帧，再在空闲时同步。
+  if (!store.state.usageSummary) scheduleInitialSync()
   refreshTimer = setInterval(onDetect, REFRESH_INTERVAL)
 })
+
+function scheduleInitialSync() {
+  const run = () => {
+    void onDetect()
+  }
+  const w = window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => void }
+  if (typeof w.requestIdleCallback === 'function') {
+    w.requestIdleCallback(run, { timeout: 1500 })
+  } else {
+    setTimeout(run, 800)
+  }
+}
 
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer)

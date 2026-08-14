@@ -5,9 +5,89 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>x-hub 个人效率工作台</title>
+    <style>
+      /* 启动欢迎页：内联在 index.html，HTML 一解析即显示（早于 Vue 挂载），数据就绪后由前端淡出移除。
+         渐变背景首帧即不透明铺满，盖住后挂载的主界面（否则 Vue 挂载会透过半透明欢迎页闪现）；
+         只对文字做淡入，观感平滑且无界面闪现。 */
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 22px;
+        background: transparent;
+        transition: opacity 0.4s ease-out;
+        user-select: none;
+        font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      #boot-splash::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background:
+          radial-gradient(1200px 800px at 20% -10%, rgba(255, 255, 255, 0.28), transparent 60%),
+          linear-gradient(120deg, #a5b4fc 0%, #93c5fd 33%, #a5f3fc 66%, #fbcfe8 100%);
+      }
+      #boot-splash.hide {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #boot-splash .welcome {
+        position: relative;
+        z-index: 1;
+        font-size: clamp(56px, 10vw, 108px);
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        color: #fff;
+        text-shadow: 0 4px 24px rgba(37, 42, 99, 0.5);
+        opacity: 0;
+        animation: splash-fade-in 0.5s ease-out 0.12s forwards;
+      }
+      #boot-splash .wave {
+        display: inline-block;
+        animation: splash-wave 2.6s ease-in-out infinite;
+      }
+      #boot-splash .wave:nth-child(2) { animation-delay: 0.12s; }
+      #boot-splash .wave:nth-child(3) { animation-delay: 0.24s; }
+      #boot-splash .wave:nth-child(4) { animation-delay: 0.36s; }
+      #boot-splash .version {
+        position: relative;
+        z-index: 1;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.32em;
+        color: rgba(255, 255, 255, 0.85);
+        text-transform: uppercase;
+        opacity: 0;
+        animation: splash-fade-in 0.5s ease-out 0.24s forwards;
+      }
+      @keyframes splash-fade-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      @keyframes splash-wave {
+        0%, 100% { transform: translateY(0); }
+        25% { transform: translateY(-11px); }
+        50% { transform: translateY(6px); }
+        75% { transform: translateY(-6px); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot-splash .welcome,
+        #boot-splash .wave,
+        #boot-splash .version { animation: none; opacity: 1; }
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>
+    <div id="boot-splash" aria-hidden="true">
+      <div class="welcome"><span class="wave">欢</span><span class="wave">迎</span><span class="wave">回</span><span class="wave">来</span></div>
+      <div class="version">x-hub · v0.1.12</div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

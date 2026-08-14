@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
-import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen } from '@tauri-apps/api/event'
 import TitleBar from '../components/TitleBar.vue'
 import TodoCard from '../components/TodoCard.vue'
@@ -108,11 +107,20 @@ function toggleTheme() {
   store.setTheme(isDark.value ? 'light' : 'dark')
 }
 
-// ---- 启动加载：数据就绪后显示窗口，避免长时间空白 ----
+// ---- 启动加载：数据就绪后隐藏欢迎页（窗口已改为启动即显示） ----
+// 欢迎页至少展示 2.2s：本地数据库很小，数据可能几十毫秒就加载完，
+// 若不保底，淡出会发生在首帧绘制之前，用户根本看不到欢迎页
+const bootStartAt = performance.now()
+const BOOT_MIN_MS = 2200
+const BOOT_MAX_MS = 4000
+
 onMounted(async () => {
-  store.loadInitialData().then(() => revealWindow())
-  // 兜底：无论数据是否加载成功，最多 1.5s 后显示窗口，避免一直不可见
-  setTimeout(revealWindow, 1500)
+  store.loadInitialData().finally(() => {
+    const wait = Math.max(0, BOOT_MIN_MS - (performance.now() - bootStartAt))
+    setTimeout(hideBootSplash, wait)
+  })
+  // 兜底：无论数据是否加载成功，最多 4s 后隐藏欢迎页，避免一直遮挡
+  setTimeout(hideBootSplash, BOOT_MAX_MS)
   // 浮窗便签还原/删除后，主窗口实时同步便签与脱离状态
   if (isTauri()) {
     unlistenStickies = await listen('stickies-changed', () => {
@@ -129,8 +137,12 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onSearchKeydown)
 })
 
-function revealWindow() {
-  if (isTauri()) getCurrentWindow().show()
+function hideBootSplash() {
+  const el = document.getElementById('boot-splash')
+  if (el && !el.classList.contains('hide')) {
+    el.classList.add('hide')
+    setTimeout(() => el.remove(), 450)
+  }
 }
 
 // ---- 笔记选中与操作 ----

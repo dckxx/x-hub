@@ -225,9 +225,9 @@ onMounted(() => load())
   gap: 4px;
   padding: var(--space-4);
   border-radius: var(--radius-lg);
-  background: var(--bg-card);
+  background: var(--frost-surface);
   border: 1px solid var(--border-soft);
-  box-shadow: var(--shadow-card);
+  box-shadow: var(--frost-edge), var(--shadow-card);
 }
 .uv-card-value {
   font-size: 24px;
@@ -297,10 +297,10 @@ onMounted(() => load())
   overflow-x: auto;
 }
 .uv-section {
-  background: var(--bg-card);
+  background: var(--frost-surface);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
+  box-shadow: var(--frost-edge), var(--shadow-card);
   padding: var(--space-4);
 }
 .uv-section-title {

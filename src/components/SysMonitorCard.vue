@@ -56,7 +56,7 @@ onUnmounted(() => {
           <div
             class="sm-bar-fill"
             :class="{ warn: cpuPct() >= 85 }"
-            :style="{ width: cpuPct() + '%' }"
+            :style="{ transform: 'scaleX(' + cpuPct() / 100 + ')' }"
           ></div>
         </div>
       </div>
@@ -73,7 +73,7 @@ onUnmounted(() => {
           <div
             class="sm-bar-fill"
             :class="{ warn: memPct() >= 85 }"
-            :style="{ width: memPct() + '%' }"
+            :style="{ transform: 'scaleX(' + memPct() / 100 + ')' }"
           ></div>
         </div>
         <p class="sm-mem-label">{{ memLabel() }}</p>
@@ -163,10 +163,11 @@ onUnmounted(() => {
 }
 .sm-bar-fill {
   height: 100%;
-  min-width: 0;
+  width: 100%;
   border-radius: var(--radius-pill);
   background: linear-gradient(90deg, var(--brand-600), var(--brand-500));
-  transition: width 0.5s ease-out;
+  transform-origin: left center;
+  transition: transform 0.5s ease-out;
 }
 .sm-bar-fill.warn {
   background: linear-gradient(90deg, var(--c-orange), var(--c-red));

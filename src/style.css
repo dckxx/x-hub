@@ -8,11 +8,18 @@
   --pro-bg: #e0ebff;
   --pro-text: #1e40af;
   --bg-page: #eceff6;
-  --bg-sidebar: rgba(255, 255, 255, 0.42);
-  --bg-card: rgba(255, 255, 255, 0.52);
-  --bg-card-solid: rgba(255, 255, 255, 0.75);
-  --bg-card-soft: rgba(255, 255, 255, 0.4);
-  --input-bg: rgba(255, 255, 255, 0.72);
+  --bg-sidebar: rgba(255, 255, 255, 0.62);
+  --bg-card: rgba(255, 255, 255, 0.74);
+  --bg-card-solid: rgba(255, 255, 255, 0.88);
+  --bg-card-soft: rgba(255, 255, 255, 0.55);
+  --input-bg: rgba(255, 255, 255, 0.86);
+  /* 伪毛玻璃：把"被模糊后的背景色"烘焙进卡片自身，静态渐变零 blur 计算 */
+  --frost-surface:
+    radial-gradient(180% 130% at 0% -12%, rgba(91, 91, 245, 0.10), transparent 55%),
+    radial-gradient(150% 120% at 105% 6%, rgba(236, 72, 153, 0.07), transparent 55%),
+    radial-gradient(170% 130% at 50% 116%, rgba(59, 130, 246, 0.09), transparent 55%),
+    linear-gradient(150deg, rgba(255, 255, 255, 0.76) 0%, rgba(255, 255, 255, 0.66) 100%);
+  --frost-edge: inset 0 1px 0 rgba(255, 255, 255, 0.55);
   --border-soft: rgba(255, 255, 255, 0.55);
   --border-strong: rgba(40, 35, 60, 0.22);
   --text-1: #26231d;
@@ -76,11 +83,17 @@
   --pro-bg: #1e3a6e;
   --pro-text: #93c5fd;
   --bg-page: #12131b;
-  --bg-sidebar: rgba(255, 255, 255, 0.05);
-  --bg-card: rgba(255, 255, 255, 0.06);
-  --bg-card-solid: rgba(255, 255, 255, 0.1);
-  --bg-card-soft: rgba(255, 255, 255, 0.07);
-  --input-bg: #1a1b24;
+  --bg-sidebar: rgba(255, 255, 255, 0.08);
+  --bg-card: rgba(255, 255, 255, 0.12);
+  --bg-card-solid: rgba(255, 255, 255, 0.2);
+  --bg-card-soft: rgba(255, 255, 255, 0.1);
+  --input-bg: #1d1e29;
+  --frost-surface:
+    radial-gradient(180% 130% at 0% -12%, rgba(139, 139, 255, 0.16), transparent 55%),
+    radial-gradient(150% 120% at 105% 6%, rgba(236, 72, 153, 0.10), transparent 55%),
+    radial-gradient(170% 130% at 50% 116%, rgba(59, 130, 246, 0.13), transparent 55%),
+    linear-gradient(150deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.08) 100%);
+  --frost-edge: inset 0 1px 0 rgba(255, 255, 255, 0.10);
   --border-soft: rgba(255, 255, 255, 0.16);
   --border-strong: rgba(255, 255, 255, 0.28);
   --text-1: #f2efe8;
@@ -130,8 +143,6 @@ html[data-sticky-window] .floating-sticky {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   background: var(--bg-card-solid);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
-  backdrop-filter: blur(20px) saturate(160%);
   box-shadow: var(--shadow-dock);
 }
 body {
@@ -161,13 +172,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--text-3) 40%, transparent); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--text-3) 60%, transparent); }
 ::-webkit-scrollbar-track { background: transparent; }
-.card { background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); }
-/* 玻璃拟态：半透明表面 + 背景模糊，配合 body 渐变背景产生磨砂质感 */
-.card,
+.card { background: var(--frost-surface); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); box-shadow: var(--frost-edge), var(--shadow-card); }
+/* 玻璃拟态：常驻表面用烘焙渐变（--frost-surface）实现伪毛玻璃；仅弹层/下拉/菜单等瞬态表面保留真 blur */
 .modal-card,
-.ctx-menu,
-.uv-card,
-.uv-section {
+.ctx-menu {
   -webkit-backdrop-filter: blur(18px) saturate(160%);
   backdrop-filter: blur(18px) saturate(160%);
 }
@@ -177,8 +185,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .ed-content,
 .ed-title-input,
 .tag-input {
-  -webkit-backdrop-filter: blur(14px) saturate(150%);
-  backdrop-filter: blur(14px) saturate(150%);
+  background: var(--input-bg);
 }
 .icon-btn { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: none; background: transparent; border-radius: var(--radius-sm); color: var(--text-3); cursor: pointer; transition: background .18s, color .18s, transform .18s; }
 .icon-btn:hover { background: var(--bg-card-soft); color: var(--text-1); transform: translateY(-1px); }
@@ -202,7 +209,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .filter-tab--tag { padding: 4px 10px; font-size: 11px; }
 .filter-tab--tag.active { background: var(--brand-50); color: var(--brand-500); font-weight: 600; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; } }
-.modal-mask { position: fixed; inset: 0; z-index: 100; background: var(--scrim); display: flex; align-items: center; justify-content: center; animation: mask-in .18s ease-out; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.modal-mask { position: fixed; inset: 0; z-index: 100; background: var(--scrim); display: flex; align-items: center; justify-content: center; animation: mask-in .18s ease-out; }
 @keyframes mask-in { from { opacity: 0; } to { opacity: 1; } }
 .modal-card { width: 400px; max-width: calc(100vw - 48px); background: var(--bg-card-solid); border: 1px solid var(--border-soft); border-radius: var(--radius-xl); box-shadow: var(--shadow-dock); padding: 24px; animation: card-in .2s cubic-bezier(.16, 1, .3, 1); }
 @keyframes card-in { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }

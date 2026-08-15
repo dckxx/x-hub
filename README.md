@@ -14,7 +14,7 @@
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 </div>
-<img width="1408" height="906" alt="image" src="https://github.com/user-attachments/assets/407d95e1-ecc4-415a-adf8-b9ad2141eec3" />
+
 
 ## ✨ 功能特性
 
@@ -105,6 +105,15 @@ src-tauri/
 - **日志**：`%APPDATA%\x-hub\logs\x-hub.log`（文件日志，便于排查）
 - **备份**：设置内一键备份/恢复（数据库 + 图标整体复制）
 - **AI 用量**：仅本地读取 opencode 生成的数据库，统计结果存本地，**不上传任何云端**
+
+## 配图
+<img width="1418" height="911" alt="首页-工作台" src="https://github.com/user-attachments/assets/7e3279fc-468c-4cf5-979d-d391e6ba3927" />
+<img width="1418" height="911" alt="速记" src="https://github.com/user-attachments/assets/baf42146-2b24-4be4-b87f-0db405988d67" />
+<img width="1418" height="911" alt="速达" src="https://github.com/user-attachments/assets/406510a0-9673-4d42-8767-2818cd57f66b" />
+<img width="1418" height="911" alt="token统计" src="https://github.com/user-attachments/assets/c872d175-8392-4d13-a1c2-f29e5728d8d3" />
+<img width="1418" height="911" alt="设置" src="https://github.com/user-attachments/assets/361635cb-8dbb-4528-b604-91f36ce768df" />
+<img width="1920" height="1030" alt="浮窗" src="https://github.com/user-attachments/assets/b8751fb5-0a2f-459b-bc44-64e8247386d5" />
+
 
 ## 📄 License
 

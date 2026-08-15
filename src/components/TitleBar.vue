@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Copy, Minus, Pin, PinOff, Search, Settings, Square, X } from 'lucide-vue-next'
+import { Copy, Minus, Pin, PinOff, Search, Square, X } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 
@@ -13,7 +13,6 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
 
 defineEmits<{
   (e: 'search'): void
-  (e: 'settings'): void
 }>()
 
 const alwaysOnTop = computed(() => store.state.config.window.always_on_top)
@@ -101,9 +100,6 @@ function close() {
     <div class="window-controls">
       <button class="tool-btn" title="全局搜索 (Ctrl+K)" @click="$emit('search')">
         <Search :size="15" :stroke-width="1.8" />
-      </button>
-      <button class="tool-btn" title="设置" @click="$emit('settings')">
-        <Settings :size="15" :stroke-width="1.8" />
       </button>
       <div class="tool-divider"></div>
       <button

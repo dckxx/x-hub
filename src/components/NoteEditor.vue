@@ -44,6 +44,8 @@ const tagInput = ref('')
 watch(
   () => props.note?.id,
   async () => {
+    // note 失效（关闭/删除/切换离开）前，把防抖中未落盘的编辑立即落盘，避免丢失
+    if (!props.note) flushPendingSave()
     syncLocal()
     mode.value = 'edit'
     // 加载笔记标签
@@ -88,19 +90,34 @@ async function submitTagInput() {
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+let lastNoteId: number | null = null
 
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape' && props.note) emit('close')
 }
 
 onMounted(() => window.addEventListener('keydown', onKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  flushPendingSave()
+})
 
 function syncLocal() {
   syncing.value = true
   localTitle.value = props.note?.title ?? ''
   localContent.value = props.note?.content ?? ''
   dirty.value = false
+}
+
+/** 立即落盘防抖中未保存的编辑（若存在），并取消挂起的定时器 */
+function flushPendingSave() {
+  if (!saveTimer) return
+  clearTimeout(saveTimer)
+  saveTimer = null
+  if (dirty.value && lastNoteId !== null) {
+    dirty.value = false
+    emit('save', lastNoteId, localTitle.value, localContent.value)
+  }
 }
 
 watch(
@@ -116,8 +133,12 @@ watch([localTitle, localContent], () => {
   if (!props.note) return
   dirty.value = true
   if (saveTimer) clearTimeout(saveTimer)
+  lastNoteId = props.note.id
   saveTimer = setTimeout(() => {
-    emit('save', props.note!.id, localTitle.value, localContent.value)
+    saveTimer = null
+    if (props.note) {
+      emit('save', props.note.id, localTitle.value, localContent.value)
+    }
   }, 600)
 })
 

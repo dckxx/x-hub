@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, provide, ref } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import TitleBar from '../components/TitleBar.vue'
 import TodoCard from '../components/TodoCard.vue'
@@ -7,7 +7,7 @@ import Suda from '../components/Suda.vue'
 import NoteList from '../components/NoteList.vue'
 import NoteEditor from '../components/NoteEditor.vue'
 import GlobalSearch from '../components/GlobalSearch.vue'
-import SettingsDialog from '../components/SettingsDialog.vue'
+import SettingsView from '../components/SettingsView.vue'
 import TokenStatsCard from '../components/TokenStatsCard.vue'
 import NotesOverviewCard from '../components/NotesOverviewCard.vue'
 import TodoOverviewCard from '../components/TodoOverviewCard.vue'
@@ -24,9 +24,13 @@ import { useStore } from '../stores/workbench'
 import { isTauri } from '../api/tauri'
 import type { Countdown, Note, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
-import { FileText, FolderOpen, Gauge, LayoutDashboard, Moon, Settings2, Sun, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { FileText, FolderOpen, Gauge, LayoutDashboard, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { useTheme } from '../composables/useTheme'
 
 const store = useStore()
+
+// 初始化三轴主题系统（应用 data-theme/data-preset/inline --accent，监听系统变化）
+useTheme()
 
 // ---- 视图切换（统一导航范式：每个侧栏项 = 一个独立视图） ----
 const navigation = [
@@ -36,10 +40,11 @@ const navigation = [
   { id: 'usage', label: '用量', icon: Gauge },
 ] as const
 
-type ViewId = (typeof navigation)[number]['id']
+// 设置不在顶部导航列表，作为独立入口固定在侧栏左下角，但同样是视图切换逻辑
+type ViewId = (typeof navigation)[number]['id'] | 'settings'
 const activeView = ref<ViewId>('dashboard')
 
-// ---- 侧边栏收起（每次打开软件默认收起，会话内可手动展开） ----
+// ---- 侧边栏收起（展开功能默认关闭，侧栏默认收起；开启后显示展开/收起按钮） ----
 const sidebarCollapsed = ref(true)
 
 function toggleSidebar() {
@@ -94,21 +99,6 @@ function openSuda() {
 // 待办概览卡的「去待办」：待办卡就在工作台，直接切回工作台即可
 function openTodo() {
   activeView.value = 'dashboard'
-}
-
-// ---- 主题（跟随配置，持久化） ----
-const theme = computed(() => store.state.config.theme)
-const isDark = computed(() => theme.value === 'dark')
-watch(
-  theme,
-  (t) => {
-    document.documentElement.dataset.theme = t === 'dark' ? 'dark' : ''
-  },
-  { immediate: true },
-)
-
-function toggleTheme() {
-  store.setTheme(isDark.value ? 'light' : 'dark')
 }
 
 // ---- 启动加载：数据就绪后隐藏欢迎页（窗口已改为启动即显示） ----
@@ -205,7 +195,6 @@ function onSaveNote(id: number, title: string, content: string) {
 
 // ---- 全局搜索 / 设置 ----
 const searchVisible = ref(false)
-const settingsVisible = ref(false)
 const promptManageVisible = ref(false)
 
 function onOpenTodo(t: Todo) {
@@ -264,7 +253,6 @@ provide('showToast', showToast)
   <div class="app-shell">
     <TitleBar
       @search="searchVisible = true"
-      @settings="settingsVisible = true"
     />
 
     <div class="app-body" :class="{ collapsed: sidebarCollapsed }">
@@ -291,22 +279,19 @@ provide('showToast', showToast)
           </button>
         </nav>
 
-        <button class="sidebar-status" type="button" aria-label="打开设置" data-tip="设置" @click="settingsVisible = true">
-          <Settings2 :size="15" :stroke-width="2" aria-hidden="true" />
-          <span>本地工作台</span>
-          <span class="status-dot" aria-hidden="true"></span>
-        </button>
         <button
-          class="sidebar-status sidebar-theme"
+          class="sidebar-status"
+          :class="{ active: activeView === 'settings' }"
           type="button"
-          :aria-label="isDark ? '切换到亮色模式' : '切换到暗色模式'"
-          :data-tip="isDark ? '亮色模式' : '暗色模式'"
-          @click="toggleTheme"
+          aria-label="打开设置"
+          data-tip="设置"
+          @click="activeView = 'settings'"
         >
-          <component :is="isDark ? Sun : Moon" :size="15" :stroke-width="2" aria-hidden="true" />
-          <span>{{ isDark ? '亮色模式' : '暗色模式' }}</span>
+          <Settings :size="15" :stroke-width="2" aria-hidden="true" />
+          <span>设置</span>
         </button>
         <button
+          v-if="store.state.config.sidebar_toggle"
           class="sidebar-status sidebar-collapse"
           type="button"
           :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
@@ -361,8 +346,13 @@ provide('showToast', showToast)
         </section>
 
         <!-- 用量：独立视图 -->
-        <section v-else class="view view-usage" tabindex="-1" aria-label="用量">
+        <section v-else-if="activeView === 'usage'" class="view view-usage" tabindex="-1" aria-label="用量">
           <UsageView />
+        </section>
+
+        <!-- 设置：独立视图 -->
+        <section v-else class="view view-settings" tabindex="-1" aria-label="设置">
+          <SettingsView />
         </section>
       </main>
     </div>
@@ -380,10 +370,6 @@ provide('showToast', showToast)
       @open-resource="onOpenResource"
       @open-note="onOpenNote"
       @open-todo="onOpenTodo"
-    />
-    <SettingsDialog
-      :visible="settingsVisible"
-      @close="settingsVisible = false"
     />
     <PromptManageDialog
       :visible="promptManageVisible"
@@ -495,16 +481,13 @@ provide('showToast', showToast)
   border: 0;
   cursor: pointer;
 }
-.sidebar-status.sidebar-theme { margin-top: var(--space-1); }
 .sidebar-nav + .sidebar-status { margin-top: auto; }
 .sidebar-status:hover { color: var(--text-1); }
-.status-dot {
-  width: 6px;
-  height: 6px;
-  margin-left: auto;
-  border-radius: 50%;
-  background: var(--c-green-ink);
+.sidebar-status.active {
+  background: var(--brand-50);
+  color: var(--brand-500);
 }
+
 /* 收起态：只保留图标 */
 .sidebar.collapsed .sidebar-nav-item,
 .sidebar.collapsed .sidebar-status {
@@ -528,8 +511,7 @@ provide('showToast', showToast)
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand-500) 10%, transparent);
 }
 .sidebar.collapsed .sidebar-nav-item > span:not(.sidebar-nav-icon),
-.sidebar.collapsed .sidebar-status span,
-.sidebar.collapsed .status-dot {
+.sidebar.collapsed .sidebar-status span {
   display: none;
 }
 .sidebar.collapsed .sidebar-status {
@@ -664,8 +646,7 @@ provide('showToast', showToast)
     padding: 0 var(--space-3);
   }
   .sidebar.collapsed .sidebar-nav-item span,
-  .sidebar.collapsed .sidebar-status span,
-  .sidebar.collapsed .status-dot {
+  .sidebar.collapsed .sidebar-status span {
     display: initial;
   }
   .workspace { padding: 0 var(--space-2) var(--space-2) 0; overflow-y: auto; }

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Pin, PinOff, X } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
+import { useTheme } from '../composables/useTheme'
 
 // 从窗口 label 解析槽位（sticky-1 / sticky-2）
 const label = isTauri() ? getCurrentWindow().label : 'sticky-1'
@@ -18,15 +19,8 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 const showDialog = ref(false)
 const dialogMode = ref<'restore' | 'delete-only'>('restore') // restore: 还原/删除/取消；delete-only: 删除/取消
 
-// 主题跟随配置
-const theme = computed(() => store.state.config.theme)
-watch(
-  theme,
-  (t) => {
-    document.documentElement.dataset.theme = t === 'dark' ? 'dark' : ''
-  },
-  { immediate: true },
-)
+// 主题跟随（监听配置与系统偏好）
+useTheme()
 
 // 标记为浮窗窗口：body 透明，只显示卡片本体
 document.documentElement.dataset.stickyWindow = ''

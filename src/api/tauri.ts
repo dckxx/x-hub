@@ -71,7 +71,10 @@ export interface WindowState {
 }
 
 export interface AppConfig {
-  theme: string
+  theme_mode: string // 'light' | 'dark' | 'system'
+  theme_preset: string // 'indigo' | 'green' | 'morandi' | 'midnight'
+  accent_color: string | null // hex like '#5b5bf5'; null = follow preset recommended
+  sidebar_toggle: boolean // 侧边栏展开/收缩功能开关（默认关闭）
   window: WindowState
   global_shortcut: string
   dashboard_mid_content: string

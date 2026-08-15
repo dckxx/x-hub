@@ -52,7 +52,10 @@ const state = reactive<StoreState>({
   snippets: [],
   tags: [],
   config: {
-    theme: 'light',
+    theme_mode: 'light',
+    theme_preset: 'indigo',
+    accent_color: null,
+    sidebar_toggle: false,
     window: {
       width: 1400,
       height: 900,
@@ -484,8 +487,20 @@ export function useStore() {
   }
 
   // ---- 配置 ----
-  async function setTheme(theme: 'light' | 'dark') {
-    state.config.theme = theme
+  async function setThemeMode(mode: 'light' | 'dark' | 'system') {
+    state.config.theme_mode = mode
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
+  async function setThemePreset(preset: string) {
+    state.config.theme_preset = preset
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
+  async function setAccentColor(hex: string | null) {
+    state.config.accent_color = hex
     if (!isTauri()) return
     await tauriApi.saveConfig(state.config)
   }
@@ -515,6 +530,13 @@ export function useStore() {
   /** 倒计时到点提示音开关 */
   async function setCountdownSound(value: boolean) {
     state.config.countdown_sound = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
+  /** 侧边栏展开/收缩功能开关 */
+  async function setSidebarToggle(value: boolean) {
+    state.config.sidebar_toggle = value
     if (!isTauri()) return
     await tauriApi.saveConfig(state.config)
   }
@@ -589,7 +611,10 @@ export function useStore() {
     createTag,
     deleteTag,
     loadNoteTagsMap,
-    setTheme,
+    setThemeMode,
+    setThemePreset,
+    setAccentColor,
+    setSidebarToggle,
     setAlwaysOnTop,
     setGlobalShortcut,
     setDashboardMidContent,

@@ -1,10 +1,10 @@
 # x-hub (个人效率工作台)
 
-**生成:** 2026-08-13 | **分支:** master | **版本:** 0.1.13
+**生成:** 2026-08-15 | **分支:** master | **版本:** 0.1.14
 
 ## 概述
 
-基于 Tauri 2 + Vue 3 + Tailwind CSS 4 的本地桌面效率工作台（Bento 风格 Dashboard）。导航含 4 个视图：**工作台**（时钟/系统监视/便签/Token 用量/提示词/待办/最近使用/**倒计时**）、**速记**（笔记）、**速达**（应用/网页/文件资源）、**用量**（AI 用量统计）。Rust 后端管理 SQLite 数据持久化，前端使用 Vite 8 + TypeScript 6。
+基于 Tauri 2 + Vue 3 + Tailwind CSS 4 的本地桌面效率工作台（Bento 风格 Dashboard）。导航含 5 个视图：**工作台**（时钟/系统监视/便签/Token 用量/提示词/待办/最近使用/**倒计时**）、**速记**（笔记）、**速达**（应用/网页/文件资源）、**用量**（AI 用量统计）、**设置**（侧栏左下角独立入口，双栏分类：通用/外观/工作台/快捷键/数据）。Rust 后端管理 SQLite 数据持久化，前端使用 Vite 8 + TypeScript 6。
 
 ## 结构
 
@@ -13,14 +13,14 @@ x-hub/
 ├── src/                        # 前端源码 (Vue 3 SPA)
 │   ├── main.ts                 # 入口：引入 style.css，createApp(App).mount('#app')
 │   ├── App.vue                 # 应用根壳：仅引入 src/index/index.vue，无业务逻辑
-│   ├── index/index.vue         # 首页：侧栏导航(工作台/速记/速达/用量) + 视图协调 + 主题/搜索/设置
+│   ├── index/index.vue         # 首页：侧栏导航(工作台/速记/速达/用量) + 左下角设置入口 + 视图协调 + 主题/搜索
 │   ├── style.css               # 设计令牌（亮/暗色 CSS 变量）+ Tailwind + 通用组件样式
 │   ├── api/tauri.ts            # 所有 Tauri invoke 调用 + 19 类模型类型
 │   ├── stores/workbench.ts     # 响应式状态管理（reactive + readonly，无 Pinia）
 │   ├── composables/            # useResourceIcon（资源图标渲染）/ useFocusTrap（弹窗焦点陷阱）
 │   ├── utils/                  # categories（文件分类）/ time / web / error-report / chime（提示音）
 │   └── components/
-│       ├── TitleBar.vue        # 透明自制标题栏（startDragging 拖动 + 窗口控制 + 搜索/设置入口）
+│       ├── TitleBar.vue        # 透明自制标题栏（startDragging 拖动 + 窗口控制 + 搜索入口）
 │       ├── ClockCard.vue       # 时钟卡片（HH:mm + 日期星期 + 最近倒计时环形进度，30s 轮询）
 │       ├── SysMonitorCard.vue  # 系统资源监视器（CPU/内存，2s 轮询，sysinfo 后端）
 │       ├── StickyCard.vue      # 便签卡片 ×2（slot 1/2，600ms 防抖自动保存）
@@ -38,7 +38,7 @@ x-hub/
 │       ├── NoteEditor.vue      # 笔记编辑弹窗（Markdown 预览 + 600ms 防抖自动保存）
 │       ├── GlobalSearch.vue    # Ctrl+K 全局搜索弹窗（资源/笔记/待办 + 300ms 防抖）
 │       ├── UsageView.vue       # 用量详情视图（左趋势/提供商排行 + 右明细分页）
-│       ├── SettingsDialog.vue  # 设置弹窗（主题/置顶/全局快捷键/备份恢复）
+│       ├── SettingsView.vue     # 设置视图（双栏：分类导航 通用/外观/工作台/快捷键/数据 + 内容面板）
 │       └── ContextMenu.vue     # 通用右键菜单
 ├── src-tauri/                  # Tauri 后端 (Rust)
 │   ├── src/
@@ -121,7 +121,7 @@ x-hub/
 8. **窗口状态持久化：** 尺寸/位置/置顶在关闭时由 Rust 端保存到 JSON，启动时恢复；最大化图标切换用 `isMaximized()` + `onResized` 监听
 9. **笔记/便签自动保存：** 600ms 防抖（NoteEditor.vue / StickyCard.vue）
 10. **搜索防抖：** 300ms（GlobalSearch.vue）
-11. **全局快捷键：** 默认 Ctrl+Shift+Space 切换窗口显隐（`shortcut.rs` + lib.rs）；可在设置中录制，失焦/回车自动保存，录制中失焦取消并还原（SettingsDialog.vue）
+11. **全局快捷键：** 默认 Ctrl+Shift+Space 切换窗口显隐（`shortcut.rs` + lib.rs）；可在设置中录制，失焦/回车自动保存，录制中失焦取消并还原（SettingsView.vue）
 12. **轻提示：** index.vue `provide('showToast')`，子组件 `inject` 使用
 13. **只读 props：** store.state 为 readonly 深度代理，组件 props 用 `readonly Note[]` 等类型
 14. **拖拽导入：** 拖入 exe/lnk 到窗口 → `onDragDropEvent`（Suda.vue）→ `parse_dropped_path` 命令（.lnk 经 PowerShell COM 解析目标 + System.Drawing 提取图标存 `app_data_dir/icons/`）→ 自动预填资源弹窗；图标经 `convertFileSrc`（assetProtocol 已启用，scope `$APPDATA/**`）渲染，提取失败回退名称 hash 首字母
@@ -132,7 +132,7 @@ x-hub/
 19. **GPU 性能约束（v0.1.13）：** 常驻卡片禁用 `backdrop-filter`，一律用 `--frost-surface` 静态烘焙渐变模拟毛玻璃；`backdrop-filter` 只允许出现在瞬态层（弹窗/菜单/下拉/tooltip）；周期性更新的进度条用 `transform: scaleX` 而非 `width`，避免触发布局重排
 20. **倒计时驱动（v0.1.13）：** 到期判定、通知、顺延全部在 Rust `countdown_ticker.rs` 后台线程（1s 轮询），**不能依赖前端 setInterval**（WebView 隐藏/最小化会节流）；前端只做展示与用户操作。到点发系统通知（tauri-plugin-notification）+ emit `countdown-fired` / `countdowns-changed` 事件；完全退出/休眠期间错过的提醒（超 5s）静默顺延不补发。`once` 到点置 finished 灰态，`daily` 按 24h 顺延，`interval` 按 `interval_minutes` 顺延
 21. **倒计时浮窗（v0.1.13）：** 每个倒计时可浮起为独立透明圆窗（label `countdown-{id}`，300×340 固定、无边框、置顶、skip_taskbar），圆形水位随剩余比例下降 + 双层正弦波滚动动画；浮起状态与位置持久化在 `countdowns` 表，重启恢复；`once` 到点自动收窗。App.vue 按 label 前缀路由到 `CountdownFloat.vue`
-22. **倒计时提示音：** 默认关闭（`countdown_sound` 配置，设置弹窗开关）；开启后前端 WebAudio 合成双音（`utils/chime.ts`，无外部音频文件），仅主窗口播放避免多窗重音
+22. **倒计时提示音：** 默认关闭（`countdown_sound` 配置，设置视图开关）；开启后前端 WebAudio 合成双音（`utils/chime.ts`，无外部音频文件），仅主窗口播放避免多窗重音
 23. **reka-ui（^2.10.3）组件：** 仅用于复杂输入（DatePicker 定时日期 / TimeField 时:分 / NumberField 步进），无头组件样式全部自绘；v-model 绑定 `Time`/`DateValue` 一律用 `shallowRef`（含 `#private` 字段，ref 深度解包破坏类型匹配）——详见 `docs/reka-ui.md`
 24. **reka-ui Portal 弹层（铁律）：** `DatePickerContent` 等经 Portal 渲染到 `<body>` 后父组件 scoped `data-v` 不传播到容器，容器样式（`z-index`/背景/边框/阴影）全部失效 → 日历被 `modal-mask`(100) 盖住选不到；容器样式必须用 `:global()`，`z-index` 设 110（CountdownCard.vue `.cc-calendar-content` 即此例）
 25. **reka-ui segment 组件（铁律）：** `TimeField`/`DatePickerField` 外层禁止 `<label>` 包裹（segment 是 contenteditable div、非 labelable，label 会激活组件内部隐藏 input → `onFocus` 强制聚焦第一个 segment，表现为点「分」跳「时」）；外层用 `<div class="cc-field">`；`NumberField` 的原生 input 不受影响可继续用 label

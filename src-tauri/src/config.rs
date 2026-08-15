@@ -27,7 +27,15 @@ impl Default for WindowState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
-    pub theme: String,
+    /// 主题模式：light / dark / system（旧配置中的 `theme` 字段自动映射到此字段）
+    #[serde(alias = "theme")]
+    pub theme_mode: String,
+    /// 主题预设：indigo / green / morandi / midnight
+    pub theme_preset: String,
+    /// 强调色（hex，如 #5B5BF5）；null 表示跟随预设推荐强调色
+    pub accent_color: Option<String>,
+    /// 侧边栏展开/收缩功能开关（默认关闭）
+    pub sidebar_toggle: bool,
     pub window: WindowState,
     pub global_shortcut: String,
     /// AI 用量同步游标（opencode time_updated 毫秒时间戳）
@@ -44,7 +52,10 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            theme: "light".to_string(),
+            theme_mode: "light".to_string(),
+            theme_preset: "indigo".to_string(),
+            accent_color: None,
+            sidebar_toggle: false,
             window: WindowState::default(),
             global_shortcut: crate::shortcut::DEFAULT_TOGGLE_SHORTCUT.to_string(),
             usage_sync_cursor: 0,
@@ -111,7 +122,10 @@ mod tests {
     #[test]
     fn default_config() {
         let c = AppConfig::default();
-        assert_eq!(c.theme, "light");
+        assert_eq!(c.theme_mode, "light");
+        assert_eq!(c.theme_preset, "indigo");
+        assert!(c.accent_color.is_none());
+        assert!(!c.sidebar_toggle);
         assert_eq!(c.window.width, 1400.0);
         assert!(!c.window.always_on_top);
         assert_eq!(c.global_shortcut, crate::shortcut::DEFAULT_TOGGLE_SHORTCUT);
@@ -121,7 +135,10 @@ mod tests {
     #[test]
     fn save_to_and_load_from_roundtrip() {
         let mut config = AppConfig::default();
-        config.theme = "dark".to_string();
+        config.theme_mode = "dark".to_string();
+        config.theme_preset = "midnight".to_string();
+        config.accent_color = Some("#8b8bff".to_string());
+        config.sidebar_toggle = true;
         config.window.width = 1280.0;
         config.window.x = Some(100.0);
         config.window.always_on_top = true;
@@ -131,7 +148,10 @@ mod tests {
         save_to(&config, &path).unwrap();
 
         let loaded = load_from(&path);
-        assert_eq!(loaded.theme, "dark");
+        assert_eq!(loaded.theme_mode, "dark");
+        assert_eq!(loaded.theme_preset, "midnight");
+        assert_eq!(loaded.accent_color.as_deref(), Some("#8b8bff"));
+        assert!(loaded.sidebar_toggle);
         assert_eq!(loaded.window.width, 1280.0);
         assert_eq!(loaded.window.x, Some(100.0));
         assert!(loaded.window.always_on_top);
@@ -143,7 +163,7 @@ mod tests {
         let path = dir.path().join("app.json");
         fs::write(&path, "not valid json {{{").unwrap();
         let loaded = load_from(&path);
-        assert_eq!(loaded.theme, "light");
+        assert_eq!(loaded.theme_mode, "light");
         assert!(path.with_extension("json.bak").exists());
     }
 
@@ -152,6 +172,37 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent.json");
         let loaded = load_from(&path);
-        assert_eq!(loaded.theme, "light");
+        assert_eq!(loaded.theme_mode, "light");
+    }
+
+    #[test]
+    fn old_theme_field_migrates_to_theme_mode() {
+        // 旧版配置格式：只有 `theme` 字段（light/dark），
+        // 依赖 serde `alias = "theme"` 自动映射到 theme_mode
+        let old_json = serde_json::json!({
+            "theme": "dark",
+            "window": {
+                "width": 1400.0,
+                "height": 900.0,
+                "x": null,
+                "y": null,
+                "always_on_top": false
+            },
+            "global_shortcut": "Ctrl+Shift+Space",
+            "usage_sync_cursor": 0,
+            "usage_db_path": null,
+            "dashboard_mid_content": "countdown",
+            "countdown_sound": false
+        })
+        .to_string();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.json");
+        fs::write(&path, old_json).unwrap();
+
+        let loaded = load_from(&path);
+        assert_eq!(loaded.theme_mode, "dark");
+        assert_eq!(loaded.theme_preset, "indigo");
+        assert!(loaded.accent_color.is_none());
     }
 }

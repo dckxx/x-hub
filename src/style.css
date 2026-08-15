@@ -1,10 +1,13 @@
 @import "tailwindcss";
 
 :root {
-  --brand-500: #5b5bf5;
-  --brand-600: #4848db;
-  --brand-50: #eeeeff;
-  --brand-glow: rgba(91, 91, 245, 0.18);
+  /* 用户强调色：JS 注入 inline --accent 时按级联优先级覆盖（用户强调色 > 预设 > 默认） */
+  --accent: #5b5bf5;
+  /* 品牌色：由 --accent 公式推导，预设/用户强调色只需改 --accent 即可整体换色相 */
+  --brand-500: var(--accent);
+  --brand-600: color-mix(in srgb, var(--accent) 78%, #000);
+  --brand-50: color-mix(in srgb, var(--accent) 12%, transparent);
+  --brand-glow: color-mix(in srgb, var(--accent) 18%, transparent);
   --pro-bg: #e0ebff;
   --pro-text: #1e40af;
   --bg-page: #eceff6;
@@ -13,13 +16,31 @@
   --bg-card-solid: rgba(255, 255, 255, 0.88);
   --bg-card-soft: rgba(255, 255, 255, 0.55);
   --input-bg: rgba(255, 255, 255, 0.86);
-  /* 伪毛玻璃：把"被模糊后的背景色"烘焙进卡片自身，静态渐变零 blur 计算 */
+  /* 伪毛玻璃：把"被模糊后的背景色"烘焙进卡片自身，静态渐变零 blur 计算；
+     色相层 tint 与中性玻璃基底 base 拆分，预设只换 tint 不动中性色 */
+  --frost-tint-a: rgba(91, 91, 245, 0.10);
+  --frost-tint-b: rgba(236, 72, 153, 0.07);
+  --frost-tint-c: rgba(59, 130, 246, 0.09);
+  --frost-base-a: rgba(255, 255, 255, 0.76);
+  --frost-base-b: rgba(255, 255, 255, 0.66);
   --frost-surface:
-    radial-gradient(180% 130% at 0% -12%, rgba(91, 91, 245, 0.10), transparent 55%),
-    radial-gradient(150% 120% at 105% 6%, rgba(236, 72, 153, 0.07), transparent 55%),
-    radial-gradient(170% 130% at 50% 116%, rgba(59, 130, 246, 0.09), transparent 55%),
-    linear-gradient(150deg, rgba(255, 255, 255, 0.76) 0%, rgba(255, 255, 255, 0.66) 100%);
+    radial-gradient(180% 130% at 0% -12%, var(--frost-tint-a), transparent 55%),
+    radial-gradient(150% 120% at 105% 6%, var(--frost-tint-b), transparent 55%),
+    radial-gradient(170% 130% at 50% 116%, var(--frost-tint-c), transparent 55%),
+    linear-gradient(150deg, var(--frost-base-a) 0%, var(--frost-base-b) 100%);
   --frost-edge: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  /* 页面背景光晕：品牌色相与中性底色分离，预设可单独覆盖 */
+  --glow-a: rgba(91, 91, 245, 0.18);
+  --glow-b: rgba(236, 72, 153, 0.12);
+  --glow-c: rgba(59, 130, 246, 0.16);
+  --bg-base-a: #edf0fa;
+  --bg-base-b: #f6f2ea;
+  /* 页面默认背景（body）：渐变预设通过覆盖 --app-bg 整体替换，未设置时回退到这里 */
+  --bg-page-surface:
+    radial-gradient(1200px 800px at 12% -8%, var(--glow-a), transparent 55%),
+    radial-gradient(1000px 700px at 100% 4%, var(--glow-b), transparent 55%),
+    radial-gradient(1200px 900px at 55% 118%, var(--glow-c), transparent 55%),
+    linear-gradient(150deg, var(--bg-base-a) 0%, var(--bg-base-b) 100%);
   --border-soft: rgba(255, 255, 255, 0.55);
   --border-strong: rgba(40, 35, 60, 0.22);
   --text-1: #26231d;
@@ -76,10 +97,11 @@
 }
 
 [data-theme="dark"] {
-  --brand-500: #8b8bff;
-  --brand-600: #a3a3ff;
-  --brand-50: #26263f;
-  --brand-glow: rgba(139, 139, 255, 0.28);
+  --accent: #8b8bff;
+  --brand-500: var(--accent);
+  --brand-600: color-mix(in srgb, var(--accent) 70%, #fff);
+  --brand-50: color-mix(in srgb, var(--accent) 16%, #16161f);
+  --brand-glow: color-mix(in srgb, var(--accent) 28%, transparent);
   --pro-bg: #1e3a6e;
   --pro-text: #93c5fd;
   --bg-page: #12131b;
@@ -88,12 +110,23 @@
   --bg-card-solid: rgba(255, 255, 255, 0.2);
   --bg-card-soft: rgba(255, 255, 255, 0.1);
   --input-bg: #1d1e29;
+  --frost-tint-a: rgba(139, 139, 255, 0.16);
+  --frost-tint-b: rgba(236, 72, 153, 0.10);
+  --frost-tint-c: rgba(59, 130, 246, 0.13);
+  --frost-base-a: rgba(255, 255, 255, 0.14);
+  --frost-base-b: rgba(255, 255, 255, 0.08);
   --frost-surface:
-    radial-gradient(180% 130% at 0% -12%, rgba(139, 139, 255, 0.16), transparent 55%),
-    radial-gradient(150% 120% at 105% 6%, rgba(236, 72, 153, 0.10), transparent 55%),
-    radial-gradient(170% 130% at 50% 116%, rgba(59, 130, 246, 0.13), transparent 55%),
-    linear-gradient(150deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.08) 100%);
+    radial-gradient(180% 130% at 0% -12%, var(--frost-tint-a), transparent 55%),
+    radial-gradient(150% 120% at 105% 6%, var(--frost-tint-b), transparent 55%),
+    radial-gradient(170% 130% at 50% 116%, var(--frost-tint-c), transparent 55%),
+    linear-gradient(150deg, var(--frost-base-a) 0%, var(--frost-base-b) 100%);
   --frost-edge: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  /* 页面背景光晕（暗色） */
+  --glow-a: rgba(139, 139, 255, 0.22);
+  --glow-b: rgba(236, 72, 153, 0.14);
+  --glow-c: rgba(59, 130, 246, 0.20);
+  --bg-base-a: #141520;
+  --bg-base-b: #1a1814;
   --border-soft: rgba(255, 255, 255, 0.16);
   --border-strong: rgba(255, 255, 255, 0.28);
   --text-1: #f2efe8;
@@ -128,6 +161,548 @@
   --window-close: #f05a67;
 }
 
+/* ===== 预设层（色相 + 氛围）：只覆盖色相/光晕/底色 tint，中性令牌（--bg-card/text/border/--c-* 等）不动 =====
+   亮色预设用 :root[data-preset=...]（优先级 0,2,0 > [data-theme=dark] 的 0,1,0），暗色预设块放最后再覆盖。
+   中性玻璃基底 --frost-base-* 各预设沿用亮/暗默认值，无需重复声明。 */
+/* 预设 · 护眼绿：自然低饱和绿，柔和护眼氛围 */
+:root[data-preset="green"] {
+  --accent: #059669;
+  --glow-a: rgba(16, 185, 129, 0.18);
+  --glow-b: rgba(132, 204, 22, 0.12);
+  --glow-c: rgba(20, 184, 166, 0.16);
+  --bg-base-a: #eef4ee;
+  --bg-base-b: #f4f0e3;
+  --frost-tint-a: rgba(16, 185, 129, 0.10);
+  --frost-tint-b: rgba(132, 204, 22, 0.07);
+  --frost-tint-c: rgba(20, 184, 166, 0.09);
+  --pro-bg: #d6ede3;
+  --pro-text: #0b6b52;
+}
+/* 预设 · 莫兰迪：低饱和灰紫，极低透明度光晕，沉静柔和 */
+:root[data-preset="morandi"] {
+  --accent: #7c7c8a;
+  --glow-a: rgba(124, 124, 138, 0.10);
+  --glow-b: rgba(167, 139, 170, 0.08);
+  --glow-c: rgba(136, 132, 160, 0.09);
+  --bg-base-a: #efefe9;
+  --bg-base-b: #f5f3ee;
+  --frost-tint-a: rgba(124, 124, 138, 0.06);
+  --frost-tint-b: rgba(167, 139, 170, 0.05);
+  --frost-tint-c: rgba(136, 132, 160, 0.05);
+  --pro-bg: #e7e2ea;
+  --pro-text: #686271;
+}
+/* 预设 · 午夜蓝：深邃皇家蓝 */
+:root[data-preset="midnight"] {
+  --accent: #2f54eb;
+  --glow-a: rgba(47, 84, 235, 0.16);
+  --glow-b: rgba(99, 102, 241, 0.10);
+  --glow-c: rgba(59, 130, 246, 0.14);
+  --bg-base-a: #e8edfb;
+  --bg-base-b: #f0eff6;
+  --frost-tint-a: rgba(47, 84, 235, 0.10);
+  --frost-tint-b: rgba(99, 102, 241, 0.07);
+  --frost-tint-c: rgba(59, 130, 246, 0.09);
+  --pro-bg: #dbe4ff;
+  --pro-text: #2a4bd0;
+}
+/* 预设 · 玫瑰红：热情玫瑰红 */
+:root[data-preset="rose"] {
+  --accent: #e11d48;
+  --glow-a: rgba(225, 29, 72, 0.16);
+  --glow-b: rgba(236, 72, 153, 0.12);
+  --glow-c: rgba(244, 114, 182, 0.14);
+  --bg-base-a: #fbedf1;
+  --bg-base-b: #f6f0ec;
+  --frost-tint-a: rgba(225, 29, 72, 0.09);
+  --frost-tint-b: rgba(236, 72, 153, 0.07);
+  --frost-tint-c: rgba(244, 114, 182, 0.08);
+  --pro-bg: #fde3ea;
+  --pro-text: #be123c;
+}
+/* 预设 · 琥珀金：暖调琥珀橙 */
+:root[data-preset="amber"] {
+  --accent: #d97706;
+  --glow-a: rgba(217, 119, 6, 0.16);
+  --glow-b: rgba(245, 158, 11, 0.12);
+  --glow-c: rgba(251, 191, 36, 0.13);
+  --bg-base-a: #fbf3e8;
+  --bg-base-b: #f7f0e6;
+  --frost-tint-a: rgba(217, 119, 6, 0.09);
+  --frost-tint-b: rgba(245, 158, 11, 0.07);
+  --frost-tint-c: rgba(251, 191, 36, 0.08);
+  --pro-bg: #fbe8c9;
+  --pro-text: #b45309;
+}
+/* 预设 · 青碧：清透青绿 */
+:root[data-preset="teal"] {
+  --accent: #0d9488;
+  --glow-a: rgba(13, 148, 136, 0.16);
+  --glow-b: rgba(20, 184, 166, 0.12);
+  --glow-c: rgba(45, 212, 191, 0.13);
+  --bg-base-a: #e8f4f2;
+  --bg-base-b: #eff3ee;
+  --frost-tint-a: rgba(13, 148, 136, 0.09);
+  --frost-tint-b: rgba(20, 184, 166, 0.07);
+  --frost-tint-c: rgba(45, 212, 191, 0.08);
+  --pro-bg: #d2efe9;
+  --pro-text: #0f766e;
+}
+/* 预设 · 紫罗兰：亮眼紫 */
+:root[data-preset="violet"] {
+  --accent: #7c3aed;
+  --glow-a: rgba(124, 58, 237, 0.16);
+  --glow-b: rgba(139, 92, 246, 0.12);
+  --glow-c: rgba(167, 139, 250, 0.13);
+  --bg-base-a: #f0ecfb;
+  --bg-base-b: #f5f0f6;
+  --frost-tint-a: rgba(124, 58, 237, 0.09);
+  --frost-tint-b: rgba(139, 92, 246, 0.07);
+  --frost-tint-c: rgba(167, 139, 250, 0.08);
+  --pro-bg: #e4dbfb;
+  --pro-text: #6d28d9;
+}
+/* 预设 · 天蓝：澄澈天空蓝 */
+:root[data-preset="sky"] {
+  --accent: #0284c7;
+  --glow-a: rgba(2, 132, 199, 0.16);
+  --glow-b: rgba(14, 165, 233, 0.12);
+  --glow-c: rgba(56, 189, 248, 0.13);
+  --bg-base-a: #e8f2f9;
+  --bg-base-b: #eff3f6;
+  --frost-tint-a: rgba(2, 132, 199, 0.09);
+  --frost-tint-b: rgba(14, 165, 233, 0.07);
+  --frost-tint-c: rgba(56, 189, 248, 0.08);
+  --pro-bg: #d8eaf9;
+  --pro-text: #0369a1;
+}
+/* 预设 · 墨石：沉稳石墨灰蓝 */
+:root[data-preset="slate"] {
+  --accent: #475569;
+  --glow-a: rgba(71, 85, 105, 0.13);
+  --glow-b: rgba(100, 116, 139, 0.10);
+  --glow-c: rgba(148, 163, 184, 0.11);
+  --bg-base-a: #eef0f3;
+  --bg-base-b: #f4f2ee;
+  --frost-tint-a: rgba(71, 85, 105, 0.08);
+  --frost-tint-b: rgba(100, 116, 139, 0.06);
+  --frost-tint-c: rgba(148, 163, 184, 0.07);
+  --pro-bg: #e0e5eb;
+  --pro-text: #334155;
+}
+/* ===== 渐变背景预设 =====
+   仅覆盖 --app-bg（body 整块背景）+ 主色/氛围，UI 强调色仍是单色 --accent；
+   渐变不能作为 color stop 喂给 glow/tint 变量，故这些仍用主色系单色 */
+/* 预设 · 星夜渐变：靛蓝→紫跨色 */
+:root[data-preset="grad-star"] {
+  --accent: #6d5dfc;
+  --app-bg: linear-gradient(150deg, #e0e7ff 0%, #ede9fe 50%, #fae8ff 100%);
+  --glow-a: rgba(109, 93, 252, 0.18);
+  --glow-b: rgba(124, 58, 237, 0.12);
+  --glow-c: rgba(99, 102, 241, 0.15);
+  --bg-base-a: #e0e7ff;
+  --bg-base-b: #fae8ff;
+  --frost-tint-a: rgba(109, 93, 252, 0.10);
+  --frost-tint-b: rgba(124, 58, 237, 0.07);
+  --frost-tint-c: rgba(99, 102, 241, 0.08);
+  --pro-bg: #ddd6fe;
+  --pro-text: #5b21b6;
+}
+/* 预设 · 落日渐变：橙→粉暖调 */
+:root[data-preset="grad-sunset"] {
+  --accent: #f4572e;
+  --app-bg: linear-gradient(150deg, #ffe8d9 0%, #fff1ef 50%, #fde7f0 100%);
+  --glow-a: rgba(244, 87, 46, 0.17);
+  --glow-b: rgba(236, 72, 153, 0.12);
+  --glow-c: rgba(245, 158, 11, 0.13);
+  --bg-base-a: #ffe8d9;
+  --bg-base-b: #fde7f0;
+  --frost-tint-a: rgba(244, 87, 46, 0.09);
+  --frost-tint-b: rgba(236, 72, 153, 0.07);
+  --frost-tint-c: rgba(245, 158, 11, 0.08);
+  --pro-bg: #ffd6c2;
+  --pro-text: #c2410c;
+}
+/* 预设 · 极光渐变：青→紫跨色 */
+:root[data-preset="grad-aurora"] {
+  --accent: #0891b2;
+  --app-bg: linear-gradient(150deg, #cffafe 0%, #e0f2fe 50%, #ede9fe 100%);
+  --glow-a: rgba(8, 145, 178, 0.16);
+  --glow-b: rgba(59, 130, 246, 0.12);
+  --glow-c: rgba(20, 184, 166, 0.13);
+  --bg-base-a: #cffafe;
+  --bg-base-b: #ede9fe;
+  --frost-tint-a: rgba(8, 145, 178, 0.09);
+  --frost-tint-b: rgba(59, 130, 246, 0.07);
+  --frost-tint-c: rgba(20, 184, 166, 0.08);
+  --pro-bg: #c7f0e9;
+  --pro-text: #0f766e;
+}
+/* 预设 · 玫瑰渐变：玫红→紫浪漫 */
+:root[data-preset="grad-rose"] {
+  --accent: #e11d48;
+  --app-bg: linear-gradient(150deg, #fde8ec 0%, #f9ecf5 50%, #f3e8ff 100%);
+  --glow-a: rgba(225, 29, 72, 0.17);
+  --glow-b: rgba(124, 58, 237, 0.13);
+  --glow-c: rgba(244, 114, 182, 0.13);
+  --bg-base-a: #fde8ec;
+  --bg-base-b: #f3e8ff;
+  --frost-tint-a: rgba(225, 29, 72, 0.09);
+  --frost-tint-b: rgba(124, 58, 237, 0.07);
+  --frost-tint-c: rgba(244, 114, 182, 0.08);
+  --pro-bg: #fbd5e0;
+  --pro-text: #be123c;
+}
+/* 预设 · 森林渐变：绿→蓝跨色 */
+:root[data-preset="grad-forest"] {
+  --accent: #059669;
+  --app-bg: linear-gradient(150deg, #d1fae5 0%, #dbeafe 50%, #e0f2fe 100%);
+  --glow-a: rgba(5, 150, 105, 0.17);
+  --glow-b: rgba(16, 185, 129, 0.12);
+  --glow-c: rgba(13, 148, 136, 0.13);
+  --bg-base-a: #d1fae5;
+  --bg-base-b: #e0f2fe;
+  --frost-tint-a: rgba(5, 150, 105, 0.09);
+  --frost-tint-b: rgba(16, 185, 129, 0.07);
+  --frost-tint-c: rgba(13, 148, 136, 0.08);
+  --pro-bg: #c8ecdb;
+  --pro-text: #047857;
+}
+/* 预设 · 鎏金渐变：金→红跨色 */
+:root[data-preset="grad-gold"] {
+  --accent: #d97706;
+  --app-bg: linear-gradient(150deg, #fef3c7 0%, #fee2e2 50%, #ffedd5 100%);
+  --glow-a: rgba(217, 119, 6, 0.16);
+  --glow-b: rgba(245, 158, 11, 0.13);
+  --glow-c: rgba(180, 83, 9, 0.12);
+  --bg-base-a: #fef3c7;
+  --bg-base-b: #ffedd5;
+  --frost-tint-a: rgba(217, 119, 6, 0.09);
+  --frost-tint-b: rgba(245, 158, 11, 0.07);
+  --frost-tint-c: rgba(180, 83, 9, 0.07);
+  --pro-bg: #fbe3bb;
+  --pro-text: #b45309;
+}
+/* 预设 · 深海渐变：蓝→青跨色 */
+:root[data-preset="grad-ocean"] {
+  --accent: #2563eb;
+  --app-bg: linear-gradient(150deg, #dbeafe 0%, #cffafe 50%, #ccfbf1 100%);
+  --glow-a: rgba(37, 99, 235, 0.17);
+  --glow-b: rgba(6, 182, 212, 0.13);
+  --glow-c: rgba(59, 130, 246, 0.14);
+  --bg-base-a: #dbeafe;
+  --bg-base-b: #ccfbf1;
+  --frost-tint-a: rgba(37, 99, 235, 0.09);
+  --frost-tint-b: rgba(6, 182, 212, 0.07);
+  --frost-tint-c: rgba(59, 130, 246, 0.08);
+  --pro-bg: #c7dafe;
+  --pro-text: #1d4ed8;
+}
+/* 预设 · 葡萄渐变：紫→粉跨色 */
+:root[data-preset="grad-grape"] {
+  --accent: #8b5cf6;
+  --app-bg: linear-gradient(150deg, #ede9fe 0%, #fce7f3 50%, #fdf2f8 100%);
+  --glow-a: rgba(139, 92, 246, 0.17);
+  --glow-b: rgba(99, 102, 241, 0.13);
+  --glow-c: rgba(167, 139, 250, 0.13);
+  --bg-base-a: #ede9fe;
+  --bg-base-b: #fdf2f8;
+  --frost-tint-a: rgba(139, 92, 246, 0.09);
+  --frost-tint-b: rgba(99, 102, 241, 0.07);
+  --frost-tint-c: rgba(167, 139, 250, 0.08);
+  --pro-bg: #ddd6fe;
+  --pro-text: #6d28d9;
+}
+/* 预设 · 焰火渐变：红→黄跨色 */
+:root[data-preset="grad-flame"] {
+  --accent: #ef4444;
+  --app-bg: linear-gradient(150deg, #fee2e2 0%, #fef3c7 50%, #fef9c3 100%);
+  --glow-a: rgba(239, 68, 68, 0.16);
+  --glow-b: rgba(249, 115, 22, 0.13);
+  --glow-c: rgba(244, 63, 94, 0.13);
+  --bg-base-a: #fee2e2;
+  --bg-base-b: #fef9c3;
+  --frost-tint-a: rgba(239, 68, 68, 0.09);
+  --frost-tint-b: rgba(249, 115, 22, 0.07);
+  --frost-tint-c: rgba(244, 63, 94, 0.08);
+  --pro-bg: #fecaca;
+  --pro-text: #b91c1c;
+}
+/* 预设 · 石墨渐变：灰→蓝跨色 */
+:root[data-preset="grad-graphite"] {
+  --accent: #64748b;
+  --app-bg: linear-gradient(150deg, #e2e8f0 0%, #dbeafe 50%, #bfdbfe 100%);
+  --glow-a: rgba(100, 116, 139, 0.14);
+  --glow-b: rgba(71, 85, 105, 0.10);
+  --glow-c: rgba(148, 163, 184, 0.11);
+  --bg-base-a: #e2e8f0;
+  --bg-base-b: #bfdbfe;
+  --frost-tint-a: rgba(100, 116, 139, 0.08);
+  --frost-tint-b: rgba(71, 85, 105, 0.06);
+  --frost-tint-c: rgba(148, 163, 184, 0.07);
+  --pro-bg: #dbe1e8;
+  --pro-text: #475569;
+}
+/* 暗色预设：与亮色预设同级 (0,2,0) 但定义在后，暗色主题下优先 */
+[data-theme="dark"][data-preset="green"] {
+  --accent: #34d399;
+  --glow-a: rgba(52, 211, 153, 0.22);
+  --glow-b: rgba(74, 222, 128, 0.12);
+  --glow-c: rgba(45, 212, 191, 0.18);
+  --bg-base-a: #0f231a;
+  --bg-base-b: #131a14;
+  --frost-tint-a: rgba(52, 211, 153, 0.16);
+  --frost-tint-b: rgba(74, 222, 128, 0.10);
+  --frost-tint-c: rgba(45, 212, 191, 0.13);
+  --pro-bg: #123229;
+  --pro-text: #6ee7b7;
+}
+[data-theme="dark"][data-preset="morandi"] {
+  --accent: #a3a3b3;
+  --glow-a: rgba(163, 163, 179, 0.14);
+  --glow-b: rgba(176, 152, 176, 0.10);
+  --glow-c: rgba(150, 148, 168, 0.12);
+  --bg-base-a: #17171d;
+  --bg-base-b: #1d1c20;
+  --frost-tint-a: rgba(163, 163, 179, 0.10);
+  --frost-tint-b: rgba(176, 152, 176, 0.07);
+  --frost-tint-c: rgba(150, 148, 168, 0.08);
+  --pro-bg: #2b2932;
+  --pro-text: #bcb6c7;
+}
+[data-theme="dark"][data-preset="midnight"] {
+  --accent: #6c8cff;
+  --glow-a: rgba(108, 140, 255, 0.22);
+  --glow-b: rgba(99, 102, 241, 0.14);
+  --glow-c: rgba(56, 132, 255, 0.20);
+  --bg-base-a: #0d1428;
+  --bg-base-b: #121623;
+  --frost-tint-a: rgba(108, 140, 255, 0.16);
+  --frost-tint-b: rgba(99, 102, 241, 0.10);
+  --frost-tint-c: rgba(56, 132, 255, 0.13);
+  --pro-bg: #182249;
+  --pro-text: #a9c2ff;
+}
+[data-theme="dark"][data-preset="rose"] {
+  --accent: #fb7185;
+  --glow-a: rgba(251, 113, 133, 0.20);
+  --glow-b: rgba(236, 72, 153, 0.14);
+  --glow-c: rgba(244, 114, 182, 0.16);
+  --bg-base-a: #221017;
+  --bg-base-b: #1e1413;
+  --frost-tint-a: rgba(251, 113, 133, 0.14);
+  --frost-tint-b: rgba(236, 72, 153, 0.10);
+  --frost-tint-c: rgba(244, 114, 182, 0.11);
+  --pro-bg: #3a1622;
+  --pro-text: #fda4af;
+}
+[data-theme="dark"][data-preset="amber"] {
+  --accent: #fbbf24;
+  --glow-a: rgba(251, 191, 36, 0.20);
+  --glow-b: rgba(245, 158, 11, 0.14);
+  --glow-c: rgba(217, 119, 6, 0.14);
+  --bg-base-a: #221a0d;
+  --bg-base-b: #1f1912;
+  --frost-tint-a: rgba(251, 191, 36, 0.14);
+  --frost-tint-b: rgba(245, 158, 11, 0.10);
+  --frost-tint-c: rgba(217, 119, 6, 0.10);
+  --pro-bg: #3a2b10;
+  --pro-text: #fcd34d;
+}
+[data-theme="dark"][data-preset="teal"] {
+  --accent: #2dd4bf;
+  --glow-a: rgba(45, 212, 191, 0.20);
+  --glow-b: rgba(20, 184, 166, 0.14);
+  --glow-c: rgba(13, 148, 136, 0.14);
+  --bg-base-a: #0c201e;
+  --bg-base-b: #111c1a;
+  --frost-tint-a: rgba(45, 212, 191, 0.14);
+  --frost-tint-b: rgba(20, 184, 166, 0.10);
+  --frost-tint-c: rgba(13, 148, 136, 0.10);
+  --pro-bg: #12312c;
+  --pro-text: #5eead4;
+}
+[data-theme="dark"][data-preset="violet"] {
+  --accent: #a78bfa;
+  --glow-a: rgba(167, 139, 250, 0.20);
+  --glow-b: rgba(139, 92, 246, 0.14);
+  --glow-c: rgba(124, 58, 237, 0.14);
+  --bg-base-a: #171024;
+  --bg-base-b: #1a1420;
+  --frost-tint-a: rgba(167, 139, 250, 0.14);
+  --frost-tint-b: rgba(139, 92, 246, 0.10);
+  --frost-tint-c: rgba(124, 58, 237, 0.10);
+  --pro-bg: #2b2140;
+  --pro-text: #c4b5fd;
+}
+[data-theme="dark"][data-preset="sky"] {
+  --accent: #38bdf8;
+  --glow-a: rgba(56, 189, 248, 0.20);
+  --glow-b: rgba(14, 165, 233, 0.14);
+  --glow-c: rgba(2, 132, 199, 0.14);
+  --bg-base-a: #0b1b28;
+  --bg-base-b: #101820;
+  --frost-tint-a: rgba(56, 189, 248, 0.14);
+  --frost-tint-b: rgba(14, 165, 233, 0.10);
+  --frost-tint-c: rgba(2, 132, 199, 0.10);
+  --pro-bg: #12334d;
+  --pro-text: #7dd3fc;
+}
+[data-theme="dark"][data-preset="slate"] {
+  --accent: #94a3b8;
+  --glow-a: rgba(148, 163, 184, 0.16);
+  --glow-b: rgba(100, 116, 139, 0.12);
+  --glow-c: rgba(71, 85, 105, 0.12);
+  --bg-base-a: #14171c;
+  --bg-base-b: #1a1a1c;
+  --frost-tint-a: rgba(148, 163, 184, 0.11);
+  --frost-tint-b: rgba(100, 116, 139, 0.08);
+  --frost-tint-c: rgba(71, 85, 105, 0.08);
+  --pro-bg: #232830;
+  --pro-text: #cbd5e1;
+}
+/* 渐变背景预设 · 暗色 */
+[data-theme="dark"][data-preset="grad-star"] {
+  --accent: #a08cff;
+  --app-bg: linear-gradient(150deg, #16132e 0%, #1e1740 50%, #141b36 100%);
+  --glow-a: rgba(160, 140, 255, 0.22);
+  --glow-b: rgba(124, 58, 237, 0.15);
+  --glow-c: rgba(99, 102, 241, 0.18);
+  --bg-base-a: #16132e;
+  --bg-base-b: #141b36;
+  --frost-tint-a: rgba(160, 140, 255, 0.15);
+  --frost-tint-b: rgba(124, 58, 237, 0.10);
+  --frost-tint-c: rgba(99, 102, 241, 0.12);
+  --pro-bg: #2a2350;
+  --pro-text: #c4b5fd;
+}
+[data-theme="dark"][data-preset="grad-sunset"] {
+  --accent: #ff7a50;
+  --app-bg: linear-gradient(150deg, #2b1310 0%, #331427 50%, #2a1018 100%);
+  --glow-a: rgba(255, 122, 80, 0.20);
+  --glow-b: rgba(236, 72, 153, 0.15);
+  --glow-c: rgba(245, 158, 11, 0.14);
+  --bg-base-a: #2b1310;
+  --bg-base-b: #2a1018;
+  --frost-tint-a: rgba(255, 122, 80, 0.14);
+  --frost-tint-b: rgba(236, 72, 153, 0.10);
+  --frost-tint-c: rgba(245, 158, 11, 0.09);
+  --pro-bg: #47201a;
+  --pro-text: #fdba74;
+}
+[data-theme="dark"][data-preset="grad-aurora"] {
+  --accent: #22d3ee;
+  --app-bg: linear-gradient(150deg, #0b1f26 0%, #0e1e33 50%, #101a2e 100%);
+  --glow-a: rgba(34, 211, 238, 0.20);
+  --glow-b: rgba(59, 130, 246, 0.15);
+  --glow-c: rgba(20, 184, 166, 0.15);
+  --bg-base-a: #0b1f26;
+  --bg-base-b: #101a2e;
+  --frost-tint-a: rgba(34, 211, 238, 0.14);
+  --frost-tint-b: rgba(59, 130, 246, 0.10);
+  --frost-tint-c: rgba(20, 184, 166, 0.10);
+  --pro-bg: #12333e;
+  --pro-text: #67e8f9;
+}
+[data-theme="dark"][data-preset="grad-rose"] {
+  --accent: #fb7185;
+  --app-bg: linear-gradient(150deg, #241019 0%, #251425 50%, #1e1330 100%);
+  --glow-a: rgba(251, 113, 133, 0.20);
+  --glow-b: rgba(124, 58, 237, 0.15);
+  --glow-c: rgba(244, 114, 182, 0.15);
+  --bg-base-a: #241019;
+  --bg-base-b: #1e1330;
+  --frost-tint-a: rgba(251, 113, 133, 0.14);
+  --frost-tint-b: rgba(124, 58, 237, 0.10);
+  --frost-tint-c: rgba(244, 114, 182, 0.10);
+  --pro-bg: #3a1622;
+  --pro-text: #fda4af;
+}
+[data-theme="dark"][data-preset="grad-forest"] {
+  --accent: #34d399;
+  --app-bg: linear-gradient(150deg, #0b2018 0%, #0c1b2e 50%, #0e1626 100%);
+  --glow-a: rgba(52, 211, 153, 0.20);
+  --glow-b: rgba(16, 185, 129, 0.15);
+  --glow-c: rgba(13, 148, 136, 0.15);
+  --bg-base-a: #0b2018;
+  --bg-base-b: #0e1626;
+  --frost-tint-a: rgba(52, 211, 153, 0.14);
+  --frost-tint-b: rgba(16, 185, 129, 0.10);
+  --frost-tint-c: rgba(13, 148, 136, 0.10);
+  --pro-bg: #12322a;
+  --pro-text: #6ee7b7;
+}
+[data-theme="dark"][data-preset="grad-gold"] {
+  --accent: #fbbf24;
+  --app-bg: linear-gradient(150deg, #241a0a 0%, #261511 50%, #2a0f14 100%);
+  --glow-a: rgba(251, 191, 36, 0.19);
+  --glow-b: rgba(245, 158, 11, 0.14);
+  --glow-c: rgba(180, 83, 9, 0.13);
+  --bg-base-a: #241a0a;
+  --bg-base-b: #2a0f14;
+  --frost-tint-a: rgba(251, 191, 36, 0.13);
+  --frost-tint-b: rgba(245, 158, 11, 0.10);
+  --frost-tint-c: rgba(180, 83, 9, 0.09);
+  --pro-bg: #3a2b10;
+  --pro-text: #fcd34d;
+}
+[data-theme="dark"][data-preset="grad-ocean"] {
+  --accent: #60a5fa;
+  --app-bg: linear-gradient(150deg, #0b1526 0%, #0c1b2b 50%, #0c1f28 100%);
+  --glow-a: rgba(96, 165, 250, 0.20);
+  --glow-b: rgba(6, 182, 212, 0.15);
+  --glow-c: rgba(59, 130, 246, 0.17);
+  --bg-base-a: #0b1526;
+  --bg-base-b: #0c1f28;
+  --frost-tint-a: rgba(96, 165, 250, 0.14);
+  --frost-tint-b: rgba(6, 182, 212, 0.10);
+  --frost-tint-c: rgba(59, 130, 246, 0.12);
+  --pro-bg: #12264a;
+  --pro-text: #93c5fd;
+}
+[data-theme="dark"][data-preset="grad-grape"] {
+  --accent: #a78bfa;
+  --app-bg: linear-gradient(150deg, #171029 0%, #191230 50%, #131a33 100%);
+  --glow-a: rgba(167, 139, 250, 0.20);
+  --glow-b: rgba(99, 102, 241, 0.15);
+  --glow-c: rgba(139, 92, 246, 0.16);
+  --bg-base-a: #171029;
+  --bg-base-b: #131a33;
+  --frost-tint-a: rgba(167, 139, 250, 0.14);
+  --frost-tint-b: rgba(99, 102, 241, 0.10);
+  --frost-tint-c: rgba(139, 92, 246, 0.11);
+  --pro-bg: #2a2146;
+  --pro-text: #c4b5fd;
+}
+[data-theme="dark"][data-preset="grad-flame"] {
+  --accent: #f87171;
+  --app-bg: linear-gradient(150deg, #251014 0%, #261d0f 50%, #262008 100%);
+  --glow-a: rgba(248, 113, 113, 0.20);
+  --glow-b: rgba(249, 115, 22, 0.15);
+  --glow-c: rgba(244, 63, 94, 0.15);
+  --bg-base-a: #251014;
+  --bg-base-b: #262008;
+  --frost-tint-a: rgba(248, 113, 113, 0.14);
+  --frost-tint-b: rgba(249, 115, 22, 0.10);
+  --frost-tint-c: rgba(244, 63, 94, 0.10);
+  --pro-bg: #3d1618;
+  --pro-text: #fca5a5;
+}
+[data-theme="dark"][data-preset="grad-graphite"] {
+  --accent: #94a3b8;
+  --app-bg: linear-gradient(150deg, #14181f 0%, #141b2e 50%, #131c38 100%);
+  --glow-a: rgba(148, 163, 184, 0.16);
+  --glow-b: rgba(100, 116, 139, 0.12);
+  --glow-c: rgba(71, 85, 105, 0.12);
+  --bg-base-a: #14181f;
+  --bg-base-b: #131c38;
+  --frost-tint-a: rgba(148, 163, 184, 0.11);
+  --frost-tint-b: rgba(100, 116, 139, 0.08);
+  --frost-tint-c: rgba(71, 85, 105, 0.08);
+  --pro-bg: #232830;
+  --pro-text: #cbd5e1;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { width: 100%; height: 100%; overflow: hidden; }
 html { color-scheme: light; }
@@ -153,23 +728,12 @@ html[data-countdown-float] #app {
   padding: 0;
 }
 body {
-  background:
-    radial-gradient(1200px 800px at 12% -8%, rgba(91, 91, 245, 0.18), transparent 55%),
-    radial-gradient(1000px 700px at 100% 4%, rgba(236, 72, 153, 0.12), transparent 55%),
-    radial-gradient(1200px 900px at 55% 118%, rgba(59, 130, 246, 0.16), transparent 55%),
-    linear-gradient(150deg, #edf0fa 0%, #f6f2ea 100%);
+  background: var(--app-bg, var(--bg-page-surface));
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
   color: var(--text-1);
   user-select: none;
   cursor: default;
-}
-[data-theme="dark"] body {
-  background:
-    radial-gradient(1200px 800px at 12% -8%, rgba(139, 139, 255, 0.22), transparent 55%),
-    radial-gradient(1000px 700px at 100% 4%, rgba(236, 72, 153, 0.14), transparent 55%),
-    radial-gradient(1200px 900px at 55% 118%, rgba(59, 130, 246, 0.2), transparent 55%),
-    linear-gradient(150deg, #141520 0%, #1a1814 100%);
 }
 h1, h2, h3, p { text-wrap: pretty; }
 button, input, textarea { font: inherit; }

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen } from '@tauri-apps/api/event'
 import { Pause, Play, X } from 'lucide-vue-next'
 import { isTauri, type Countdown } from '../api/tauri'
 import { useStore } from '../stores/workbench'
+import { useTheme } from '../composables/useTheme'
 
 // 从窗口 label 解析倒计时 id（countdown-{id}）
 const label = isTauri() ? getCurrentWindow().label : 'countdown-0'
@@ -14,6 +15,9 @@ const store = useStore()
 
 // 标记为浮窗窗口：body 透明，只显示圆形水罐本体
 document.documentElement.dataset.countdownFloat = ''
+
+// 主题跟随（监听配置与系统偏好）
+useTheme()
 
 const mine = computed(() => store.state.countdowns.find((c) => c.id === id) ?? null)
 
@@ -44,16 +48,6 @@ onBeforeUnmount(() => {
   unlistenFired?.()
   unlistenChanged?.()
 })
-
-// 主题跟随
-const theme = computed(() => store.state.config.theme)
-watch(
-  theme,
-  (t) => {
-    document.documentElement.dataset.theme = t === 'dark' ? 'dark' : ''
-  },
-  { immediate: true },
-)
 
 function fmt(n: number): string {
   return String(n).padStart(2, '0')

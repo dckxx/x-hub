@@ -793,8 +793,10 @@ pub struct NoteTagRow {
 pub fn save_config(config: AppConfig) -> Result<AppConfig, String> {
     crate::config::save(&config)?;
     log::info!(
-        "配置已保存: theme={} window={}x{} always_on_top={}",
-        config.theme,
+        "配置已保存: theme_mode={} theme_preset={} accent_color={:?} window={}x{} always_on_top={}",
+        config.theme_mode,
+        config.theme_preset,
+        config.accent_color,
         config.window.width,
         config.window.height,
         config.window.always_on_top

@@ -243,8 +243,16 @@ pub fn run() {
             // 主窗口启动时隐藏（tauri.conf.json visible:false），等前端内容可绘制后再 show，
             // 避免 WebView2 冷启动期间出现空白/白屏等待窗口；这里先铺上主题底色，
             // 若 show 早于首帧绘制，也只会闪主题色而非纯白
-            let theme = config::load().theme;
-            let bg = if theme == "dark" {
+            // 主题三态：dark，或 system 且系统偏好深色 → 暗色底色；light / 系统浅色 → 亮色
+            let config = config::load();
+            let mut dark = config.theme_mode == "dark";
+            if config.theme_mode == "system" {
+                dark = matches!(
+                    app.get_webview_window("main").and_then(|w| w.theme().ok()),
+                    Some(tauri::Theme::Dark)
+                );
+            }
+            let bg = if dark {
                 tauri::window::Color(18, 19, 27, 255) // --bg-page 暗色 #12131b
             } else {
                 tauri::window::Color(236, 239, 246, 255) // --bg-page 亮色 #eceff6

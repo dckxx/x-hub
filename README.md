@@ -14,6 +14,7 @@
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 </div>
+<img width="1408" height="906" alt="image" src="https://github.com/user-attachments/assets/407d95e1-ecc4-415a-adf8-b9ad2141eec3" />
 
 ## ✨ 功能特性
 

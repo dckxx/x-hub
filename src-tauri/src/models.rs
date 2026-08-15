@@ -173,3 +173,26 @@ pub struct SyncResult {
     pub listening: bool,
     pub path: Option<String>,
 }
+
+/// 倒计时（三种形态统一建模）：
+/// - once    一次性：end_at 为绝对时刻，到点置 finished，卡片灰态待删
+/// - daily   每天固定时刻：end_at 为当天/次日 HH:MM 时刻，到点顺延 24h
+/// - interval 每隔 N 分钟：end_at 为当前轮结束时刻，到点按 interval_minutes 顺延
+/// total_ms 为周期总长（once 创建时长 / daily 24h / interval N 分钟），用于水位进度。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Countdown {
+    pub id: i64,
+    pub name: String,
+    pub repeat_mode: String,
+    pub end_at: i64,
+    pub total_ms: i64,
+    pub interval_minutes: Option<i64>,
+    pub paused: bool,
+    pub paused_remaining_ms: Option<i64>,
+    pub finished: bool,
+    pub floated: bool,
+    pub float_x: Option<f64>,
+    pub float_y: Option<f64>,
+    pub created_at: String,
+    pub updated_at: String,
+}

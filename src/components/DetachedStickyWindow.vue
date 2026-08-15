@@ -99,19 +99,37 @@ function onCancel() {
   showDialog.value = false
 }
 
-// 窗口拖动：与 TitleBar 一致，按钮子元素不触发
+// 窗口拖动：按下后指针发生实际位移才启动拖动，避免单纯点击误触发
+// Windows 模态拖动循环（鼠标松开事件被 WebView 吞掉）导致整个应用卡死
 const appWindow = isTauri() ? getCurrentWindow() : null
-function onDragStart(e: MouseEvent) {
+const DRAG_THRESHOLD = 4
+let dragPending: { x: number; y: number } | null = null
+
+function onMouseDown(e: MouseEvent) {
   if (!appWindow || e.button !== 0) return
   const target = e.target as HTMLElement
   if (target.closest('button')) return
-  appWindow.startDragging()
+  dragPending = { x: e.screenX, y: e.screenY }
+}
+
+function onMouseMove(e: MouseEvent) {
+  if (!dragPending || !appWindow) return
+  const dx = e.screenX - dragPending.x
+  const dy = e.screenY - dragPending.y
+  if (dx * dx + dy * dy >= DRAG_THRESHOLD * DRAG_THRESHOLD) {
+    dragPending = null
+    void appWindow.startDragging()
+  }
+}
+
+function onDragEnd() {
+  dragPending = null
 }
 </script>
 
 <template>
   <div class="floating-sticky">
-    <header class="fs-header" @mousedown="onDragStart">
+    <header class="fs-header" @mousedown="onMouseDown" @mousemove="onMouseMove" @mouseup="onDragEnd" @mouseleave="onDragEnd">
       <span class="fs-title">便签</span>
       <div class="fs-controls">
         <button

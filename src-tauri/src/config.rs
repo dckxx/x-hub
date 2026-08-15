@@ -35,8 +35,10 @@ pub struct AppConfig {
     /// 手动指定的 opencode.db 路径
     pub usage_db_path: Option<String>,
     /// 主页面「中上区块」显示内容：
-    /// token(默认 Token 统计) / notes(速记统计) / todo(待办概览) / resources(速达数量)
+    /// countdown(默认倒计时) / token(Token 统计) / notes(速记统计) / todo(待办概览) / resources(速达数量)
     pub dashboard_mid_content: String,
+    /// 倒计时到点提示音（默认关闭）
+    pub countdown_sound: bool,
 }
 
 impl Default for AppConfig {
@@ -47,7 +49,8 @@ impl Default for AppConfig {
             global_shortcut: crate::shortcut::DEFAULT_TOGGLE_SHORTCUT.to_string(),
             usage_sync_cursor: 0,
             usage_db_path: None,
-            dashboard_mid_content: "token".to_string(),
+            dashboard_mid_content: "countdown".to_string(),
+            countdown_sound: false,
         }
     }
 }
@@ -112,7 +115,7 @@ mod tests {
         assert_eq!(c.window.width, 1400.0);
         assert!(!c.window.always_on_top);
         assert_eq!(c.global_shortcut, crate::shortcut::DEFAULT_TOGGLE_SHORTCUT);
-        assert_eq!(c.dashboard_mid_content, "token");
+        assert_eq!(c.dashboard_mid_content, "countdown");
     }
 
     #[test]

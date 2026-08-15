@@ -1,10 +1,10 @@
 use crate::config::AppConfig;
 use crate::models::{
-    DetachedSticky, Note, Resource, ResourceKind, SearchResult, Snippet, Sticky, SyncResult, Tag,
-    Todo, UsageDetail, UsageSummary,
+    Countdown, DetachedSticky, Note, Resource, ResourceKind, SearchResult, Snippet, Sticky,
+    SyncResult, Tag, Todo, UsageDetail, UsageSummary,
 };
 use crate::process;
-use crate::repo::{detached_sticky, note, resource, snippet, sticky, tag, todo};
+use crate::repo::{countdown, detached_sticky, note, resource, snippet, sticky, tag, todo};
 use crate::usage;
 use rusqlite::Connection;
 use std::sync::Mutex;
@@ -22,15 +22,17 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
     let stickies = sticky::list(&conn).map_err(err_str)?;
     let detached = detached_sticky::list(&conn).map_err(err_str)?;
     let usage_summary = usage::query_summary(&conn).map_err(err_str)?;
+    let countdowns = countdown::list(&conn).map_err(err_str)?;
     let config = crate::config::load();
     log::info!(
-        "初始化数据加载完成: resources={} notes={} tags={} todos={} stickies={} detached={}",
+        "初始化数据加载完成: resources={} notes={} tags={} todos={} stickies={} detached={} countdowns={}",
         resources.len(),
         notes.len(),
         tags.len(),
         todos.len(),
         stickies.len(),
-        detached.len()
+        detached.len(),
+        countdowns.len()
     );
     Ok(InitialData {
         resources,
@@ -39,6 +41,7 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
         todos,
         stickies,
         detached,
+        countdowns,
         usage_summary,
         config,
     })
@@ -52,6 +55,7 @@ pub struct InitialData {
     pub todos: Vec<Todo>,
     pub stickies: Vec<Sticky>,
     pub detached: Vec<DetachedSticky>,
+    pub countdowns: Vec<Countdown>,
     pub usage_summary: UsageSummary,
     pub config: AppConfig,
 }
@@ -444,6 +448,157 @@ pub async fn delete_detached_sticky(
     crate::sticky_window::destroy(&app, slot);
     log::info!("删除浮窗便签: slot={}", slot);
     Ok(())
+}
+
+// ---------- 倒计时 ----------
+
+#[tauri::command]
+pub fn list_countdowns(state: State<'_, DbState>) -> Result<Vec<Countdown>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let items = countdown::list(&conn).map_err(err_str)?;
+    log::debug!("加载倒计时: {} 个", items.len());
+    Ok(items)
+}
+
+#[tauri::command]
+pub fn create_countdown(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    name: String,
+    repeat_mode: String,
+    end_at: i64,
+    total_ms: i64,
+    interval_minutes: Option<i64>,
+) -> Result<Countdown, String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("倒计时名称不能为空".into());
+    }
+    if !matches!(repeat_mode.as_str(), "once" | "daily" | "interval") {
+        return Err("重复模式不合法".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let total = countdown::count(&conn).map_err(err_str)?;
+    if total >= countdown::MAX_COUNTDOWNS {
+        return Err(format!("最多只能创建 {} 个倒计时", countdown::MAX_COUNTDOWNS));
+    }
+    let c = countdown::create(&conn, n, &repeat_mode, end_at, total_ms, interval_minutes)
+        .map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("countdowns-changed", ());
+    log::info!(
+        "创建倒计时: id={} name={} mode={} end_at={}",
+        c.id,
+        c.name,
+        c.repeat_mode,
+        c.end_at
+    );
+    Ok(c)
+}
+
+#[tauri::command]
+pub fn update_countdown(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    id: i64,
+    name: String,
+    repeat_mode: String,
+    end_at: i64,
+    total_ms: i64,
+    interval_minutes: Option<i64>,
+) -> Result<Countdown, String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("倒计时名称不能为空".into());
+    }
+    if !matches!(repeat_mode.as_str(), "once" | "daily" | "interval") {
+        return Err("重复模式不合法".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let c = countdown::update(&conn, id, n, &repeat_mode, end_at, total_ms, interval_minutes)
+        .map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("countdowns-changed", ());
+    log::info!("更新倒计时: id={} name={} mode={}", id, c.name, c.repeat_mode);
+    Ok(c)
+}
+
+#[tauri::command]
+pub fn delete_countdown(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    id: i64,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    countdown::delete(&conn, id).map_err(err_str)?;
+    drop(conn);
+    crate::countdown_window::destroy(&app, id);
+    let _ = app.emit("countdowns-changed", ());
+    log::info!("删除倒计时: id={}", id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pause_countdown(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    id: i64,
+) -> Result<Countdown, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let c = countdown::pause(&conn, id).map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("countdowns-changed", ());
+    log::info!("暂停倒计时: id={} name={}", c.id, c.name);
+    Ok(c)
+}
+
+#[tauri::command]
+pub fn resume_countdown(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    id: i64,
+) -> Result<Countdown, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let c = countdown::resume(&conn, id).map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("countdowns-changed", ());
+    log::info!("恢复倒计时: id={} name={} 下次={}", c.id, c.name, c.end_at);
+    Ok(c)
+}
+
+/// 浮窗浮起：持久化状态并创建独立圆窗。
+/// 必须 async：同步命令运行在主线程，会与 WebviewWindow 创建互相阻塞（死锁），
+/// 表现为主窗口卡死且浮窗不出现。
+#[tauri::command]
+pub async fn float_countdown(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    id: i64,
+) -> Result<Countdown, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let c = countdown::set_floated(&conn, id, true, None, None).map_err(err_str)?;
+    drop(conn);
+    crate::countdown_window::create_or_focus(&app, id, c.float_x, c.float_y)
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("countdowns-changed", ());
+    log::info!("倒计时浮窗浮起: id={} name={}", id, c.name);
+    Ok(c)
+}
+
+/// 浮窗收起：销毁窗口并落盘位置
+#[tauri::command]
+pub async fn unfloat_countdown(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    id: i64,
+) -> Result<Countdown, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let c = countdown::set_floated(&conn, id, false, None, None).map_err(err_str)?;
+    drop(conn);
+    crate::countdown_window::destroy(&app, id);
+    let _ = app.emit("countdowns-changed", ());
+    log::info!("倒计时浮窗收起: id={} name={}", id, c.name);
+    Ok(c)
 }
 
 // ---------- 提示词百宝箱 ----------
@@ -1139,6 +1294,289 @@ pub fn import_icon_file(
             }
         }
     }
+}
+
+// ---------- 扫描已安装应用 ----------
+
+#[derive(serde::Serialize)]
+pub struct InstalledAppInfo {
+    pub name: String,
+    pub target: String,
+    pub icon: Option<String>,
+}
+
+/// 扫描本机已安装应用（注册表卸载项 + 用户/公共开始菜单快捷方式），
+/// 去重、过滤系统噪音后批量提取程序图标（icons/<hash>.png，与拖拽导入共用缓存键）。
+/// 必须 async：扫描 + 图标提取耗时数秒，同步命令会卡死主线程冻结 UI。
+#[tauri::command]
+pub async fn scan_installed_apps(app: tauri::AppHandle) -> Result<Vec<InstalledAppInfo>, String> {
+    let candidates = scan_app_candidates()?;
+    if candidates.is_empty() {
+        return Ok(vec![]);
+    }
+    let icons = batch_extract_icons(&app, &candidates)?;
+    Ok(candidates
+        .into_iter()
+        .zip(icons)
+        .map(|((name, target), icon)| InstalledAppInfo { name, target, icon })
+        .collect())
+}
+
+/// 单次 PowerShell 扫描注册表卸载项 + 开始菜单快捷方式，
+/// 输出 APP=<json> 行（name/target），Rust 侧解析并二次去重、按名称排序、限量。
+/// 命名/路径等取值一律在 PS 内 Trim + 环境变量展开，中文经 UTF-8 输出。
+fn scan_app_candidates() -> Result<Vec<(String, String)>, String> {
+    let script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$sh = New-Object -ComObject WScript.Shell
+$seen = @{}
+$out = New-Object System.Collections.ArrayList
+
+function Add-App([string]$name, [string]$target) {
+  if (-not $name) { return }
+  $name = $name.Trim()
+  if (-not $target) { return }
+  $target = $target.Trim()
+  if (-not (Test-Path -LiteralPath $target)) { return }
+  # 只收可执行目标（exe/bat/cmd），过滤 dll 图标源等
+  if ($target -notmatch '\.(exe|bat|cmd)$') { return }
+  $key = $target.ToLower()
+  if ($seen.ContainsKey($key)) { return }
+  $seen[$key] = $true
+  [void]$out.Add(@{ name = $name; target = $target })
+}
+
+# ---- 注册表卸载项（HKLM 32/64 + HKCU）----
+$regRoots = @(
+  'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+  'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+  'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+)
+foreach ($root in $regRoots) {
+  Get-ItemProperty $root | ForEach-Object {
+    $dn = $_.DisplayName
+    if (-not $dn) { return }
+    $dn = ([string]$dn).Trim()
+    # 过滤系统组件/运行时/更新类噪音
+    if ($dn -match '^(KB\d+|Update for|Security Update|Hotfix|Microsoft Update Health|Microsoft Edge (Update|WebView)|Microsoft Windows|Windows (SDK|Driver|Update|PowerShell|Terminal|Web Experience|Package Manager|App Runtime|App Certification|Kits)|Microsoft Visual C\+\+|Microsoft \.NET|\.NET (Runtime|Host)|Windows App Runtime|Microsoft Office (ClickToRun|Microsoft 365 Apps for enterprise))') { return }
+    if ($dn -match '(卸载|Uninstall|Update|Updater)$') { return }
+    $target = ''
+    # DisplayIcon 常直接指向主 exe（可能带 ,0 序号或 %环境变量%）
+    if ($_.DisplayIcon) {
+      $di = (([string]$_.DisplayIcon) -split ',')[0].Trim()
+      if ($di) {
+        try { $di = $ExecutionContext.InvokeCommand.ExpandString($di) } catch {}
+        if ($di -and (Test-Path -LiteralPath $di)) { $target = $di }
+      }
+    }
+    # 无 DisplayIcon 时从安装目录挑一个主 exe
+    if (-not $target -and $_.InstallLocation) {
+      $loc = ([string]$_.InstallLocation).Trim()
+      try { $loc = $ExecutionContext.InvokeCommand.ExpandString($loc) } catch {}
+      if ($loc -and (Test-Path -LiteralPath $loc)) {
+        $exe = Get-ChildItem -LiteralPath $loc -Filter *.exe -File -Recurse -Depth 1 -ErrorAction SilentlyContinue |
+          Where-Object { $_.FullName -notmatch '(unins\d*\.exe|uninstall(\.exe|_?[\w-]*\.exe)?|update(\.exe|r\.exe)?)$' } |
+          Select-Object -First 1
+        if ($exe) { $target = $exe.FullName }
+      }
+    }
+    if (-not $target) { return }
+    if ($target -match '\\Windows\\(System32|SysWOW64|servicing|WinSxS)\\' -or $target -match '(unins\d*\.exe|uninstall(\.exe|_?[\w-]*\.exe)?)$') { return }
+    Add-App $dn $target
+  }
+}
+
+# ---- 开始菜单快捷方式（用户 + 公共）----
+$lnkDirs = @(
+  "$env:APPDATA\Microsoft\Windows\Start Menu\Programs",
+  "$env:ProgramData\Microsoft\Windows\Start Menu\Programs"
+)
+foreach ($dir in $lnkDirs) {
+  Get-ChildItem -LiteralPath $dir -Filter *.lnk -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+    try {
+      $lnk = $sh.CreateShortcut($_.FullName)
+      $t = $lnk.TargetPath
+    } catch { return }
+    if (-not $t) { return }
+    if ($t -match '\\Windows\\(System32|SysWOW64|servicing|WinSxS)\\' -or $t -match '(unins\d*\.exe|uninstall(\.exe|_?[\w-]*\.exe)?)$') { return }
+    $bn = $_.BaseName
+    $bn = $bn -replace '\s*[-–—]\s*(快捷方式|shortcut)$','' -replace '\s*\(\d+\)\s*$',''
+    Add-App $bn $t
+  }
+}
+
+foreach ($a in $out) {
+  Write-Output ('APP=' + ($a | ConvertTo-Json -Compress))
+}
+"#;
+    let output = powershell()
+        .args(["-NoProfile", "-Command", script])
+        .output()
+        .map_err(|e| format!("扫描已安装应用失败（PowerShell 执行错误）: {}", e))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        log::debug!("扫描应用 PowerShell stderr: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut apps: Vec<(String, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in stdout.lines() {
+        let Some(json) = line.strip_prefix("APP=") else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+            continue;
+        };
+        let (Some(name), Some(target)) = (
+            v.get("name").and_then(|x| x.as_str()),
+            v.get("target").and_then(|x| x.as_str()),
+        ) else {
+            continue;
+        };
+        let (name, target) = (name.trim(), target.trim());
+        if name.is_empty() || target.is_empty() {
+            continue;
+        }
+        if !seen.insert(target.to_lowercase()) {
+            continue;
+        }
+        apps.push((name.to_string(), target.to_string()));
+    }
+    apps.sort_by(|a, b| {
+        a.0.to_lowercase()
+            .cmp(&b.0.to_lowercase())
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    const MAX_APPS: usize = 500;
+    if apps.len() > MAX_APPS {
+        apps.truncate(MAX_APPS);
+    }
+    log::info!("扫描已安装应用: 共 {} 个", apps.len());
+    Ok(apps)
+}
+
+/// 批量提取程序图标：单次 PowerShell 提取所有未缓存目标图标到临时目录，
+/// 再按 DefaultHasher(target) 重命名为正式缓存键（与 extract_app_icon 共用缓存，
+/// 已缓存的目标直接复用，重复扫描零开销）。
+fn batch_extract_icons(
+    app: &tauri::AppHandle,
+    apps: &[(String, String)],
+) -> Result<Vec<Option<String>>, String> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let icons_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("icons");
+    std::fs::create_dir_all(&icons_dir).map_err(|e| e.to_string())?;
+
+    // 已缓存目标直接复用，只收集未缓存的索引
+    let mut missing: Vec<usize> = Vec::new();
+    let mut result: Vec<Option<String>> = Vec::with_capacity(apps.len());
+    for (i, (_, target)) in apps.iter().enumerate() {
+        let mut hasher = DefaultHasher::new();
+        target.hash(&mut hasher);
+        let cached = icons_dir.join(format!("{:016x}.png", hasher.finish()));
+        if cached.exists() {
+            result.push(Some(cached.to_string_lossy().into_owned()));
+        } else {
+            result.push(None);
+            missing.push(i);
+        }
+    }
+    if missing.is_empty() {
+        return Ok(result);
+    }
+
+    let tmp_dir = icons_dir.join(".scan_tmp");
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    let list_path = tmp_dir.join("list.txt");
+    let mut list = String::new();
+    for &i in &missing {
+        list.push_str(&apps[i].1);
+        list.push('\n');
+    }
+    std::fs::write(&list_path, list).map_err(|e| e.to_string())?;
+
+    let script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -AssemblyName System.Drawing
+$listFile = $env:XHUB_LIST
+$outDir = $env:XHUB_OUTDIR
+$idx = 0
+Get-Content -LiteralPath $listFile -Encoding UTF8 | ForEach-Object {
+  $p = $_.Trim()
+  if ($p) {
+    try {
+      $i = [System.Drawing.Icon]::ExtractAssociatedIcon($p)
+      if ($i -ne $null) {
+        try {
+          $bmp = $i.ToBitmap()
+          $bmp.Save((Join-Path $outDir ('{0}.png' -f $idx)), [System.Drawing.Imaging.ImageFormat]::Png)
+          $bmp.Dispose()
+        } catch {}
+        $i.Dispose()
+      }
+    } catch {}
+  }
+  $idx++
+}
+"#;
+    let output = powershell()
+        .args(["-NoProfile", "-Command", script])
+        .env("XHUB_LIST", list_path.to_str().unwrap_or(""))
+        .env("XHUB_OUTDIR", tmp_dir.to_str().unwrap_or(""))
+        .output()
+        .map_err(|e| format!("应用图标提取失败（PowerShell 执行错误）: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::warn!("应用图标提取脚本异常退出: {}", stderr.trim());
+    }
+
+    // 临时图标重命名为正式缓存键（缺文件 = 该程序无可用图标）
+    for (n, &i) in missing.iter().enumerate() {
+        let tmp_file = tmp_dir.join(format!("{}.png", n));
+        if !tmp_file.exists() {
+            continue;
+        }
+        let mut hasher = DefaultHasher::new();
+        apps[i].1.hash(&mut hasher);
+        let final_path = icons_dir.join(format!("{:016x}.png", hasher.finish()));
+        if final_path.exists() {
+            let _ = std::fs::remove_file(&tmp_file);
+        } else {
+            let _ = std::fs::rename(&tmp_file, &final_path);
+        }
+        result[i] = Some(final_path.to_string_lossy().into_owned());
+    }
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    log::info!("应用图标提取完成: {} 个（缺 {} 个）", apps.len(), missing.len());
+    Ok(result)
+}
+
+// ---------- 运行状态检测 ----------
+
+/// 返回当前所有正在运行的进程名（ImageName，小写去重、排序）。
+/// 前端按速达 app 资源的目标文件名匹配，判断应用是否已启动。
+/// 由前端每 3s 轮询；进程枚举走系统快照，单次开销约几十毫秒。
+#[tauri::command]
+pub fn get_running_processes() -> Result<Vec<String>, String> {
+    use sysinfo::{ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let mut names: Vec<String> = sys
+        .processes()
+        .values()
+        .filter_map(|p| p.name().to_str().map(|s| s.to_lowercase()))
+        .collect();
+    names.sort();
+    names.dedup();
+    log::debug!("查询运行中进程: {} 个", names.len());
+    Ok(names)
 }
 
 // ---------- 工具 ----------

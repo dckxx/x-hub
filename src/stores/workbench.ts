@@ -3,6 +3,7 @@ import {
   tauriApi,
   isTauri,
   type AppConfig,
+  type Countdown,
   type DetachedSticky,
   type Note,
   type Resource,
@@ -30,6 +31,7 @@ interface StoreState {
   todos: Todo[]
   stickies: Sticky[]
   detached: DetachedSticky[]
+  countdowns: Countdown[]
   snippets: Snippet[]
   tags: Tag[]
   config: AppConfig
@@ -46,6 +48,7 @@ const state = reactive<StoreState>({
   todos: [],
   stickies: [],
   detached: [],
+  countdowns: [],
   snippets: [],
   tags: [],
   config: {
@@ -58,7 +61,8 @@ const state = reactive<StoreState>({
       always_on_top: false,
     },
     global_shortcut: DEFAULT_GLOBAL_SHORTCUT,
-    dashboard_mid_content: 'token',
+    dashboard_mid_content: 'countdown',
+    countdown_sound: false,
   },
   usageSummary: null,
   usageDetail: null,
@@ -84,6 +88,7 @@ export function useStore() {
     state.usageSummary = data.usage_summary
     state.config = data.config
     state.snippets = snippets
+    state.countdowns = data.countdowns
     state.loaded = true
   }
 
@@ -365,6 +370,101 @@ export function useStore() {
     state.detached = detached
   }
 
+  // ---- 倒计时 ----
+  function upsertCountdown(updated: Countdown) {
+    const idx = state.countdowns.findIndex((x) => x.id === updated.id)
+    if (idx >= 0) state.countdowns[idx] = updated
+    else state.countdowns.push(updated)
+  }
+
+  async function addCountdown(payload: {
+    name: string
+    repeatMode: string
+    endAt: number
+    totalMs: number
+    intervalMinutes?: number | null
+  }) {
+    const c = isTauri()
+      ? await tauriApi.createCountdown(payload)
+      : ({
+          id: Date.now(),
+          name: payload.name,
+          repeat_mode: payload.repeatMode,
+          end_at: payload.endAt,
+          total_ms: payload.totalMs,
+          interval_minutes: payload.intervalMinutes ?? null,
+          paused: false,
+          paused_remaining_ms: null,
+          finished: false,
+          floated: false,
+          float_x: null,
+          float_y: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        } as Countdown)
+    upsertCountdown(c)
+    return c
+  }
+
+  async function editCountdown(payload: {
+    id: number
+    name: string
+    repeatMode: string
+    endAt: number
+    totalMs: number
+    intervalMinutes?: number | null
+  }) {
+    const c = isTauri()
+      ? await tauriApi.updateCountdown(payload)
+      : ({
+          ...(state.countdowns.find((x) => x.id === payload.id) ?? ({} as Countdown)),
+          ...payload,
+          repeat_mode: payload.repeatMode,
+          end_at: payload.endAt,
+          total_ms: payload.totalMs,
+          interval_minutes: payload.intervalMinutes ?? null,
+          paused: false,
+          paused_remaining_ms: null,
+          updated_at: new Date().toISOString(),
+        } as Countdown)
+    upsertCountdown(c)
+    return c
+  }
+
+  async function removeCountdown(id: number) {
+    if (isTauri()) await tauriApi.deleteCountdown(id)
+    state.countdowns = state.countdowns.filter((x) => x.id !== id)
+  }
+
+  async function toggleCountdownPause(id: number) {
+    if (!isTauri()) return null
+    const cur = state.countdowns.find((x) => x.id === id)
+    const c = cur?.paused
+      ? await tauriApi.resumeCountdown(id)
+      : await tauriApi.pauseCountdown(id)
+    upsertCountdown(c)
+    return c
+  }
+
+  async function floatCountdown(id: number) {
+    if (!isTauri()) return null
+    const c = await tauriApi.floatCountdown(id)
+    upsertCountdown(c)
+    return c
+  }
+
+  async function unfloatCountdown(id: number) {
+    if (!isTauri()) return null
+    const c = await tauriApi.unfloatCountdown(id)
+    upsertCountdown(c)
+    return c
+  }
+
+  async function refreshCountdowns() {
+    if (!isTauri()) return
+    state.countdowns = await tauriApi.listCountdowns()
+  }
+
   // ---- 标签 ----
   async function createTag(name: string) {
     const t = await tauriApi.createTag(name)
@@ -405,9 +505,16 @@ export function useStore() {
     return saved
   }
 
-  /** 主页面「中上区块」显示内容：token/notes/todo/resources */
+  /** 主页面「中上区块」显示内容：token/notes/todo/resources/countdown */
   async function setDashboardMidContent(value: string) {
     state.config.dashboard_mid_content = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
+  /** 倒计时到点提示音开关 */
+  async function setCountdownSound(value: boolean) {
+    state.config.countdown_sound = value
     if (!isTauri()) return
     await tauriApi.saveConfig(state.config)
   }
@@ -472,6 +579,13 @@ export function useStore() {
     restoreDetachedSticky,
     deleteDetachedSticky,
     refreshStickies,
+    addCountdown,
+    editCountdown,
+    removeCountdown,
+    toggleCountdownPause,
+    floatCountdown,
+    unfloatCountdown,
+    refreshCountdowns,
     createTag,
     deleteTag,
     loadNoteTagsMap,
@@ -479,6 +593,7 @@ export function useStore() {
     setAlwaysOnTop,
     setGlobalShortcut,
     setDashboardMidContent,
+    setCountdownSound,
     refreshUsage,
     loadUsageSummary,
     loadUsageDetail,

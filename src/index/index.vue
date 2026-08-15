@@ -19,9 +19,11 @@ import UsageView from '../components/UsageView.vue'
 import RecentBar from '../components/RecentBar.vue'
 import ClockCard from '../components/ClockCard.vue'
 import StickyCard from '../components/StickyCard.vue'
+import CountdownCard from '../components/CountdownCard.vue'
 import { useStore } from '../stores/workbench'
 import { isTauri } from '../api/tauri'
-import type { Note, Resource, Todo } from '../api/tauri'
+import type { Countdown, Note, Resource, Todo } from '../api/tauri'
+import { playChime } from '../utils/chime'
 import { FileText, FolderOpen, Gauge, LayoutDashboard, Moon, Settings2, Sun, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 
 const store = useStore()
@@ -52,7 +54,7 @@ function openPromptManage() {
   promptManageVisible.value = true
 }
 
-// ---- 主页面「中上区块」内容（Token 统计 / 速记统计 / 待办概览 / 速达数量，设置中切换） ----
+// ---- 主页面「中上区块」内容（Token 统计 / 速记统计 / 待办概览 / 速达数量 / 倒计时，设置中切换） ----
 const dashMidContent = computed(() => store.state.config.dashboard_mid_content)
 const dashMidCard = computed(() => {
   switch (dashMidContent.value) {
@@ -62,6 +64,8 @@ const dashMidCard = computed(() => {
       return TodoOverviewCard
     case 'resources':
       return ResourcesOverviewCard
+    case 'countdown':
+      return CountdownCard
     default:
       return TokenStatsCard
   }
@@ -77,7 +81,7 @@ const dashMidProps = computed(() => {
     case 'resources':
       return { onOpenDetail: openSuda }
     default:
-      return { onOpenDetail: openUsageDetail }
+      return {}
   }
 })
 
@@ -126,14 +130,31 @@ onMounted(async () => {
     unlistenStickies = await listen('stickies-changed', () => {
       store.refreshStickies()
     })
+    // 倒计时到点：toast 提示 + 刷新列表（浮窗水罐同步）
+    unlistenCountdownFired = await listen<Countdown>('countdown-fired', (e) => {
+      const name = e.payload?.name ?? ''
+      showToast(name ? `「${name}」时间到` : '倒计时时间到')
+      if (store.state.config.countdown_sound) {
+        playChime()
+      }
+      void store.refreshCountdowns()
+    })
+    // ticker 顺延 / 创建更新后同步
+    unlistenCountdownsChanged = await listen('countdowns-changed', () => {
+      void store.refreshCountdowns()
+    })
   }
   window.addEventListener('keydown', onSearchKeydown)
 })
 
 let unlistenStickies: (() => void) | null = null
+let unlistenCountdownFired: (() => void) | null = null
+let unlistenCountdownsChanged: (() => void) | null = null
 
 onUnmounted(() => {
   unlistenStickies?.()
+  unlistenCountdownFired?.()
+  unlistenCountdownsChanged?.()
   window.removeEventListener('keydown', onSearchKeydown)
 })
 
@@ -581,6 +602,7 @@ provide('showToast', showToast)
   flex-direction: column;
   gap: var(--space-4);
   min-height: 0;
+  overflow-y: auto;
 }
 .dash-left .dash-clock {
   flex-shrink: 0;

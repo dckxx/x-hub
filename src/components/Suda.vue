@@ -7,16 +7,18 @@ import {
   Loader2,
   Pencil,
   Plus,
+  ScanSearch,
   Trash2,
   Wrench,
 } from 'lucide-vue-next'
-import { isTauri, tauriApi, type Resource } from '../api/tauri'
+import { isTauri, tauriApi, type InstalledAppInfo, type Resource } from '../api/tauri'
 import { CATEGORIES, categorize } from '../utils/categories'
 import { useStore } from '../stores/workbench'
 import { reportClientError } from '../utils/error-report'
 import { accentOf, fileAccentOf, iconSrc, useResourceIcon } from '../composables/useResourceIcon'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 import SudaFormDialog from './SudaFormDialog.vue'
+import SudaScanDialog from './SudaScanDialog.vue'
 
 const store = useStore()
 const showToast = inject<(msg: string, action?: { label: string; onClick: () => void }) => void>(
@@ -25,7 +27,7 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
 )
 const rootRef = ref<HTMLElement | null>(null)
 void rootRef
-const hasOverlayModal = computed(() => formVisible.value || menu.value.visible)
+const hasOverlayModal = computed(() => formVisible.value || menu.value.visible || scanVisible.value)
 const { onIconError, showImageIcon, showWebFallbackIcon, iconText, fileIconOf } =
   useResourceIcon()
 
@@ -74,6 +76,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   unlistenDrop?.()
+  if (runningTimer) {
+    clearInterval(runningTimer)
+    runningTimer = null
+  }
 })
 
 async function handleDrop(file: string) {
@@ -105,6 +111,32 @@ async function handleDrop(file: string) {
     showToast(String(e))
   }
 }
+
+// ---- 运行状态检测：每 3s 轮询进程名集合，应用已启动时名称左侧显示小绿点 ----
+const runningNames = ref<Set<string>>(new Set())
+let runningTimer: ReturnType<typeof setInterval> | null = null
+
+function isRunning(r: Resource): boolean {
+  if (r.kind !== 'app' || !r.target) return false
+  const file = r.target.split(/[\\/]/).pop()?.toLowerCase()
+  return !!file && runningNames.value.has(file)
+}
+
+async function refreshRunning() {
+  if (!isTauri()) return
+  try {
+    const names = await tauriApi.getRunningProcesses()
+    runningNames.value = new Set(names)
+  } catch {
+    // 静默失败，下一轮重试
+  }
+}
+
+onMounted(() => {
+  if (!isTauri()) return
+  void refreshRunning()
+  runningTimer = setInterval(() => void refreshRunning(), 3000)
+})
 
 // ---- 分类筛选 ----
 type FilterKey = '全部' | '常用' | '应用' | '网页' | '文件'
@@ -221,6 +253,43 @@ function onFormSubmit(payload: {
   prefill.value = null
 }
 
+// ---- 扫描已安装应用导入 ----
+const scanVisible = ref(false)
+const importing = ref(false)
+
+async function onScanImported(apps: InstalledAppInfo[]) {
+  if (importing.value) return
+  importing.value = true
+  let added = 0
+  let skipped = 0
+  for (const a of apps) {
+    // 二次去重保护：目标路径已存在则跳过（弹窗中已禁用，这里兜底）
+    if (
+      store.state.resources.some(
+        (r) => r.kind === 'app' && r.target.toLowerCase() === a.target.toLowerCase(),
+      )
+    ) {
+      skipped++
+      continue
+    }
+    try {
+      await store.addResource({
+        kind: 'app',
+        name: a.name,
+        target: a.target,
+        category: null,
+        icon: a.icon,
+        args: null,
+      })
+      added++
+    } catch (e) {
+      void reportClientError('速达扫描导入失败', e)
+    }
+  }
+  importing.value = false
+  showToast(skipped > 0 ? `已添加 ${added} 个应用，跳过 ${skipped} 个已存在` : `已添加 ${added} 个应用`)
+}
+
 // ---- 图标渲染（统一在 useResourceIcon composable） ----
 
 function kindLabel(r: Resource): string {
@@ -250,13 +319,24 @@ function cardAccentStyle(r: Resource) {
   <section ref="rootRef" class="card suda">
     <header class="suda-header">
       <h2 class="suda-title">速达</h2>
-      <button
-        class="icon-btn add"
-        title="添加"
-        @click="editing = null; prefill = null; formVisible = true"
-      >
-        <Plus :size="15" :stroke-width="2.2" />
-      </button>
+      <div class="suda-header-actions">
+        <button
+          v-if="isTauri()"
+          class="icon-btn scan"
+          title="扫描已安装应用"
+          aria-label="扫描已安装应用"
+          @click="scanVisible = true"
+        >
+          <ScanSearch :size="15" :stroke-width="2.2" />
+        </button>
+        <button
+          class="icon-btn add"
+          title="添加"
+          @click="editing = null; prefill = null; formVisible = true"
+        >
+          <Plus :size="15" :stroke-width="2.2" />
+        </button>
+      </div>
     </header>
 
     <!-- 分类 tabs -->
@@ -366,7 +446,10 @@ function cardAccentStyle(r: Resource) {
               {{ iconText(r) }}
             </span>
           </div>
-          <span class="suda-name">{{ r.name }}</span>
+          <span class="suda-name">
+            <span v-if="isRunning(r)" class="suda-dot" title="运行中" />
+            <span class="suda-name-text">{{ r.name }}</span>
+          </span>
         </div>
       </div>
 
@@ -399,6 +482,11 @@ function cardAccentStyle(r: Resource) {
       :prefill="prefill"
       @close="formVisible = false"
       @submit="onFormSubmit"
+    />
+    <SudaScanDialog
+      :visible="scanVisible"
+      @close="scanVisible = false"
+      @imported="onScanImported"
     />
 
     <!-- 拖拽导入遮罩（dropping = 拖拽中；parsing = 正在识别程序） -->
@@ -439,6 +527,11 @@ function cardAccentStyle(r: Resource) {
   color: var(--text-1);
   letter-spacing: -0.01em;
 }
+.suda-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .icon-btn.add {
   width: 30px;
   height: 30px;
@@ -446,6 +539,16 @@ function cardAccentStyle(r: Resource) {
   color: var(--brand-500);
 }
 .icon-btn.add:hover {
+  background: var(--brand-500);
+  color: var(--text-on-accent);
+}
+.icon-btn.scan {
+  width: 30px;
+  height: 30px;
+  background: var(--bg-card-soft);
+  color: var(--text-3);
+}
+.icon-btn.scan:hover {
   background: var(--brand-500);
   color: var(--text-on-accent);
 }
@@ -525,13 +628,27 @@ function cardAccentStyle(r: Resource) {
   background: var(--bg-card);
 }
 .suda-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
   font-size: 12px;
   font-weight: 500;
   color: var(--text-2);
-  max-width: 100%;
+}
+.suda-name-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.suda-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-green);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--c-green) 22%, transparent);
 }
 .suda-kind {
   position: absolute;

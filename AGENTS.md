@@ -1,10 +1,10 @@
 # x-hub (个人效率工作台)
 
-**生成:** 2026-08-13 | **分支:** master | **版本:** 0.1.12
+**生成:** 2026-08-13 | **分支:** master | **版本:** 0.1.13
 
 ## 概述
 
-基于 Tauri 2 + Vue 3 + Tailwind CSS 4 的本地桌面效率工作台（Bento 风格 Dashboard）。导航含 4 个视图：**工作台**（时钟/系统监视/便签/Token 用量/提示词/待办/最近使用）、**速记**（笔记）、**速达**（应用/网页/文件资源）、**用量**（AI 用量统计）。Rust 后端管理 SQLite 数据持久化，前端使用 Vite 8 + TypeScript 6。
+基于 Tauri 2 + Vue 3 + Tailwind CSS 4 的本地桌面效率工作台（Bento 风格 Dashboard）。导航含 4 个视图：**工作台**（时钟/系统监视/便签/Token 用量/提示词/待办/最近使用/**倒计时**）、**速记**（笔记）、**速达**（应用/网页/文件资源）、**用量**（AI 用量统计）。Rust 后端管理 SQLite 数据持久化，前端使用 Vite 8 + TypeScript 6。
 
 ## 结构
 
@@ -18,12 +18,15 @@ x-hub/
 │   ├── api/tauri.ts            # 所有 Tauri invoke 调用 + 19 类模型类型
 │   ├── stores/workbench.ts     # 响应式状态管理（reactive + readonly，无 Pinia）
 │   ├── composables/            # useResourceIcon（资源图标渲染）/ useFocusTrap（弹窗焦点陷阱）
-│   ├── utils/                  # categories（文件分类）/ time / web / error-report
+│   ├── utils/                  # categories（文件分类）/ time / web / error-report / chime（提示音）
 │   └── components/
 │       ├── TitleBar.vue        # 透明自制标题栏（startDragging 拖动 + 窗口控制 + 搜索/设置入口）
-│       ├── ClockCard.vue       # 时钟卡片（HH:mm + 日期星期，30s 轮询）
+│       ├── ClockCard.vue       # 时钟卡片（HH:mm + 日期星期 + 最近倒计时环形进度，30s 轮询）
 │       ├── SysMonitorCard.vue  # 系统资源监视器（CPU/内存，2s 轮询，sysinfo 后端）
 │       ├── StickyCard.vue      # 便签卡片 ×2（slot 1/2，600ms 防抖自动保存）
+│       ├── CountdownCard.vue   # 倒计时卡片（时长/定时/每天/间隔 新建 + 列表 + 暂停/浮窗/删除）
+│       ├── CountdownFloat.vue  # 倒计时圆形浮窗（水位水波动画，透明置顶小窗）
+│       ├── DetachedStickyWindow.vue # 便签浮窗小窗（sticky-* label 专属渲染）
 │       ├── TokenStatsCard.vue  # Token 用量统计卡（三指标 + 近7日迷你趋势，5min 自动刷新）
 │       ├── PromptBoxCard.vue   # 提示词百宝箱卡片（点击复制 + 置顶标 + 复制计数）
 │       ├── PromptManageDialog.vue  # 提示词管理弹窗（新增/编辑/删除/置顶）
@@ -40,22 +43,25 @@ x-hub/
 ├── src-tauri/                  # Tauri 后端 (Rust)
 │   ├── src/
 │   │   ├── main.rs             # Windows 子系统入口 → app_lib::run()
-│   │   ├── lib.rs              # Tauri Builder：数据库/托盘/快捷键/窗口状态/46 命令注册
-│   │   ├── commands.rs         # 46 个 Tauri 命令处理函数
-│   │   ├── models.rs           # Resource/Note/Todo/Sticky/Snippet/Tag/Usage* 结构体
+│   │   ├── lib.rs              # Tauri Builder：数据库/托盘/快捷键/窗口状态/53 命令注册
+│   │   ├── commands.rs         # 53 个 Tauri 命令处理函数
+│   │   ├── models.rs           # Resource/Note/Todo/Sticky/Snippet/Tag/Usage*/Countdown 结构体
 │   │   ├── db.rs               # rusqlite 数据库初始化与迁移（init_in_memory 仅测试用）
-│   │   ├── config.rs           # JSON 配置文件读写（AppConfig/WindowState + 用量游标）
+│   │   ├── config.rs           # JSON 配置文件读写（AppConfig/WindowState + 用量游标 + 提示音开关）
 │   │   ├── process.rs          # 外部进程启动/URL 打开/本地路径打开（app/web/file）
 │   │   ├── shortcut.rs         # 全局快捷键注册（默认 Ctrl+Shift+Space）
 │   │   ├── tray.rs             # 系统托盘（显示/隐藏/退出菜单）
 │   │   ├── sysmon.rs           # 系统资源监视（CPU/内存，sysinfo crate）
 │   │   ├── usage.rs            # AI 用量同步（opencode.db）/汇总/详情/排行
-│   │   └── repo/               # 数据访问层：resource, note, todo, sticky, snippet, tag
-│   ├── capabilities/default.json  # Tauri 权限声明（含 start-dragging/global-shortcut/dialog）
+│   │   ├── countdown_ticker.rs # 倒计时后台驱动线程（1s 轮询到期项→通知+事件+顺延）
+│   │   ├── countdown_window.rs # 倒计时圆形浮窗（创建/销毁/位置持久化，countdown-{id}）
+│   │   └── repo/               # 数据访问层：resource, note, todo, sticky, snippet, tag, countdown
+│   ├── capabilities/default.json  # Tauri 权限声明（含 start-dragging/global-shortcut/dialog/notification）
 │   └── tauri.conf.json         # 窗口配置（无边框、1400x900）
 ├── docs/
-│   └── design-spec.md          # 设计基线 v1.0（Notion × macOS Bento，与 DESIGN.md 并存）
-├── DESIGN.md                   # 当前设计系统（唯一实现基线，与 style.css 对齐）
+│   ├── design-spec.md          # 设计基线 v1.0（Notion × macOS Bento，与 DESIGN.md 并存）
+│   └── reka-ui.md              # Reka UI 使用规范（铁律/踩坑记录/调试指南，新增组件前必读）
+├── DESIGN.md                   # 当前设计系统（唯一实现基线，与 style.css 对齐；§8 为 Reka UI 组件规范）
 └── package.json
 ```
 
@@ -86,7 +92,7 @@ x-hub/
 - **唯一通道：** `@tauri-apps/api/core` → `invoke<ReturnType>('command_name', args)`
 - **类型安全：** 所有 invoke 调用封装在 `src/api/tauri.ts` 的 `tauriApi` 对象中，含完整 TypeScript 类型
 - **环境守卫：** `isTauri()` 检查 `'__TAURI_INTERNALS__' in window`，确保浏览器预览环境不崩溃
-- **命令注册：** `src-tauri/src/lib.rs` 的 `invoke_handler!` 宏列出全部 46 个命令
+- **命令注册：** `src-tauri/src/lib.rs` 的 `invoke_handler!` 宏列出全部 53 个命令
 
 ## 数据模型（SQLite）
 
@@ -96,11 +102,12 @@ x-hub/
 | `notes` | 速记笔记（title/content） |
 | `tags` / `note_tags` | 笔记标签（多对多） |
 | `todos` | 待办（done/priority/completed_at） |
-| `stickies` | 便签（slot 1/2） |
+| `stickies` / `detached_stickies` | 便签（slot 1/2）与脱离浮窗 |
 | `snippets` | 提示词（is_pinned/copy_count/last_copied_at） |
 | `ai_usage` | AI 用量明细（session_id/provider/model/tokens*/cost/time_created/source） |
+| `countdowns` | 倒计时（repeat_mode once/daily/interval + end_at/total_ms/interval_minutes/paused/finished/floated/float_x/float_y） |
 
-> 旧版 `groups`/`files` 表已并入 `resources`（Speed-to-launch 合一）；索引含 `idx_notes_updated`、`idx_todos_created`、`idx_ai_usage_time`、`idx_resources_category` 等。
+> 旧版 `groups`/`files` 表已并入 `resources`（Speed-to-launch 合一）；索引含 `idx_notes_updated`、`idx_todos_created`、`idx_ai_usage_time`、`idx_resources_category`、`idx_countdowns_end` 等。
 
 ## 关键约定
 
@@ -122,7 +129,13 @@ x-hub/
 16. **文件选择：** 已集成 tauri-plugin-dialog（`dialog:allow-open` 权限）；SudaFormDialog 路径/图标输入框右侧有选择按钮，选 exe/lnk 自动解析名称与图标，选图标文件经 `import_icon_file` 存入 icons 目录
 17. **AI 用量：** `usage.rs` 从 opencode 数据库按 message 粒度同步到 `ai_usage` 表（游标 `usage_sync_cursor` 持久化在 config），避免长会话跨天归因错误；`sync_ai_usage`/`get_usage_summary`/`get_usage_detail` 三命令；汇总含今日/7日/月/累计与今日调用次数
 18. **系统监视：** `sysmon.rs` 用 sysinfo crate 返回 CPU/内存，2s 轮询（SysMonitorCard.vue）
-19. **GPU 性能约束（v0.1.12）：** 常驻卡片禁用 `backdrop-filter`，一律用 `--frost-surface` 静态烘焙渐变模拟毛玻璃；`backdrop-filter` 只允许出现在瞬态层（弹窗/菜单/下拉/tooltip）；周期性更新的进度条用 `transform: scaleX` 而非 `width`，避免触发布局重排
+19. **GPU 性能约束（v0.1.13）：** 常驻卡片禁用 `backdrop-filter`，一律用 `--frost-surface` 静态烘焙渐变模拟毛玻璃；`backdrop-filter` 只允许出现在瞬态层（弹窗/菜单/下拉/tooltip）；周期性更新的进度条用 `transform: scaleX` 而非 `width`，避免触发布局重排
+20. **倒计时驱动（v0.1.13）：** 到期判定、通知、顺延全部在 Rust `countdown_ticker.rs` 后台线程（1s 轮询），**不能依赖前端 setInterval**（WebView 隐藏/最小化会节流）；前端只做展示与用户操作。到点发系统通知（tauri-plugin-notification）+ emit `countdown-fired` / `countdowns-changed` 事件；完全退出/休眠期间错过的提醒（超 5s）静默顺延不补发。`once` 到点置 finished 灰态，`daily` 按 24h 顺延，`interval` 按 `interval_minutes` 顺延
+21. **倒计时浮窗（v0.1.13）：** 每个倒计时可浮起为独立透明圆窗（label `countdown-{id}`，300×340 固定、无边框、置顶、skip_taskbar），圆形水位随剩余比例下降 + 双层正弦波滚动动画；浮起状态与位置持久化在 `countdowns` 表，重启恢复；`once` 到点自动收窗。App.vue 按 label 前缀路由到 `CountdownFloat.vue`
+22. **倒计时提示音：** 默认关闭（`countdown_sound` 配置，设置弹窗开关）；开启后前端 WebAudio 合成双音（`utils/chime.ts`，无外部音频文件），仅主窗口播放避免多窗重音
+23. **reka-ui（^2.10.3）组件：** 仅用于复杂输入（DatePicker 定时日期 / TimeField 时:分 / NumberField 步进），无头组件样式全部自绘；v-model 绑定 `Time`/`DateValue` 一律用 `shallowRef`（含 `#private` 字段，ref 深度解包破坏类型匹配）——详见 `docs/reka-ui.md`
+24. **reka-ui Portal 弹层（铁律）：** `DatePickerContent` 等经 Portal 渲染到 `<body>` 后父组件 scoped `data-v` 不传播到容器，容器样式（`z-index`/背景/边框/阴影）全部失效 → 日历被 `modal-mask`(100) 盖住选不到；容器样式必须用 `:global()`，`z-index` 设 110（CountdownCard.vue `.cc-calendar-content` 即此例）
+25. **reka-ui segment 组件（铁律）：** `TimeField`/`DatePickerField` 外层禁止 `<label>` 包裹（segment 是 contenteditable div、非 labelable，label 会激活组件内部隐藏 input → `onFocus` 强制聚焦第一个 segment，表现为点「分」跳「时」）；外层用 `<div class="cc-field">`；`NumberField` 的原生 input 不受影响可继续用 label
 
 ## 命令速查
 
@@ -144,6 +157,7 @@ npm run tauri:build   # 构建桌面应用（产物在 src-tauri/target/release/
 - **Tauri 权限：** 新增前端 API 调用需在 `src-tauri/capabilities/default.json` 声明对应权限
 - **测试工具函数：** `db.rs::init_in_memory` 仅 `#[cfg(test)]` 使用；`repo/*.rs` 含单元测试（snippet/usage 有端到端验证）
 - **dialog 插件：** 前端 `@tauri-apps/plugin-dialog` 的 `open()` 需 `dialog:allow-open` 权限（已声明）；浏览器预览环境需 `isTauri()` 守卫
+- **reka-ui 调试：** segment 输入/焦点问题必须用**真实键盘事件**验证（Playwright `browser_press_key` 逐个按键），`browser.type` 类工具是直接改 DOM 文本、不触发 `keydown`，会造成「显示变了但 v-model 不同步」的假象；验证时检查快照中 segment 的 `[active]`（焦点位置）与隐藏 input 的 value（如 `15:45:00`）是否同步
 
 ## 待实现
 

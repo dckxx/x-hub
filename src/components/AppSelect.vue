@@ -38,7 +38,7 @@ watch(open, async (v) => {
   positionMenu()
 })
 
-/** 弹出层定位：宽度与触发器一致；下方空间不足时向上展开，并做视口钳制 */
+/** 弹出层定位：宽度至少能容纳全部选项；下方空间不足时向上展开，并做视口钳制 */
 function positionMenu() {
   const trigger = triggerRef.value
   const menu = menuRef.value
@@ -46,7 +46,9 @@ function positionMenu() {
   const tr = trigger.getBoundingClientRect()
   const menuHeight = menu.offsetHeight
   const gap = 6
-  const x = Math.max(8, Math.min(tr.left, window.innerWidth - tr.width - 8))
+  // 下拉至少与触发器同宽；若选项文字较长（含打钩），按内容自适应加宽
+  const menuWidth = Math.max(tr.width, menu.scrollWidth)
+  const x = Math.max(8, Math.min(tr.left, window.innerWidth - menuWidth - 8))
   const spaceBelow = window.innerHeight - tr.bottom - 8
   const spaceAbove = tr.top - 8
   let y: number
@@ -59,7 +61,7 @@ function positionMenu() {
   } else {
     y = Math.max(8, Math.min(tr.bottom + gap, window.innerHeight - menuHeight - 8))
   }
-  pos.value = { x, y, width: tr.width, openUp }
+  pos.value = { x, y, width: menuWidth, openUp }
 }
 
 function closeMenu() {

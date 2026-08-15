@@ -59,9 +59,14 @@ async function onCopy(s: Snippet) {
         <Boxes :size="15" :stroke-width="2" aria-hidden="true" />
         <span>提示词</span>
       </h3>
-      <button class="pb-more" type="button" @click="props.onOpenManage?.()">
-        管理
-        <Settings2 :size="13" :stroke-width="2" aria-hidden="true" />
+      <button
+        class="pb-more"
+        type="button"
+        :title="'管理提示词'"
+        :aria-label="'管理提示词'"
+        @click="props.onOpenManage?.()"
+      >
+        <Settings2 :size="14" :stroke-width="2" aria-hidden="true" />
       </button>
     </header>
 
@@ -126,16 +131,19 @@ async function onCopy(s: Snippet) {
 .pb-more {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
   border: none;
   background: transparent;
+  border-radius: var(--radius-sm);
   color: var(--text-3);
-  font-size: 12px;
   cursor: pointer;
-  transition: color 0.18s;
+  transition: color 0.18s, background 0.18s;
 }
 .pb-more:hover {
   color: var(--brand-500);
+  background: var(--brand-50);
 }
 .pb-body {
   flex: 1;

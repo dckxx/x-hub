@@ -121,10 +121,36 @@ fn migrate(conn: &Connection) -> Result<()> {
           source TEXT NOT NULL DEFAULT 'remote'
         );
 
+        CREATE TABLE IF NOT EXISTS countdowns (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          -- 重复模式：once 一次性 / daily 每天固定时刻 / interval 每隔 N 分钟
+          repeat_mode TEXT NOT NULL DEFAULT 'once' CHECK (repeat_mode IN ('once', 'daily', 'interval')),
+          -- 下一次到点时刻（毫秒时间戳）；once 为绝对时刻，daily 为当天 HH:MM，interval 为当前轮结束时刻
+          end_at INTEGER NOT NULL,
+          -- 周期总长（毫秒）：once 为创建时长，daily 为 24h，interval 为 interval_minutes*60000；用于水位进度计算
+          total_ms INTEGER NOT NULL DEFAULT 0,
+          -- interval 专用：间隔分钟数
+          interval_minutes INTEGER,
+          -- 暂停：once 冻结剩余时长，daily/interval 到点不提醒
+          paused INTEGER NOT NULL DEFAULT 0,
+          -- once 暂停时冻结的剩余毫秒（恢复时 end_at = now + paused_remaining_ms）
+          paused_remaining_ms INTEGER,
+          -- once 到点后置 1（卡片灰态，等手动删除）；daily/interval 永不置 1
+          finished INTEGER NOT NULL DEFAULT 0,
+          -- 浮窗状态与位置（浮起时创建独立透明圆窗，位置随拖动持久化）
+          floated INTEGER NOT NULL DEFAULT 0,
+          float_x REAL,
+          float_y REAL,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+        );
+
         CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
         CREATE INDEX IF NOT EXISTS idx_todos_created ON todos(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_ai_usage_time ON ai_usage(time_created);
+        CREATE INDEX IF NOT EXISTS idx_countdowns_end ON countdowns(end_at);
         ",
     )?;
 

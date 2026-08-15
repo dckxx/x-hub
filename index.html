@@ -5,7 +5,24 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>x-hub 个人效率工作台</title>
+    <script>
+      // 便签浮窗（sticky-*）与倒计时浮窗（countdown-*）复用同一 index.html，
+      // 但不能显示启动欢迎页：head 阶段同步判定窗口 label，标记后 CSS 直接隐藏 splash。
+      // 非 Tauri 环境（浏览器预览）无 __TAURI_INTERNALS__，保持默认即主窗口行为。
+      try {
+        var wl = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.metadata
+          ? window.__TAURI_INTERNALS__.metadata.currentWindow.label
+          : 'main'
+        if (typeof wl === 'string' && (wl.indexOf('sticky-') === 0 || wl.indexOf('countdown-') === 0)) {
+          document.documentElement.setAttribute('data-no-splash', '')
+        }
+      } catch (e) {}
+    </script>
     <style>
+      /* 便签浮窗不显示启动欢迎页（head 内联脚本标记 data-no-splash） */
+      html[data-no-splash] #boot-splash {
+        display: none;
+      }
       /* 启动欢迎页：内联在 index.html，HTML 一解析即显示（早于 Vue 挂载），数据就绪后由前端淡出移除。
          渐变背景首帧即不透明铺满，盖住后挂载的主界面（否则 Vue 挂载会透过半透明欢迎页闪现）；
          只对文字做淡入，观感平滑且无界面闪现。 */
@@ -86,7 +103,7 @@
     <div id="app"></div>
     <div id="boot-splash" aria-hidden="true">
       <div class="welcome"><span class="wave">欢</span><span class="wave">迎</span><span class="wave">回</span><span class="wave">来</span></div>
-      <div class="version">x-hub · v0.1.12</div>
+      <div class="version">x-hub · v0.1.13</div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

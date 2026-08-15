@@ -51,12 +51,13 @@ function onKeydown(e: KeyboardEvent) {
 onMounted(() => window.addEventListener('keydown', onKeydown))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
-// ---- 主页面「中上区块」显示内容（Token 统计 / 速记统计 / 待办概览 / 速达数量） ----
+// ---- 主页面「中上区块」显示内容（Token 统计 / 速记统计 / 待办概览 / 速达数量 / 倒计时） ----
 const DASH_MID_OPTIONS = [
   { value: 'token', label: 'Token 统计' },
   { value: 'notes', label: '速记统计' },
   { value: 'todo', label: '待办概览' },
   { value: 'resources', label: '速达数量' },
+  { value: 'countdown', label: '倒计时' },
 ] as const
 
 function onDashboardMidChange(value: string) {
@@ -64,6 +65,10 @@ function onDashboardMidChange(value: string) {
   showToast(`主页面中上区块已切换为 ${
     DASH_MID_OPTIONS.find((o) => o.value === value)?.label ?? value
   }`)
+}
+
+function onToggleCountdownSound() {
+  void store.setCountdownSound(!store.state.config.countdown_sound)
 }
 
 // ---- 数据备份 / 恢复 ----
@@ -252,23 +257,40 @@ function onShortcutKeydown(e: KeyboardEvent) {
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">工作台中上区块</span>
-              <span class="setting-desc">主页面中部展示的卡片内容（默认 Token 统计）</span>
+              <span class="setting-desc">主页面中部展示的卡片内容（默认倒计时）</span>
             </div>
             <AppSelect
               class="setting-select"
+              style="min-width: 220px"
               :model-value="store.state.config.dashboard_mid_content"
               :options="DASH_MID_OPTIONS"
-              aria-label="主页面中上区块显示内容"
+              aria-label="首页中部区块展示内容"
               @update:model-value="onDashboardMidChange"
             />
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">倒计时到点提示音</span>
+              <span class="setting-desc">到点时额外播放提示音（默认关闭）</span>
+            </div>
+            <button
+              class="toggle"
+              role="switch"
+              type="button"
+              :aria-checked="store.state.config.countdown_sound"
+              :class="{ on: store.state.config.countdown_sound }"
+              @click="onToggleCountdownSound"
+            >
+              <span class="toggle-knob"></span>
+            </button>
           </div>
 
           <div class="setting-row shortcut-row">
             <div class="setting-info">
               <span class="setting-name">全局快捷键</span>
               <span class="setting-desc">支持手动输入或按键录入，无冲突自动保存</span>
-            </div>
-            <div class="shortcut-edit">
+            </div>            <div class="shortcut-edit">
               <div class="shortcut-input-wrap">
                 <Keyboard :size="14" :stroke-width="2" class="shortcut-icon" />
                 <input
@@ -339,12 +361,40 @@ function onShortcutKeydown(e: KeyboardEvent) {
   color: var(--text-1);
 }
 .setting-desc {
-  font-size: 12px;
-  color: var(--text-3);
-}
+    font-size: 12px;
+    color: var(--text-3);
+  }
 
-.setting-select {
-  min-width: 150px;
+
+/* 开关 */
+.toggle {
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  position: relative;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.18s;
+}
+.toggle.on {
+  background: var(--brand-500);
+}
+.toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: var(--shadow-dock);
+  transition: transform 0.18s;
+}
+.toggle.on .toggle-knob {
+  transform: translateX(18px);
 }
 
 .data-btn {

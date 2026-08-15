@@ -62,7 +62,8 @@ pub fn create_or_focus(
     .always_on_top(always_on_top)
     .skip_taskbar(true)
     .visible(true)
-    .position(pos_x, pos_y);
+    .position(pos_x, pos_y)
+    .additional_browser_args(crate::ADDITIONAL_BROWSER_ARGS);
 
     // 透明窗口在 Windows 上不能同时启用 resizable 与阴影拉伸，
     // 保持固定尺寸，窗口内内容即卡片本体

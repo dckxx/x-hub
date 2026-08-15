@@ -1,3 +1,4 @@
+pub mod countdown;
 pub mod detached_sticky;
 pub mod note;
 pub mod resource;

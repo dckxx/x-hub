@@ -75,6 +75,7 @@ export interface AppConfig {
   window: WindowState
   global_shortcut: string
   dashboard_mid_content: string
+  countdown_sound: boolean
 }
 
 export interface ClientErrorPayload {
@@ -94,6 +95,7 @@ export interface InitialData {
   todos: Todo[]
   stickies: Sticky[]
   detached: DetachedSticky[]
+  countdowns: Countdown[]
   tags: Tag[]
   usage_summary: UsageSummary
   config: AppConfig
@@ -178,7 +180,33 @@ export interface SyncResult {
   path: string | null
 }
 
+export interface Countdown {
+  id: number
+  name: string
+  /** once / daily / interval */
+  repeat_mode: string
+  /** 下一次到点时刻（毫秒时间戳） */
+  end_at: number
+  /** 周期总长（毫秒），用于水位进度 */
+  total_ms: number
+  interval_minutes: number | null
+  paused: boolean
+  paused_remaining_ms: number | null
+  finished: boolean
+  floated: boolean
+  float_x: number | null
+  float_y: number | null
+  created_at: string
+  updated_at: string
+}
+
 export interface DroppedAppInfo {
+  name: string
+  target: string
+  icon: string | null
+}
+
+export interface InstalledAppInfo {
   name: string
   target: string
   icon: string | null
@@ -257,6 +285,8 @@ export const tauriApi = {
   deleteDetachedSticky: (slot: number) =>
     invoke<void>('delete_detached_sticky', { slot }),
   parseDroppedPath: (path: string) => invoke<DroppedAppInfo>('parse_dropped_path', { path }),
+  scanInstalledApps: () => invoke<InstalledAppInfo[]>('scan_installed_apps'),
+  getRunningProcesses: () => invoke<string[]>('get_running_processes'),
   importIconFile: (source: string) =>
     invoke<string | null>('import_icon_file', { source }),
   inspectPath: (path: string) =>
@@ -295,4 +325,40 @@ export const tauriApi = {
   deleteSnippet: (id: number) => invoke<void>('delete_snippet', { id }),
   toggleSnippetPin: (id: number) => invoke<Snippet>('toggle_snippet_pin', { id }),
   recordSnippetCopy: (id: number) => invoke<Snippet>('record_snippet_copy', { id }),
+  listCountdowns: () => invoke<Countdown[]>('list_countdowns'),
+  createCountdown: (payload: {
+    name: string
+    repeatMode: string
+    endAt: number
+    totalMs: number
+    intervalMinutes?: number | null
+  }) =>
+    invoke<Countdown>('create_countdown', {
+      name: payload.name,
+      repeatMode: payload.repeatMode,
+      endAt: payload.endAt,
+      totalMs: payload.totalMs,
+      intervalMinutes: payload.intervalMinutes ?? null,
+    }),
+  updateCountdown: (payload: {
+    id: number
+    name: string
+    repeatMode: string
+    endAt: number
+    totalMs: number
+    intervalMinutes?: number | null
+  }) =>
+    invoke<Countdown>('update_countdown', {
+      id: payload.id,
+      name: payload.name,
+      repeatMode: payload.repeatMode,
+      endAt: payload.endAt,
+      totalMs: payload.totalMs,
+      intervalMinutes: payload.intervalMinutes ?? null,
+    }),
+  deleteCountdown: (id: number) => invoke<void>('delete_countdown', { id }),
+  pauseCountdown: (id: number) => invoke<Countdown>('pause_countdown', { id }),
+  resumeCountdown: (id: number) => invoke<Countdown>('resume_countdown', { id }),
+  floatCountdown: (id: number) => invoke<Countdown>('float_countdown', { id }),
+  unfloatCountdown: (id: number) => invoke<Countdown>('unfloat_countdown', { id }),
 }

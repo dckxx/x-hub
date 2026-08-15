@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.12"
+version = "0.1.13"
 description = "本地个人效率工作台"
 authors = ["you"]
 license = ""
@@ -26,11 +26,19 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-log = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
 opener = "0.7"
 rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 dirs = "6"
 chrono = "0.4"
 sysinfo = "0.32"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 tempfile = "3"

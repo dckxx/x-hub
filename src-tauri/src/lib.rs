@@ -1,7 +1,10 @@
 mod commands;
 mod config;
+mod countdown_ticker;
+mod countdown_window;
 mod db;
 mod models;
+mod notify;
 mod process;
 mod repo;
 mod shortcut;
@@ -9,6 +12,13 @@ mod sticky_window;
 mod sysmon;
 mod tray;
 mod usage;
+
+/// WebView2 附加浏览器参数（主窗/倒计时浮窗/便签浮窗必须完全一致，
+/// 同一 user data folder 下不同参数的环境创建会失败）。
+/// 保留 wry 默认的 --disable-features 前缀 + 唯一有官方背书的
+/// --disable-background-timer-throttling（禁用后台定时器节流，见 WebView2 浏览器标志文档）。
+pub const ADDITIONAL_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling";
 
 use commands::DbState;
 use rusqlite::Connection;
@@ -202,8 +212,21 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             log::info!("========== x-hub 启动 ==========");
+
+            // 系统通知权限：Prompt 时请求一次（Windows 通常直接放行）
+            {
+                use tauri::plugin::PermissionState;
+                use tauri_plugin_notification::NotificationExt;
+                if matches!(
+                    app.notification().permission_state(),
+                    Ok(PermissionState::Prompt) | Ok(PermissionState::PromptWithRationale)
+                ) {
+                    let _ = app.notification().request_permission();
+                }
+            }
 
             // 旧版本（com.workbench.desktop 标识）数据迁移到 x-hub 目录
             migrate_legacy_data(app);
@@ -246,6 +269,18 @@ pub fn run() {
                 drop(conn);
                 sticky_window::restore_all(app.handle(), &detached);
             }
+
+            // 恢复上次已浮起的倒计时浮窗（浮起状态 + 位置持久化）
+            {
+                let state = app.state::<DbState>();
+                let conn = state.0.lock().map_err(|e| e.to_string())?;
+                let floated = crate::repo::countdown::list_floated(&conn).unwrap_or_default();
+                drop(conn);
+                countdown_window::restore_all(app.handle(), &floated);
+            }
+
+            // 启动倒计时后台驱动线程（每秒扫描到期项，托盘/隐藏时不受 WebView 节流影响）
+            countdown_ticker::start(app.handle().clone());
 
             // 关闭事件：拦截默认关闭，改为隐藏至托盘
             if let Some(window) = app.get_webview_window("main") {
@@ -304,6 +339,14 @@ pub fn run() {
             commands::toggle_detached_sticky_pin,
             commands::restore_detached_sticky,
             commands::delete_detached_sticky,
+            commands::list_countdowns,
+            commands::create_countdown,
+            commands::update_countdown,
+            commands::delete_countdown,
+            commands::pause_countdown,
+            commands::resume_countdown,
+            commands::float_countdown,
+            commands::unfloat_countdown,
             commands::list_snippets,
             commands::create_snippet,
             commands::update_snippet,
@@ -323,6 +366,8 @@ pub fn run() {
             commands::parse_dropped_path,
             commands::import_icon_file,
             commands::inspect_path,
+            commands::scan_installed_apps,
+            commands::get_running_processes,
             commands::list_tags,
             commands::create_tag,
             commands::delete_tag,

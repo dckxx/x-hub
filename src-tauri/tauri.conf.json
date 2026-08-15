@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "x-hub",
   "mainBinaryName": "x-hub",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "identifier": "x-hub",
   "build": {
     "frontendDist": "../dist",
@@ -23,7 +23,8 @@
         "center": true,
         "visible": false,
         "decorations": false,
-        "shadow": true
+        "shadow": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling"
       }
     ],
     "security": {

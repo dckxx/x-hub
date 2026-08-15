@@ -1,6 +1,6 @@
 # x-hub Design System
 
-> 版本对齐：v0.1.12。本文档为当前实现的唯一设计基线，UI 改动以本文件 + `src/style.css` 为准。
+> 版本对齐：v0.1.13。本文档为当前实现的唯一设计基线，UI 改动以本文件 + `src/style.css` 为准。
 
 ## 1. Atmosphere & Identity
 
@@ -152,9 +152,11 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 
 | 组件 | 说明 |
 |---|---|
-| ClockCard | 时间 HH:mm + 日期星期，30s 轮询 |
+| ClockCard | 时间 HH:mm + 日期星期 + 最近进行中倒计时的环形进度（SVG stroke-dashoffset），30s 轮询 |
 | SysMonitorCard | CPU/内存进度条（品牌渐变，≥85% 红色警示渐变）+ 2s 轮询（sysinfo 后端）；进度条用 `transform: scaleX` 动画（走合成器，不触发布局重排） |
 | StickyCard | 便签 x2（slot 1/2），600ms 防抖自动保存 |
+| CountdownCard | 倒计时卡（v0.1.13）：时长/定时/每天/间隔四种新建 + 列表（每秒刷新剩余时间 + 圆形水位）+ 暂停/恢复/浮窗/删除；`once` 到点灰态「已结束」待删 |
+| CountdownFloat | 倒计时圆形浮窗（v0.1.13）：透明置顶圆窗，水位随剩余比例下降 + 双层正弦波滚动（`cf-wave-a/b` 平移动画），悬停出暂停/关闭按钮；`once` 到点自动收窗 |
 | TokenStatsCard | 用量三指标 + 近 7 日迷你趋势，5min 自动刷新 + 手动刷新 |
 | PromptBoxCard | 提示词列表卡，点击复制 + 置顶标 + 管理入口 |
 | RecentBar | 最近使用通栏（按 last_launched_at 排序，前 10） |
@@ -178,7 +180,7 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 
 采用 mixed strategy：页面、侧栏和面板使用 tonal shift（玻璃半透明）；弹窗和拖拽目标保留轻量阴影/边框。主面板圆角 12px，内部控件圆角 8px，禁止 24px 以上的卡片圆角。背景保持稳定，层次来自明度与间距，而非玻璃装饰。
 
-### 玻璃拟态与性能（v0.1.12 起）
+### 玻璃拟态与性能（v0.1.13 起）
 
 为把 GPU 占用压到低位，毛玻璃效果按「常驻 / 瞬态」分两层实现：
 
@@ -186,3 +188,45 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 - **瞬态表面（`.modal-card` / `.ctx-menu` / 下拉 / tooltip / 关闭确认遮罩）= 真 `backdrop-filter`**：弹窗、菜单、下拉这类"打开一下就消失"的层保留真实背景模糊，一次性打开成本，不影响常驻开销。
 - **不动画布局属性**：进度条等周期性刷新一律用 `transform`（走合成器），禁用 `width/height` 这类触发布局重排的属性。
 - 收益：磨砂观感保留（透出背景色 + 玻璃边缘反光），但常驻卡片的 GPU 重采样成本归零，整体占用从 ~26% 明显回落。
+
+## 8. Reka UI 组件规范（v0.1.13 起）
+
+> 详细文档见 `docs/reka-ui.md`。Reka UI 为无头组件库（不提供样式），外观一律用项目设计令牌自绘。当前仅用于复杂输入组件（`CountdownCard.vue`）：`DatePicker`（定时日期）、`TimeField`（定时/每天时:分）、`NumberField`（时长/间隔步进）。
+
+### 8.1 Portal 弹层：容器样式必须 `:global()`
+
+`DatePickerContent` 经 `PopoverPortal` 渲染到 `<body>` 后，父组件的 **scoped `data-v` 属性不传播到容器元素**（日历内部插槽元素有，唯独 reka-ui 渲染的容器没有），`.cc-calendar-content[data-v-xxx]` 规则全部失效，`z-index` 退化为 `auto` 会被 `modal-mask`（`z-index: 100`）盖住。
+
+```css
+/* 必须 :global()，否则日历 z-index/背景/阴影全失效 */
+:global(.cc-calendar-content) {
+  background: var(--frost-surface);
+  z-index: 110; /* > modal-mask 的 100 */
+  /* …边框/阴影/padding/min-width/backdrop-filter（瞬态层允许） */
+}
+```
+
+### 8.2 segment 输入组件：外层禁止 `<label>`，用 `<div>`
+
+`TimeField`/`DatePickerField` 的 segment 是 `contenteditable` div（**非 labelable 元素**），字段内唯一的 labelable 元素是组件内部的隐藏 input；`<label>` 包裹时点击 segment 会激活该隐藏 input，其 `onFocus` 强制聚焦第一个 segment → 点「分」跳「时」、点「日」跳「年」。
+
+```vue
+<!-- 错误：label 包裹 → 焦点跳到第一个 segment -->
+<div class="cc-field">
+  <span class="cc-field-label">时间</span>
+  <TimeFieldRoot … />
+</div>
+```
+
+**例外**：`NumberField` 的原生 input 是 labelable，`<label>` 包裹正常。
+
+### 8.3 v-model 绑定日期/时间值：用 `shallowRef`
+
+`Time`/`DateValue` 含 `#private` 字段，`ref` 深度解包会破坏与 Reka UI 的类型匹配；必须 `shallowRef` 持有（`CountdownCard.vue` 的 `scheduleTime`/`dailyTime`/`scheduleDate` 即此模式）。
+
+### 8.4 浮层层级
+
+| 层 | z-index |
+|---|---|
+| `modal-mask`（遮罩） | 100 |
+| 日历弹层 `.cc-calendar-content` | 110 |

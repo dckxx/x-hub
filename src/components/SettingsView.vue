@@ -4,8 +4,11 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { Download, Keyboard, Lock, Upload } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import AppSelect from './AppSelect.vue'
+import AiProviders from './AiProviders.vue'
 import { useStore } from '../stores/workbench'
 import { reportClientError } from '../utils/error-report'
+
+const props = defineProps<{ initialSection?: string }>()
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
@@ -13,6 +16,7 @@ const store = useStore()
 // ---- 分类导航（左侧分类 = 右侧区块锚点，点击平滑滚动定位，不做内容切换） ----
 const SECTIONS = [
   { id: 'general', label: '通用' },
+  { id: 'ai', label: 'AI 助手' },
   { id: 'appearance', label: '外观' },
   { id: 'workbench', label: '工作台' },
   { id: 'shortcut', label: '快捷键' },
@@ -72,6 +76,14 @@ const shortcutNormalized = computed(() => shortcut.value.trim())
 onMounted(async () => {
   if (!isTauri()) return
   shortcut.value = normalizeShortcutDisplay(await tauriApi.getGlobalShortcut())
+  // 支持外部定位到指定分类（如 AI 对话面板「去配置」跳转）
+  if (props.initialSection) {
+    const target = props.initialSection as SectionId
+    if (SECTIONS.some((s) => s.id === target)) {
+      activeSection.value = target
+      void nextTick(() => goToSection(target))
+    }
+  }
 })
 
 // ---- 主页面「中上区块」显示内容（Token 统计 / 速记统计 / 待办概览 / 速达数量 / 倒计时） ----
@@ -96,6 +108,11 @@ function onToggleCountdownSound() {
 
 function onToggleSidebar() {
   void store.setSidebarToggle(!store.state.config.sidebar_toggle)
+}
+
+function onChatPanelOpacityInput(e: Event) {
+  const v = Number((e.target as HTMLInputElement).value)
+  void store.setChatPanelOpacity(v)
 }
 
 // ---- 时钟卡片语录（回车/失焦自动保存，清空则回退默认） ----
@@ -286,6 +303,8 @@ const themeAccent = computed(() => store.state.config.accent_color)
 function onAccentInput(e: Event) {
   store.setAccentColor((e.target as HTMLInputElement).value)
 }
+
+
 </script>
 
 <template>
@@ -350,6 +369,33 @@ function onAccentInput(e: Event) {
               />
             </div>
           </div>
+        </section>
+
+        <!-- AI 助手 -->
+        <section id="sv-sec-ai" class="sv-sec" aria-label="AI 助手">
+          <h3 class="sv-sec-title">AI 助手</h3>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">AI 对话面板透明度</span>
+              <span class="setting-desc">对话抽屉的整体不透明度（50% – 100%）</span>
+            </div>
+            <div class="opacity-edit">
+              <input
+                class="opacity-slider"
+                type="range"
+                min="0.5"
+                max="1"
+                step="0.05"
+                :value="store.state.config.chat_panel_opacity ?? 1"
+                :aria-label="'AI 对话面板透明度'"
+                @input="onChatPanelOpacityInput"
+              />
+              <span class="opacity-value">{{ Math.round((store.state.config.chat_panel_opacity ?? 1) * 100) }}%</span>
+            </div>
+          </div>
+
+          <AiProviders />
         </section>
 
         <!-- 外观 -->
@@ -740,6 +786,26 @@ function onAccentInput(e: Event) {
 .shortcut-row {
   align-items: flex-start;
 }
+.opacity-edit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 240px;
+  flex-shrink: 0;
+}
+.opacity-slider {
+  flex: 1;
+  min-width: 120px;
+  accent-color: var(--brand-500);
+  cursor: pointer;
+}
+.opacity-value {
+  min-width: 40px;
+  text-align: right;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
 .quote-edit {
   min-width: 240px;
   flex-shrink: 0;
@@ -955,4 +1021,5 @@ function onAccentInput(e: Event) {
   padding: 4px 10px;
   font-size: 12px;
 }
+
 </style>

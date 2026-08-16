@@ -110,9 +110,9 @@ function summary(n: Note): string {
         @keydown.space.prevent="emit('select', n.id)"
       >
         <div class="note-item-main">
-          <span class="note-title">{{ n.title }}</span>
+          <span class="note-title" :title="n.title">{{ n.title }}</span>
           <span class="note-meta">{{ formatTime(n.updated_at) }}</span>
-          <span class="note-summary">{{ summary(n) }}</span>
+          <span class="note-summary" :title="summary(n)">{{ summary(n) }}</span>
         </div>
         <button
           class="icon-btn del"

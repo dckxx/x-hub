@@ -196,3 +196,41 @@ pub struct Countdown {
     pub created_at: String,
     pub updated_at: String,
 }
+
+/// AI 对话会话
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatSession {
+    pub id: i64,
+    pub title: String,
+    pub model_name: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// AI 对话消息（user / assistant）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub id: i64,
+    pub session_id: i64,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+/// 自定义模型配置（不绑定厂商，统一 OpenAI 兼容协议）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatModelConfig {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub model: String,
+    /// 仅保存时携带；读取/落盘时一律清空（真实 Key 存系统钥匙串）
+    pub api_key: String,
+    pub is_default: bool,
+    /// 是否已配置 API Key（返回给前端做状态展示，保存时忽略）
+    #[serde(default)]
+    pub has_api_key: bool,
+    /// 供应商名称（如 DeepSeek / OpenAI），同一 base_url 下的模型归为一组
+    #[serde(default)]
+    pub provider_name: String,
+}

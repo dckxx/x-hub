@@ -67,6 +67,10 @@ const state = reactive<StoreState>({
     dashboard_mid_content: 'countdown',
     countdown_sound: false,
     clock_quote: '',
+    chat_models: [],
+    chat_panel_width: 420,
+    chat_panel_open: false,
+    chat_panel_opacity: 1,
   },
   usageSummary: null,
   usageDetail: null,
@@ -549,6 +553,13 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** AI 对话面板透明度（0.5–1.0） */
+  async function setChatPanelOpacity(value: number) {
+    state.config.chat_panel_opacity = Math.min(1, Math.max(0.5, value))
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   // ---- AI 用量 ----
   async function refreshUsage(path?: string): Promise<SyncResult> {
     if (!isTauri()) {
@@ -628,6 +639,7 @@ export function useStore() {
     setDashboardMidContent,
     setCountdownSound,
     setClockQuote,
+    setChatPanelOpacity,
     refreshUsage,
     loadUsageSummary,
     loadUsageDetail,

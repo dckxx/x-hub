@@ -16,6 +16,7 @@
   --bg-card-solid: rgba(255, 255, 255, 0.88);
   --bg-card-soft: rgba(255, 255, 255, 0.55);
   --input-bg: rgba(255, 255, 255, 0.86);
+  --bg-chat-panel: rgba(255, 255, 255, 0.97);
   /* 伪毛玻璃：把"被模糊后的背景色"烘焙进卡片自身，静态渐变零 blur 计算；
      色相层 tint 与中性玻璃基底 base 拆分，预设只换 tint 不动中性色 */
   --frost-tint-a: rgba(91, 91, 245, 0.10);
@@ -110,6 +111,7 @@
   --bg-card-solid: rgba(255, 255, 255, 0.2);
   --bg-card-soft: rgba(255, 255, 255, 0.1);
   --input-bg: #1d1e29;
+  --bg-chat-panel: rgba(28, 29, 41, 0.97);
   --frost-tint-a: rgba(139, 139, 255, 0.16);
   --frost-tint-b: rgba(236, 72, 153, 0.10);
   --frost-tint-c: rgba(59, 130, 246, 0.13);

@@ -1,3 +1,4 @@
+mod chat;
 mod commands;
 mod config;
 mod countdown_ticker;
@@ -377,6 +378,19 @@ pub fn run() {
             commands::sync_ai_usage,
             commands::get_usage_summary,
             commands::get_usage_detail,
+            commands::list_chat_sessions,
+            commands::create_chat_session,
+            commands::delete_chat_session,
+            commands::rename_chat_session,
+            commands::set_chat_session_model,
+            commands::list_chat_messages,
+            commands::send_chat_message,
+commands::get_chat_models,
+commands::save_chat_models,
+commands::fetch_chat_provider_models,
+commands::get_chat_api_key,
+commands::set_chat_panel,
+            commands::get_chat_panel,
             sysmon::get_system_info,
         ])
         .run(tauri::generate_context!())

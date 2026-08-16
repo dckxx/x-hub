@@ -148,7 +148,7 @@ function onDragEnd() {
 
       <!-- 中心内容：名称 + 剩余时间 -->
       <div class="cf-center">
-        <span class="cf-name">{{ name }}</span>
+        <span class="cf-name" :title="name">{{ name }}</span>
         <span class="cf-time" :class="{ paused: paused }">{{ remainingLabel }}</span>
         <span v-if="paused" class="cf-state">已暂停</span>
         <span v-else-if="finished" class="cf-state">已结束</span>

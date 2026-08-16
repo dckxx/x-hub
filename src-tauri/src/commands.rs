@@ -1,10 +1,12 @@
+use crate::config;
 use crate::config::AppConfig;
 use crate::models::{
-    Countdown, DetachedSticky, Note, Resource, ResourceKind, SearchResult, Snippet, Sticky,
-    SyncResult, Tag, Todo, UsageDetail, UsageSummary,
+    ChatMessage, ChatModelConfig, ChatSession, Countdown, DetachedSticky, Note, Resource,
+    ResourceKind, SearchResult, Snippet, Sticky, SyncResult, Tag, Todo, UsageDetail,
+    UsageSummary,
 };
 use crate::process;
-use crate::repo::{countdown, detached_sticky, note, resource, snippet, sticky, tag, todo};
+use crate::repo::{chat, countdown, detached_sticky, note, resource, snippet, sticky, tag, todo};
 use crate::usage;
 use rusqlite::Connection;
 use std::sync::Mutex;
@@ -1579,6 +1581,306 @@ pub fn get_running_processes() -> Result<Vec<String>, String> {
     names.dedup();
     log::debug!("查询运行中进程: {} 个", names.len());
     Ok(names)
+}
+
+// ---------- AI 对话 ----------
+
+/// 会话列表（按最近更新倒序）
+#[tauri::command]
+pub fn list_chat_sessions(state: State<'_, DbState>) -> Result<Vec<ChatSession>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    chat::list_sessions(&conn).map_err(err_str)
+}
+
+/// 新建会话
+#[tauri::command]
+pub fn create_chat_session(
+    state: State<'_, DbState>,
+    title: Option<String>,
+    model_name: Option<String>,
+) -> Result<ChatSession, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let title = title.unwrap_or_else(|| "新对话".to_string());
+    let model_name = model_name.unwrap_or_else(|| {
+        config::load()
+            .chat_models
+            .iter()
+            .find(|m| m.is_default)
+            .map(|m| m.name.clone())
+            .unwrap_or_default()
+    });
+    let s = chat::create_session(&conn, &title, &model_name).map_err(err_str)?;
+    log::info!("新建对话会话: id={} title={}", s.id, s.title);
+    Ok(s)
+}
+
+/// 删除会话（级联删除消息）
+#[tauri::command]
+pub fn delete_chat_session(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    chat::delete_session(&conn, id).map_err(err_str)?;
+    log::info!("删除对话会话: id={}", id);
+    Ok(())
+}
+
+/// 重命名会话
+#[tauri::command]
+pub fn rename_chat_session(
+    state: State<'_, DbState>,
+    id: i64,
+    title: String,
+) -> Result<ChatSession, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    chat::rename_session(&conn, id, &title).map_err(err_str)
+}
+
+/// 切换会话使用的模型
+#[tauri::command]
+pub fn set_chat_session_model(
+    state: State<'_, DbState>,
+    id: i64,
+    model_name: String,
+) -> Result<ChatSession, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    chat::set_session_model(&conn, id, &model_name).map_err(err_str)
+}
+
+/// 会话消息列表（按时间正序）
+#[tauri::command]
+pub fn list_chat_messages(
+    state: State<'_, DbState>,
+    session_id: i64,
+) -> Result<Vec<ChatMessage>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    chat::list_messages(&conn, session_id).map_err(err_str)
+}
+
+/// 模型配置列表：返回时清空 api_key，填充 has_api_key（真实 Key 存系统钥匙串）
+#[tauri::command]
+pub fn get_chat_models() -> Result<Vec<ChatModelConfig>, String> {
+    let mut models = config::load().chat_models;
+    for m in &mut models {
+        m.has_api_key = crate::chat::get_api_key(&m.id).is_some();
+        m.api_key.clear();
+    }
+    Ok(models)
+}
+
+/// 保存模型配置：非空 api_key 写入钥匙串，落盘时一律清空；保证有且仅有一个默认模型
+#[tauri::command]
+pub fn save_chat_models(models: Vec<ChatModelConfig>) -> Result<Vec<ChatModelConfig>, String> {
+    let mut config = config::load();
+    let mut next = Vec::with_capacity(models.len());
+    for m in models {
+        if !m.api_key.trim().is_empty() {
+            crate::chat::save_api_key(&m.id, m.api_key.trim())?;
+        }
+        let mut m = m;
+        m.api_key.clear();
+        next.push(m);
+    }
+    // 默认模型归一：无默认则第一个为默认；多默认只保留第一个
+    let has_default = next.iter().any(|m| m.is_default);
+    if !has_default {
+        if let Some(first) = next.first_mut() {
+            first.is_default = true;
+        }
+    } else {
+        let mut seen = false;
+        for m in &mut next {
+            if m.is_default {
+                if seen {
+                    m.is_default = false;
+                }
+                seen = true;
+            }
+        }
+    }
+    config.chat_models = next;
+    config::save(&config)?;
+    // 供应商级 Key 传播：同一 base_url 组内任意模型已存有 Key 时，补齐到组内其余模型
+    // （保证「获取模型」后新加入的模型无需重复填写 Key）
+    propagate_provider_keys(&config.chat_models);
+    log::info!("保存对话模型配置: {} 条", config.chat_models.len());
+    Ok(config
+        .chat_models
+        .iter()
+        .map(|m| {
+            let mut m = m.clone();
+            m.has_api_key = crate::chat::get_api_key(&m.id).is_some();
+            m
+        })
+        .collect())
+}
+
+/// 同一 base_url（供应商）内的模型共享 API Key：
+/// 若组内任意模型已在钥匙串中存有 Key，则把该 Key 复制到组内尚未存 Key 的模型。
+/// 这样「获取模型」新增的模型无需再逐个填 Key。
+fn propagate_provider_keys(models: &[ChatModelConfig]) {
+    use std::collections::HashMap;
+    let mut key_by_url: HashMap<&str, Option<String>> = HashMap::new();
+    for m in models {
+        let base = m.base_url.trim();
+        if base.is_empty() {
+            continue;
+        }
+        let slot = key_by_url.entry(base).or_insert(None);
+        if slot.is_none() {
+            *slot = crate::chat::get_api_key(&m.id);
+        }
+    }
+    for m in models {
+        let base = m.base_url.trim();
+        if base.is_empty() {
+            continue;
+        }
+        if let Some(Some(key)) = key_by_url.get(base) {
+            if crate::chat::get_api_key(&m.id).is_none() {
+                let _ = crate::chat::save_api_key(&m.id, key);
+            }
+        }
+    }
+}
+
+/// 连通性测试 + 拉取模型列表（OpenAI 兼容 `GET {base_url}/models`）
+///
+/// 供设置页「测试连通」「获取模型」使用。api_key 优先用前端传入值（尚未保存时）；
+/// 传入为空则尝试用 key_id 从系统钥匙串读取已保存的 Key（已保存的供应商场景）。
+#[tauri::command]
+pub async fn fetch_chat_provider_models(
+    base_url: String,
+    api_key: String,
+    key_id: Option<String>,
+) -> Result<Vec<String>, String> {
+    let key = if api_key.trim().is_empty() {
+        key_id
+            .as_deref()
+            .and_then(crate::chat::get_api_key)
+            .ok_or_else(|| "未填写 API Key，且未找到已保存的 Key".to_string())?
+    } else {
+        api_key.trim().to_string()
+    };
+    crate::chat::fetch_provider_models(&base_url, &key).await
+}
+
+/// 读取某个模型已保存的 API Key（设置页脱敏展示 / 眼睛查看 / 复制用）
+#[tauri::command]
+pub fn get_chat_api_key(model_id: String) -> Result<String, String> {
+    crate::chat::get_api_key(&model_id).ok_or_else(|| "未找到已保存的 API Key".to_string())
+}
+
+/// 设置右侧面板宽度与展开状态（持久化）
+#[tauri::command]
+pub fn set_chat_panel(width: f64, open: bool) -> Result<(), String> {
+    let mut config = config::load();
+    config.chat_panel_width = width.clamp(320.0, 640.0);
+    config.chat_panel_open = open;
+    config::save(&config)
+}
+
+/// 获取右侧面板宽度与展开状态
+#[tauri::command]
+pub fn get_chat_panel() -> Result<(f64, bool), String> {
+    let config = config::load();
+    Ok((config.chat_panel_width, config.chat_panel_open))
+}
+
+/// 发送一条对话消息并流式接收回复（SSE → Channel 增量推送）
+///
+/// 流程：落库用户消息 → 组装历史上下文 → 流式请求 → 增量逐段推 Chunk →
+/// 完整回复落库后推 Done；出错时推 Error 并保留已生成部分（前端展示，不入库）
+#[tauri::command]
+pub async fn send_chat_message(
+    state: State<'_, DbState>,
+    session_id: i64,
+    content: String,
+    on_event: tauri::ipc::Channel<crate::chat::ChatStreamEvent>,
+) -> Result<(), String> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err("消息不能为空".into());
+    }
+
+    // 1) 加锁读取会话（尽量短持锁，流式请求期间不占锁）
+    let session = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        chat::get_session(&conn, session_id).map_err(err_str)?
+    };
+
+    // 2) 落库用户消息
+    let user_msg = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        let m = chat::add_message(&conn, session_id, "user", &content).map_err(err_str)?;
+        let _ = chat::touch_session(&conn, session_id);
+        m
+    };
+
+    // 3) 读取含新消息的完整历史作为上下文
+    let history = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        chat::list_messages(&conn, session_id).map_err(err_str)?
+    };
+
+    // 4) 解析模型配置
+    let models = config::load().chat_models;
+    let model = models
+        .iter()
+        .find(|m| m.name == session.model_name)
+        .or_else(|| models.iter().find(|m| m.is_default))
+        .cloned()
+        .ok_or_else(|| "未配置任何对话模型，请先在对话设置中添加".to_string())?;
+
+    let mut partial = String::new();
+    let mut full: Option<String> = None;
+    let mut send_error: Option<String> = None;
+
+    // 5) 流式请求（history 已含刚落的 user 消息）
+    let chunk_sender = on_event.clone();
+    let result = crate::chat::stream_chat(&model, &history, |delta| {
+        partial.push_str(&delta);
+        chunk_sender
+            .send(crate::chat::ChatStreamEvent::Chunk {
+                content: delta,
+            })
+            .map_err(|e| e.to_string())
+    })
+    .await;
+
+    match result {
+        Ok(text) => {
+            if text.trim().is_empty() {
+                send_error = Some("模型未返回任何内容".to_string());
+            } else {
+                full = Some(text);
+            }
+        }
+        Err(e) => send_error = Some(e),
+    }
+
+    // 6) 落库完整回复 / 清空本次失败残留
+    {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        // 清理可能残留的半截 assistant 消息（中断场景）
+        let _ = chat::delete_messages_from(&conn, session_id, user_msg.id);
+        if let Some(text) = &full {
+            let msg = chat::add_message(&conn, session_id, "assistant", text).map_err(err_str)?;
+            let _ = chat::touch_session(&conn, session_id);
+            drop(conn);
+            on_event
+                .send(crate::chat::ChatStreamEvent::Done { message: msg })
+                .map_err(|e| e.to_string())?;
+        } else if let Some(e) = send_error {
+            drop(conn);
+            on_event
+                .send(crate::chat::ChatStreamEvent::Error {
+                    message: e,
+                    partial,
+                })
+                .map_err(|e2| e2.to_string())?;
+        }
+    }
+
+    Ok(())
 }
 
 // ---------- 工具 ----------

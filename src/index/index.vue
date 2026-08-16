@@ -20,11 +20,12 @@ import RecentBar from '../components/RecentBar.vue'
 import ClockCard from '../components/ClockCard.vue'
 import StickyCard from '../components/StickyCard.vue'
 import CountdownCard from '../components/CountdownCard.vue'
+import ChatPanel from '../components/ChatPanel.vue'
 import { useStore } from '../stores/workbench'
-import { isTauri } from '../api/tauri'
+import { isTauri, tauriApi } from '../api/tauri'
 import type { Countdown, Note, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
-import { FileText, FolderOpen, Gauge, LayoutDashboard, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { FileText, FolderOpen, Gauge, LayoutDashboard, MessageSquare, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { useTheme } from '../composables/useTheme'
 
 const store = useStore()
@@ -38,11 +39,23 @@ const navigation = [
   { id: 'notes', label: '速记', icon: FileText },
   { id: 'suda', label: '速达', icon: FolderOpen },
   { id: 'usage', label: '用量', icon: Gauge },
+  { id: 'chat', label: '对话', icon: MessageSquare },
 ] as const
+
+// 对话入口暂时隐藏（后续恢复），功能仍可通过标题栏按钮 / Ctrl+Shift+K 唤起
+const visibleNavigation = navigation.filter((item) => item.id !== 'chat')
 
 // 设置不在顶部导航列表，作为独立入口固定在侧栏左下角，但同样是视图切换逻辑
 type ViewId = (typeof navigation)[number]['id'] | 'settings'
 const activeView = ref<ViewId>('dashboard')
+
+// 对话入口：点击侧栏「对话」即唤起右侧面板（面板是主形态，视图仅占位说明）
+function onNavClick(id: ViewId) {
+  activeView.value = id
+  if (id === 'chat' && !chatOpen.value) {
+    toggleChat()
+  }
+}
 
 // ---- 侧边栏收起（展开功能默认关闭，侧栏默认收起；开启后显示展开/收起按钮） ----
 const sidebarCollapsed = ref(true)
@@ -135,6 +148,8 @@ onMounted(async () => {
     })
   }
   window.addEventListener('keydown', onSearchKeydown)
+  window.addEventListener('keydown', onChatKeydown)
+  await restoreChatPanel()
 })
 
 let unlistenStickies: (() => void) | null = null
@@ -146,6 +161,7 @@ onUnmounted(() => {
   unlistenCountdownFired?.()
   unlistenCountdownsChanged?.()
   window.removeEventListener('keydown', onSearchKeydown)
+  window.removeEventListener('keydown', onChatKeydown)
 })
 
 function hideBootSplash() {
@@ -196,6 +212,7 @@ function onSaveNote(id: number, title: string, content: string) {
 // ---- 全局搜索 / 设置 ----
 const searchVisible = ref(false)
 const promptManageVisible = ref(false)
+const settingsSection = ref('')
 
 function onOpenTodo(t: Todo) {
   searchVisible.value = false
@@ -207,6 +224,46 @@ function onSearchKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault()
     searchVisible.value = !searchVisible.value
+  }
+}
+
+// ---- AI 对话右侧面板 ----
+const chatOpen = ref(false)
+const chatWidth = ref(420)
+
+function toggleChat() {
+  chatOpen.value = !chatOpen.value
+  // 窗口开关状态不持久化：重启后始终默认收起，仅保存宽度
+  if (isTauri()) void tauriApi.setChatPanel(chatWidth.value, false)
+}
+
+function onChatToggle() {
+  toggleChat()
+}
+
+// 面板「去配置大模型」：跳转设置页并定位到 AI 助手分类
+function onOpenChatSettings() {
+  settingsSection.value = 'ai'
+  if (chatOpen.value) toggleChat()
+  activeView.value = 'settings'
+}
+
+async function restoreChatPanel() {
+  if (!isTauri()) return
+  try {
+    const [w] = await tauriApi.getChatPanel()
+    chatWidth.value = w
+    // 启动时始终默认收起（开关状态不持久化）
+    chatOpen.value = false
+  } catch {
+    // 忽略：命令未就绪时保持默认收起
+  }
+}
+
+function onChatKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    toggleChat()
   }
 }
 
@@ -253,6 +310,7 @@ provide('showToast', showToast)
   <div class="app-shell">
     <TitleBar
       @search="searchVisible = true"
+      @chat="toggleChat"
     />
 
     <div class="app-body" :class="{ collapsed: sidebarCollapsed }">
@@ -263,14 +321,14 @@ provide('showToast', showToast)
       >
         <nav class="sidebar-nav" aria-label="主要导航">
           <button
-            v-for="item in navigation"
+            v-for="item in visibleNavigation"
             :key="item.id"
             class="sidebar-nav-item"
             :class="{ active: activeView === item.id }"
             :aria-current="activeView === item.id ? 'page' : undefined"
             :data-tip="item.label"
             type="button"
-            @click="activeView = item.id"
+            @click="onNavClick(item.id)"
           >
             <span class="sidebar-nav-icon" aria-hidden="true">
               <component :is="item.icon" :size="16" :stroke-width="2" />
@@ -308,7 +366,8 @@ provide('showToast', showToast)
         </button>
       </aside>
 
-      <main class="workspace" aria-label="主工作区">
+      <div class="main-area">
+        <main class="workspace" aria-label="主工作区">
         <!-- 工作台：时钟/系统/便签 + Token 统计/提示词 + 待办 + 最近使用 -->
         <div v-if="activeView === 'dashboard'" class="dash-grid">
           <div class="dash-panel dash-left">
@@ -350,11 +409,34 @@ provide('showToast', showToast)
           <UsageView />
         </section>
 
+        <!-- 对话：独立视图（完整视图，与右侧面板共用会话数据） -->
+        <section v-else-if="activeView === 'chat'" class="view view-chat" tabindex="-1" aria-label="对话">
+          <div class="view-chat-hint">
+            <MessageSquare :size="20" :stroke-width="1.8" />
+            <p>右侧面板已是最佳对话形态，可点击标题栏对话按钮或按 Ctrl+Shift+K 唤起。</p>
+          </div>
+        </section>
+
         <!-- 设置：独立视图 -->
         <section v-else class="view view-settings" tabindex="-1" aria-label="设置">
-          <SettingsView />
+          <SettingsView :initial-section="settingsSection" />
         </section>
-      </main>
+        </main>
+
+        <!-- AI 对话抽屉（覆盖式，悬浮在内容上方，可拖拽调宽） -->
+        <Transition name="chat-drawer">
+          <div
+            v-if="chatOpen"
+            class="chat-dock"
+            :style="{ opacity: store.state.config.chat_panel_opacity ?? 1 }"
+          >
+            <ChatPanel
+              @toggle="onChatToggle"
+              @open-model-settings="onOpenChatSettings"
+            />
+          </div>
+        </Transition>
+      </div>
     </div>
 
     <NoteEditor
@@ -378,7 +460,7 @@ provide('showToast', showToast)
 
     <Transition name="toast">
       <div v-if="toastMsg" class="toast">
-        <span class="toast-msg">{{ toastMsg }}</span>
+        <span class="toast-msg" :title="toastMsg">{{ toastMsg }}</span>
         <button
           v-if="toastAction"
           class="toast-action"
@@ -556,13 +638,41 @@ provide('showToast', showToast)
   transition-delay: 0.3s;
 }
 
-/* 主工作区 */
-.workspace {
+/* 主工作区：抽屉悬浮在内容上方，不再挤压左侧内容 */
+.main-area {
+  position: relative;
   min-width: 0;
   min-height: 0;
+  display: flex;
+  align-items: stretch;
   overflow: hidden;
-  padding: 0 var(--space-3) var(--space-3) 0;
-  background: transparent;
+}
+.main-area .workspace {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 覆盖式抽屉：absolute 悬浮于工作区之上，右侧滑入 */
+.main-area .chat-dock {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  pointer-events: none;
+}
+.main-area .chat-dock :deep(.chat-panel) {
+  height: 100%;
+  pointer-events: auto;
+}
+
+.chat-drawer-enter-active,
+.chat-drawer-leave-active {
+  transition: transform 0.24s ease-out;
+}
+.chat-drawer-enter-from,
+.chat-drawer-leave-to {
+  transform: translateX(100%);
 }
 
 /* 工作台布局：三列（时钟/系统/便签 | Token/提示词 | 待办）+ 底部最近使用通栏 */
@@ -616,6 +726,26 @@ provide('showToast', showToast)
 /* 速记/速达视图：保留 .card 的边框/圆角/阴影，与其他卡片一致 */
 .view-usage :deep(.usage-view) {
   padding: 0;
+}
+.view-chat-hint {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-3);
+  text-align: center;
+  padding: 0 var(--space-6);
+}
+.view-chat-hint svg {
+  color: var(--text-3);
+  opacity: 0.6;
+}
+.view-chat-hint p {
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 360px;
 }
 
 @media (max-width: 1100px) {

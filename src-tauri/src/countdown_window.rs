@@ -4,7 +4,7 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow};
 /// 倒计时浮窗 label 前缀；完整 label 为 `countdown-{id}`
 pub const COUNTDOWN_WINDOW_PREFIX: &str = "countdown-";
 
-/// 浮窗固定尺寸（v0.1.14 进一步缩小并增强透明感：150×170 → 120×132）
+/// 浮窗固定尺寸（v0.1.15 进一步缩小并增强透明感：150×170 → 120×132）
 pub const COUNTDOWN_WIDTH: f64 = 120.0;
 pub const COUNTDOWN_HEIGHT: f64 = 132.0;
 

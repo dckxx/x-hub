@@ -3,6 +3,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::models::ChatModelConfig;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowState {
     pub width: f64,
@@ -49,6 +51,19 @@ pub struct AppConfig {
     pub countdown_sound: bool,
     /// 时钟卡片语录（工作台时间卡片下方显示的一句话，空串时回退默认）
     pub clock_quote: String,
+    /// AI 对话自定义模型配置（不绑定厂商，统一 OpenAI 兼容协议；api_key 不落盘）
+    pub chat_models: Vec<ChatModelConfig>,
+    /// AI 对话右侧面板宽度（320–640px，持久化用户拖拽结果）
+    pub chat_panel_width: f64,
+    /// AI 对话右侧面板是否展开
+    pub chat_panel_open: bool,
+    /// AI 对话右侧面板透明度（0.5–1.0，可在设置中调整）
+    #[serde(default = "default_chat_panel_opacity")]
+    pub chat_panel_opacity: f64,
+}
+
+fn default_chat_panel_opacity() -> f64 {
+    1.0
 }
 
 impl Default for AppConfig {
@@ -65,8 +80,26 @@ impl Default for AppConfig {
             dashboard_mid_content: "countdown".to_string(),
             countdown_sound: false,
             clock_quote: "日拱一卒，功不唐捐。".to_string(),
+            chat_models: default_chat_models(),
+            chat_panel_width: 420.0,
+            chat_panel_open: false,
+            chat_panel_opacity: 1.0,
         }
     }
+}
+
+/// 预置一条 DeepSeek 官方配置作为开箱即用示例（用户可删可改可加）
+pub fn default_chat_models() -> Vec<ChatModelConfig> {
+    vec![ChatModelConfig {
+        id: "deepseek-default".to_string(),
+        name: "DeepSeek".to_string(),
+        provider_name: "DeepSeek".to_string(),
+        base_url: "https://api.deepseek.com/v1".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        api_key: String::new(),
+        is_default: true,
+        has_api_key: false,
+    }]
 }
 
 pub fn config_dir() -> PathBuf {

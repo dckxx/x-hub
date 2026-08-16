@@ -448,7 +448,7 @@ function cardAccentStyle(r: Resource) {
           </div>
           <span class="suda-name">
             <span v-if="isRunning(r)" class="suda-dot" title="运行中" />
-            <span class="suda-name-text">{{ r.name }}</span>
+                <span class="suda-name-text" :title="r.name">{{ r.name }}</span>
           </span>
         </div>
       </div>
@@ -498,7 +498,7 @@ function cardAccentStyle(r: Resource) {
             <FilePlus v-else :size="34" :stroke-width="1.5" />
             <p v-if="parsing">正在识别…</p>
             <p v-else>释放以添加</p>
-            <span v-if="parsing">{{ parsing }}</span>
+            <span v-if="parsing" :title="parsing">{{ parsing }}</span>
             <span v-else>支持本地程序 / 网页 / 任意文件或文件夹</span>
           </div>
         </div>

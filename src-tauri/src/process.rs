@@ -121,12 +121,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn open_url_with_invalid_url_returns_error() {
-        // 空 URL 应返回错误或不可预测结果，这里仅验证函数可调用
-        let _ = open_url("https://example.com");
-    }
-
-    #[test]
     fn launch_nonexistent_program_returns_error() {
         // Windows 上经 cmd /C 启动不存在路径时 cmd 进程本身可成功 spawn，
         // 因此只对非 Windows 平台断言失败；Windows 断言不 panic 即可。

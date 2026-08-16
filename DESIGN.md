@@ -1,6 +1,6 @@
 # x-hub Design System
 
-> 版本对齐：v0.1.14。本文档为当前实现的唯一设计基线，UI 改动以本文件 + `src/style.css` 为准。
+> 版本对齐：v0.1.15。本文档为当前实现的唯一设计基线，UI 改动以本文件 + `src/style.css` 为准。
 
 ## 1. Atmosphere & Identity
 
@@ -31,7 +31,7 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 | Scrim | `--scrim` | `rgba(38,35,29,.48)` | 暗色同值 | 弹窗遮罩（暗色下避免过亮） |
 | Success | `--c-green-ink` | `#15803d` | 暗色同值 | 正向反馈 |
 
-> **三轴主题（v0.1.14）**：品牌强调色不再写死，由 inline `--accent` CSS 变量注入（`useTheme` composable 写入 `:root`），`--brand-500` = `var(--accent)`，`--brand-600/50/glow` 全部 `color-mix` 派生。主题三轴独立配置：**模式**（light/dark/system → `data-theme`）、**预设**（10 单色 `data-preset` + 10 渐变，渐变仅覆盖 `--app-bg` 背景）、**强调色**（8 预设 + 自定义 hex → inline `--accent`）。配置字段 `theme_mode`/`theme_preset`/`accent_color`（旧 `theme` 字段经 serde alias 自动迁移）。
+> **三轴主题（v0.1.15）**：品牌强调色不再写死，由 inline `--accent` CSS 变量注入（`useTheme` composable 写入 `:root`），`--brand-500` = `var(--accent)`，`--brand-600/50/glow` 全部 `color-mix` 派生。主题三轴独立配置：**模式**（light/dark/system → `data-theme`）、**预设**（10 单色 `data-preset` + 10 渐变，渐变仅覆盖 `--app-bg` 背景）、**强调色**（8 预设 + 自定义 hex → inline `--accent`）。配置字段 `theme_mode`/`theme_preset`/`accent_color`（旧 `theme` 字段经 serde alias 自动迁移）。
 
 ### 强调色（8 色 + ink/soft 变体）
 

@@ -229,8 +229,8 @@ watch(
 
               <template v-else>
                 <div class="pm-row-main">
-                  <span class="pm-row-title">{{ s.title }}</span>
-                  <p class="pm-row-preview">{{ s.content }}</p>
+                  <span class="pm-row-title" :title="s.title">{{ s.title }}</span>
+                  <p class="pm-row-preview" :title="s.content">{{ s.content }}</p>
                 </div>
                 <div class="pm-row-actions">
                   <button

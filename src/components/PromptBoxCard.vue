@@ -80,7 +80,7 @@ async function onCopy(s: Snippet) {
         @click="onCopy(s)"
       >
         <span class="pb-row-title">
-          <span class="pb-row-title-text">{{ s.title }}</span>
+          <span class="pb-row-title-text" :title="s.title">{{ s.title }}</span>
           <Pin
             v-if="s.is_pinned"
             class="pb-row-pin"
@@ -89,7 +89,7 @@ async function onCopy(s: Snippet) {
             aria-label="已置顶"
           />
         </span>
-        <span class="pb-row-preview">{{ s.content }}</span>
+        <span class="pb-row-preview" :title="s.content">{{ s.content }}</span>
       </button>
     </div>
 

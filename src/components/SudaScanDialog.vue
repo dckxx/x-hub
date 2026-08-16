@@ -214,7 +214,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 </span>
               </span>
               <span class="scan-info">
-                <span class="scan-name">{{ a.name }}</span>
+                <span class="scan-name" :title="a.name">{{ a.name }}</span>
                 <span class="scan-target" :title="a.target">{{ a.target }}</span>
               </span>
               <span v-if="isExisting(a)" class="scan-added">已添加</span>

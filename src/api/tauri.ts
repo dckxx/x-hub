@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { Channel, invoke } from '@tauri-apps/api/core'
 
 export interface Resource {
   id: number
@@ -80,6 +80,11 @@ export interface AppConfig {
   dashboard_mid_content: string
   countdown_sound: boolean
   clock_quote: string // 时钟卡片语录（可配置，空串回退默认）
+  chat_models: ChatModelConfig[]
+  chat_panel_width: number
+  chat_panel_open: boolean
+  /** AI 对话面板透明度（0.5–1.0，设置中可调） */
+  chat_panel_opacity: number
 }
 
 export interface ClientErrorPayload {
@@ -223,6 +228,38 @@ export interface SystemInfo {
   memPercent: number
 }
 
+export interface ChatSession {
+  id: number
+  title: string
+  model_name: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ChatMessage {
+  id: number
+  session_id: number
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
+}
+
+export interface ChatModelConfig {
+  id: string
+  name: string
+  base_url: string
+  model: string
+  api_key: string
+  is_default: boolean
+  has_api_key: boolean
+  provider_name?: string
+}
+
+export type ChatStreamEvent =
+  | { type: 'chunk'; content: string }
+  | { type: 'done'; message: ChatMessage }
+  | { type: 'error'; message: string; partial: string }
+
 export const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 export const tauriApi = {
@@ -330,7 +367,37 @@ export const tauriApi = {
   toggleSnippetPin: (id: number) => invoke<Snippet>('toggle_snippet_pin', { id }),
   recordSnippetCopy: (id: number) => invoke<Snippet>('record_snippet_copy', { id }),
   listCountdowns: () => invoke<Countdown[]>('list_countdowns'),
-  createCountdown: (payload: {
+  // ---- AI 对话 ----
+  listChatSessions: () => invoke<ChatSession[]>('list_chat_sessions'),
+  createChatSession: (payload?: { title?: string; modelName?: string }) =>
+    invoke<ChatSession>('create_chat_session', {
+      title: payload?.title ?? null,
+      modelName: payload?.modelName ?? null,
+    }),
+  deleteChatSession: (id: number) => invoke<void>('delete_chat_session', { id }),
+  renameChatSession: (id: number, title: string) =>
+    invoke<ChatSession>('rename_chat_session', { id, title }),
+  setChatSessionModel: (id: number, modelName: string) =>
+    invoke<ChatSession>('set_chat_session_model', { id, modelName }),
+  listChatMessages: (sessionId: number) =>
+    invoke<ChatMessage[]>('list_chat_messages', { sessionId }),
+  sendChatMessage: (
+    sessionId: number,
+    content: string,
+    onEvent: (e: ChatStreamEvent) => void,
+  ) => {
+    const channel = new Channel<ChatStreamEvent>()
+    channel.onmessage = onEvent
+    return invoke<void>('send_chat_message', { sessionId, content, onEvent: channel })
+  },
+  getChatModels: () => invoke<ChatModelConfig[]>('get_chat_models'),
+  saveChatModels: (models: ChatModelConfig[]) => invoke<ChatModelConfig[]>('save_chat_models', { models }),
+  fetchChatProviderModels: (baseUrl: string, apiKey: string, keyId?: string) =>
+    invoke<string[]>('fetch_chat_provider_models', { baseUrl, apiKey, keyId }),
+  getChatApiKey: (modelId: string) => invoke<string>('get_chat_api_key', { modelId }),
+  setChatPanel: (width: number, open: boolean) =>
+    invoke<void>('set_chat_panel', { width, open }),
+  getChatPanel: () => invoke<[number, boolean]>('get_chat_panel'),  createCountdown: (payload: {
     name: string
     repeatMode: string
     endAt: number

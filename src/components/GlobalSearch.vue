@@ -162,7 +162,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 <span class="result-badge" :class="r.kind">
                   {{ kindText(r.kind) }}
                 </span>
-                <span class="result-name">{{ r.name }}</span>
+                <span class="result-name" :title="r.name">{{ r.name }}</span>
                 <span class="result-sub">{{ r.target }}</span>
               </div>
             </template>
@@ -182,7 +182,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 @mouseenter="activeIndex = results.resources.length + idx"
               >
                 <span class="result-badge note-badge">笔记</span>
-                <span class="result-name">{{ n.title }}</span>
+                <span class="result-name" :title="n.title">{{ n.title }}</span>
                 <span class="result-sub">
                   {{ n.content.replace(/\s+/g, ' ').slice(0, 60) }}
                 </span>
@@ -204,7 +204,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 @mouseenter="activeIndex = results.resources.length + results.notes.length + idx"
               >
                 <span class="result-badge todo-badge">{{ t.done ? '已完成' : '待完成' }}</span>
-                <span class="result-name">{{ t.title }}</span>
+                <span class="result-name" :title="t.title">{{ t.title }}</span>
                 <span class="result-sub">{{ ['普通', '重要', '紧急'][t.priority] ?? '普通' }}优先级</span>
               </div>
             </template>

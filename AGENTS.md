@@ -1,6 +1,6 @@
 # x-hub (个人效率工作台)
 
-**生成:** 2026-08-16 | **分支:** master | **版本:** 0.1.14
+**生成:** 2026-08-16 | **分支:** master | **版本:** 0.1.15
 
 ## 概述
 
@@ -84,7 +84,7 @@ x-hub/
 **实现基线见 `DESIGN.md`（当前设计系统）与 `docs/design-spec.md`（原始 v1.0 基线）。** 速览：
 
 - **设计令牌**：全部定义在 `src/style.css`（CSS 变量，亮色 `:root` + 暗色 `[data-theme="dark"]` 覆盖），组件一律引用变量，禁止硬编码色值
-- **主色（三轴主题 v0.1.14）**：品牌强调色由 `--accent` 内联 CSS 变量注入（默认亮 `#5B5BF5` / 暗 `#8b8bff`），`--brand-500/600/50/glow` 全部经 `color-mix` 派生自 `--accent`；主题 = 模式（亮/暗/系统）× 预设（10 单色 + 10 渐变）× 强调色（8 预设 + 自定义 hex）三轴独立配置（`useTheme` + 设置「外观」区）
+- **主色（三轴主题 v0.1.15）**：品牌强调色由 `--accent` 内联 CSS 变量注入（默认亮 `#5B5BF5` / 暗 `#8b8bff`），`--brand-500/600/50/glow` 全部经 `color-mix` 派生自 `--accent`；主题 = 模式（亮/暗/系统）× 预设（10 单色 + 10 渐变）× 强调色（8 预设 + 自定义 hex）三轴独立配置（`useTheme` + 设置「外观」区）
 - **玻璃卡片**：常驻表面用 `--frost-surface`（静态烘焙渐变伪毛玻璃）+ `--frost-edge` 顶部高光 + `--shadow-card` + `--radius-lg`(12px)，内部控件 8px；真 `backdrop-filter` 仅用于弹窗/菜单/下拉等瞬态表面（性能策略见 DESIGN.md §7）
 - **强调色**：`--c-yellow/red/blue/green/pink/orange/purple/gray` 8 色 + ink/soft 变体，资源图标按名称 hash 取色（`useResourceIcon`）
 - **字体层级**：Section title 16/650、Body 13、Caption 12、Micro 11（见 DESIGN.md §3）
@@ -141,9 +141,9 @@ x-hub/
 23. **reka-ui（^2.10.3）组件：** 仅用于复杂输入（DatePicker 定时日期 / TimeField 时:分 / NumberField 步进），无头组件样式全部自绘；v-model 绑定 `Time`/`DateValue` 一律用 `shallowRef`（含 `#private` 字段，ref 深度解包破坏类型匹配）——详见 `docs/reka-ui.md`
 24. **reka-ui Portal 弹层（铁律）：** `DatePickerContent` 等经 Portal 渲染到 `<body>` 后父组件 scoped `data-v` 不传播到容器，容器样式（`z-index`/背景/边框/阴影）全部失效 → 日历被 `modal-mask`(100) 盖住选不到；容器样式必须用 `:global()`，`z-index` 设 110（CountdownCard.vue `.cc-calendar-content` 即此例）
 25. **reka-ui segment 组件（铁律）：** `TimeField`/`DatePickerField` 外层禁止 `<label>` 包裹（segment 是 contenteditable div、非 labelable，label 会激活组件内部隐藏 input → `onFocus` 强制聚焦第一个 segment，表现为点「分」跳「时」）；外层用 `<div class="cc-field">`；`NumberField` 的原生 input 不受影响可继续用 label
-26. **主题三轴系统（v0.1.14）：** 主题 = 模式（light/dark/system，`data-theme`）× 预设（10 单色 `data-preset` + 10 渐变，渐变仅覆盖 `--app-bg` 背景）× 强调色（8 预设 + 自定义 hex，inline `--accent`）。`style.css` 中 `--brand-500` = `var(--accent)`，`--brand-600/50/glow` 均 `color-mix` 派生；实现/读取都在 `composables/useTheme.ts`，配置字段 `theme_mode`/`theme_preset`/`accent_color`（旧 `theme` 字段经 serde alias 自动迁移）
-27. **工作台中上区块（v0.1.14）：** 中列上半内容由配置 `dashboard_mid_content` 控制，可选 `countdown`（倒计时，默认）/ `token`（Token 统计）/ `notes`（速记概览）/ `todo`（待办概览）/ `resources`（速达数量），设置「工作台」区切换；倒计时卡默认占据中列上半，Token 用量卡仅在切到 `token` 时显示
-28. **侧栏默认收起（v0.1.14）：** `sidebarCollapsed` 默认 `true`（56px 图标态，hover 出名称气泡）；展开/收起按钮仅在设置开启 `sidebar_toggle` 后出现（默认关闭）；720px 以下强制恢复文字导航
+26. **主题三轴系统（v0.1.15）：** 主题 = 模式（light/dark/system，`data-theme`）× 预设（10 单色 `data-preset` + 10 渐变，渐变仅覆盖 `--app-bg` 背景）× 强调色（8 预设 + 自定义 hex，inline `--accent`）。`style.css` 中 `--brand-500` = `var(--accent)`，`--brand-600/50/glow` 均 `color-mix` 派生；实现/读取都在 `composables/useTheme.ts`，配置字段 `theme_mode`/`theme_preset`/`accent_color`（旧 `theme` 字段经 serde alias 自动迁移）
+27. **工作台中上区块（v0.1.15）：** 中列上半内容由配置 `dashboard_mid_content` 控制，可选 `countdown`（倒计时，默认）/ `token`（Token 统计）/ `notes`（速记概览）/ `todo`（待办概览）/ `resources`（速达数量），设置「工作台」区切换；倒计时卡默认占据中列上半，Token 用量卡仅在切到 `token` 时显示
+28. **侧栏默认收起（v0.1.15）：** `sidebarCollapsed` 默认 `true`（56px 图标态，hover 出名称气泡）；展开/收起按钮仅在设置开启 `sidebar_toggle` 后出现（默认关闭）；720px 以下强制恢复文字导航
 
 ## 命令速查
 

@@ -94,7 +94,7 @@ const RING_C = 2 * Math.PI * RING_R
       <div class="clock-date">{{ dateText }}</div>
       <div class="clock-quote">
         <Quote :size="12" :stroke-width="2" aria-hidden="true" />
-        <span>{{ QUOTE }}</span>
+        <span :title="QUOTE">{{ QUOTE }}</span>
       </div>
     </div>
 

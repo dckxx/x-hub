@@ -5,6 +5,8 @@ import { Check, ChevronDown } from 'lucide-vue-next'
 export interface AppSelectOption {
   value: string
   label: string
+  /** 分组标题：同一分组的选项在弹出层中合并展示为「标题 + 选项」 */
+  group?: string
 }
 
 // 触发器按钮需接收外部 class/style（宽度控制），关闭属性自动继承
@@ -14,6 +16,8 @@ const props = defineProps<{
   modelValue: string
   options: readonly AppSelectOption[]
   ariaLabel?: string
+  /** 弹出层最小宽度（px），默认与触发器同宽 */
+  menuMinWidth?: number
 }>()
 
 const emit = defineEmits<{ (e: 'update:modelValue', value: string): void }>()
@@ -46,8 +50,8 @@ function positionMenu() {
   const tr = trigger.getBoundingClientRect()
   const menuHeight = menu.offsetHeight
   const gap = 6
-  // 下拉至少与触发器同宽；若选项文字较长（含打钩），按内容自适应加宽
-  const menuWidth = Math.max(tr.width, menu.scrollWidth)
+  // 下拉至少与触发器同宽，且不小于配置的最小宽度；若选项文字较长（含打钩），按内容自适应加宽
+  const menuWidth = Math.max(tr.width, menu.scrollWidth, props.menuMinWidth ?? 0)
   const x = Math.max(8, Math.min(tr.left, window.innerWidth - menuWidth - 8))
   const spaceBelow = window.innerHeight - tr.bottom - 8
   const spaceAbove = tr.top - 8
@@ -169,7 +173,7 @@ onBeforeUnmount(() => {
     @click.stop="open = !open"
     @keydown="onTriggerKeydown"
   >
-    <span class="app-select-label">{{ selectedLabel }}</span>
+    <span class="app-select-label" :title="selectedLabel">{{ selectedLabel }}</span>
     <ChevronDown
       class="app-select-chevron"
       :size="14"
@@ -191,31 +195,38 @@ onBeforeUnmount(() => {
         :aria-label="ariaLabel"
         @click.stop
       >
-        <button
-          v-for="(option, i) in options"
-          :key="option.value"
-          :id="`${popupId}-opt-${i}`"
-          class="app-select-option"
-          :class="{
-            active: i === activeIndex,
-            keyboard: keyboardNav && i === activeIndex,
-            selected: option.value === modelValue,
-          }"
-          role="option"
-          type="button"
-          :aria-selected="option.value === modelValue"
-          @click="selectOption(option)"
-          @mouseenter="onOptionHover(i)"
-        >
-          <span class="app-select-option-label">{{ option.label }}</span>
-          <Check
-            v-if="option.value === modelValue"
-            class="app-select-check"
-            :size="14"
-            :stroke-width="2"
-            aria-hidden="true"
-          />
-        </button>
+        <template v-for="(option, i) in options" :key="option.value">
+          <div
+            v-if="option.group && (i === 0 || options[i - 1].group !== option.group)"
+            class="app-select-group"
+            :title="option.group"
+          >
+            {{ option.group }}
+          </div>
+          <button
+            :id="`${popupId}-opt-${i}`"
+            class="app-select-option"
+            :class="{
+              active: i === activeIndex,
+              keyboard: keyboardNav && i === activeIndex,
+              selected: option.value === modelValue,
+            }"
+            role="option"
+            type="button"
+            :aria-selected="option.value === modelValue"
+            @click="selectOption(option)"
+            @mouseenter="onOptionHover(i)"
+          >
+            <span class="app-select-option-label" :title="option.label">{{ option.label }}</span>
+            <Check
+              v-if="option.value === modelValue"
+              class="app-select-check"
+              :size="14"
+              :stroke-width="2"
+              aria-hidden="true"
+            />
+          </button>
+        </template>
       </div>
     </Transition>
   </Teleport>
@@ -275,6 +286,16 @@ onBeforeUnmount(() => {
 }
 .app-select-menu.open-up {
   transform-origin: bottom center;
+}
+.app-select-group {
+  padding: 6px 12px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--text-4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .app-select-option {
   display: flex;

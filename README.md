@@ -27,8 +27,9 @@
 | 🔍 **全局搜索** | `Ctrl+K` 唤起，300ms 防抖，同时检索**资源、笔记、待办**，点击直达 |
 | ✅ **待办清单** | 添加/完成/删除；优先级循环切换（普通/重要/紧急，10px 纯色圆点）；行内编辑；待办与已完成视图分离；支持全局搜索直达与高亮 |
 | 📊 **AI 用量** | 从 opencode 数据库同步**用量明细**（input/cache/output/reasoning/cost）；今日/7日/月/累计汇总；按提供商与模型排行；今日调用次数；Token 用量卡显示今日总量 + 三指标 + 监听绿点；详情页双栏（趋势/排行 + 明细分页） |
+| 🤖 **AI 对话** | **OpenAI 兼容流式对话**（DeepSeek/OpenAI/Ollama/one-api 等，SSE 打字机效果）；**多会话管理**（新建/切换/删除，宽 320–640 可拖拽调宽）；**Markdown 渲染**回复（代码块/表格/列表等）；供应商模型管理——**测试连通性** + **拉取模型批量勾选添加** + 同供应商模型共享 API Key；API Key 存**系统钥匙串**，界面脱敏（👁 查看 / 📋 复制）；面板透明度可调（50%–100%）；`Ctrl+Shift+K` 唤起 |
 | 💬 **提示词百宝箱** | 常用提示词片段管理；置顶 + 复制计数；卡片一键复制 |
-| ⚙️ **系统设置** | **三轴主题**（模式 亮/暗/系统 × 10 色 + 10 渐变预设 × 强调色 8 预设/自定义）、**全局快捷键录入**（失焦/回车自动保存）、**中上区块切换**（倒计时/Token/概览卡）、**倒计时提示音开关**、**数据备份与恢复** |
+| ⚙️ **系统设置** | **三轴主题**（模式 亮/暗/系统 × 10 色 + 10 渐变预设 × 强调色 8 预设/自定义）、**全局快捷键录入**（失焦/回车自动保存）、**中上区块切换**（倒计时/Token/概览卡）、**倒计时提示音开关**、**AI 助手**（供应商/模型配置）、**AI 对话面板透明度**、**数据备份与恢复** |
 | 🖥️ **窗口能力** | 无边框 + 透明自制标题栏（拖动/最大化/还原/置顶按钮/关闭至托盘）；系统托盘常驻；`Ctrl+Shift+Space` 全局唤起；记忆窗口位置尺寸；便签/倒计时独立浮窗 |
 
 ## ⌨️ 快捷键
@@ -36,6 +37,7 @@
 | 快捷键 | 功能 |
 | --- | --- |
 | `Ctrl + K` | 唤起全局搜索 |
+| `Ctrl + Shift + K` | 唤起 / 收起 AI 对话面板 |
 | `Ctrl + Shift + Space` | 显示 / 隐藏主窗口（可在设置中自定义） |
 | `Esc` | 关闭弹窗 |
 
@@ -46,7 +48,7 @@
 | 前端 | Vue 3（`<script setup>`）+ TypeScript + Tailwind CSS 4 + Vite 8 |
 | 图标 | lucide-vue-next（按需引入，颜色继承 currentColor） |
 | 表单 | reka-ui 无头组件（DatePicker / TimeField / NumberField，样式自绘） |
-| 后端 | Rust（Tauri 2）+ rusqlite（SQLite, WAL 模式）+ sysinfo（系统资源）+ tauri-plugin-notification（系统通知） |
+| 后端 | Rust（Tauri 2）+ rusqlite（SQLite, WAL 模式）+ sysinfo（系统资源）+ tauri-plugin-notification（系统通知）+ reqwest（OpenAI 兼容 SSE 流式）+ keyring（API Key 系统钥匙串） |
 | 状态 | `reactive()` + `readonly()` 自定义 store（无 Pinia） |
 | 样式 | 设计令牌 CSS 变量（Bento 风格，见 `DESIGN.md`），三轴主题（模式 × 预设 × 强调色） |
 
@@ -76,35 +78,37 @@ src/
 ├── main.ts / App.vue        # 入口与窗口壳（App.vue 按窗口 label 路由：主界面 / 便签浮窗 / 倒计时浮窗）
 ├── index/index.vue          # 首页：侧栏导航（工作台/速记/速达/用量）+ 三轴主题 + 中上区块切换 + 搜索/设置协调
 ├── style.css                # 设计令牌（亮/暗色）+ 通用样式
-├── api/tauri.ts             # Tauri invoke 类型安全封装（23 类模型 + 64 个命令）
-├── stores/workbench.ts      # 响应式状态管理（工作台/用量/系统信息/提示词/倒计时）
+├── api/tauri.ts             # Tauri invoke 类型安全封装（26 类模型 + 77 个命令）
+├── stores/workbench.ts      # 响应式状态管理（工作台/用量/系统信息/提示词/倒计时/AI 对话）
 ├── composables/             # 组合式函数（useResourceIcon / useFocusTrap / useTheme）
 ├── utils/                   # 文件分类 / 时间 / 错误上报 / chime 提示音
-└── components/              # 功能组件（工作台卡片/速达/速记/搜索/待办/设置/用量/倒计时…）
+└── components/              # 功能组件（工作台卡片/速达/速记/搜索/待办/设置/用量/倒计时/AI 对话…）
 
 src-tauri/
 └── src/
-    ├── lib.rs               # 应用构建：数据库/托盘/快捷键/窗口状态/数据迁移/64 命令注册
-    ├── commands.rs          # 64 个 Tauri 命令
+    ├── lib.rs               # 应用构建：数据库/托盘/快捷键/窗口状态/数据迁移/77 命令注册
+    ├── commands.rs          # 77 个 Tauri 命令
     ├── models.rs / db.rs    # 模型与 SQLite 迁移
-    ├── config.rs            # 配置持久化（主题/窗口/全局快捷键/用量游标/提示音开关）
+    ├── config.rs            # 配置持久化（主题/窗口/全局快捷键/用量游标/提示音开关/AI 模型）
     ├── process.rs           # 程序启动 / URL 打开 / 提权（UAC）
     ├── shortcut.rs / tray.rs
     ├── sysmon.rs            # 系统资源监视（CPU/内存）
     ├── usage.rs             # opencode 用量同步与汇总
     ├── notify.rs            # 系统通知封装（tauri-plugin-notification）
+    ├── chat.rs              # OpenAI 兼容 SSE 流式对话客户端 + API Key 钥匙串存取
     ├── countdown_ticker.rs  # 倒计时后台驱动线程（1s 轮询 → 通知 + 事件 + 顺延）
     ├── countdown_window.rs  # 倒计时圆形浮窗（创建/销毁/位置持久化）
-    └── repo/                # 数据访问层（resource/note/todo/sticky/snippet/tag/countdown）
+    └── repo/                # 数据访问层（resource/note/todo/sticky/snippet/tag/countdown/chat）
 ```
 
 ## 🔒 数据与隐私
 
-- **数据库**：`%APPDATA%\x-hub\app.db`（SQLite，resources/notes/todos/stickies/snippets/tags/ai_usage/countdowns）
+- **数据库**：`%APPDATA%\x-hub\app.db`（SQLite，resources/notes/todos/stickies/snippets/tags/ai_usage/countdowns/chat_sessions/chat_messages）
 - **图标**：`%APPDATA%\x-hub\icons\`（拖拽导入/扫描安装应用时自动提取的程序图标）
 - **日志**：`%APPDATA%\x-hub\logs\x-hub.log`（文件日志，便于排查）
 - **备份**：设置内一键备份/恢复（数据库 + 图标整体复制）
 - **AI 用量**：仅本地读取 opencode 生成的数据库，统计结果存本地，**不上传任何云端**
+- **AI 对话**：会话与消息存本地 SQLite；API Key 存入**系统钥匙串**（keyring），界面脱敏展示，**不明文落盘、不上传**
 
 ## 配图
 <img width="1418" height="911" alt="首页-工作台" src="https://github.com/user-attachments/assets/7e3279fc-468c-4cf5-979d-d391e6ba3927" />

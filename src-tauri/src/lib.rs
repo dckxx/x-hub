@@ -307,17 +307,7 @@ pub fn run() {
             // 全局快捷键事件：切换主窗口显示/隐藏
             let app_handle = app.handle().clone();
             app.listen("global-shortcut-toggle", move |_| {
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    if window.is_visible().unwrap_or(false) {
-                        log::debug!("全局快捷键：隐藏窗口");
-                        let _ = window.hide();
-                    } else {
-                        log::debug!("全局快捷键：显示窗口");
-                        let _ = window.show();
-                        let _ = window.unminimize();
-                        let _ = window.set_focus();
-                    }
-                }
+                crate::tray::toggle_window(&app_handle);
             });
 
             log::info!("x-hub 启动完成");

@@ -43,14 +43,7 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    if window.is_visible().unwrap_or(false) {
-                        hide_window(app);
-                    } else {
-                        show_window(app);
-                    }
-                }
+                toggle_window(tray.app_handle());
             }
         })
         .build(app)?;
@@ -69,5 +62,29 @@ pub fn show_window(app: &AppHandle) {
 pub fn hide_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
+    }
+}
+
+/// 切换主窗口显隐（全局快捷键 / 托盘左键共用）：
+/// - 窗口不可见（已隐藏至托盘）→ 显示并聚焦
+/// - 窗口最小化 → 取消最小化并聚焦
+/// - 窗口可见且已聚焦 → 隐藏
+/// - 窗口可见但被其他窗口盖住（未聚焦）→ 提升到前台，不隐藏
+pub fn toggle_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if !window.is_visible().unwrap_or(false) {
+            log::debug!("toggle_window: 显示窗口");
+            show_window(app);
+        } else if window.is_minimized().unwrap_or(false) {
+            log::debug!("toggle_window: 取消最小化并聚焦");
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        } else if window.is_focused().unwrap_or(false) {
+            log::debug!("toggle_window: 隐藏窗口");
+            hide_window(app);
+        } else {
+            log::debug!("toggle_window: 窗口被盖住，提升到前台");
+            let _ = window.set_focus();
+        }
     }
 }

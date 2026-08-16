@@ -47,6 +47,8 @@ pub struct AppConfig {
     pub dashboard_mid_content: String,
     /// 倒计时到点提示音（默认关闭）
     pub countdown_sound: bool,
+    /// 时钟卡片语录（工作台时间卡片下方显示的一句话，空串时回退默认）
+    pub clock_quote: String,
 }
 
 impl Default for AppConfig {
@@ -62,6 +64,7 @@ impl Default for AppConfig {
             usage_db_path: None,
             dashboard_mid_content: "countdown".to_string(),
             countdown_sound: false,
+            clock_quote: "日拱一卒，功不唐捐。".to_string(),
         }
     }
 }

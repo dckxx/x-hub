@@ -37,7 +37,9 @@ const dateText = computed(() => {
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 周${WEEKDAYS[d.getDay()]}`
 })
 
-const QUOTE = '日拱一卒，功不唐捐。'
+const QUOTE = computed(
+  () => store.state.config.clock_quote?.trim() || '日拱一卒，功不唐捐。',
+)
 
 // ---- 最近一个进行中的倒计时（环形进度） ----
 const nearest = computed<Countdown | null>(() => {

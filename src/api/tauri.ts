@@ -79,6 +79,7 @@ export interface AppConfig {
   global_shortcut: string
   dashboard_mid_content: string
   countdown_sound: boolean
+  clock_quote: string // 时钟卡片语录（可配置，空串回退默认）
 }
 
 export interface ClientErrorPayload {

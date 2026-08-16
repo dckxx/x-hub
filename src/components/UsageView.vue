@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RefreshCw } from 'lucide-vue-next'
 import type { UsageDaily, UsageProvider, UsageRecord } from '../api/tauri'
 import { useStore } from '../stores/workbench'
@@ -7,7 +7,8 @@ import { useStore } from '../stores/workbench'
 const store = useStore()
 const loading = ref(false)
 const page = ref(0)
-const pageSize = 50
+const pageSize = ref(12)
+const detailSectionRef = ref<HTMLElement | null>(null)
 const detail = computed(() => store.state.usageDetail)
 const summary = computed(() => store.state.usageSummary)
 
@@ -54,11 +55,46 @@ function modelLabel(r: UsageRecord): string {
 async function load(offset = 0) {
   loading.value = true
   try {
-    await store.loadUsageDetail(7, pageSize, offset)
+    await store.loadUsageDetail(7, pageSize.value, offset)
   } finally {
     loading.value = false
   }
 }
+
+function computePageSize() {
+  const section = detailSectionRef.value
+  if (!section) return
+  // 真实 DOM 测量：优先量出标题/表头/行/分页条的实际高度，避免估算误差留下空隙
+  const title = section.querySelector<HTMLElement>('.uv-section-title')
+  const thead = section.querySelector<HTMLElement>('.uv-table thead')
+  const row = section.querySelector<HTMLElement>('.uv-table tbody tr')
+  const pager = section.querySelector<HTMLElement>('.uv-pager')
+  const titleH = title ? title.offsetHeight + 12 : 33 // + margin-bottom 12px
+  const theadH = thead?.offsetHeight ?? 33
+  const rowH = row?.offsetHeight ?? 31
+  const pagerH = pager ? pager.offsetHeight + 12 : 0 // + margin-top 12px
+  const paddingAndGap = 32 // section padding 上下 16px
+  const usableHeight = section.clientHeight - titleH - theadH - pagerH - paddingAndGap
+  const newSize = Math.max(5, Math.min(50, Math.floor(usableHeight / rowH)))
+  if (newSize !== pageSize.value) {
+    const oldSize = pageSize.value
+    pageSize.value = newSize
+    const currentOffset = page.value * oldSize
+    const newPage = Math.floor(currentOffset / newSize)
+    page.value = newPage
+    load(newPage * newSize)
+  }
+}
+
+let resizeObserver: ResizeObserver | null = null
+
+// 数据加载完成后 DOM 已渲染真实行高，重新精测 pageSize（窗口未变化时仅此一处会重算）
+watch(
+  () => detail.value?.records.length ?? 0,
+  () => {
+    void nextTick(computePageSize)
+  },
+)
 
 async function onRefresh() {
   loading.value = true
@@ -72,20 +108,27 @@ async function onRefresh() {
 
 function nextPage() {
   if (!detail.value) return
-  if ((page.value + 1) * pageSize < detail.value.total) {
+  if ((page.value + 1) * pageSize.value < detail.value.total) {
     page.value += 1
-    load(page.value * pageSize)
+    load(page.value * pageSize.value)
   }
 }
 
 function prevPage() {
   if (page.value > 0) {
     page.value -= 1
-    load(page.value * pageSize)
+    load(page.value * pageSize.value)
   }
 }
 
-onMounted(() => load())
+onMounted(() => {
+  computePageSize()
+  load()
+  if (detailSectionRef.value) {
+    resizeObserver = new ResizeObserver(() => computePageSize())
+    resizeObserver.observe(detailSectionRef.value)
+  }
+})
 </script>
 
 <template>
@@ -112,8 +155,10 @@ onMounted(() => load())
         <h3 class="uv-section-title">近 7 日趋势</h3>
         <div v-if="daily.length" class="uv-chart">
           <div v-for="d in daily" :key="d.date" class="uv-chart-col">
-            <div class="uv-chart-bar" :style="{ height: dailyHeight(d) + '%' }" :title="`${d.date} 输入 ${fmt(d.input)} · 缓存 ${fmt(d.cache_input)} · 输出 ${fmt(d.output)}`">
-              <span class="uv-chart-val">{{ fmt(d.input + d.cache_input + d.output) }}</span>
+            <div class="uv-chart-bar-wrap">
+              <div class="uv-chart-bar" :style="{ height: dailyHeight(d) + '%' }" :title="`${d.date} 输入 ${fmt(d.input)} · 缓存 ${fmt(d.cache_input)} · 输出 ${fmt(d.output)}`">
+                <span class="uv-chart-val">{{ fmt(d.input + d.cache_input + d.output) }}</span>
+              </div>
             </div>
             <span class="uv-chart-date">{{ d.date.slice(5) }}</span>
           </div>
@@ -141,7 +186,7 @@ onMounted(() => load())
       </section>
 
       <!-- 明细列表 -->
-      <section class="uv-section uv-detail">
+      <section ref="detailSectionRef" class="uv-section uv-detail">
         <h3 class="uv-section-title">明细（共 {{ detail?.total ?? 0 }} 条）</h3>
         <div v-if="(detail?.records ?? []).length" class="uv-table-wrap">
         <table class="uv-table">
@@ -267,7 +312,7 @@ onMounted(() => load())
   flex: 1;
   min-height: 0;
   display: flex;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 10px;
   padding-top: 8px;
 }
@@ -293,7 +338,7 @@ onMounted(() => load())
 .uv-detail .uv-table-wrap {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: hidden;
   overflow-x: auto;
 }
 .uv-section {
@@ -322,20 +367,32 @@ onMounted(() => load())
   gap: 6px;
   min-width: 0;
 }
+.uv-chart-bar-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: 100%;
+}
 .uv-chart-bar {
   width: 100%;
   max-width: 34px;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   background: linear-gradient(180deg, var(--brand-500), var(--brand-600));
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: center;
   transition: height 0.3s;
+  min-height: 3px;
+}
+.uv-chart-bar:has(.uv-chart-val:empty) {
+  min-height: 4px;
 }
 .uv-chart-val {
   font-size: 10px;
   color: var(--text-on-accent);
-  padding: 2px;
+  padding: 4px 2px 2px;
   white-space: nowrap;
   transform: scale(0.9);
 }

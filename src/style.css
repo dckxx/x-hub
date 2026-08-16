@@ -739,10 +739,41 @@ h1, h2, h3, p { text-wrap: pretty; }
 button, input, textarea { font: inherit; }
 input, textarea { user-select: text; }
 button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--text-3) 40%, transparent); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--text-3) 60%, transparent); }
+/* ===== 全局滚动条：Bento 玻璃风格，隐形直到需要，优雅可见 ===== */
+/* WebKit 滚动条（Chrome/Edge/Safari） */
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-corner { background: transparent; }
 ::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  /* 边框技巧：透明边框让 thumb"悬浮"在轨道内、与内容保持呼吸间距 */
+  background-clip: padding-box;
+  background-color: color-mix(in srgb, var(--text-3) 16%, transparent);
+  border-radius: var(--radius-pill);
+  min-height: 40px;
+  min-width: 40px;
+  transition: background-color .18s ease;
+}
+/* 垂直滚动条：内容侧(左)留白 6px 拉开距离，边缘侧(右)收窄贴向窗口 */
+::-webkit-scrollbar-thumb:vertical {
+  border: 3px solid transparent;
+  border-left-width: 6px;
+  border-right-width: 2px;
+}
+/* 水平滚动条：内容侧(上)留白 6px，边缘侧(下)收窄 */
+::-webkit-scrollbar-thumb:horizontal {
+  border: 3px solid transparent;
+  border-top-width: 6px;
+  border-bottom-width: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--brand-500) 40%, var(--text-3) 20%);
+}
+/* Firefox 滚动条支持：scrollbar-width 不继承（Applies to scrolling boxes），
+   必须作用于所有元素才能覆盖内部滚动容器；scrollbar-color 继承，root 声明即可 */
+html, body, * {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-3) 16%, transparent) transparent;
+}
 .card { background: var(--frost-surface); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); box-shadow: var(--frost-edge), var(--shadow-card); }
 /* 玻璃拟态：常驻表面用烘焙渐变（--frost-surface）实现伪毛玻璃；仅弹层/下拉/菜单等瞬态表面保留真 blur */
 .modal-card,

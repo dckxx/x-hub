@@ -98,6 +98,19 @@ function onToggleSidebar() {
   void store.setSidebarToggle(!store.state.config.sidebar_toggle)
 }
 
+// ---- 时钟卡片语录（回车/失焦自动保存，清空则回退默认） ----
+const clockQuote = ref(store.state.config.clock_quote ?? '')
+const savedClockQuote = ref(clockQuote.value)
+
+function commitClockQuote() {
+  const value = clockQuote.value.trim()
+  clockQuote.value = value
+  if (value === savedClockQuote.value) return
+  savedClockQuote.value = value
+  void store.setClockQuote(value)
+  showToast(value ? '时钟卡片语录已更新' : '时钟卡片语录已恢复默认')
+}
+
 // ---- 数据备份 / 恢复 ----
 const confirmRestore = ref(false)
 let confirmTimer: ReturnType<typeof setTimeout> | null = null
@@ -317,6 +330,25 @@ function onAccentInput(e: Event) {
             >
               <span class="toggle-knob"></span>
             </button>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">时钟卡片语录</span>
+              <span class="setting-desc">工作台时间卡片下方显示的一句话（默认：日拱一卒，功不唐捐。）</span>
+            </div>
+            <div class="quote-edit">
+              <input
+                v-model="clockQuote"
+                class="field-input"
+                type="text"
+                maxlength="50"
+                placeholder="日拱一卒，功不唐捐。"
+                spellcheck="false"
+                @blur="commitClockQuote"
+                @keydown.enter="commitClockQuote"
+              />
+            </div>
           </div>
         </section>
 
@@ -707,6 +739,10 @@ function onAccentInput(e: Event) {
 
 .shortcut-row {
   align-items: flex-start;
+}
+.quote-edit {
+  min-width: 240px;
+  flex-shrink: 0;
 }
 .shortcut-edit {
   min-width: 240px;

@@ -66,6 +66,7 @@ const state = reactive<StoreState>({
     global_shortcut: DEFAULT_GLOBAL_SHORTCUT,
     dashboard_mid_content: 'countdown',
     countdown_sound: false,
+    clock_quote: '',
   },
   usageSummary: null,
   usageDetail: null,
@@ -541,6 +542,13 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 时钟卡片语录（空串时 ClockCard 回退默认句子） */
+  async function setClockQuote(value: string) {
+    state.config.clock_quote = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   // ---- AI 用量 ----
   async function refreshUsage(path?: string): Promise<SyncResult> {
     if (!isTauri()) {
@@ -619,6 +627,7 @@ export function useStore() {
     setGlobalShortcut,
     setDashboardMidContent,
     setCountdownSound,
+    setClockQuote,
     refreshUsage,
     loadUsageSummary,
     loadUsageDetail,

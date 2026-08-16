@@ -71,17 +71,6 @@
       #boot-splash .wave:nth-child(2) { animation-delay: 0.12s; }
       #boot-splash .wave:nth-child(3) { animation-delay: 0.24s; }
       #boot-splash .wave:nth-child(4) { animation-delay: 0.36s; }
-      #boot-splash .version {
-        position: relative;
-        z-index: 1;
-        font-size: 13px;
-        font-weight: 600;
-        letter-spacing: 0.32em;
-        color: rgba(255, 255, 255, 0.85);
-        text-transform: uppercase;
-        opacity: 0;
-        animation: splash-fade-in 0.5s ease-out 0.24s forwards;
-      }
       @keyframes splash-fade-in {
         from { opacity: 0; }
         to { opacity: 1; }
@@ -94,8 +83,7 @@
       }
       @media (prefers-reduced-motion: reduce) {
         #boot-splash .welcome,
-        #boot-splash .wave,
-        #boot-splash .version { animation: none; opacity: 1; }
+        #boot-splash .wave { animation: none; opacity: 1; }
       }
     </style>
   </head>
@@ -103,7 +91,6 @@
     <div id="app"></div>
     <div id="boot-splash" aria-hidden="true">
       <div class="welcome"><span class="wave">欢</span><span class="wave">迎</span><span class="wave">回</span><span class="wave">来</span></div>
-      <div class="version">x-hub · v0.1.13</div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

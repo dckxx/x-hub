@@ -108,11 +108,13 @@ src-tauri/
 
 ## 配图
 <img width="1418" height="911" alt="首页-工作台" src="https://github.com/user-attachments/assets/7e3279fc-468c-4cf5-979d-d391e6ba3927" />
+<img width="1408" height="911" alt="1b6dfac7d89ccc73912a22463d8cb2f2" src="https://github.com/user-attachments/assets/0390f712-3fad-4ea5-b916-8340051acbbc" />
 <img width="1418" height="911" alt="速记" src="https://github.com/user-attachments/assets/baf42146-2b24-4be4-b87f-0db405988d67" />
 <img width="1418" height="911" alt="速达" src="https://github.com/user-attachments/assets/406510a0-9673-4d42-8767-2818cd57f66b" />
 <img width="1418" height="911" alt="token统计" src="https://github.com/user-attachments/assets/c872d175-8392-4d13-a1c2-f29e5728d8d3" />
 <img width="1418" height="911" alt="设置" src="https://github.com/user-attachments/assets/361635cb-8dbb-4528-b604-91f36ce768df" />
 <img width="1920" height="1030" alt="浮窗" src="https://github.com/user-attachments/assets/b8751fb5-0a2f-459b-bc44-64e8247386d5" />
+<img width="1405" height="905" alt="076e394832d4e0feba0d46ef558bd3ea" src="https://github.com/user-attachments/assets/7f911d2a-bbf4-4d14-8b2d-9921928c55f4" />
 
 
 ## 📄 License

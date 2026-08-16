@@ -698,11 +698,11 @@ function onAccentInput(e: Event) {
   padding: 7px 14px;
 }.data-btn.confirm {
   background: var(--c-red);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 .data-btn.confirm:hover {
   background: color-mix(in srgb, var(--c-red) 85%, #000);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
 .shortcut-row {

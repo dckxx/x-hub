@@ -207,7 +207,7 @@ function onDragEnd() {
   left: 0;
   right: 0;
   bottom: 0;
-  background: linear-gradient(180deg, var(--brand-400, #8b8bff), var(--brand-600));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 50%, #fff), var(--brand-600));
   transition: height 0.8s ease-out;
 }
 

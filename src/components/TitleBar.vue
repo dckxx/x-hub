@@ -108,22 +108,22 @@ function close() {
         :title="alwaysOnTop ? '取消窗口置顶' : '窗口置顶'"
         @click="toggleAlwaysOnTop"
       >
-        <Pin v-if="!alwaysOnTop" :size="14" :stroke-width="1.8" color="var(--text-2)" />
-        <PinOff v-else :size="14" :stroke-width="1.8" color="var(--brand-500)" />
+        <Pin v-if="!alwaysOnTop" :size="14" :stroke-width="1.8" />
+        <PinOff v-else :size="14" :stroke-width="1.8" />
       </button>
       <button class="win-btn minimize" title="最小化" @click="minimize">
-        <Minus :size="15" :stroke-width="1.8" color="var(--text-2)" />
+        <Minus :size="15" :stroke-width="1.8" />
       </button>
       <button
         class="win-btn maximize"
         :title="isMaximized ? '还原' : '最大化'"
         @click="toggleMaximize"
       >
-        <Square v-if="!isMaximized" :size="14" :stroke-width="1.8" color="var(--text-2)" />
-        <Copy v-else :size="14" :stroke-width="1.8" color="var(--text-2)" />
+        <Square v-if="!isMaximized" :size="14" :stroke-width="1.8" />
+        <Copy v-else :size="14" :stroke-width="1.8" />
       </button>
       <button class="win-btn close" title="关闭（最小化至托盘）" @click="close">
-        <X :size="15" :stroke-width="1.8" color="var(--text-2)" />
+        <X :size="15" :stroke-width="1.8" />
       </button>
     </div>
   </div>
@@ -189,22 +189,23 @@ function close() {
   display: flex;
   align-items: center;
   justify-content: center;
+  color: var(--text-2);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 .win-btn:hover {
   background: var(--bg-card-soft);
 }
 .win-btn.top-btn.active {
   background: var(--brand-50);
+  color: var(--brand-500);
 }
 .win-btn.top-btn.active:hover {
   background: var(--brand-50);
+  color: var(--brand-500);
 }
 .win-btn.close:hover {
   background: var(--window-close);
-}
-.win-btn.close:hover svg path {
-  stroke: var(--text-on-accent);
+  color: var(--text-on-accent);
 }
 </style>

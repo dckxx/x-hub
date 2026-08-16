@@ -164,7 +164,7 @@ function summary(n: Note): string {
 }
 .icon-btn.add:hover {
   background: var(--brand-500);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
 .nl-body {

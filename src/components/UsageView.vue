@@ -156,7 +156,7 @@ onMounted(() => load())
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in (detail?.records ?? []) as UsageRecord[]" :key="r.session_id">
+            <tr v-for="r in (detail?.records ?? []) as UsageRecord[]" :key="`${r.time_created}-${r.session_id}`">
               <td>{{ fmtTime(r.time_created) }}</td>
               <td class="model">{{ modelLabel(r) }}</td>
               <td>{{ r.provider ?? '未知' }}</td>

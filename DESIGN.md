@@ -1,6 +1,6 @@
 # x-hub Design System
 
-> 版本对齐：v0.1.13。本文档为当前实现的唯一设计基线，UI 改动以本文件 + `src/style.css` 为准。
+> 版本对齐：v0.1.14。本文档为当前实现的唯一设计基线，UI 改动以本文件 + `src/style.css` 为准。
 
 ## 1. Atmosphere & Identity
 
@@ -25,11 +25,13 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 | Text muted | `--text-3` | `#8d877d` | `#9b968c` | 元数据、图标 |
 | Border subtle | `--border-soft` | `rgba(255,255,255,.55)` | `rgba(255,255,255,.16)` | 分隔、输入框 |
 | Border strong | `--border-strong` | `rgba(40,35,60,.22)` | `rgba(255,255,255,.28)` | 焦点、强调描边 |
-| Accent | `--brand-500` | `#5b5bf5` | `#8b8bff` | 当前项、主操作、焦点 |
-| Accent soft | `--brand-50` | `#eeeeff` | `#26263f` | 激活背景、选中状态 |
-| Accent glow | `--brand-glow` | `rgba(91,91,245,.18)` | `rgba(139,139,255,.28)` | 焦点环、光晕 |
+| Accent | `--brand-500` | `var(--accent)`（默认 `#5b5bf5`） | `var(--accent)`（默认 `#8b8bff`） | 当前项、主操作、焦点 |
+| Accent soft | `--brand-50` | `color-mix(in srgb, var(--accent) 12%, transparent)` | `color-mix(in srgb, var(--accent) 16%, #16161f)` | 激活背景、选中状态 |
+| Accent glow | `--brand-glow` | `color-mix(in srgb, var(--accent) 18%, transparent)` | `color-mix(in srgb, var(--accent) 28%, transparent)` | 焦点环、光晕 |
 | Scrim | `--scrim` | `rgba(38,35,29,.48)` | 暗色同值 | 弹窗遮罩（暗色下避免过亮） |
 | Success | `--c-green-ink` | `#15803d` | 暗色同值 | 正向反馈 |
+
+> **三轴主题（v0.1.14）**：品牌强调色不再写死，由 inline `--accent` CSS 变量注入（`useTheme` composable 写入 `:root`），`--brand-500` = `var(--accent)`，`--brand-600/50/glow` 全部 `color-mix` 派生。主题三轴独立配置：**模式**（light/dark/system → `data-theme`）、**预设**（10 单色 `data-preset` + 10 渐变，渐变仅覆盖 `--app-bg` 背景）、**强调色**（8 预设 + 自定义 hex → inline `--accent`）。配置字段 `theme_mode`/`theme_preset`/`accent_color`（旧 `theme` 字段经 serde alias 自动迁移）。
 
 ### 强调色（8 色 + ink/soft 变体）
 
@@ -92,14 +94,16 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 - 窗口默认 1400×900，最小 800×600。
 - `app-body` 为两栏 Grid：`220px minmax(0,1fr)`；收起态 `56px minmax(0,1fr)`，180ms 过渡。
 - 标题栏 48px，背景透明（无底部分隔线）。
+- **侧栏默认收起**（56px 图标态，hover 出名称气泡）；展开/收起按钮仅在设置开启 `sidebar_toggle` 后出现（默认关闭）；720px 以下强制恢复文字导航。
 
 ### Dashboard（工作台）— 三列 Bento 网格
 
 ```
 ┌───────────────┬───────────────────┬──────────────┐
-│ 时钟          │ Token 用量卡       │  待办清单     │
-│ 系统资源监视器 │ 提示词百宝箱       │  (grid-row    │
-│ 便签 ×2       │ (中列下半)         │   1/3)       │
+│ 时钟          │ 中上区块           │  待办清单     │
+│ 系统资源监视器 │ (默认倒计时，可切换 │  (grid-row    │
+│ 便签 ×2       │  Token/概览卡)     │   1/3)       │
+│               │ 提示词百宝箱       │              │
 └───────────────┴───────────────────┴──────────────┘
 │              最近使用通栏（跨三列）                 │
 └──────────────────────────────────────────────────┘
@@ -107,9 +111,9 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 
 - `grid-template-columns: minmax(0,1.2fr) minmax(0,1.8fr) minmax(0,1fr)`，行 `auto minmax(0,1fr) auto`，gap 16px。
 - 左列 flex 栈：时钟 → 系统监视 → 便签（两张 1fr 并排）。
+- 中列上半为**可切换区块** `dashboard_mid_content`（设置「工作台」区切换）：`countdown` 倒计时（默认）/ `token` Token 统计 / `notes` 速记概览 / `todo` 待办概览 / `resources` 速达数量；中列下半为提示词百宝箱。
 - 待办占右列整列（grid-row 1/3），最近使用通栏占底部整行。
 - 首页铺满视口无滚动，卡片内容区内滚动；960px 以下折两列，720px 以下单列堆叠。
-- 侧栏默认收起，会话内可手动展开。
 
 ### 独立视图
 
@@ -129,11 +133,12 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 
 ### Sidebar navigation
 
-- **Structure**: 主导航（工作台/速记/速达/用量）、底部设置、主题切换、收起按钮。
+- **Structure**: 主导航（工作台/速记/速达/用量）、底部设置、收起按钮（仅 `sidebar_toggle` 开启后显示）。
 - **Variants**: active、hover、disabled/empty。
 - **States**: default、hover、active、focus、empty。
-- **收起态**: 仅图标 + hover 右侧名称气泡（data-tip，300ms 延迟显示）。
+- **收起态**: 侧栏默认收起，仅图标 + hover 右侧名称气泡（data-tip，300ms 延迟显示）。
 - **Motion**: 150ms 背景与颜色变化，不做入场编舞。
+- **主题切换**：不在侧栏/标题栏，位于设置「外观」区（模式/预设/强调色三轴）。
 
 ### Glass card（基础卡片）
 
@@ -145,7 +150,7 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 
 - **Structure**: 标题行 + 分段（待办/已完成）、添加输入行、待办列表。
 - **States**: default、hover、done（删除线 + 降透明度）、highlight（全局搜索直达后 3s 高亮）。
-- **Interactions**: 勾选切换完成；**优先级圆点**（10px 纯色点：中性灰 `--todo-pri-default`（亮 `#c6cad4` / 暗 `#52525f`）/ 黄 / 红 = 普通/重要/紧急，点击循环，hover 放大）；**多行显示**（自动换行，最多 5 行截断，超过时 hover 悬浮全文）；双击行内编辑；删除按钮 hover 显现；删除可撤销。
+- **Interactions**: 勾选切换完成；**优先级圆点**（10px 纯色点：中性灰 `--todo-pri-default`（亮 `#c6cad4` / 暗 `#52525f`）/ 柔黄 `--c-yellow-soft` / 柔红 `--c-red-soft` = 普通/重要/紧急，点击循环，hover 放大）；**多行显示**（自动换行，最多 5 行截断，超过时 hover 悬浮全文）；双击行内编辑；删除按钮 hover 显现；删除可撤销。
 - **Accessibility**: 分段使用 `role="tablist"`，优先级圆点可键盘触发，勾选/删除带 `aria-label`。
 
 ### 其他卡片组件
@@ -154,14 +159,18 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 |---|---|
 | ClockCard | 时间 HH:mm + 日期星期 + 最近进行中倒计时的环形进度（SVG stroke-dashoffset），30s 轮询 |
 | SysMonitorCard | CPU/内存进度条（品牌渐变，≥85% 红色警示渐变）+ 2s 轮询（sysinfo 后端）；进度条用 `transform: scaleX` 动画（走合成器，不触发布局重排） |
-| StickyCard | 便签 x2（slot 1/2），600ms 防抖自动保存 |
-| CountdownCard | 倒计时卡（v0.1.13）：时长/定时/每天/间隔四种新建 + 列表（每秒刷新剩余时间 + 圆形水位）+ 暂停/恢复/浮窗/删除；`once` 到点灰态「已结束」待删 |
+| StickyCard | 便签 x2（slot 1/2，统一玻璃卡），600ms 防抖自动保存 |
+| CountdownCard | 倒计时卡（v0.1.13）：时长/定时/每天/间隔四种新建 + 列表（每秒刷新剩余时间 + 圆形水位）+ 暂停/恢复/浮窗/删除；`once` 到点灰态「已结束」待删；工作台中上区块默认内容 |
 | CountdownFloat | 倒计时圆形浮窗（v0.1.13）：透明置顶圆窗，水位随剩余比例下降 + 双层正弦波滚动（`cf-wave-a/b` 平移动画），悬停出暂停/关闭按钮；`once` 到点自动收窗 |
-| TokenStatsCard | 用量三指标 + 近 7 日迷你趋势，5min 自动刷新 + 手动刷新 |
+| DetachedStickyWindow | 便签脱离浮窗小窗（sticky-* label 专属渲染，App.vue 路由分发） |
+| TokenStatsCard | 今日用量总量 + 非缓存/缓存/输出三指标 + 三段分割条 + 监听绿点，5min 自动刷新 + 手动刷新 + 「查看详情」跳转用量视图；仅在 `dashboard_mid_content = 'token'` 时显示 |
+| NotesOverviewCard / TodoOverviewCard / ResourcesOverviewCard | 中上区块可选概览卡：速记统计 / 待办概览 / 速达数量，点击跳转对应视图 |
 | PromptBoxCard | 提示词列表卡，点击复制 + 置顶标 + 管理入口 |
 | RecentBar | 最近使用通栏（按 last_launched_at 排序，前 10） |
-| Suda | 速达资源管理视图（筛选 tabs + 卡片网格 + 拖拽导入 + 右键菜单） |
-| UsageView | 用量详情视图（双栏，明细分页） |
+| Suda | 速达资源管理视图（筛选 tabs + 卡片网格 + 拖拽导入 + 扫描安装应用 + 右键菜单） |
+| SudaFormDialog / SudaScanDialog | 新增/编辑资源弹窗（app/web/file + 文件选择）/ 扫描已安装应用批量导入弹窗 |
+| AppSelect | 通用下拉选择器（无头封装，样式自绘） |
+| UsageView | 用量详情视图（双栏：左趋势/提供商排行 + 右明细分页） |
 
 ### 弹窗 / 浮层
 

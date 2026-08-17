@@ -697,6 +697,8 @@ provide('showToast', showToast)
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.8fr) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: var(--space-4);
+  /* 仅右下保留外边距（左上与 0.1.15 原版一致贴边），与各视图统一 */
+  padding: 0 20px 20px 0;
 }
 .dash-panel {
   min-width: 0;
@@ -739,9 +741,19 @@ provide('showToast', showToast)
   overflow: hidden;
 }
 
-/* 速记视图：两栏布局 */
+/* 速记视图：两栏布局（仅右下外边距，左上贴边与原版一致） */
 .view-notes {
-  padding: 14px;
+  padding: 0 20px 20px 0;
+}
+.view-suda {
+  padding: 0 20px 20px 0;
+}
+.view-settings {
+  padding: 0 20px 20px 0;
+}
+/* 用量页：覆盖组件内四边 20px padding，仅保留右下外边距（左上贴边与原版一致） */
+.view-usage :deep(.usage-view) {
+  padding: 0 20px 20px 0;
 }
 .notes-split {
   display: flex;
@@ -756,10 +768,6 @@ provide('showToast', showToast)
 .notes-split > *:last-child {
   flex: 1;
   min-width: 0;
-}
-/* 速记/速达视图：保留 .card 的边框/圆角/阴影，与其他卡片一致 */
-.view-usage :deep(.usage-view) {
-  padding: 0;
 }
 .view-chat-hint {
   flex: 1;
@@ -784,6 +792,11 @@ provide('showToast', showToast)
 
 @media (max-width: 1100px) {
   .workspace { padding: 0 10px 10px 0; }
+  /* 窄窗口下视图外边距交给 workspace，避免叠加 */
+  .dash-grid { padding: 0; }
+  .view-notes { padding: 0; }
+  .view-suda { padding: 0; }
+  .view-settings { padding: 0; }
 }
 
 /* 960px 以下：三列改两列（左：时钟+系统+便签；右：Token+提示词/待办） */

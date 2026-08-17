@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onMounted, ref } from 'vue'
 import { marked } from 'marked'
-import { MessageSquare, PanelRightClose, Plus, Send, Settings2, X } from 'lucide-vue-next'
+import { ChevronDown, MessageSquare, PanelRightClose, Plus, Send, Settings2, X } from 'lucide-vue-next'
 import { isTauri, tauriApi, type ChatMessage, type ChatModelConfig, type ChatSession, type ChatStreamEvent } from '../api/tauri'
 import AppSelect from './AppSelect.vue'
 
@@ -27,6 +27,8 @@ const models = ref<ChatModelConfig[]>([])
 const selectedModel = ref('')
 const bodyEl = ref<HTMLElement | null>(null)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
+// 内容区不在底部时显示「跳到底部」按钮
+const showJumpBtn = ref(false)
 
 const modelOptions = computed(() =>
   models.value.map((m) => ({ value: m.name, label: modelLabel(m), group: modelGroup(m) })),
@@ -63,7 +65,8 @@ async function openSession(id: number) {
   ])
   messages.value = msgs
   if (s) selectedModel.value = s.model_name
-  scrollToBottom()
+  // 打开会话强制定位到最新消息（非 force 模式会因 scrollTop=0 误判「不在底部」而停在第一句）
+  scrollToBottom(true)
 }
 
 async function createSession() {
@@ -140,7 +143,8 @@ async function send() {
   sending.value = true
   streamingContent.value = ''
   streamError.value = ''
-  scrollToBottom()
+  // 用户主动发送：强制定位到最新消息，后续流式输出保持跟随
+  scrollToBottom(true)
 
   try {
     await tauriApi.sendChatMessage(activeSessionId.value, content, (e: ChatStreamEvent) => {
@@ -179,12 +183,23 @@ function scrollToBottom(force = false) {
     if (!el) return
     if (force) {
       el.scrollTop = el.scrollHeight
+      showJumpBtn.value = false
     } else {
       // 接近底部时才自动跟随，避免用户上翻查看时被打断
       const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-      if (nearBottom) el.scrollTop = el.scrollHeight
+      if (nearBottom) {
+        el.scrollTop = el.scrollHeight
+        showJumpBtn.value = false
+      }
     }
   })
+}
+
+// 用户手动滚动：不在底部（且内容可滚动）时显示跳转按钮
+function onBodyScroll() {
+  const el = bodyEl.value
+  if (!el) return
+  showJumpBtn.value = el.scrollHeight - el.scrollTop - el.clientHeight > 40
 }
 
 // 大模型输出可能是 Markdown，用 marked 渲染为 HTML（含代码块/列表/引用等）
@@ -275,50 +290,64 @@ function autosize() {
         </button>
       </div>
 
-    <div class="cp-body" ref="bodyEl">
-      <div v-if="sessions.length === 0" class="cp-empty">
-        <MessageSquare :size="26" :stroke-width="1.5" />
-        <template v-if="hasModels">
-          <p>还没有对话</p>
-          <button class="cp-empty-btn" @click="createSession">开始新对话</button>
-        </template>
+    <div class="cp-body-wrap">
+      <div class="cp-body" ref="bodyEl" @scroll="onBodyScroll">
+        <div v-if="sessions.length === 0" class="cp-empty">
+          <MessageSquare :size="26" :stroke-width="1.5" />
+          <template v-if="hasModels">
+            <p>还没有对话</p>
+            <button class="cp-empty-btn" @click="createSession">开始新对话</button>
+          </template>
+          <template v-else>
+            <p>还没有配置大模型</p>
+            <p class="cp-empty-sub">先添加一个 OpenAI 兼容的模型端点，才能开始对话</p>
+            <button class="cp-empty-btn" @click="openModelSettings">去配置大模型</button>
+          </template>
+        </div>
+
         <template v-else>
-          <p>还没有配置大模型</p>
-          <p class="cp-empty-sub">先添加一个 OpenAI 兼容的模型端点，才能开始对话</p>
-          <button class="cp-empty-btn" @click="openModelSettings">去配置大模型</button>
+          <div
+            v-for="m in messages"
+            :key="m.id"
+            class="msg"
+            :class="m.role === 'user' ? 'user' : 'ai'"
+          >
+            <div class="ava">{{ m.role === 'user' ? '你' : 'A' }}</div>
+            <div v-if="m.role === 'assistant'" class="bubble md" v-html="renderMd(m.content)"></div>
+            <div v-else class="bubble">{{ m.content }}</div>
+          </div>
+
+          <div v-if="sending" class="msg ai">
+            <div class="ava">A</div>
+            <div v-if="streamingContent" class="bubble streaming md">
+              <span v-html="renderMd(streamingContent)"></span><span class="cursor"></span>
+            </div>
+            <div v-else class="bubble streaming">
+              <span class="dots">思考中<span>.</span><span>.</span><span>.</span></span><span class="cursor"></span>
+            </div>
+          </div>
+
+          <div v-if="streamError" class="msg ai">
+            <div class="ava">A</div>
+            <div class="bubble error">
+              <span class="err-title">出错了</span>
+              {{ streamError }}
+            </div>
+          </div>
         </template>
       </div>
 
-      <template v-else>
-        <div
-          v-for="m in messages"
-          :key="m.id"
-          class="msg"
-          :class="m.role === 'user' ? 'user' : 'ai'"
+      <Transition name="jump">
+        <button
+          v-if="showJumpBtn"
+          class="cp-jump"
+          title="跳到底部"
+          aria-label="跳到底部"
+          @click="scrollToBottom(true)"
         >
-          <div class="ava">{{ m.role === 'user' ? '你' : 'A' }}</div>
-          <div v-if="m.role === 'assistant'" class="bubble md" v-html="renderMd(m.content)"></div>
-          <div v-else class="bubble">{{ m.content }}</div>
-        </div>
-
-        <div v-if="sending" class="msg ai">
-          <div class="ava">A</div>
-          <div v-if="streamingContent" class="bubble streaming md">
-            <span v-html="renderMd(streamingContent)"></span><span class="cursor"></span>
-          </div>
-          <div v-else class="bubble streaming">
-            <span class="dots">思考中<span>.</span><span>.</span><span>.</span></span><span class="cursor"></span>
-          </div>
-        </div>
-
-        <div v-if="streamError" class="msg ai">
-          <div class="ava">A</div>
-          <div class="bubble error">
-            <span class="err-title">出错了</span>
-            {{ streamError }}
-          </div>
-        </div>
-      </template>
+          <ChevronDown :size="14" :stroke-width="2.2" />
+        </button>
+      </Transition>
     </div>
 
     <div class="cp-input">
@@ -550,6 +579,13 @@ function autosize() {
   color: var(--brand-500);
 }
 
+.cp-body-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .cp-body {
   flex: 1;
   min-height: 0;
@@ -558,6 +594,38 @@ function autosize() {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+/* 「跳到底部」悬浮按钮：内容区不在底部时出现 */
+.cp-jump {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border-soft);
+  background: var(--frost-surface);
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: var(--shadow-card);
+  z-index: 5;
+  transition: background 150ms ease-out, color 150ms ease-out;
+}
+.cp-jump:hover {
+  background: var(--brand-50);
+  color: var(--brand-500);
+}
+.jump-enter-active,
+.jump-leave-active {
+  transition: opacity 0.18s ease-out, transform 0.18s ease-out;
+}
+.jump-enter-from,
+.jump-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
 }
 .cp-empty {
   flex: 1;
@@ -592,6 +660,7 @@ function autosize() {
 }
 .msg {
   display: flex;
+  align-items: flex-start;
   gap: 9px;
   max-width: 92%;
 }
@@ -609,6 +678,14 @@ function autosize() {
   justify-content: center;
   font-size: 12px;
   font-weight: 700;
+}
+.msg.ai .ava {
+  /* AI 回复：头像顶部与气泡内首行文字顶部对齐（气泡 padding-top 为 9px） */
+  margin-top: 9px;
+}
+.msg.user .ava {
+  /* 用户消息：头像贴气泡顶部 */
+  margin-top: 0;
 }
 .msg.user .ava {
   background: var(--brand-50);
@@ -655,6 +732,34 @@ function autosize() {
 .bubble.md :deep(h4) { font-size: 13.5px; }
 .bubble.md :deep(p) {
   margin: 6px 0;
+}
+/* 首元素去掉上外边距：让首行文字从气泡内边距处开始，与头像顶部对齐。
+   注意：必须用「元素 + :first-child」形式，`:deep(:first-child)` 会被编译器
+   编译成无 scoped 前缀的裸全局规则，造成全局污染与两侧不对称 */
+.bubble.md :deep(p:first-child),
+.bubble.md :deep(h1:first-child),
+.bubble.md :deep(h2:first-child),
+.bubble.md :deep(h3:first-child),
+.bubble.md :deep(h4:first-child),
+.bubble.md :deep(ul:first-child),
+.bubble.md :deep(ol:first-child),
+.bubble.md :deep(pre:first-child),
+.bubble.md :deep(blockquote:first-child),
+.bubble.md :deep(table:first-child) {
+  margin-top: 0;
+}
+/* 流式输出时文字包在 span 内：span 内首段同样去掉上外边距 */
+.bubble.md :deep(span:first-child p:first-child),
+.bubble.md :deep(span:first-child h1:first-child),
+.bubble.md :deep(span:first-child h2:first-child),
+.bubble.md :deep(span:first-child h3:first-child),
+.bubble.md :deep(span:first-child h4:first-child),
+.bubble.md :deep(span:first-child ul:first-child),
+.bubble.md :deep(span:first-child ol:first-child),
+.bubble.md :deep(span:first-child pre:first-child),
+.bubble.md :deep(span:first-child blockquote:first-child),
+.bubble.md :deep(span:first-child table:first-child) {
+  margin-top: 0;
 }
 .bubble.md :deep(ul),
 .bubble.md :deep(ol) {

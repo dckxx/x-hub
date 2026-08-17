@@ -401,13 +401,20 @@ provide('showToast', showToast)
 
         <!-- 速记：独立视图 -->
         <section v-else-if="activeView === 'notes'" class="view view-notes" tabindex="-1" aria-label="速记">
-          <NoteList
-            :notes="store.state.notes"
-            :active-id="activeNoteId"
-            @select="onSelectNote"
-            @create="onCreateNote"
-            @delete="onDeleteNote"
-          />
+          <div class="notes-split">
+            <NoteList
+              :notes="store.state.notes"
+              :active-id="activeNoteId"
+              @select="onSelectNote"
+              @create="onCreateNote"
+              @delete="onDeleteNote"
+            />
+            <NoteEditor
+              :note="activeNote"
+              @save="onSaveNote"
+              @delete="onDeleteNote"
+            />
+          </div>
         </section>
 
         <!-- 速达：独立视图 -->
@@ -449,13 +456,6 @@ provide('showToast', showToast)
         </Transition>
       </div>
     </div>
-
-    <NoteEditor
-      :note="activeNote"
-      @save="onSaveNote"
-      @delete="onDeleteNote"
-      @close="activeNoteId = null"
-    />
 
     <GlobalSearch
       :visible="searchVisible"
@@ -737,6 +737,25 @@ provide('showToast', showToast)
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* 速记视图：两栏布局 */
+.view-notes {
+  padding: 14px;
+}
+.notes-split {
+  display: flex;
+  gap: 14px;
+  height: 100%;
+  min-height: 0;
+}
+.notes-split > *:first-child {
+  flex: 0 0 300px;
+  min-width: 0;
+}
+.notes-split > *:last-child {
+  flex: 1;
+  min-width: 0;
 }
 /* 速记/速达视图：保留 .card 的边框/圆角/阴影，与其他卡片一致 */
 .view-usage :deep(.usage-view) {

@@ -230,20 +230,24 @@ export function useStore() {
 
   // ---- 笔记 ----
   async function addNote(title: string) {
-    const n = await tauriApi.createNote(title)
+    const n = isTauri()
+      ? await tauriApi.createNote(title)
+      : { id: Date.now(), title, content: '', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
     state.notes.unshift(n)
     return n
   }
 
   async function saveNote(id: number, title: string, content: string) {
-    const n = await tauriApi.updateNote(id, title, content)
+    const n = isTauri()
+      ? await tauriApi.updateNote(id, title, content)
+      : { id, title, content, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
     const idx = state.notes.findIndex((x) => x.id === id)
     if (idx >= 0) state.notes[idx] = n
     return n
   }
 
   async function removeNote(id: number) {
-    await tauriApi.deleteNote(id)
+    if (isTauri()) await tauriApi.deleteNote(id)
     state.notes = state.notes.filter((x) => x.id !== id)
   }
 
@@ -477,13 +481,15 @@ export function useStore() {
 
   // ---- 标签 ----
   async function createTag(name: string) {
-    const t = await tauriApi.createTag(name)
+    const t = isTauri()
+      ? await tauriApi.createTag(name)
+      : { id: Date.now(), name, created_at: new Date().toISOString() }
     if (!state.tags.some((x) => x.id === t.id)) state.tags.push(t)
     return t
   }
 
   async function deleteTag(id: number) {
-    await tauriApi.deleteTag(id)
+    if (isTauri()) await tauriApi.deleteTag(id)
     state.tags = state.tags.filter((x) => x.id !== id)
   }
 

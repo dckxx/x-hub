@@ -60,6 +60,10 @@ pub struct AppConfig {
     /// AI 对话右侧面板透明度（0.5–1.0，可在设置中调整）
     #[serde(default = "default_chat_panel_opacity")]
     pub chat_panel_opacity: f64,
+    /// 升级后弹窗显示更新说明（默认关闭，安静优先）
+    pub whats_new_enabled: bool,
+    /// 上次已记录「更新说明」的版本号（用于升级检测；空串表示首次运行）
+    pub last_seen_version: String,
 }
 
 fn default_chat_panel_opacity() -> f64 {
@@ -84,6 +88,8 @@ impl Default for AppConfig {
             chat_panel_width: 420.0,
             chat_panel_open: false,
             chat_panel_opacity: 1.0,
+            whats_new_enabled: false,
+            last_seen_version: String::new(),
         }
     }
 }

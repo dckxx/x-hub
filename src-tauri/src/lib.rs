@@ -1,3 +1,4 @@
+mod about;
 mod chat;
 mod commands;
 mod config;
@@ -391,6 +392,8 @@ commands::fetch_chat_provider_models,
 commands::get_chat_api_key,
 commands::set_chat_panel,
             commands::get_chat_panel,
+            commands::get_app_info,
+            commands::check_whats_new,
             sysmon::get_system_info,
         ])
         .run(tauri::generate_context!())

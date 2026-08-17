@@ -21,6 +21,7 @@ import ClockCard from '../components/ClockCard.vue'
 import StickyCard from '../components/StickyCard.vue'
 import CountdownCard from '../components/CountdownCard.vue'
 import ChatPanel from '../components/ChatPanel.vue'
+import WhatsNewDialog from '../components/WhatsNewDialog.vue'
 import { useStore } from '../stores/workbench'
 import { isTauri, tauriApi } from '../api/tauri'
 import type { Countdown, Note, Resource, Todo } from '../api/tauri'
@@ -150,6 +151,15 @@ onMounted(async () => {
   window.addEventListener('keydown', onSearchKeydown)
   window.addEventListener('keydown', onChatKeydown)
   await restoreChatPanel()
+  // 升级检测：仅在版本变化且用户开启「升级后显示更新说明」时弹一次 What's New
+  if (isTauri()) {
+    try {
+      const latest = await tauriApi.checkWhatsNew()
+      if (latest) whatsNewContent.value = latest
+    } catch {
+      // 忽略：命令未就绪或检测失败时不打扰
+    }
+  }
 })
 
 let unlistenStickies: (() => void) | null = null
@@ -213,6 +223,7 @@ function onSaveNote(id: number, title: string, content: string) {
 const searchVisible = ref(false)
 const promptManageVisible = ref(false)
 const settingsSection = ref('')
+const whatsNewContent = ref<string | null>(null)
 
 function onOpenTodo(t: Todo) {
   searchVisible.value = false
@@ -456,6 +467,10 @@ provide('showToast', showToast)
     <PromptManageDialog
       :visible="promptManageVisible"
       @close="promptManageVisible = false"
+    />
+    <WhatsNewDialog
+      :content="whatsNewContent"
+      @close="whatsNewContent = null"
     />
 
     <Transition name="toast">

@@ -5,6 +5,7 @@ import { Download, Keyboard, Lock, Upload } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import AppSelect from './AppSelect.vue'
 import AiProviders from './AiProviders.vue'
+import AboutSection from './AboutSection.vue'
 import { useStore } from '../stores/workbench'
 import { reportClientError } from '../utils/error-report'
 
@@ -21,6 +22,7 @@ const SECTIONS = [
   { id: 'workbench', label: '工作台' },
   { id: 'shortcut', label: '快捷键' },
   { id: 'data', label: '数据' },
+  { id: 'about', label: '关于' },
 ] as const
 
 type SectionId = (typeof SECTIONS)[number]['id']
@@ -602,6 +604,12 @@ function onAccentInput(e: Event) {
             <Lock :size="12" :stroke-width="2" class="settings-lock" aria-hidden="true" />
             所有数据默认存储在本地，不会上传云端
           </p>
+        </section>
+
+        <!-- 关于 -->
+        <section id="sv-sec-about" class="sv-sec" aria-label="关于">
+          <h3 class="sv-sec-title">关于</h3>
+          <AboutSection />
         </section>
       </div>
     </div>

@@ -85,6 +85,16 @@ export interface AppConfig {
   chat_panel_open: boolean
   /** AI 对话面板透明度（0.5–1.0，设置中可调） */
   chat_panel_opacity: number
+  /** 升级后弹窗显示更新说明（默认关闭） */
+  whats_new_enabled: boolean
+  /** 上次已记录「更新说明」的版本号（空串表示首次运行） */
+  last_seen_version: string
+}
+
+export interface AppInfo {
+  version: string
+  changelog: string
+  latest_section: string
 }
 
 export interface ClientErrorPayload {
@@ -397,7 +407,9 @@ export const tauriApi = {
   getChatApiKey: (modelId: string) => invoke<string>('get_chat_api_key', { modelId }),
   setChatPanel: (width: number, open: boolean) =>
     invoke<void>('set_chat_panel', { width, open }),
-  getChatPanel: () => invoke<[number, boolean]>('get_chat_panel'),  createCountdown: (payload: {
+  getChatPanel: () => invoke<[number, boolean]>('get_chat_panel'),
+  getAppInfo: () => invoke<AppInfo>('get_app_info'),
+  checkWhatsNew: () => invoke<string | null>('check_whats_new'),  createCountdown: (payload: {
     name: string
     repeatMode: string
     endAt: number

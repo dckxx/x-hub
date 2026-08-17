@@ -144,6 +144,7 @@ x-hub/
 26. **主题三轴系统（v0.1.15）：** 主题 = 模式（light/dark/system，`data-theme`）× 预设（10 单色 `data-preset` + 10 渐变，渐变仅覆盖 `--app-bg` 背景）× 强调色（8 预设 + 自定义 hex，inline `--accent`）。`style.css` 中 `--brand-500` = `var(--accent)`，`--brand-600/50/glow` 均 `color-mix` 派生；实现/读取都在 `composables/useTheme.ts`，配置字段 `theme_mode`/`theme_preset`/`accent_color`（旧 `theme` 字段经 serde alias 自动迁移）
 27. **工作台中上区块（v0.1.15）：** 中列上半内容由配置 `dashboard_mid_content` 控制，可选 `countdown`（倒计时，默认）/ `token`（Token 统计）/ `notes`（速记概览）/ `todo`（待办概览）/ `resources`（速达数量），设置「工作台」区切换；倒计时卡默认占据中列上半，Token 用量卡仅在切到 `token` 时显示
 28. **侧栏默认收起（v0.1.15）：** `sidebarCollapsed` 默认 `true`（56px 图标态，hover 出名称气泡）；展开/收起按钮仅在设置开启 `sidebar_toggle` 后出现（默认关闭）；720px 以下强制恢复文字导航
+29. **关于 / 更新日志（v0.1.16）：** 设置「关于」区（`AboutSection.vue`）展示版本号 + 开源声明 + 内置版本历史；changelog 单一来源为仓库根 `RELEASE_NOTES.md`，经 `about.rs` `include_str!` 打包进二进制（**零网络**），`get_app_info` 返回 `{version, changelog, latest_section}`。版本号运行时读 `app.package_info().version`（随 `tauri.conf.json` 烘焙），README badge 是文档侧唯一真相。升级检测 `check_whats_new` 在启动时调用：`last_seen_version` 空→首跑仅记录；与当前版本不同→推进记录，且仅当 `whats_new_enabled`（默认关）开启才返回最新说明给 `WhatsNewDialog.vue` 弹一次。RELEASE_NOTES 累积式：每发版在顶部新增一节 `# vX.Y.Z 发布说明`（`version_sections()` 按 `# ` 一级标题切分，最新在前）
 
 ## 命令速查
 
@@ -154,13 +155,21 @@ npm run build         # vue-tsc 类型检查 + vite build
 npm run tauri:build   # 构建桌面应用（产物在 src-tauri/target/release/bundle/）
 ```
 
+## 发版清单（版本号单一来源 = README）
+
+每次发版从 README 向下同步版本号（`README.md` 徽章 → `package.json` → `src-tauri/tauri.conf.json` → `src-tauri/Cargo.toml` → `AGENTS.md` 头部），并：
+
+1. 在 `RELEASE_NOTES.md` **顶部**新增一节 `# vX.Y.Z 发布说明`（累积式，旧版依次排后，勿覆盖历史）。
+2. 同步 `README.md` 版本徽章与 `DESIGN.md` 顶部「版本对齐」。
+3. git tag 用 `vX.Y.Z` 触发 `.github/workflows/release.yml`（tag 号须与 `tauri.conf.json` version 一致，否则打包产物版本漂移）。
+
 ## 注意事项
 
 - **decorations: false**：窗口无边框，标题栏/窗口控制全部自定义（TitleBar.vue）
 - **startDragging 权限**：`core:window:allow-start-dragging` 已在 capabilities 声明
 - **数据目录：** `app.path().app_data_dir()/` = `%APPDATA%\x-hub`（identifier 为 `x-hub`；旧标识 `com.workbench.desktop` 的数据在启动时自动迁移一次，且 `lib.rs::fix_icon_paths` 会把数据库中的旧图标路径批量替换为新目录）
 - **日志：** `tauri-plugin-log` 文件日志 → `%APPDATA%\x-hub\logs\x-hub.log`（Info 级别），同时输出 Stdout + Webview；所有命令入口记录成功/失败，数据查询类用 `log::debug!` 防噪音；启动程序遇 os error 740（需要管理员权限）自动经 PowerShell `Start-Process -Verb RunAs` 触发 UAC 提权
-- **配置位置：** 与数据库同目录的 JSON 文件（含 theme_mode/theme_preset/accent_color/sidebar_toggle/window/global_shortcut/usage_db_path/usage_sync_cursor/dashboard_mid_content/countdown_sound）
+- **配置位置：** 与数据库同目录的 JSON 文件（含 theme_mode/theme_preset/accent_color/sidebar_toggle/window/global_shortcut/usage_db_path/usage_sync_cursor/dashboard_mid_content/countdown_sound/whats_new_enabled/last_seen_version）
 - **数据恢复：** `backup_data`/`restore_data` 命令只把备份暂存为 `restore.db`/`restore_icons` 并写 `.restore_pending` 标记，重启时 `apply_pending_restore` 才替换正式数据（lib.rs）
 - **SQLite：** 使用 `rusqlite` crate（bundled）
 - **Tauri 权限：** 新增前端 API 调用需在 `src-tauri/capabilities/default.json` 声明对应权限

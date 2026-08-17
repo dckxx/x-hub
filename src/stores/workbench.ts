@@ -71,6 +71,8 @@ const state = reactive<StoreState>({
     chat_panel_width: 420,
     chat_panel_open: false,
     chat_panel_opacity: 1,
+    whats_new_enabled: false,
+    last_seen_version: '',
   },
   usageSummary: null,
   usageDetail: null,
@@ -560,6 +562,13 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 升级后弹窗显示更新说明（默认关闭） */
+  async function setWhatsNewEnabled(value: boolean) {
+    state.config.whats_new_enabled = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   // ---- AI 用量 ----
   async function refreshUsage(path?: string): Promise<SyncResult> {
     if (!isTauri()) {
@@ -640,6 +649,7 @@ export function useStore() {
     setCountdownSound,
     setClockQuote,
     setChatPanelOpacity,
+    setWhatsNewEnabled,
     refreshUsage,
     loadUsageSummary,
     loadUsageDetail,

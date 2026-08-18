@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onMounted, ref } from 'vue'
-import { marked } from 'marked'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { marked, Renderer } from 'marked'
 import { ChevronDown, MessageSquare, PanelRightClose, Plus, Send, Settings2, X } from 'lucide-vue-next'
 import { isTauri, tauriApi, type ChatMessage, type ChatModelConfig, type ChatSession, type ChatStreamEvent } from '../api/tauri'
 import AppSelect from './AppSelect.vue'
@@ -29,11 +29,50 @@ const bodyEl = ref<HTMLElement | null>(null)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 // 内容区不在底部时显示「跳到底部」按钮
 const showJumpBtn = ref(false)
+// 新建 / 切换对话下拉菜单
+const menuOpen = ref(false)
+const menuPos = ref({ x: 0, y: 0, width: 0, openUp: false })
+const addBtnRef = ref<HTMLButtonElement | null>(null)
+const menuRef = ref<HTMLElement | null>(null)
+
+const activeSession = computed(() => sessions.value.find((s) => s.id === activeSessionId.value) ?? null)
+// 顶部直接显示当前对话标题（未命名时为「新对话」）
+const currentTitle = computed(() => activeSession.value?.title || '新对话')
 
 const modelOptions = computed(() =>
   models.value.map((m) => ({ value: m.name, label: modelLabel(m), group: modelGroup(m) })),
 )
 const hasModels = computed(() => models.value.length > 0)
+
+// 去掉小数尾部的 ".0"（如 1.0 → 1）
+function trimZero(s: string): string {
+  return s.endsWith('.0') ? s.slice(0, -2) : s
+}
+
+// token 数量格式化：≥100万用 M，≥1000 用 K，否则原值
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return trimZero((n / 1_000_000).toFixed(1)) + 'M'
+  if (n >= 1000) return trimZero((n / 1000).toFixed(1)) + 'K'
+  return String(n)
+}
+
+// 缓存率 = 缓存读取 / 输入
+const cacheRate = computed(() => {
+  const s = activeSession.value
+  const input = s?.tokens_input ?? 0
+  const cache = s?.tokens_cache_read ?? 0
+  if (!input) return 0
+  return Math.round((cache / input) * 100)
+})
+
+// TPS = 累计输出 token / 累计生成秒数
+const tps = computed(() => {
+  const s = activeSession.value
+  const out = s?.tokens_output ?? 0
+  const ms = s?.elapsed_ms ?? 0
+  if (!ms || !out) return 0
+  return out / (ms / 1000)
+})
 
 // 选中后界面只展示大模型名称，不再展示供应商
 function modelLabel(m: ChatModelConfig): string {
@@ -64,7 +103,12 @@ async function openSession(id: number) {
     tauriApi.listChatSessions().then((l) => l.find((x) => x.id === id) ?? null),
   ])
   messages.value = msgs
-  if (s) selectedModel.value = s.model_name
+  if (s) {
+    selectedModel.value = s.model_name
+    // 同步本地会话条目（标题 / token 等可能已变化）
+    const i = sessions.value.findIndex((x) => x.id === id)
+    if (i >= 0) sessions.value = sessions.value.map((x) => (x.id === id ? s : x))
+  }
   // 打开会话强制定位到最新消息（非 force 模式会因 scrollTop=0 误判「不在底部」而停在第一句）
   scrollToBottom(true)
 }
@@ -86,6 +130,66 @@ async function deleteSession(id: number) {
     streamingContent.value = ''
     if (sessions.value.length > 0) await openSession(sessions.value[0].id)
   }
+}
+
+// ---- 新建 / 切换对话下拉菜单 ----
+function toggleMenu() {
+  if (!menuOpen.value) {
+    menuOpen.value = true
+    void nextTick().then(positionMenu)
+  } else {
+    menuOpen.value = false
+  }
+}
+
+function positionMenu() {
+  const trigger = addBtnRef.value
+  const menu = menuRef.value
+  if (!trigger || !menu) return
+  const tr = trigger.getBoundingClientRect()
+  const gap = 6
+  const width = 140
+  // 加号在右侧：菜单右对齐到加号，向左展开，避免超出屏幕右缘
+  const x = Math.max(8, Math.min(tr.right - width, window.innerWidth - width - 8))
+  const spaceBelow = window.innerHeight - tr.bottom - 8
+  const spaceAbove = tr.top - 8
+  const menuHeight = menu.offsetHeight
+  let y: number
+  let openUp = false
+  if (spaceBelow >= menuHeight + gap) {
+    y = tr.bottom + gap
+  } else if (spaceAbove >= menuHeight + gap) {
+    y = Math.max(8, tr.top - menuHeight - gap)
+    openUp = true
+  } else {
+    y = Math.max(8, Math.min(tr.bottom + gap, window.innerHeight - menuHeight - 8))
+  }
+  menuPos.value = { x, y, width, openUp }
+}
+
+function onPickSession(id: number) {
+  menuOpen.value = false
+  void openSession(id)
+}
+
+async function onNewSession() {
+  menuOpen.value = false
+  await createSession()
+}
+
+function onWindowClick(e: MouseEvent) {
+  if (!menuOpen.value) return
+  const t = e.target as HTMLElement
+  if (addBtnRef.value?.contains(t) || menuRef.value?.contains(t)) return
+  menuOpen.value = false
+}
+
+function onWindowKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && menuOpen.value) menuOpen.value = false
+}
+
+function onWindowResize() {
+  if (menuOpen.value) positionMenu()
 }
 
 // ---- 模型 ----
@@ -154,14 +258,17 @@ async function send() {
       } else if (e.type === 'done') {
         // 用后端落库的权威消息替换占位回复
         const i = messages.value.findIndex((m) => m.id === userMsg.id)
-        const next = [...messages.value.slice(0, i + 1), e.message]
-        messages.value = next
+        messages.value = [...messages.value.slice(0, i + 1), e.message]
         streamingContent.value = ''
         sending.value = false
-        const s = sessions.value.find((x) => x.id === activeSessionId.value)
-        if (s) {
-          s.updated_at = new Date().toISOString()
-          sessions.value = [...sessions.value].sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+        // 后端返回的会话含自动生成的标题与累计 token，直接替换本地条目
+        const idx = sessions.value.findIndex((x) => x.id === e.session.id)
+        if (idx >= 0) {
+          sessions.value = sessions.value
+            .map((x) => (x.id === e.session.id ? e.session : x))
+            .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+        } else {
+          sessions.value.unshift(e.session)
         }
         scrollToBottom(true)
       } else if (e.type === 'error') {
@@ -202,10 +309,74 @@ function onBodyScroll() {
   showJumpBtn.value = el.scrollHeight - el.scrollTop - el.clientHeight > 40
 }
 
+// ---- Markdown 渲染（代码块深色框 + 语言标签 + 复制按钮）----
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+const mdRenderer = new Renderer()
+mdRenderer.code = ({ text, lang }) => {
+  const language = (lang ?? '').trim() || 'text'
+  return (
+    `<div class="code-block">` +
+    `<div class="code-block-head"><span class="code-lang">${escapeHtml(language)}</span>` +
+    `<button class="code-copy" type="button" data-copy>复制</button></div>` +
+    `<pre class="code-pre"><code class="code-code">${escapeHtml(text)}</code></pre>` +
+    `</div>`
+  )
+}
+
 // 大模型输出可能是 Markdown，用 marked 渲染为 HTML（含代码块/列表/引用等）
 function renderMd(text: string): string {
   if (!text) return ''
-  return marked.parse(text, { async: false }) as string
+  return marked.parse(text, { async: false, renderer: mdRenderer }) as string
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    /* 降级到 execCommand */
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+// 代码块复制按钮：v-html 内容走事件委托
+async function onBodyClick(e: MouseEvent) {
+  const target = e.target as HTMLElement | null
+  const btn = target?.closest?.('.code-copy') as HTMLElement | null
+  if (!btn) return
+  const block = btn.closest('.code-block')
+  const code = block?.querySelector('.code-code') as HTMLElement | null
+  if (!code) return
+  const ok = await copyText(code.textContent ?? '')
+  if (ok) {
+    btn.textContent = '已复制'
+    btn.classList.add('copied')
+    window.setTimeout(() => {
+      btn.textContent = '复制'
+      btn.classList.remove('copied')
+    }, 1500)
+  }
 }
 
 // ---- 面板宽度拖拽 ----
@@ -236,10 +407,19 @@ function onResizeUp() {
 const panelWidth = ref(420)
 
 onMounted(async () => {
+  window.addEventListener('click', onWindowClick)
+  window.addEventListener('keydown', onWindowKeydown)
+  window.addEventListener('resize', onWindowResize)
   if (!isTauri()) return
   const [w] = await tauriApi.getChatPanel()
   panelWidth.value = w
   await Promise.all([loadSessions(), loadModels()])
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('click', onWindowClick)
+  window.removeEventListener('keydown', onWindowKeydown)
+  window.removeEventListener('resize', onWindowResize)
 })
 
 defineExpose({ refreshModels: () => { void loadModels() } })
@@ -257,41 +437,31 @@ function autosize() {
   <div class="chat-panel" :style="{ width: panelWidth + 'px' }">
     <div class="resize-h" @mousedown="onResizeDown"></div>
 
-      <div class="cp-header">
-        <div class="cp-title">
-          <MessageSquare :size="15" :stroke-width="2" />
-          AI 对话
-        </div>
-        <div class="cp-spacer"></div>
-        <button class="cp-hbtn" title="模型设置" @click="openModelSettings">
-          <Settings2 :size="15" />
-        </button>
-        <button class="cp-hbtn" title="收起面板" @click="emit('toggle')">
-          <PanelRightClose :size="15" />
-        </button>
-      </div>
-
-      <div class="cp-sessions">
-        <div
-          v-for="s in sessions"
-          :key="s.id"
-          class="sess-pill"
-          :class="{ on: activeSessionId === s.id }"
-          @click="openSession(s.id)"
-        >
-          <span class="sess-title" :title="s.title">{{ s.title }}</span>
-          <button class="sess-x" title="删除会话" @click.stop="deleteSession(s.id)">
-            <X :size="11" />
-          </button>
-        </div>
-        <button class="sess-add" title="新建会话" @click="createSession">
-          <Plus :size="13" />
-          新建
-        </button>
-      </div>
+    <div class="cp-header">
+      <div class="cp-title" :title="currentTitle">{{ currentTitle }}</div>
+      <div class="cp-spacer"></div>
+      <button
+        ref="addBtnRef"
+        class="cp-hbtn cp-add"
+        :class="{ open: menuOpen }"
+        title="新建 / 切换对话"
+        aria-label="新建或切换对话"
+        :aria-expanded="menuOpen"
+        aria-haspopup="menu"
+        @click="toggleMenu"
+      >
+        <Plus :size="16" />
+      </button>
+      <button class="cp-hbtn" title="模型设置" @click="openModelSettings">
+        <Settings2 :size="15" />
+      </button>
+      <button class="cp-hbtn" title="收起面板" @click="emit('toggle')">
+        <PanelRightClose :size="15" />
+      </button>
+    </div>
 
     <div class="cp-body-wrap">
-      <div class="cp-body" ref="bodyEl" @scroll="onBodyScroll">
+      <div class="cp-body" ref="bodyEl" @scroll="onBodyScroll" @click="onBodyClick">
         <div v-if="sessions.length === 0" class="cp-empty">
           <MessageSquare :size="26" :stroke-width="1.5" />
           <template v-if="hasModels">
@@ -351,6 +521,14 @@ function autosize() {
     </div>
 
     <div class="cp-input">
+      <!-- 当前会话 token 统计：输入 / 输出 / 缓存 / 缓存率 / TPS -->
+      <div v-if="activeSessionId" class="cp-stats">
+        <span class="stat"><span class="stat-label">输入</span><b>{{ fmtTokens(activeSession?.tokens_input ?? 0) }}</b></span>
+        <span class="stat"><span class="stat-label">输出</span><b>{{ fmtTokens(activeSession?.tokens_output ?? 0) }}</b></span>
+        <span class="stat"><span class="stat-label">缓存</span><b>{{ fmtTokens(activeSession?.tokens_cache_read ?? 0) }}</b></span>
+        <span class="stat"><span class="stat-label">缓存率</span><b>{{ cacheRate }}%</b></span>
+        <span class="stat"><span class="stat-label">TPS</span><b>{{ trimZero(tps.toFixed(1)) }}</b></span>
+      </div>
       <textarea
         ref="inputEl"
         v-model="input"
@@ -381,6 +559,42 @@ function autosize() {
         </button>
       </div>
     </div>
+
+    <!-- 新建 / 切换对话下拉菜单 -->
+    <Teleport to="body">
+      <Transition name="cpmenu">
+        <div
+          v-if="menuOpen"
+          ref="menuRef"
+          class="cp-menu"
+          :class="{ 'open-up': menuPos.openUp }"
+          :style="{ left: menuPos.x + 'px', top: menuPos.y + 'px', width: menuPos.width + 'px' }"
+          role="menu"
+        >
+          <button class="cp-menu-item cp-menu-new" role="menuitem" @click="onNewSession">
+            <Plus :size="14" :stroke-width="2.2" />
+            新建对话
+          </button>
+          <div class="cp-menu-sep"></div>
+          <div v-if="sessions.length === 0" class="cp-menu-empty">暂无对话</div>
+          <div v-else class="cp-menu-list">
+            <div
+              v-for="s in sessions"
+              :key="s.id"
+              class="cp-menu-sess"
+              :class="{ on: s.id === activeSessionId }"
+              role="menuitem"
+              @click="onPickSession(s.id)"
+            >
+              <span class="cp-menu-sess-title" :title="s.title">{{ s.title }}</span>
+              <button class="cp-menu-del" title="删除对话" @click.stop="deleteSession(s.id)">
+                <X :size="12" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -429,25 +643,38 @@ function autosize() {
   padding: 0 10px;
   border-bottom: 1px solid var(--border-soft);
 }
+.cp-add {
+  flex: 0 0 auto;
+  color: var(--text-2);
+  border: 1px solid var(--border-soft);
+  background: var(--bg-card-soft);
+}
+.cp-add:hover,
+.cp-add.open {
+  background: var(--brand-50);
+  color: var(--brand-500);
+  border-color: color-mix(in srgb, var(--brand-500) 35%, transparent);
+}
 .cp-title {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 7px;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 650;
   color: var(--text-1);
-}
-.cp-title svg {
-  color: var(--brand-500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cp-spacer {
-  flex: 1;
+  flex: 0;
 }
 .model-sel {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-2);
   background: var(--input-bg);
   border: 1px solid var(--border-soft);
@@ -461,14 +688,14 @@ function autosize() {
   padding: 2px 6px !important;
   border: none !important;
   background: transparent !important;
-  font-size: 12px !important;
+  font-size: 0.75rem !important;
   width: 180px !important;
 }
 .model-app-select:hover {
   background: var(--bg-card-soft) !important;
 }
 .model-empty {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--brand-500);
   cursor: pointer;
   white-space: nowrap;
@@ -500,83 +727,109 @@ function autosize() {
   color: var(--text-1);
 }
 
-.cp-sessions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border-soft);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.cp-sessions::-webkit-scrollbar {
-  display: none;
-}
-.sess-pill {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  color: var(--text-2);
-  background: var(--bg-card-soft);
+/* ---- 新建 / 切换对话下拉菜单 ---- */
+.cp-menu {
+  position: fixed;
+  z-index: 320;
+  padding: 6px;
+  background: var(--bg-card);
   border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm);
-  padding: 4px 8px;
-  cursor: pointer;
-  max-width: 160px;
-  transition: background 150ms ease-out, color 150ms ease-out;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-dock);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
 }
-.sess-pill:hover {
+.cp-menu-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--brand-500);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.cp-menu-new:hover {
+  background: var(--brand-50);
+}
+.cp-menu-sep {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--border-soft);
+}
+.cp-menu-empty {
+  padding: 10px 12px;
+  font-size: 0.75rem;
+  color: var(--text-4);
+  text-align: center;
+}
+.cp-menu-list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+.cp-menu-sess {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px 7px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-2);
+  transition: background 0.12s, color 0.12s;
+}
+.cp-menu-sess:hover {
+  background: var(--bg-card-soft);
   color: var(--text-1);
 }
-.sess-pill.on {
+.cp-menu-sess.on {
   background: var(--brand-50);
   color: var(--brand-500);
-  border-color: color-mix(in srgb, var(--brand-500) 35%, transparent);
 }
-.sess-title {
+.cp-menu-sess-title {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 0.8125rem;
 }
-.sess-x {
-  width: 16px;
-  height: 16px;
+.cp-menu-del {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
   border: none;
   background: transparent;
-  border-radius: 4px;
+  border-radius: 5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-3);
+  color: var(--text-4);
   cursor: pointer;
-  flex-shrink: 0;
   opacity: 0;
-  transition: opacity 150ms;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
 }
-.sess-pill:hover .sess-x {
-  opacity: 0.7;
+.cp-menu-sess:hover .cp-menu-del {
+  opacity: 1;
 }
-.sess-x:hover {
-  opacity: 1 !important;
+.cp-menu-del:hover {
   background: var(--bg-card-solid);
+  color: var(--c-red-ink);
 }
-.sess-add {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--text-3);
-  background: transparent;
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-sm);
-  padding: 4px 9px;
-  cursor: pointer;
+.cpmenu-enter-active,
+.cpmenu-leave-active {
+  transition: opacity 0.12s ease-out, transform 0.12s ease-out;
 }
-.sess-add:hover {
-  color: var(--brand-500);
+.cpmenu-enter-from,
+.cpmenu-leave-to {
+  opacity: 0;
+  transform: scale(0.96);
 }
 
 .cp-body-wrap {
@@ -594,6 +847,9 @@ function autosize() {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* 对话内容允许鼠标滑动选中复制（全局 body 默认禁选，这里单独放开） */
+  -webkit-user-select: text;
+  user-select: text;
 }
 /* 「跳到底部」悬浮按钮：内容区不在底部时出现 */
 .cp-jump {
@@ -635,7 +891,7 @@ function autosize() {
   justify-content: center;
   gap: 10px;
   color: var(--text-3);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 .cp-empty svg {
   color: var(--text-3);
@@ -645,14 +901,14 @@ function autosize() {
   border: none;
   background: var(--brand-500);
   color: var(--text-on-accent);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   font-weight: 600;
   border-radius: var(--radius-pill);
   padding: 7px 18px;
   cursor: pointer;
 }
 .cp-empty-sub {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-4);
   max-width: 240px;
   text-align: center;
@@ -676,7 +932,7 @@ function autosize() {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 .msg.ai .ava {
@@ -696,13 +952,15 @@ function autosize() {
   color: #fff;
 }
 .bubble {
+  min-width: 0;
   padding: 9px 12px;
   border-radius: 11px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.55;
   color: var(--text-1);
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .msg.user .bubble {
   background: var(--brand-500);
@@ -726,10 +984,10 @@ function autosize() {
   margin: 12px 0 6px;
   line-height: 1.4;
 }
-.bubble.md :deep(h1) { font-size: 18px; }
-.bubble.md :deep(h2) { font-size: 16px; }
-.bubble.md :deep(h3) { font-size: 14.5px; }
-.bubble.md :deep(h4) { font-size: 13.5px; }
+.bubble.md :deep(h1) { font-size: 1.125rem; }
+.bubble.md :deep(h2) { font-size: 1rem; }
+.bubble.md :deep(h3) { font-size: 0.90625rem; }
+.bubble.md :deep(h4) { font-size: 0.84375rem; }
 .bubble.md :deep(p) {
   margin: 6px 0;
 }
@@ -745,7 +1003,8 @@ function autosize() {
 .bubble.md :deep(ol:first-child),
 .bubble.md :deep(pre:first-child),
 .bubble.md :deep(blockquote:first-child),
-.bubble.md :deep(table:first-child) {
+.bubble.md :deep(table:first-child),
+.bubble.md :deep(.code-block:first-child) {
   margin-top: 0;
 }
 /* 流式输出时文字包在 span 内：span 内首段同样去掉上外边距 */
@@ -758,7 +1017,8 @@ function autosize() {
 .bubble.md :deep(span:first-child ol:first-child),
 .bubble.md :deep(span:first-child pre:first-child),
 .bubble.md :deep(span:first-child blockquote:first-child),
-.bubble.md :deep(span:first-child table:first-child) {
+.bubble.md :deep(span:first-child table:first-child),
+.bubble.md :deep(span:first-child .code-block:first-child) {
   margin-top: 0;
 }
 .bubble.md :deep(ul),
@@ -771,27 +1031,77 @@ function autosize() {
 .bubble.md :deep(li) {
   margin: 2px 0;
 }
+/* 行内 code（反引号） */
 .bubble.md :deep(code) {
-  background: var(--bg-card);
-  border: 1px solid var(--border-soft);
+  background: var(--code-inline-bg);
+  color: var(--code-inline-fg);
   border-radius: 5px;
   padding: 1px 6px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
   word-break: break-all;
 }
-.bubble.md :deep(pre) {
-  background: var(--bg-card);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
-  padding: 10px;
-  overflow-x: auto;
+/* 代码块：深色框 + 头部语言标签 + 复制按钮（贴近主流 AI 对话展示方式） */
+.bubble.md :deep(.code-block) {
   margin: 8px 0;
+  max-width: 100%;
+  border: 1px solid var(--code-border);
+  border-radius: 8px;
+  background: var(--bg-code);
+  overflow: hidden;
 }
-.bubble.md :deep(pre code) {
+.bubble.md :deep(.code-block-head) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px 6px 12px;
+  background: var(--bg-code-head);
+  border-bottom: 1px solid var(--code-border);
+}
+.bubble.md :deep(.code-lang) {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--code-text-dim);
+  text-transform: lowercase;
+}
+.bubble.md :deep(.code-copy) {
+  border: 1px solid var(--code-border);
+  background: transparent;
+  color: var(--code-text-dim);
+  font-size: 0.6875rem;
+  font-family: inherit;
+  border-radius: 5px;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.bubble.md :deep(.code-copy:hover) {
+  color: var(--code-text);
+  border-color: color-mix(in srgb, var(--code-text-dim) 60%, transparent);
+}
+.bubble.md :deep(.code-copy.copied) {
+  color: var(--c-green-ink);
+  border-color: color-mix(in srgb, var(--c-green-ink) 50%, transparent);
+}
+.bubble.md :deep(.code-pre) {
+  margin: 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+.bubble.md :deep(.code-code) {
+  display: block;
   background: transparent;
   border: none;
   padding: 0;
+  color: var(--code-text);
+  font-size: 0.78125rem;
+  line-height: 1.55;
+  font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
   white-space: pre;
   word-break: normal;
 }
@@ -820,7 +1130,7 @@ function autosize() {
 .bubble.md :deep(td) {
   border: 1px solid var(--border-soft);
   padding: 5px 9px;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }
 .bubble.md :deep(strong) { font-weight: 700; }
 .bubble.md :deep(em) { font-style: italic; }
@@ -865,6 +1175,39 @@ function autosize() {
   margin-bottom: 3px;
 }
 
+/* ---- 当前会话 token 统计行（置于输入区内、紧贴输入框上方） ---- */
+.cp-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.cp-stats::-webkit-scrollbar {
+  display: none;
+}
+.cp-stats .stat {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-card-soft);
+  border: 1px solid var(--border-soft);
+  font-size: 0.6875rem;
+  color: var(--text-4);
+}
+.cp-stats .stat b {
+  font-size: 0.71875rem;
+  font-weight: 600;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.cp-stats .stat-label {
+  color: var(--text-4);
+}
+
 .cp-input {
   flex: 0 0 auto;
   border-top: 1px solid var(--border-soft);
@@ -884,7 +1227,7 @@ function autosize() {
   border: 1px solid var(--border-soft);
   border-radius: 10px;
   padding: 9px 11px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-family: inherit;
   color: var(--text-1);
   outline: none;
@@ -900,7 +1243,7 @@ function autosize() {
   gap: 8px;
 }
 .cp-hint {
-  font-size: 11.5px;
+  font-size: 0.71875rem;
   color: var(--text-3);
 }
 .send {
@@ -908,7 +1251,7 @@ function autosize() {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   font-weight: 600;
   color: var(--text-on-accent);
   background: var(--brand-500);

@@ -99,7 +99,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -136,12 +136,12 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-2);
 }
 .sm-item-value {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
@@ -150,7 +150,7 @@ onUnmounted(() => {
 }
 .sm-item-value em {
   font-style: normal;
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 500;
   color: var(--text-3);
   margin-left: 2px;
@@ -174,7 +174,7 @@ onUnmounted(() => {
 }
 .sm-mem-label {
   margin: 0;
-  font-size: 10px;
+  font-size: 0.625rem;
   line-height: 1.2;
   color: var(--text-3);
 }

@@ -110,6 +110,8 @@ async function onCopy(s: Snippet) {
   flex-direction: column;
   padding: 16px;
   min-height: 0;
+  /* 提示词模块字号：全局基准 × 模块系数 */
+  font-size: calc(1rem * var(--fs-prompt, 1));
 }
 .pb-header {
   display: flex;
@@ -122,7 +124,7 @@ async function onCopy(s: Snippet) {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 16px;
+  font-size: 1em;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -181,7 +183,7 @@ async function onCopy(s: Snippet) {
   min-width: 0;
 }
 .pb-row-title-text {
-  font-size: 13px;
+  font-size: 0.8125em;
   font-weight: 600;
   color: var(--text-1);
   overflow: hidden;
@@ -193,7 +195,7 @@ async function onCopy(s: Snippet) {
   color: var(--brand-500);
 }
 .pb-row-preview {
-  font-size: 12px;
+  font-size: 0.75em;
   color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -210,13 +212,13 @@ async function onCopy(s: Snippet) {
 }
 .pb-empty-title {
   margin: 0;
-  font-size: 13px;
+  font-size: 0.8125em;
   font-weight: 600;
   color: var(--text-2);
 }
 .pb-empty-sub {
   margin: 0 0 6px;
-  font-size: 11px;
+  font-size: 0.6875em;
   color: var(--text-4);
 }
 </style>

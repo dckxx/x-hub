@@ -456,7 +456,7 @@ function cardAccentStyle(r: Resource) {
       <div v-else class="empty-state">
         <Wrench :size="24" :stroke-width="1.7" aria-hidden="true" />
         <p>{{ emptyTitle }}</p>
-        <p style="font-size: 12px; color: var(--text-4)">
+        <p style="font-size: 0.75rem; color: var(--text-4)">
           拖拽本地文件/程序到窗口，或手动添加快捷链接
         </p>
         <button
@@ -522,7 +522,7 @@ function cardAccentStyle(r: Resource) {
   margin-bottom: 12px;
 }
 .suda-title {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -617,7 +617,7 @@ function cardAccentStyle(r: Resource) {
   background: var(--c-green-soft);
 }
 .suda-letter {
-  font-size: 20px;
+  font-size: 1.25rem;
   font-weight: 700;
 }
 .suda-img {
@@ -632,7 +632,7 @@ function cardAccentStyle(r: Resource) {
   align-items: center;
   gap: 5px;
   max-width: 100%;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   color: var(--text-2);
 }
@@ -658,7 +658,7 @@ function cardAccentStyle(r: Resource) {
   align-items: center;
   min-height: 0;
   padding: 0;
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   line-height: 1;
   color: var(--text-3);
@@ -734,11 +734,11 @@ function cardAccentStyle(r: Resource) {
   color: var(--brand-500);
 }
 .drop-hint p {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 600;
 }
 .drop-hint span {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-3);
   max-width: 420px;
   overflow: hidden;

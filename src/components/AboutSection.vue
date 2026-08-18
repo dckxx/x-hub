@@ -102,13 +102,13 @@ function onToggleWhatsNew() {
   flex-wrap: wrap;
 }
 .setting-name {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--text-1);
 }
 .setting-desc {
   flex-basis: 100%;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-3);
 }
 .toggle {
@@ -142,7 +142,7 @@ function onToggleWhatsNew() {
 }
 
 .about-version {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--brand-500);
@@ -158,23 +158,23 @@ function onToggleWhatsNew() {
 }
 .about-changelog-title {
   margin: 0 0 var(--space-3);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 700;
   color: var(--text-2);
 }
 .about-changelog-empty {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--text-3);
 }
 
 /* 只读静态 Markdown 渲染（复用 marked，样式对齐速记预览） */
 .md-body {
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.7;
   color: var(--text-2);
 }
 .md-body :deep(h1) {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 700;
   color: var(--text-1);
   margin: 16px 0 10px;
@@ -185,13 +185,13 @@ function onToggleWhatsNew() {
   margin-top: 0;
 }
 .md-body :deep(h2) {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 700;
   color: var(--text-1);
   margin: 16px 0 8px;
 }
 .md-body :deep(h3) {
-  font-size: 13.5px;
+  font-size: 0.84375rem;
   font-weight: 700;
   color: var(--text-1);
   margin: 12px 0 6px;
@@ -218,7 +218,7 @@ function onToggleWhatsNew() {
   border: 1px solid var(--border-soft);
   border-radius: 5px;
   padding: 1px 6px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-family: 'FiraCode', Consolas, monospace;
 }
 .md-body :deep(pre) {

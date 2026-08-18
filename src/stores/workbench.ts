@@ -71,8 +71,19 @@ const state = reactive<StoreState>({
     chat_panel_width: 420,
     chat_panel_open: false,
     chat_panel_opacity: 1,
-    whats_new_enabled: false,
+    whats_new_enabled: true,
     last_seen_version: '',
+    clipboard_shortcut: IS_MAC_PREVIEW ? 'CommandOrControl+Alt+V' : 'Ctrl+Alt+V',
+    clipboard_max_items: 500,
+    clipboard_ttl_days: 7,
+    clipboard_paused: false,
+    clipboard_paste_method: 'auto',
+    font_scale: 1,
+    font_sticky: 1,
+    font_notes: 1,
+    font_prompt: 1,
+    font_todo: 1,
+    font_usage: 1,
   },
   usageSummary: null,
   usageDetail: null,
@@ -249,6 +260,13 @@ export function useStore() {
   async function removeNote(id: number) {
     if (isTauri()) await tauriApi.deleteNote(id)
     state.notes = state.notes.filter((x) => x.id !== id)
+  }
+
+  /** 剪贴板浮层等外部保存速记后，主窗口刷新笔记列表 */
+  async function refreshNotes() {
+    if (!isTauri()) return
+    const data = await tauriApi.getInitialData()
+    state.notes = data.notes
   }
 
   async function searchAll(keyword: string) {
@@ -575,6 +593,29 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 字号缩放钳制到 0.85–1.30，保留 2 位小数 */
+  function clampFontScale(value: number) {
+    return Math.round(Math.min(1.3, Math.max(0.85, value)) * 100) / 100
+  }
+
+  /** 全局字体缩放（0.85–1.30） */
+  async function setFontScale(value: number) {
+    state.config.font_scale = clampFontScale(value)
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
+  /** 单模块字体缩放：sticky / notes / prompt / todo / usage */
+  async function setModuleFontScale(
+    module: 'sticky' | 'notes' | 'prompt' | 'todo' | 'usage',
+    value: number,
+  ) {
+    const key = `font_${module}` as 'font_sticky' | 'font_notes' | 'font_prompt' | 'font_todo' | 'font_usage'
+    state.config[key] = clampFontScale(value)
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   // ---- AI 用量 ----
   async function refreshUsage(path?: string): Promise<SyncResult> {
     if (!isTauri()) {
@@ -606,6 +647,33 @@ export function useStore() {
     return state.systemInfo
   }
 
+  // ---- 剪贴板历史 ----
+  async function setClipboardShortcut(value: string) {
+    state.config.clipboard_shortcut = value
+    if (!isTauri()) return value
+    const saved = await tauriApi.setClipboardShortcut(value)
+    state.config.clipboard_shortcut = saved
+    return saved
+  }
+
+  async function setClipboardPaused(value: boolean) {
+    state.config.clipboard_paused = value
+    if (!isTauri()) return
+    await tauriApi.clipboardSetPaused(value)
+    await tauriApi.saveConfig(state.config)
+  }
+
+  async function setClipboardRetention(maxItems: number, ttlDays: number) {
+    // 与后端 set_clipboard_retention 的钳制范围对齐，避免 saveConfig 用未钳制值覆盖后端结果
+    const clampedMax = Math.min(5000, Math.max(20, Math.round(maxItems)))
+    const clampedTtl = Math.min(365, Math.max(1, Math.round(ttlDays)))
+    state.config.clipboard_max_items = clampedMax
+    state.config.clipboard_ttl_days = clampedTtl
+    if (!isTauri()) return
+    await tauriApi.setClipboardRetention(clampedMax, clampedTtl)
+    await tauriApi.saveConfig(state.config)
+  }
+
   return {
     state: readonly(state),
     loadInitialData,
@@ -622,6 +690,7 @@ export function useStore() {
     addNote,
     saveNote,
     removeNote,
+    refreshNotes,
     searchAll,
     createTodo,
     toggleTodo,
@@ -656,6 +725,11 @@ export function useStore() {
     setClockQuote,
     setChatPanelOpacity,
     setWhatsNewEnabled,
+    setFontScale,
+    setModuleFontScale,
+    setClipboardShortcut,
+    setClipboardPaused,
+    setClipboardRetention,
     refreshUsage,
     loadUsageSummary,
     loadUsageDetail,

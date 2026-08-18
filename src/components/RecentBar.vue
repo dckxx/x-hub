@@ -120,7 +120,7 @@ async function onOpen(r: Resource) {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -133,7 +133,7 @@ async function onOpen(r: Resource) {
   border: none;
   background: transparent;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
   transition: color 0.18s;
 }
@@ -171,7 +171,7 @@ async function onOpen(r: Resource) {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -184,7 +184,7 @@ async function onOpen(r: Resource) {
 }
 .rb-name {
   max-width: 100%;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 500;
   color: var(--text-2);
   overflow: hidden;
@@ -200,7 +200,7 @@ async function onOpen(r: Resource) {
 }
 .rb-empty-text {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-3);
 }
 .rb-empty-btn {

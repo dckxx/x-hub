@@ -441,13 +441,13 @@ defineExpose({ reload: () => void loadProviders() })
 <style scoped>
 .ai-intro {
   margin: 0 0 var(--space-4);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   line-height: 1.6;
   color: var(--text-3);
 }
 .ai-loading {
   padding: 18px 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--text-3);
 }
 
@@ -488,7 +488,7 @@ defineExpose({ reload: () => void loadProviders() })
   gap: 3px;
 }
 .prov-name {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 700;
   color: var(--text-1);
   overflow: hidden;
@@ -496,7 +496,7 @@ defineExpose({ reload: () => void loadProviders() })
   white-space: nowrap;
 }
 .prov-meta {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -505,7 +505,7 @@ defineExpose({ reload: () => void loadProviders() })
 .prov-del {
   flex-shrink: 0;
   padding: 5px 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .prov-del:hover {
   background: var(--c-red-soft);
@@ -527,7 +527,7 @@ defineExpose({ reload: () => void loadProviders() })
   gap: 5px;
 }
 .ai-label {
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-3);
 }
@@ -553,7 +553,7 @@ defineExpose({ reload: () => void loadProviders() })
 .key-text {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   color: var(--text-2);
   font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
   overflow: hidden;
@@ -580,12 +580,12 @@ defineExpose({ reload: () => void loadProviders() })
 .prov-test {
   flex-shrink: 0;
   padding: 8px 12px;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .prov-fetch {
   flex-shrink: 0;
   padding: 8px 12px;
-  font-size: 12px;
+  font-size: 0.75rem;
   background: var(--brand-50);
   color: var(--brand-500);
   border-color: color-mix(in srgb, var(--brand-500) 35%, transparent);
@@ -597,7 +597,7 @@ defineExpose({ reload: () => void loadProviders() })
 }
 .prov-msg {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--c-red-ink);
 }
 .prov-msg.ok {
@@ -615,7 +615,7 @@ defineExpose({ reload: () => void loadProviders() })
 }
 .fetch-head,
 .models-head {
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--text-2);
 }
@@ -623,7 +623,7 @@ defineExpose({ reload: () => void loadProviders() })
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--text-1);
   cursor: pointer;
 }
@@ -638,7 +638,7 @@ defineExpose({ reload: () => void loadProviders() })
 .fetch-add {
   align-self: flex-start;
   padding: 5px 12px;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 /* ---- 已配置模型：tag 并排展示 ---- */
@@ -648,7 +648,7 @@ defineExpose({ reload: () => void loadProviders() })
   gap: 6px;
 }
 .models-empty {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-3);
 }
 .model-tags {
@@ -662,7 +662,7 @@ defineExpose({ reload: () => void loadProviders() })
   gap: 2px;
   max-width: 100%;
   padding: 3px 4px 3px 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--brand-500);
   background: var(--brand-50);
   border: 1px solid color-mix(in srgb, var(--brand-500) 45%, transparent);

@@ -18,9 +18,16 @@ const input = ref('')
 // 编辑状态
 const editingId = ref<number | null>(null)
 const editText = ref('')
-const editInputRef = ref<HTMLInputElement | null>(null)
+const editInputRef = ref<HTMLTextAreaElement | null>(null)
 function setEditInput(el: Element | ComponentPublicInstance | null) {
-  editInputRef.value = el instanceof HTMLInputElement ? el : null
+  editInputRef.value = el instanceof HTMLTextAreaElement ? el : null
+}
+
+/** 文本域随内容自动增高，保证多行待办内容能看全 */
+function autoResizeEdit(e: Event) {
+  const el = e.target as HTMLTextAreaElement
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
 }
 
 // 全局搜索跳转高亮
@@ -103,7 +110,14 @@ async function remove(t: Todo) {
 function startEdit(t: Todo) {
   editingId.value = t.id
   editText.value = t.title
-  nextTick(() => editInputRef.value?.focus())
+  nextTick(() => {
+    const el = editInputRef.value
+    if (!el) return
+    // 先按内容撑开高度再聚焦，避免先显示单行再跳动
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+    el.focus()
+  })
 }
 
 function cancelEdit() {
@@ -216,15 +230,16 @@ watch(
         ></button>
 
         <template v-if="editingId === t.id">
-          <input
+          <textarea
             :ref="setEditInput"
             v-model="editText"
             class="todo-edit"
+            rows="1"
             :aria-label="'编辑待办：' + t.title"
-            @keydown.enter.prevent="commitEdit(t.id)"
+            @input="autoResizeEdit"
             @keydown.esc="cancelEdit()"
             @blur="commitEdit(t.id)"
-          />
+          ></textarea>
         </template>
         <span
           v-else
@@ -273,6 +288,8 @@ watch(
   padding: 16px;
   min-height: 0;
   --todo-pri-default: #c6cad4;
+  /* 待办模块字号：全局基准 × 模块系数 */
+  font-size: calc(1rem * var(--fs-todo, 1));
 }
 [data-theme='dark'] .todo-card {
   --todo-pri-default: #52525f;
@@ -288,7 +305,7 @@ watch(
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 16px;
+  font-size: 1em;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -301,7 +318,7 @@ watch(
 }
 .todo-seg .filter-tab {
   padding: 4px 8px;
-  font-size: 11px;
+  font-size: 0.6875em;
 }
 
 .todo-add {
@@ -313,7 +330,7 @@ watch(
   border-radius: var(--radius-md);
   background: var(--input-bg);
   color: var(--text-1);
-  font-size: 13px;
+  font-size: 0.8125em;
   padding: 7px 10px;
   outline: none;
   transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
@@ -400,13 +417,14 @@ watch(
 .todo-label {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: 0.8125em;
   line-height: 1.45;
   color: var(--text-1);
   overflow: hidden;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 5;
+  white-space: pre-wrap;
   word-break: break-word;
   cursor: text;
 }
@@ -423,10 +441,16 @@ watch(
   border-radius: 6px;
   background: var(--bg-card-solid);
   color: var(--text-1);
-  font-size: 13px;
+  font-size: 0.8125em;
+  line-height: 1.45;
+  font-family: inherit;
   padding: 2px 6px;
   outline: none;
   box-shadow: var(--shadow-focus);
+  resize: none;
+  overflow-y: auto;
+  min-height: 22px;
+  max-height: 40vh;
 }
 
 .todo-del {
@@ -459,11 +483,11 @@ watch(
 }
 .todo-empty p {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.75em;
   color: var(--text-4);
 }
 .todo-empty p:first-child {
-  font-size: 13px;
+  font-size: 0.8125em;
   font-weight: 600;
   color: var(--text-3);
 }
@@ -477,7 +501,7 @@ watch(
   background: var(--bg-card-solid);
   border: 1px solid var(--border-soft);
   box-shadow: var(--shadow-dock);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
   color: var(--text-1);
   white-space: pre-wrap;

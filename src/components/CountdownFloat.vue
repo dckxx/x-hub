@@ -250,7 +250,7 @@ function onDragEnd() {
   pointer-events: none;
 }
 .cf-name {
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   color: var(--text-1);
   max-width: 100%;
@@ -259,7 +259,7 @@ function onDragEnd() {
   white-space: nowrap;
 }
 .cf-time {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 800;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
@@ -270,7 +270,7 @@ function onDragEnd() {
   color: var(--text-3);
 }
 .cf-state {
-  font-size: 9px;
+  font-size: 0.5625rem;
   color: var(--text-4);
 }
 

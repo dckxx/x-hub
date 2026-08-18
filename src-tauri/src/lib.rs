@@ -1,5 +1,6 @@
 mod about;
 mod chat;
+mod clipboard;
 mod commands;
 mod config;
 mod countdown_ticker;
@@ -236,6 +237,7 @@ pub fn run() {
             let conn = init_database(app)?;
             fix_icon_paths(&conn, app);
             app.manage(DbState(std::sync::Mutex::new(conn)));
+            app.manage(clipboard::ClipboardState::default());
 
             tray::setup(app)?;
             shortcut::setup(app)?;
@@ -292,6 +294,9 @@ pub fn run() {
             // 启动倒计时后台驱动线程（每秒扫描到期项，托盘/隐藏时不受 WebView 节流影响）
             countdown_ticker::start(app.handle().clone());
 
+            // 启动剪贴板监听线程（启动零加载历史，仅剪贴板变化时落库）
+            clipboard::start_monitor(app.handle().clone());
+
             // 关闭事件：拦截默认关闭，改为隐藏至托盘
             if let Some(window) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
@@ -310,6 +315,12 @@ pub fn run() {
             let app_handle = app.handle().clone();
             app.listen("global-shortcut-toggle", move |_| {
                 crate::tray::toggle_window(&app_handle);
+            });
+
+            // 剪贴板快捷键事件：唤起/收起剪贴板历史浮层
+            let app_handle = app.handle().clone();
+            app.listen("clipboard-toggle", move |_| {
+                crate::clipboard::toggle_overlay(&app_handle);
             });
 
             log::info!("x-hub 启动完成");
@@ -394,6 +405,19 @@ commands::set_chat_panel,
             commands::get_chat_panel,
             commands::get_app_info,
             commands::check_whats_new,
+            commands::clipboard_list,
+            commands::clipboard_copy,
+            commands::clipboard_paste,
+            commands::clipboard_toggle_pin,
+            commands::clipboard_delete,
+            commands::clipboard_clear,
+            commands::clipboard_set_paused,
+            commands::clipboard_activate,
+            commands::clipboard_hide,
+            commands::set_clipboard_paste_method,
+            commands::clipboard_get_info,
+            commands::set_clipboard_shortcut,
+            commands::set_clipboard_retention,
             sysmon::get_system_info,
         ])
         .run(tauri::generate_context!())

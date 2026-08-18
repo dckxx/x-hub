@@ -62,6 +62,26 @@ export interface Snippet {
   updated_at: string
 }
 
+export interface ClipboardItem {
+  id: number
+  content: string
+  /** 富文本 HTML 片段（粘贴时优先还原格式） */
+  html: string | null
+  /** 来源应用 */
+  source_app: string | null
+  is_pinned: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface ClipboardInfo {
+  paused: boolean
+  max_items: number
+  ttl_days: number
+  total: number
+  shortcut: string
+}
+
 export interface WindowState {
   width: number
   height: number
@@ -85,10 +105,32 @@ export interface AppConfig {
   chat_panel_open: boolean
   /** AI 对话面板透明度（0.5–1.0，设置中可调） */
   chat_panel_opacity: number
-  /** 升级后弹窗显示更新说明（默认关闭） */
+  /** 升级后弹窗显示更新说明（默认开启） */
   whats_new_enabled: boolean
   /** 上次已记录「更新说明」的版本号（空串表示首次运行） */
   last_seen_version: string
+  /** 剪贴板历史全局呼出快捷键 */
+  clipboard_shortcut: string
+  /** 剪贴板历史最大条数（含置顶） */
+  clipboard_max_items: number
+  /** 非置顶记录保留天数 */
+  clipboard_ttl_days: number
+  /** 暂停剪贴板记录 */
+  clipboard_paused: boolean
+  /** 粘贴快捷键方式：auto / ctrl_v / ctrl_shift_v / shift_insert */
+  clipboard_paste_method: string
+  /** 全局字体缩放系数（0.85–1.30，默认 1.0） */
+  font_scale: number
+  /** 便签模块字体缩放系数（相对全局的额外缩放，默认 1.0） */
+  font_sticky: number
+  /** 速记模块字体缩放系数 */
+  font_notes: number
+  /** 提示词模块字体缩放系数 */
+  font_prompt: number
+  /** 待办模块字体缩放系数 */
+  font_todo: number
+  /** 用量模块字体缩放系数 */
+  font_usage: number
 }
 
 export interface AppInfo {
@@ -244,6 +286,13 @@ export interface ChatSession {
   model_name: string
   created_at: string
   updated_at: string
+  /** 会话级累计 token（输入 / 输出 / 缓存读取 / 推理） */
+  tokens_input: number
+  tokens_output: number
+  tokens_cache_read: number
+  tokens_reasoning: number
+  /** 会话级累计生成耗时（毫秒），用于计算 TPS */
+  elapsed_ms: number
 }
 
 export interface ChatMessage {
@@ -267,7 +316,7 @@ export interface ChatModelConfig {
 
 export type ChatStreamEvent =
   | { type: 'chunk'; content: string }
-  | { type: 'done'; message: ChatMessage }
+  | { type: 'done'; message: ChatMessage; session: ChatSession }
   | { type: 'error'; message: string; partial: string }
 
 export const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -444,4 +493,20 @@ export const tauriApi = {
   resumeCountdown: (id: number) => invoke<Countdown>('resume_countdown', { id }),
   floatCountdown: (id: number) => invoke<Countdown>('float_countdown', { id }),
   unfloatCountdown: (id: number) => invoke<Countdown>('unfloat_countdown', { id }),
+  // ---- 剪贴板历史 ----
+  clipboardList: (keyword?: string, limit?: number) =>
+    invoke<ClipboardItem[]>('clipboard_list', { keyword: keyword ?? null, limit: limit ?? 50 }),
+  clipboardCopy: (id: number) => invoke<void>('clipboard_copy', { id }),
+  clipboardPaste: (id: number) => invoke<void>('clipboard_paste', { id }),
+  clipboardTogglePin: (id: number) => invoke<ClipboardItem>('clipboard_toggle_pin', { id }),
+  clipboardDelete: (id: number) => invoke<void>('clipboard_delete', { id }),
+  clipboardClear: () => invoke<void>('clipboard_clear'),
+  clipboardSetPaused: (paused: boolean) => invoke<void>('clipboard_set_paused', { paused }),
+  clipboardActivate: () => invoke<void>('clipboard_activate'),
+  clipboardHide: () => invoke<void>('clipboard_hide'),
+  setClipboardPasteMethod: (method: string) => invoke<string>('set_clipboard_paste_method', { method }),
+  clipboardGetInfo: () => invoke<ClipboardInfo>('clipboard_get_info'),
+  setClipboardShortcut: (value: string) => invoke<string>('set_clipboard_shortcut', { value }),
+  setClipboardRetention: (maxItems: number, ttlDays: number) =>
+    invoke<void>('set_clipboard_retention', { maxItems, ttlDays }),
 }

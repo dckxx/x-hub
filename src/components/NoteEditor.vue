@@ -263,6 +263,8 @@ function formatSavedTime(iso: string): string {
   flex-direction: column;
   padding: 16px 24px 12px;
   overflow: hidden;
+  /* 速记模块字号：全局基准 × 模块系数 */
+  font-size: calc(1rem * var(--fs-notes, 1));
 }
 
 .editor-empty {
@@ -273,7 +275,7 @@ function formatSavedTime(iso: string): string {
   justify-content: center;
   gap: 12px;
   color: var(--text-3);
-  font-size: 14px;
+  font-size: 0.875em;
 }
 
 .editor-empty svg {
@@ -293,7 +295,7 @@ function formatSavedTime(iso: string): string {
   border: 1px solid var(--border-soft);
   background: var(--input-bg);
   border-radius: var(--radius-md);
-  font-size: 16px;
+  font-size: 1em;
   font-weight: 600;
   font-family: inherit;
   color: var(--text-1);
@@ -331,7 +333,7 @@ function formatSavedTime(iso: string): string {
   border-radius: var(--radius-md);
   resize: none;
   outline: none;
-  font-size: 14px;
+  font-size: 0.875em;
   line-height: 1.7;
   font-family: inherit;
   color: var(--text-2);
@@ -359,15 +361,15 @@ function formatSavedTime(iso: string): string {
 }
 
 .md-preview :deep(h1) {
-  font-size: 20px;
+  font-size: calc(1.25rem * var(--fs-notes, 1));
 }
 
 .md-preview :deep(h2) {
-  font-size: 17px;
+  font-size: calc(1.0625rem * var(--fs-notes, 1));
 }
 
 .md-preview :deep(h3) {
-  font-size: 15px;
+  font-size: calc(0.9375rem * var(--fs-notes, 1));
 }
 
 .md-preview :deep(p) {
@@ -393,7 +395,7 @@ function formatSavedTime(iso: string): string {
   border: 1px solid var(--border-soft);
   border-radius: 5px;
   padding: 1px 6px;
-  font-size: 12px;
+  font-size: calc(0.75rem * var(--fs-notes, 1));
   font-family: 'FiraCode', Consolas, monospace;
 }
 
@@ -438,7 +440,7 @@ function formatSavedTime(iso: string): string {
 .md-preview :deep(td) {
   border: 1px solid var(--border-soft);
   padding: 6px 10px;
-  font-size: 13px;
+  font-size: calc(0.8125rem * var(--fs-notes, 1));
 }
 
 /* 标签行 */
@@ -460,7 +462,7 @@ function formatSavedTime(iso: string): string {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  font-size: 11px;
+  font-size: 0.6875em;
   font-weight: 500;
   color: var(--brand-500);
   background: var(--brand-50);
@@ -478,7 +480,7 @@ function formatSavedTime(iso: string): string {
   border-radius: 50%;
   background: transparent;
   color: inherit;
-  font-size: 10px;
+  font-size: calc(0.625rem * var(--fs-notes, 1));
   line-height: 1;
   padding: 0;
   cursor: pointer;
@@ -500,7 +502,7 @@ function formatSavedTime(iso: string): string {
   align-items: center;
   justify-content: center;
   color: var(--text-3);
-  font-size: 13px;
+  font-size: 0.8125em;
   cursor: pointer;
   transition: border-color 0.12s, color 0.12s;
 }
@@ -516,7 +518,7 @@ function formatSavedTime(iso: string): string {
   background: var(--input-bg);
   border-radius: var(--radius-sm);
   color: var(--text-1);
-  font-size: 12px;
+  font-size: 0.75em;
   font-family: inherit;
   padding: 4px 10px;
   outline: none;
@@ -537,7 +539,7 @@ function formatSavedTime(iso: string): string {
 
 .ed-status {
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: 0.75em;
   color: var(--text-3);
 }
 

@@ -50,7 +50,7 @@ const html = computed(() =>
 }
 .wn-title {
   margin: 0;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 700;
   color: var(--text-1);
 }
@@ -59,7 +59,7 @@ const html = computed(() =>
   min-height: 0;
   overflow-y: auto;
   padding-right: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.7;
   color: var(--text-2);
 }
@@ -72,7 +72,7 @@ const html = computed(() =>
 
 /* 只读静态 Markdown 渲染 */
 .md-body :deep(h1) {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 700;
   color: var(--text-1);
   margin: 12px 0 10px;
@@ -83,13 +83,13 @@ const html = computed(() =>
   margin-top: 0;
 }
 .md-body :deep(h2) {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 700;
   color: var(--text-1);
   margin: 14px 0 8px;
 }
 .md-body :deep(h3) {
-  font-size: 13.5px;
+  font-size: 0.84375rem;
   font-weight: 700;
   color: var(--text-1);
   margin: 12px 0 6px;
@@ -116,7 +116,7 @@ const html = computed(() =>
   border: 1px solid var(--border-soft);
   border-radius: 5px;
   padding: 1px 6px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-family: 'FiraCode', Consolas, monospace;
 }
 .md-body :deep(pre) {

@@ -211,7 +211,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
             <!-- 状态 -->
             <div v-if="searched && results.resources.length === 0 && results.notes.length === 0 && results.todos.length === 0" class="empty-state">
-              <span style="font-size: 26px">🔍</span>
+              <span style="font-size: 1.625rem">🔍</span>
               <p>未找到「{{ keyword.trim() }}」相关内容</p>
             </div>
             <div
@@ -277,7 +277,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   border: none;
   background: transparent;
   outline: none;
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-family: inherit;
   color: var(--text-1);
 }
@@ -286,7 +286,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .esc-hint {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--text-4);
   background: var(--bg-card-soft);
   border: 1px solid var(--border-soft);
@@ -302,7 +302,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   padding: 12px 12px 16px;
 }
 .result-group-title {
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   color: var(--text-3);
   padding: 8px 10px 4px;
@@ -324,7 +324,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   flex-shrink: 0;
   width: 34px;
   text-align: center;
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   border-radius: 6px;
   padding: 3px 0;
@@ -354,12 +354,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   flex-direction: column;
   gap: 6px;
   margin-top: 12px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-3);
 }
 .shortcut-hints kbd {
   font-family: inherit;
-  font-size: 11px;
+  font-size: 0.6875rem;
   background: var(--bg-card-soft);
   border: 1px solid var(--border-soft);
   border-radius: 5px;
@@ -369,7 +369,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .result-name {
   flex-shrink: 0;
   max-width: 160px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-1);
   overflow: hidden;
@@ -379,7 +379,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .result-sub {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;

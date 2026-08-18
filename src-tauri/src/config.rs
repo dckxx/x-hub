@@ -60,14 +60,56 @@ pub struct AppConfig {
     /// AI 对话右侧面板透明度（0.5–1.0，可在设置中调整）
     #[serde(default = "default_chat_panel_opacity")]
     pub chat_panel_opacity: f64,
-    /// 升级后弹窗显示更新说明（默认关闭，安静优先）
+    /// 升级后弹窗显示更新说明（默认开启）
+    #[serde(default = "default_true")]
     pub whats_new_enabled: bool,
     /// 上次已记录「更新说明」的版本号（用于升级检测；空串表示首次运行）
     pub last_seen_version: String,
+    /// 剪贴板历史全局呼出快捷键（默认 Ctrl+Alt+V，可配置）
+    pub clipboard_shortcut: String,
+    /// 剪贴板历史最大条数（含置顶；置顶豁免自动清理但计入上限）
+    pub clipboard_max_items: i64,
+    /// 非置顶记录的保留天数
+    pub clipboard_ttl_days: i64,
+    /// 是否暂停记录（暂停期间复制内容不写入历史）
+    pub clipboard_paused: bool,
+    /// 粘贴快捷键方式：auto(自动检测终端) / ctrl_v / ctrl_shift_v / shift_insert
+    #[serde(default = "default_paste_method")]
+    pub clipboard_paste_method: String,
+    /// 全局字体缩放系数（0.85–1.30，默认 1.0）
+    #[serde(default = "one")]
+    pub font_scale: f64,
+    /// 便签模块字体缩放系数（相对全局的额外缩放，默认 1.0）
+    #[serde(default = "one")]
+    pub font_sticky: f64,
+    /// 速记模块字体缩放系数（默认 1.0）
+    #[serde(default = "one")]
+    pub font_notes: f64,
+    /// 提示词模块字体缩放系数（默认 1.0）
+    #[serde(default = "one")]
+    pub font_prompt: f64,
+    /// 待办模块字体缩放系数（默认 1.0）
+    #[serde(default = "one")]
+    pub font_todo: f64,
+    /// 用量模块字体缩放系数（默认 1.0）
+    #[serde(default = "one")]
+    pub font_usage: f64,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+fn default_paste_method() -> String {
+    "auto".to_string()
 }
 
 fn default_chat_panel_opacity() -> f64 {
     1.0
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppConfig {
@@ -88,8 +130,19 @@ impl Default for AppConfig {
             chat_panel_width: 420.0,
             chat_panel_open: false,
             chat_panel_opacity: 1.0,
-            whats_new_enabled: false,
+            whats_new_enabled: true,
             last_seen_version: String::new(),
+            clipboard_shortcut: crate::shortcut::DEFAULT_CLIPBOARD_SHORTCUT.to_string(),
+            clipboard_max_items: 500,
+            clipboard_ttl_days: 7,
+            clipboard_paused: false,
+            clipboard_paste_method: "auto".to_string(),
+            font_scale: 1.0,
+            font_sticky: 1.0,
+            font_notes: 1.0,
+            font_prompt: 1.0,
+            font_todo: 1.0,
+            font_usage: 1.0,
         }
     }
 }

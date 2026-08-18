@@ -1,5 +1,5 @@
 use crate::config;
-use crate::models::{ChatMessage, ChatModelConfig};
+use crate::models::{ChatMessage, ChatModelConfig, ChatSession};
 use futures_util::TryStreamExt;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -10,10 +10,19 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 pub enum ChatStreamEvent {
     /// 增量文本
     Chunk { content: String },
-    /// 完整回复已落库（携带最终消息）
-    Done { message: ChatMessage },
+    /// 完整回复已落库（携带最终消息 + 更新后的会话：含自动标题与累计 token）
+    Done { message: ChatMessage, session: ChatSession },
     /// 出错（携带已生成的增量，前端可保留）
     Error { message: String, partial: String },
+}
+
+/// 单轮回复的 token 用量（OpenAI 兼容 usage 字段）
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct ChatUsage {
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub reasoning: i64,
 }
 
 /// API Key 存系统钥匙串（keyring），失败时回退到本地受限权限文件，保证可用性
@@ -78,7 +87,7 @@ pub async fn stream_chat<F>(
     model: &ChatModelConfig,
     messages: &[ChatMessage],
     mut on_chunk: F,
-) -> Result<String, String>
+) -> Result<(String, ChatUsage), String>
 where
     F: FnMut(String) -> Result<(), String>,
 {
@@ -107,6 +116,8 @@ where
         "model": model.model,
         "messages": payload_messages,
         "stream": true,
+        // 让 OpenAI 兼容后端在最后一个 chunk 返回 usage（输入/输出/缓存/推理 token）
+        "stream_options": { "include_usage": true },
     });
 
     let resp = client
@@ -145,6 +156,7 @@ where
 
     let mut reader = BufReader::new(tokio_util::io::StreamReader::new(stream));
     let mut full = String::new();
+    let mut usage = ChatUsage::default();
     loop {
         let mut line = String::new();
         let n = reader
@@ -167,6 +179,10 @@ where
                 Ok(v) => v,
                 Err(_) => continue,
             };
+            // usage 通常在最后一个 chunk（开启 include_usage 后），或每个 chunk 都可能带
+            if let Some(u) = parsed.get("usage") {
+                usage = usage_from_json(u);
+            }
             if let Some(delta) = parsed["choices"][0]["delta"]["content"].as_str() {
                 if !delta.is_empty() {
                     full.push_str(delta);
@@ -176,7 +192,22 @@ where
         }
     }
 
-    Ok(full)
+    Ok((full, usage))
+}
+
+/// 解析 OpenAI 兼容 usage 字段（含 DeepSeek 的 prompt_cache_hit_tokens 别名）
+fn usage_from_json(v: &Value) -> ChatUsage {
+    ChatUsage {
+        input: v["prompt_tokens"].as_i64().unwrap_or(0),
+        output: v["completion_tokens"].as_i64().unwrap_or(0),
+        cache_read: v["prompt_tokens_details"]["cached_tokens"]
+            .as_i64()
+            .or_else(|| v["prompt_cache_hit_tokens"].as_i64())
+            .unwrap_or(0),
+        reasoning: v["completion_tokens_details"]["reasoning_tokens"]
+            .as_i64()
+            .unwrap_or(0),
+    }
 }
 
 /// 连通性测试 + 拉取模型列表：`GET {base_url}/models`（OpenAI 兼容）

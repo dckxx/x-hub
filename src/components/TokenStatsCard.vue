@@ -94,8 +94,13 @@ onUnmounted(() => {
           aria-hidden="true"
         ></span>
       </h3>
-      <button class="ts-more" type="button" @click="props.onOpenDetail?.()">
-        查看详情
+      <button
+        class="ts-more"
+        type="button"
+        title="查看详情"
+        aria-label="查看详情"
+        @click="props.onOpenDetail?.()"
+      >
         <ArrowRight :size="13" :stroke-width="2" aria-hidden="true" />
       </button>
     </header>
@@ -164,7 +169,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -220,15 +225,18 @@ onUnmounted(() => {
 .ts-more {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
   border: none;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-3);
-  font-size: 12px;
   cursor: pointer;
-  transition: color 0.18s;
+  transition: background .18s, color .18s;
 }
 .ts-more:hover {
+  background: var(--bg-card-soft);
   color: var(--brand-500);
 }
 .ts-date-row {
@@ -239,7 +247,7 @@ onUnmounted(() => {
 }
 .ts-date-label {
   margin: 0;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-4);
 }
 .ts-total {
@@ -249,7 +257,7 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 .ts-total-value {
-  font-size: 32px;
+  font-size: 2rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.03em;
@@ -257,7 +265,7 @@ onUnmounted(() => {
   line-height: 1;
 }
 .ts-total-suffix {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-4);
 }
 .ts-split {
@@ -291,14 +299,14 @@ onUnmounted(() => {
   min-width: 0;
 }
 .ts-metric-value {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
   color: var(--text-1);
 }
 .ts-metric-label {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-3);
   white-space: nowrap;
 }
@@ -313,13 +321,13 @@ onUnmounted(() => {
 }
 .ts-empty-title {
   margin: 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-2);
 }
 .ts-empty-sub {
   margin: 0 0 6px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-4);
 }
 </style>

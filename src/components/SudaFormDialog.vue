@@ -428,7 +428,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   overflow-y: auto;
 }
 .dialog-title {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-1);
   margin-bottom: 16px;
@@ -447,7 +447,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   background: transparent;
   padding: 7px 0;
   border-radius: var(--radius-pill);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--text-3);
   cursor: pointer;
@@ -525,7 +525,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   right: 10px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   color: var(--c-green);
   background: var(--c-green-soft);
@@ -551,7 +551,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   background: var(--bg-card-soft);
   border-radius: var(--radius-pill);
   padding: 5px 12px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-2);
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s, background 0.15s;
@@ -567,7 +567,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .link-hint {
   margin-top: 14px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-3);
   display: flex;
   align-items: center;
@@ -578,7 +578,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .form-error {
   margin-top: 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--c-red);
 }
 .dialog-actions {

@@ -151,7 +151,14 @@ fn migrate(conn: &Connection) -> Result<()> {
           title TEXT NOT NULL DEFAULT '新对话',
           model_name TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
-          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+          -- 会话级累计 token（每轮回复完成后累加，用于面板顶部实时统计）
+          tokens_input INTEGER NOT NULL DEFAULT 0,
+          tokens_output INTEGER NOT NULL DEFAULT 0,
+          tokens_cache_read INTEGER NOT NULL DEFAULT 0,
+          tokens_reasoning INTEGER NOT NULL DEFAULT 0,
+          -- 会话级累计生成耗时（毫秒），用于计算 TPS（输出 token / 秒）
+          elapsed_ms INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS chat_messages (
@@ -162,12 +169,23 @@ fn migrate(conn: &Connection) -> Result<()> {
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
         );
 
+        CREATE TABLE IF NOT EXISTS clipboard_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          content TEXT NOT NULL,
+          html TEXT,
+          source_app TEXT,
+          is_pinned INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+        );
+
         CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
         CREATE INDEX IF NOT EXISTS idx_todos_created ON todos(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_ai_usage_time ON ai_usage(time_created);
         CREATE INDEX IF NOT EXISTS idx_countdowns_end ON countdowns(end_at);
         CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
+        CREATE INDEX IF NOT EXISTS idx_clipboard_updated ON clipboard_history(updated_at DESC);
         ",
     )?;
 
@@ -271,6 +289,26 @@ fn migrate(conn: &Connection) -> Result<()> {
         let mut cfg = crate::config::load();
         cfg.usage_sync_cursor = 0;
         let _ = crate::config::save(&cfg);
+    }
+
+    // 旧 chat_sessions 表缺 token 累计列：逐列补齐（ALTER TABLE ADD COLUMN 幂等）
+    let chat_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(chat_sessions)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    for (col, def) in [
+        ("tokens_input", "INTEGER NOT NULL DEFAULT 0"),
+        ("tokens_output", "INTEGER NOT NULL DEFAULT 0"),
+        ("tokens_cache_read", "INTEGER NOT NULL DEFAULT 0"),
+        ("tokens_reasoning", "INTEGER NOT NULL DEFAULT 0"),
+        ("elapsed_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !chat_cols.iter().any(|c| c == col) {
+            conn.execute(
+                &format!("ALTER TABLE chat_sessions ADD COLUMN {col} {def}"),
+                [],
+            )?;
+        }
     }
 
     Ok(())

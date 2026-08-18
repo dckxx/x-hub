@@ -249,13 +249,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   padding: 20px;
 }
 .dialog-title {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-1);
 }
 .scan-sub {
   margin-top: 2px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-3);
 }
 .scan-toolbar {
@@ -333,7 +333,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   background: var(--bg-card);
 }
 .scan-letter {
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 700;
 }
 .scan-info {
@@ -344,7 +344,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   gap: 1px;
 }
 .scan-name {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--text-1);
   overflow: hidden;
@@ -352,7 +352,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   white-space: nowrap;
 }
 .scan-target {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -360,7 +360,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .scan-added {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   color: var(--c-green);
   background: var(--c-green-soft);
@@ -391,7 +391,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   margin-top: 14px;
 }
 .scan-count {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-3);
 }
 .scan-actions {
@@ -410,10 +410,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   gap: 8px;
   padding: 52px 16px;
   color: var(--text-3);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 .scan-state span {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-4);
 }
 .scan-error {

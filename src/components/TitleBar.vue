@@ -128,7 +128,7 @@ function close() {
   gap: 10px;
 }
 .title-text {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 700;
   color: var(--text-1);
   letter-spacing: -0.2px;

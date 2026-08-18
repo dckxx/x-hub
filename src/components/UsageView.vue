@@ -239,6 +239,8 @@ onMounted(() => {
   gap: var(--space-4);
   padding: var(--space-5);
   overflow: hidden;
+  /* 用量模块字号：全局基准 × 模块系数 */
+  font-size: calc(1rem * var(--fs-usage, 1));
 }
 .uv-header {
   display: flex;
@@ -248,7 +250,7 @@ onMounted(() => {
 .uv-title {
   flex: 1;
   margin: 0;
-  font-size: 18px;
+  font-size: 1.125em;
   font-weight: 700;
   color: var(--text-1);
 }
@@ -275,7 +277,7 @@ onMounted(() => {
   box-shadow: var(--frost-edge), var(--shadow-card);
 }
 .uv-card-value {
-  font-size: 24px;
+  font-size: 1.5em;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
@@ -285,12 +287,12 @@ onMounted(() => {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  font-size: 12px;
+  font-size: 0.75em;
   color: var(--text-3);
 }
 .uv-card-label em {
   font-style: normal;
-  font-size: 11px;
+  font-size: calc(0.6875rem * var(--fs-usage, 1));
   color: var(--text-4);
 }
 .uv-main {
@@ -350,7 +352,7 @@ onMounted(() => {
 }
 .uv-section-title {
   margin: 0 0 var(--space-3);
-  font-size: 14px;
+  font-size: 0.875em;
   font-weight: 600;
   color: var(--text-2);
 }
@@ -390,14 +392,14 @@ onMounted(() => {
   min-height: 4px;
 }
 .uv-chart-val {
-  font-size: 10px;
+  font-size: 0.625em;
   color: var(--text-on-accent);
   padding: 4px 2px 2px;
   white-space: nowrap;
   transform: scale(0.9);
 }
 .uv-chart-date {
-  font-size: 10px;
+  font-size: 0.625em;
   color: var(--text-4);
 }
 .uv-providers {
@@ -413,12 +415,12 @@ onMounted(() => {
   margin-bottom: 5px;
 }
 .uv-provider-name {
-  font-size: 13px;
+  font-size: 0.8125em;
   font-weight: 600;
   color: var(--text-1);
 }
 .uv-provider-nums {
-  font-size: 11px;
+  font-size: 0.6875em;
   color: var(--text-3);
 }
 .uv-provider-bar {
@@ -439,7 +441,7 @@ onMounted(() => {
 .uv-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 0.75em;
 }
 .uv-table th {
   text-align: left;
@@ -472,7 +474,7 @@ onMounted(() => {
   justify-content: center;
 }
 .uv-pager-info {
-  font-size: 12px;
+  font-size: 0.75em;
   color: var(--text-3);
 }
 .uv-empty {
@@ -482,7 +484,7 @@ onMounted(() => {
   justify-content: center;
   text-align: center;
   color: var(--text-4);
-  font-size: 13px;
+  font-size: 0.8125em;
   padding: 16px;
 }
 </style>

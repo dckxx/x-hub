@@ -587,7 +587,7 @@ async function onToggleFloat(c: Countdown) {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -633,7 +633,7 @@ async function onToggleFloat(c: Countdown) {
 }
 .cc-dialog-title {
   margin: 0;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-1);
 }
@@ -654,7 +654,7 @@ async function onToggleFloat(c: Countdown) {
   border-radius: var(--radius-md);
   background: var(--input-bg);
   color: var(--text-1);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-family: inherit;
   padding: 7px 10px;
   outline: none;
@@ -675,7 +675,7 @@ async function onToggleFloat(c: Countdown) {
   border: 1px solid var(--border-soft);
   background: transparent;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 0.75rem;
   padding: 5px 0;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -702,12 +702,12 @@ async function onToggleFloat(c: Countdown) {
   flex: 1;
 }
 .cc-field-label {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-4);
 }
 .cc-error {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--c-red);
 }
 .cc-submit {
@@ -715,7 +715,7 @@ async function onToggleFloat(c: Countdown) {
   border: none;
   background: var(--brand-500);
   color: var(--text-on-accent);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
   padding: 6px 16px;
   border-radius: var(--radius-pill);
@@ -775,7 +775,7 @@ async function onToggleFloat(c: Countdown) {
   gap: 6px;
 }
 .cc-item-name {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-1);
   overflow: hidden;
@@ -787,7 +787,7 @@ async function onToggleFloat(c: Countdown) {
 }
 .cc-badge {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 0.625rem;
   padding: 1px 6px;
   border-radius: var(--radius-pill);
   background: var(--bg-card-solid);
@@ -810,7 +810,7 @@ async function onToggleFloat(c: Countdown) {
   white-space: nowrap;
 }
 .cc-remaining {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--text-1);
@@ -820,7 +820,7 @@ async function onToggleFloat(c: Countdown) {
   color: var(--text-4);
 }
 .cc-due {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-4);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -896,10 +896,10 @@ async function onToggleFloat(c: Countdown) {
 }
 .cc-empty p {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .cc-empty-sub {
-  font-size: 11px !important;
+  font-size: 0.6875rem !important;
 }
 
 /* Reka UI NumberField 样式 */
@@ -1070,7 +1070,7 @@ async function onToggleFloat(c: Countdown) {
   opacity: 0.4;
 }
 .cc-calendar-heading {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-1);
   text-align: center;
@@ -1087,7 +1087,7 @@ async function onToggleFloat(c: Countdown) {
   gap: 2px;
 }
 .cc-calendar-weekday {
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 500;
   color: var(--text-4);
   text-align: center;
@@ -1109,7 +1109,7 @@ async function onToggleFloat(c: Countdown) {
   background: transparent;
   border-radius: 8px;
   color: var(--text-1);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;

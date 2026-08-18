@@ -86,6 +86,20 @@ pub struct Snippet {
     pub updated_at: String,
 }
 
+/// 剪贴板历史单条（v1 仅文本；html 为可选富文本片段，粘贴时优先还原格式）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipboardItem {
+    pub id: i64,
+    pub content: String,
+    /// 富文本 HTML 片段（如浏览器复制时携带）；无则空
+    pub html: Option<String>,
+    /// 来源应用（记录时取前台窗口所属进程名）
+    pub source_app: Option<String>,
+    pub is_pinned: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// 笔记标签
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tag {
@@ -205,6 +219,18 @@ pub struct ChatSession {
     pub model_name: String,
     pub created_at: String,
     pub updated_at: String,
+    /// 会话级累计 token（输入 / 输出 / 缓存读取 / 推理）
+    #[serde(default)]
+    pub tokens_input: i64,
+    #[serde(default)]
+    pub tokens_output: i64,
+    #[serde(default)]
+    pub tokens_cache_read: i64,
+    #[serde(default)]
+    pub tokens_reasoning: i64,
+    /// 会话级累计生成耗时（毫秒），用于计算 TPS
+    #[serde(default)]
+    pub elapsed_ms: i64,
 }
 
 /// AI 对话消息（user / assistant）

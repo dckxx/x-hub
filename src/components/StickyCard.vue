@@ -92,6 +92,8 @@ async function onDetachClick() {
   display: flex;
   flex-direction: column;
   padding: 12px;
+  /* 便签模块字号：全局基准 × 模块系数，内部字号用 em 相对此基准 */
+  font-size: calc(1rem * var(--fs-sticky, 1));
 }
 .sticky-header {
   display: flex;
@@ -104,7 +106,7 @@ async function onDetachClick() {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 0.8125em;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -140,7 +142,7 @@ async function onDetachClick() {
   border-radius: var(--radius-md);
   resize: none;
   outline: none;
-  font-size: 12px;
+  font-size: 0.75em;
   line-height: 1.6;
   font-family: inherit;
   color: var(--text-2);

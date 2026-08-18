@@ -1,6 +1,6 @@
 # x-hub Design System
 
-> 版本对齐：v0.1.16。本文档为当前实现的唯一设计基线，UI 改动以本文件 + `src/style.css` 为准。
+> 版本对齐：v0.1.17。本文档为当前实现的唯一设计基线，UI 改动以本文件 + `src/style.css` 为准。
 
 ## 1. Atmosphere & Identity
 
@@ -67,6 +67,14 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 | Body strong | 13px | 600 | 1.4 | 条目标题、按钮 |
 | Caption | 12px | 500 | 1.4 | 元数据、提示 |
 | Micro | 11px | 500 | 1.35 | 标签、快捷键 |
+
+### Font Scale（字体缩放）
+
+字号不再散落硬编码 px，而是映射到相对单位，配合两层可调系数（设置「外观」区「字体大小」，范围 0.85–1.30）：
+
+- **全局字体大小**：根字号 `html { font-size: calc(16px * var(--fs-global, 1)) }`；全局 UI 字号统一用 `rem`（1rem = 16px × `--fs-global`）。
+- **单模块字体大小**：便签（`--fs-sticky`）、速记（`--fs-notes`）、提示词（`--fs-prompt`）、待办（`--fs-todo`）、用量（`--fs-usage`）5 个内容模块，模块根 `font-size: calc(1rem * var(--fs-xxx, 1))`，模块内部字号用 `em` 相对模块根；嵌套在已缩放字号内的元素（如 Markdown 标题、标签删除按钮）用 `calc(Nrem * var(--fs-xxx, 1))` 精确表达。
+- `--fs-*` 由 `useTheme` 依据 config（`font_scale` / `font_sticky` 等）注入 inline；rem 相对根、em 相对模块根，两层缩放相乘。
 
 ### Font Stack
 

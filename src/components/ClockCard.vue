@@ -49,6 +49,11 @@ const nearest = computed<Countdown | null>(() => {
   return active[0] ?? null
 })
 
+// 仅当中上区块为「倒计时」时，时钟卡片才显示最近倒计时环形进度
+const showCountdownRing = computed(
+  () => store.state.config.dashboard_mid_content === 'countdown',
+)
+
 function fmt(n: number): string {
   return String(n).padStart(2, '0')
 }
@@ -99,7 +104,7 @@ const RING_C = 2 * Math.PI * RING_R
     </div>
 
     <!-- 最近倒计时环形进度 -->
-    <div v-if="nearest" class="clock-countdown" :title="nearest.name">
+    <div v-if="nearest && showCountdownRing" class="clock-countdown" :title="nearest.name">
       <svg class="cd-ring" viewBox="0 0 72 72" aria-hidden="true">
         <circle class="cd-ring-bg" cx="36" cy="36" :r="RING_R" />
         <circle
@@ -135,7 +140,7 @@ const RING_C = 2 * Math.PI * RING_R
   min-width: 0;
 }
 .clock-time {
-  font-size: 30px;
+  font-size: 1.875rem;
   font-weight: 700;
   line-height: 1.1;
   letter-spacing: -0.03em;
@@ -143,7 +148,7 @@ const RING_C = 2 * Math.PI * RING_R
   color: var(--text-1);
 }
 .clock-date {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--text-3);
 }
@@ -154,7 +159,7 @@ const RING_C = 2 * Math.PI * RING_R
   margin-top: 6px;
   padding-top: 10px;
   border-top: 1px solid var(--border-soft);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
   color: var(--text-3);
   max-width: 180px;
@@ -208,7 +213,7 @@ const RING_C = 2 * Math.PI * RING_R
   pointer-events: none;
 }
 .cd-label {
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--text-1);

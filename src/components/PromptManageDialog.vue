@@ -287,7 +287,7 @@ watch(
   margin-bottom: 12px;
 }
 .dialog-title {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-1);
 }
@@ -315,7 +315,7 @@ watch(
   border-radius: var(--radius-md);
   background: var(--input-bg);
   color: var(--text-1);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-family: inherit;
   line-height: 1.6;
   padding: 9px 12px;
@@ -363,7 +363,7 @@ watch(
 }
 .pm-row-title {
   display: block;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-1);
   overflow: hidden;
@@ -372,7 +372,7 @@ watch(
 }
 .pm-row-preview {
   margin: 2px 0 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
   color: var(--text-3);
   display: -webkit-box;
@@ -401,7 +401,7 @@ watch(
   justify-content: center;
   padding: 32px 16px;
   text-align: center;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--text-3);
 }
 .pm-empty p {

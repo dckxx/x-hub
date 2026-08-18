@@ -97,7 +97,7 @@ const pendingLabel = computed(() => (pendingCount.value > 0 ? `还有 ${pendingC
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -113,7 +113,7 @@ const pendingLabel = computed(() => (pendingCount.value > 0 ? `还有 ${pendingC
   border: none;
   background: transparent;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
   transition: color 0.18s;
 }
@@ -155,7 +155,7 @@ const pendingLabel = computed(() => (pendingCount.value > 0 ? `还有 ${pendingC
   gap: 1px;
 }
 .to-rate-value {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
@@ -163,12 +163,12 @@ const pendingLabel = computed(() => (pendingCount.value > 0 ? `还有 ${pendingC
   line-height: 1;
 }
 .to-rate-label {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--text-4);
 }
 .to-rate-note {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-3);
 }
 .to-metrics {
@@ -186,14 +186,14 @@ const pendingLabel = computed(() => (pendingCount.value > 0 ? `还有 ${pendingC
   min-width: 0;
 }
 .to-metric-value {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
   color: var(--text-1);
 }
 .to-metric-label {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-3);
   white-space: nowrap;
 }
@@ -208,13 +208,13 @@ const pendingLabel = computed(() => (pendingCount.value > 0 ? `还有 ${pendingC
 }
 .to-empty-title {
   margin: 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-2);
 }
 .to-empty-sub {
   margin: 0;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-4);
 }
 </style>

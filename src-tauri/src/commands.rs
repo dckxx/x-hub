@@ -1,12 +1,12 @@
 use crate::config;
 use crate::config::AppConfig;
 use crate::models::{
-    ChatMessage, ChatModelConfig, ChatSession, Countdown, DetachedSticky, Note, Resource,
-    ResourceKind, SearchResult, Snippet, Sticky, SyncResult, Tag, Todo, UsageDetail,
+    ChatMessage, ChatModelConfig, ChatSession, ClipboardItem, Countdown, DetachedSticky, Note,
+    Resource, ResourceKind, SearchResult, Snippet, Sticky, SyncResult, Tag, Todo, UsageDetail,
     UsageSummary,
 };
 use crate::process;
-use crate::repo::{chat, countdown, detached_sticky, note, resource, snippet, sticky, tag, todo};
+use crate::repo::{chat, clipboard, countdown, detached_sticky, note, resource, snippet, sticky, tag, todo};
 use crate::usage;
 use rusqlite::Connection;
 use std::sync::Mutex;
@@ -1836,6 +1836,27 @@ pub fn get_chat_panel() -> Result<(f64, bool), String> {
     Ok((config.chat_panel_width, config.chat_panel_open))
 }
 
+/// 用首条用户消息自动生成会话标题：压缩空白、截断到 24 字、超长加省略号
+fn auto_chat_title(content: &str) -> String {
+    let one_line: String = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = one_line.chars();
+    let mut t = String::new();
+    while t.chars().count() < 24 {
+        match chars.next() {
+            Some(c) => t.push(c),
+            None => break,
+        }
+    }
+    if chars.next().is_some() {
+        t.push('…');
+    }
+    if t.trim().is_empty() {
+        "新对话".to_string()
+    } else {
+        t
+    }
+}
+
 /// 发送一条对话消息并流式接收回复（SSE → Channel 增量推送）
 ///
 /// 流程：落库用户消息 → 组装历史上下文 → 流式请求 → 增量逐段推 Chunk →
@@ -1858,11 +1879,15 @@ pub async fn send_chat_message(
         chat::get_session(&conn, session_id).map_err(err_str)?
     };
 
-    // 2) 落库用户消息
+    // 2) 落库用户消息；若仍为默认标题，则用首条消息自动命名
     let user_msg = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         let m = chat::add_message(&conn, session_id, "user", &content).map_err(err_str)?;
         let _ = chat::touch_session(&conn, session_id);
+        if session.title == "新对话" {
+            let title = auto_chat_title(&content);
+            let _ = chat::rename_session(&conn, session_id, &title);
+        }
         m
     };
 
@@ -1882,11 +1907,12 @@ pub async fn send_chat_message(
         .ok_or_else(|| "未配置任何对话模型，请先在对话设置中添加".to_string())?;
 
     let mut partial = String::new();
-    let mut full: Option<String> = None;
+    let mut full: Option<(String, crate::chat::ChatUsage)> = None;
     let mut send_error: Option<String> = None;
 
-    // 5) 流式请求（history 已含刚落的 user 消息）
+    // 5) 流式请求（history 已含刚落的 user 消息）；记录生成耗时用于 TPS
     let chunk_sender = on_event.clone();
+    let started = std::time::Instant::now();
     let result = crate::chat::stream_chat(&model, &history, |delta| {
         partial.push_str(&delta);
         chunk_sender
@@ -1896,13 +1922,14 @@ pub async fn send_chat_message(
             .map_err(|e| e.to_string())
     })
     .await;
+    let elapsed_ms = started.elapsed().as_millis() as i64;
 
     match result {
-        Ok(text) => {
+        Ok((text, usage)) => {
             if text.trim().is_empty() {
                 send_error = Some("模型未返回任何内容".to_string());
             } else {
-                full = Some(text);
+                full = Some((text, usage));
             }
         }
         Err(e) => send_error = Some(e),
@@ -1913,12 +1940,26 @@ pub async fn send_chat_message(
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         // 清理可能残留的半截 assistant 消息（中断场景）
         let _ = chat::delete_messages_from(&conn, session_id, user_msg.id);
-        if let Some(text) = &full {
+        if let Some((text, usage)) = &full {
             let msg = chat::add_message(&conn, session_id, "assistant", text).map_err(err_str)?;
+            // token 统计累加失败不阻断主流程（回复已落库，前端仍需收到 Done）
+            let _ = chat::add_session_usage(
+                &conn,
+                session_id,
+                usage.input,
+                usage.output,
+                usage.cache_read,
+                usage.reasoning,
+                elapsed_ms,
+            );
             let _ = chat::touch_session(&conn, session_id);
+            let updated = chat::get_session(&conn, session_id).map_err(err_str)?;
             drop(conn);
             on_event
-                .send(crate::chat::ChatStreamEvent::Done { message: msg })
+                .send(crate::chat::ChatStreamEvent::Done {
+                    message: msg,
+                    session: updated,
+                })
                 .map_err(|e| e.to_string())?;
         } else if let Some(e) = send_error {
             drop(conn);
@@ -1932,6 +1973,179 @@ pub async fn send_chat_message(
     }
 
     Ok(())
+}
+
+// ---------- 剪贴板历史 ----------
+
+/// 浮层状态（暂停 / 保留策略 / 总条数），前端底部栏展示
+#[derive(serde::Serialize)]
+pub struct ClipboardInfo {
+    pub paused: bool,
+    pub max_items: i64,
+    pub ttl_days: i64,
+    pub total: i64,
+    pub shortcut: String,
+}
+
+/// 历史列表：Q8 异步加载，首次唤起只拉最近 50 条；搜索时传 keyword
+#[tauri::command]
+pub fn clipboard_list(
+    state: State<'_, DbState>,
+    keyword: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<ClipboardItem>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    clipboard::list(&conn, keyword.as_deref(), limit.unwrap_or(50)).map_err(err_str)
+}
+
+/// 仅复制到系统剪贴板（不注入粘贴）
+#[tauri::command]
+pub fn clipboard_copy(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let item = clipboard::get(&conn, id).map_err(err_str)?;
+    crate::clipboard::set_clipboard(&item.content, item.html.as_deref())
+}
+
+/// 粘贴到唤起前窗口：写入剪贴板 → 条目挪到最前 → 本应用主窗口直接插入 / 外部窗口注入 Ctrl+V
+#[tauri::command]
+pub fn clipboard_paste(app: tauri::AppHandle, state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let item = clipboard::get(&conn, id).map_err(err_str)?;
+    crate::clipboard::set_clipboard(&item.content, item.html.as_deref())?;
+    // 使用即前置：粘贴过的条目刷新时间挪到列表最前，配合入库去重不会产生重复条目
+    clipboard::touch(&conn, id).map_err(err_str)?;
+    crate::clipboard::paste_to_previous_window(&app, &item.content, item.html.as_deref());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clipboard_toggle_pin(state: State<'_, DbState>, id: i64) -> Result<ClipboardItem, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    clipboard::toggle_pin(&conn, id).map_err(err_str)
+}
+
+#[tauri::command]
+pub fn clipboard_delete(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    clipboard::delete(&conn, id).map_err(err_str)
+}
+
+#[tauri::command]
+pub fn clipboard_clear(state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    clipboard::clear(&conn).map_err(err_str)
+}
+
+/// 暂停/恢复记录（配置持久化，监听线程每次变更前读取）
+#[tauri::command]
+pub fn clipboard_set_paused(paused: bool) -> Result<(), String> {
+    let mut config = crate::config::load();
+    config.clipboard_paused = paused;
+    crate::config::save(&config)?;
+    // 恢复记录时清掉自复制指纹：暂停期间产生的指纹可能抑制恢复后的首次复制
+    if !paused {
+        crate::clipboard::clear_self_set_fingerprint();
+    }
+    log::info!("剪贴板记录 {}", if paused { "已暂停" } else { "已恢复" });
+    Ok(())
+}
+
+/// 激活剪贴板浮层（用户点击搜索框开始键盘操作时调用）：
+/// 清除 WS_EX_NOACTIVATE 并把浮层带到前台
+#[tauri::command]
+pub fn clipboard_activate(app: tauri::AppHandle) -> Result<(), String> {
+    crate::clipboard::activate_overlay(&app);
+    Ok(())
+}
+
+/// 收起剪贴板浮层并恢复唤起前窗口焦点（Esc 关闭时调用）
+#[tauri::command]
+pub fn clipboard_hide(app: tauri::AppHandle) -> Result<(), String> {
+    crate::clipboard::hide_overlay(&app);
+    Ok(())
+}
+
+/// 更新粘贴快捷键方式（auto / ctrl_v / ctrl_shift_v / shift_insert）
+#[tauri::command]
+pub fn set_clipboard_paste_method(method: String) -> Result<String, String> {
+    let method = method.trim().to_string();
+    if !["auto", "ctrl_v", "ctrl_shift_v", "shift_insert"].contains(&method.as_str()) {
+        return Err("无效的粘贴方式".into());
+    }
+    let mut config = crate::config::load();
+    config.clipboard_paste_method = method.clone();
+    crate::config::save(&config)?;
+    Ok(config.clipboard_paste_method)
+}
+
+#[tauri::command]
+pub fn clipboard_get_info(state: State<'_, DbState>) -> Result<ClipboardInfo, String> {
+    let cfg = crate::config::load();
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let total = clipboard::count(&conn).map_err(err_str)?;
+    Ok(ClipboardInfo {
+        paused: cfg.clipboard_paused,
+        max_items: cfg.clipboard_max_items,
+        ttl_days: cfg.clipboard_ttl_days,
+        total,
+        shortcut: cfg.clipboard_shortcut,
+    })
+}
+
+/// 更新剪贴板全局快捷键（注册/反注册与配置持久化）
+#[tauri::command]
+pub fn set_clipboard_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    let shortcut = value.trim();
+    if shortcut.is_empty() {
+        return Err("快捷键不能为空".into());
+    }
+
+    let mut config = crate::config::load();
+    let previous = config.clipboard_shortcut.clone();
+    if previous == shortcut {
+        return Ok(config.clipboard_shortcut);
+    }
+    if crate::shortcut::same_hotkey(&previous, shortcut) {
+        config.clipboard_shortcut = shortcut.to_string();
+        crate::config::save(&config)?;
+        return Ok(config.clipboard_shortcut);
+    }
+    if crate::shortcut::is_shortcut_registered(&app, shortcut) {
+        return Err("快捷键冲突".into());
+    }
+    if let Err(e) = crate::shortcut::unregister_toggle_shortcut(&app, &previous) {
+        if !crate::shortcut::is_conflict_error(&e) {
+            return Err(e);
+        }
+        return Err("快捷键冲突".into());
+    }
+    if let Err(e) = crate::shortcut::register_toggle_shortcut(&app, shortcut) {
+        let mapped = crate::shortcut::format_shortcut_error(&e);
+        if !mapped.eq(&e) {
+            let _ = crate::shortcut::register_toggle_shortcut(&app, &previous);
+        }
+        return Err(mapped);
+    }
+    config.clipboard_shortcut = shortcut.to_string();
+    crate::config::save(&config)?;
+    Ok(config.clipboard_shortcut)
+}
+
+/// 更新剪贴板保留策略（条数上限 / 保留天数），保存后立即执行一次清理
+#[tauri::command]
+pub fn set_clipboard_retention(
+    state: State<'_, DbState>,
+    max_items: i64,
+    ttl_days: i64,
+) -> Result<(), String> {
+    let max_items = max_items.clamp(20, 5000);
+    let ttl_days = ttl_days.clamp(1, 365);
+    let mut config = crate::config::load();
+    config.clipboard_max_items = max_items;
+    config.clipboard_ttl_days = ttl_days;
+    crate::config::save(&config)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    clipboard::cleanup(&conn).map_err(err_str)
 }
 
 // ---------- 工具 ----------

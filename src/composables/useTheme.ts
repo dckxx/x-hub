@@ -27,6 +27,26 @@ export function applyTheme(opts: { mode: string; preset: string; accent: string 
   }
 }
 
+interface FontScale {
+  global: number
+  sticky: number
+  notes: number
+  prompt: number
+  todo: number
+  usage: number
+}
+
+/** 注入字体缩放 CSS 变量：--fs-global 作用于根字号（rem 基准），--fs-* 作用于各内容模块 */
+export function applyFontScale(s: FontScale) {
+  const el = document.documentElement
+  el.style.setProperty('--fs-global', String(s.global))
+  el.style.setProperty('--fs-sticky', String(s.sticky))
+  el.style.setProperty('--fs-notes', String(s.notes))
+  el.style.setProperty('--fs-prompt', String(s.prompt))
+  el.style.setProperty('--fs-todo', String(s.todo))
+  el.style.setProperty('--fs-usage', String(s.usage))
+}
+
 /** 组件挂载时调用一次即完成主题应用与实时跟随 */
 export function useTheme() {
   initSystemTheme()
@@ -41,6 +61,20 @@ export function useTheme() {
       applyTheme({ mode: 'system', preset: store.state.config.theme_preset, accent: store.state.config.accent_color })
     }
   })
+  watch(
+    () =>
+      [
+        store.state.config.font_scale,
+        store.state.config.font_sticky,
+        store.state.config.font_notes,
+        store.state.config.font_prompt,
+        store.state.config.font_todo,
+        store.state.config.font_usage,
+      ] as const,
+    ([global, sticky, notes, prompt, todo, usage]) =>
+      applyFontScale({ global, sticky, notes, prompt, todo, usage }),
+    { immediate: true },
+  )
 }
 
 export function systemDarkMode() { return systemDark }

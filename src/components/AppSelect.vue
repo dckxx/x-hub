@@ -244,7 +244,7 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-md);
   background: var(--input-bg);
   color: var(--text-1);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-family: inherit;
   text-align: left;
   cursor: pointer;
@@ -289,7 +289,7 @@ onBeforeUnmount(() => {
 }
 .app-select-group {
   padding: 6px 12px 4px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
   letter-spacing: 0.03em;
   color: var(--text-4);
@@ -308,7 +308,7 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-family: inherit;
   text-align: left;
   cursor: pointer;

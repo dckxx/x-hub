@@ -1,5 +1,6 @@
 pub mod countdown;
 pub mod chat;
+pub mod clipboard;
 pub mod detached_sticky;
 pub mod note;
 pub mod resource;

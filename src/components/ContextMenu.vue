@@ -135,7 +135,7 @@ onBeforeUnmount(() => {
   background: transparent;
   padding: 8px 12px;
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-family: inherit;
   color: var(--text-2);
   cursor: pointer;

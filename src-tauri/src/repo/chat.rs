@@ -2,18 +2,20 @@ use crate::models::{ChatMessage, ChatSession};
 use crate::repo::now;
 use rusqlite::{params, Connection, Result};
 
+const SESSION_COLS: &str =
+    "id, title, model_name, created_at, updated_at, tokens_input, tokens_output, tokens_cache_read, tokens_reasoning, elapsed_ms";
+
 pub fn list_sessions(conn: &Connection) -> Result<Vec<ChatSession>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, title, model_name, created_at, updated_at FROM chat_sessions
-         ORDER BY updated_at DESC",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {SESSION_COLS} FROM chat_sessions ORDER BY updated_at DESC"
+    ))?;
     let rows = stmt.query_map([], row_to_session)?;
     rows.collect()
 }
 
 pub fn get_session(conn: &Connection, id: i64) -> Result<ChatSession> {
     conn.query_row(
-        "SELECT id, title, model_name, created_at, updated_at FROM chat_sessions WHERE id = ?1",
+        &format!("SELECT {SESSION_COLS} FROM chat_sessions WHERE id = ?1"),
         params![id],
         row_to_session,
     )
@@ -89,6 +91,29 @@ pub fn get_message(conn: &Connection, id: i64) -> Result<ChatMessage> {
     )
 }
 
+/// 累加一轮回复的 token 用量与生成耗时至会话（input 为本次请求输入，output 为本次生成输出）
+pub fn add_session_usage(
+    conn: &Connection,
+    id: i64,
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    reasoning: i64,
+    elapsed_ms: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE chat_sessions
+         SET tokens_input = tokens_input + ?2,
+             tokens_output = tokens_output + ?3,
+             tokens_cache_read = tokens_cache_read + ?4,
+             tokens_reasoning = tokens_reasoning + ?5,
+             elapsed_ms = elapsed_ms + ?6
+         WHERE id = ?1",
+        params![id, input, output, cache_read, reasoning, elapsed_ms],
+    )?;
+    Ok(())
+}
+
 /// 删除会话内从某条消息起的全部消息（用于中断后清理半截回复）
 pub fn delete_messages_from(conn: &Connection, session_id: i64, after_id: i64) -> Result<()> {
     conn.execute(
@@ -105,6 +130,11 @@ fn row_to_session(row: &rusqlite::Row) -> Result<ChatSession> {
         model_name: row.get(2)?,
         created_at: row.get(3)?,
         updated_at: row.get(4)?,
+        tokens_input: row.get(5)?,
+        tokens_output: row.get(6)?,
+        tokens_cache_read: row.get(7)?,
+        tokens_reasoning: row.get(8)?,
+        elapsed_ms: row.get(9)?,
     })
 }
 

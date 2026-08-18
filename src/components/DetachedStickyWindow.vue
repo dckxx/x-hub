@@ -188,6 +188,8 @@ function onDragEnd() {
   padding: 10px;
   box-sizing: border-box;
   -webkit-app-region: no-drag;
+  /* 便签模块字号：跟随 --fs-sticky，内部字号用 em */
+  font-size: calc(1rem * var(--fs-sticky, 1));
 }
 .fs-header {
   display: flex;
@@ -198,7 +200,7 @@ function onDragEnd() {
   cursor: move;
 }
 .fs-title {
-  font-size: 13px;
+  font-size: 0.8125em;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -240,7 +242,7 @@ function onDragEnd() {
   background: transparent;
   resize: none;
   outline: none;
-  font-size: 12px;
+  font-size: 0.75em;
   line-height: 1.6;
   font-family: inherit;
   color: var(--text-2);
@@ -276,7 +278,7 @@ function onDragEnd() {
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 .fs-dialog-text {
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.55;
   color: var(--text-1);
   margin-bottom: 12px;
@@ -291,7 +293,7 @@ function onDragEnd() {
   border: 1px solid var(--border-soft);
   background: var(--bg-card-soft);
   color: var(--text-2);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   padding: 4px 10px;
   border-radius: var(--radius-pill);

@@ -147,6 +147,13 @@ onMounted(async () => {
     unlistenCountdownsChanged = await listen('countdowns-changed', () => {
       void store.refreshCountdowns()
     })
+    // 剪贴板浮层「存为速记 / 加入提示词库」后，主窗口实时刷新列表
+    unlistenNotesChanged = await listen('notes-changed', () => {
+      void store.refreshNotes()
+    })
+    unlistenSnippetsChanged = await listen('snippets-changed', () => {
+      void store.loadSnippets()
+    })
   }
   window.addEventListener('keydown', onSearchKeydown)
   window.addEventListener('keydown', onChatKeydown)
@@ -165,11 +172,15 @@ onMounted(async () => {
 let unlistenStickies: (() => void) | null = null
 let unlistenCountdownFired: (() => void) | null = null
 let unlistenCountdownsChanged: (() => void) | null = null
+let unlistenNotesChanged: (() => void) | null = null
+let unlistenSnippetsChanged: (() => void) | null = null
 
 onUnmounted(() => {
   unlistenStickies?.()
   unlistenCountdownFired?.()
   unlistenCountdownsChanged?.()
+  unlistenNotesChanged?.()
+  unlistenSnippetsChanged?.()
   window.removeEventListener('keydown', onSearchKeydown)
   window.removeEventListener('keydown', onChatKeydown)
 })
@@ -541,7 +552,7 @@ provide('showToast', showToast)
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   text-align: left;
   cursor: pointer;
@@ -573,7 +584,7 @@ provide('showToast', showToast)
   padding: 0 var(--space-2);
   background: transparent;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 0.75rem;
   text-align: left;
   border: 0;
   cursor: pointer;
@@ -633,7 +644,7 @@ provide('showToast', showToast)
   top: 50%;
   transform: translateY(-50%);
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   white-space: nowrap;
   color: var(--text-1);
@@ -785,7 +796,7 @@ provide('showToast', showToast)
   opacity: 0.6;
 }
 .view-chat-hint p {
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.6;
   max-width: 360px;
 }
@@ -850,7 +861,7 @@ provide('showToast', showToast)
   gap: 12px;
   background: var(--text-1);
   color: var(--text-on-accent);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   padding: 9px 18px;
   border-radius: var(--radius-pill);
@@ -870,7 +881,7 @@ provide('showToast', showToast)
   border: none;
   background: color-mix(in srgb, var(--text-on-accent) 10%, transparent);
   color: inherit;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
   padding: 3px 10px;
   border-radius: var(--radius-pill);

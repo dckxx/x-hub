@@ -142,6 +142,8 @@ function summary(n: Note): string {
   flex-direction: column;
   padding: 20px 16px;
   min-height: 0;
+  /* 速记模块字号：全局基准 × 模块系数 */
+  font-size: calc(1rem * var(--fs-notes, 1));
 }
 .nl-header {
   display: flex;
@@ -151,7 +153,7 @@ function summary(n: Note): string {
   margin-bottom: 12px;
 }
 .nl-title {
-  font-size: 16px;
+  font-size: 1em;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -215,7 +217,7 @@ function summary(n: Note): string {
   gap: 2px;
 }
 .note-title {
-  font-size: 13px;
+  font-size: 0.8125em;
   font-weight: 600;
   color: var(--text-1);
   overflow: hidden;
@@ -223,11 +225,11 @@ function summary(n: Note): string {
   white-space: nowrap;
 }
 .note-meta {
-  font-size: 11px;
+  font-size: 0.6875em;
   color: var(--text-3);
 }
 .note-summary {
-  font-size: 12px;
+  font-size: 0.75em;
   color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;

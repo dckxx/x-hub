@@ -79,7 +79,7 @@ const shortcutNormalized = computed(() => shortcut.value.trim())
 onMounted(async () => {
   if (!isTauri()) return
   shortcut.value = normalizeShortcutDisplay(await tauriApi.getGlobalShortcut())
-  clipShortcut.value = normalizeShortcutDisplay(store.state.config.clipboard_shortcut ?? 'Ctrl+Alt+V')
+  clipShortcut.value = normalizeShortcutDisplay(store.state.config.clipboard_shortcut ?? 'Ctrl+`')
   clipSavedShortcut.value = clipShortcut.value
   clipMaxItems.value = store.state.config.clipboard_max_items ?? 500
   clipTtlDays.value = store.state.config.clipboard_ttl_days ?? 7
@@ -395,6 +395,20 @@ async function onToggleClipboardPause() {
   const next = !store.state.config.clipboard_paused
   await store.setClipboardPaused(next)
   showToast(next ? '剪贴板已暂停记录' : '剪贴板已恢复记录')
+}
+
+async function onToggleClipboardImage() {
+  if (!isTauri()) return
+  const next = !store.state.config.clipboard_image_enabled
+  await store.setClipboardMediaEnabled(next, store.state.config.clipboard_file_enabled)
+  showToast(next ? '已开启图片记录' : '已关闭图片记录')
+}
+
+async function onToggleClipboardFile() {
+  if (!isTauri()) return
+  const next = !store.state.config.clipboard_file_enabled
+  await store.setClipboardMediaEnabled(store.state.config.clipboard_image_enabled, next)
+  showToast(next ? '已开启文件记录' : '已关闭文件记录')
 }
 
 // ---- 粘贴快捷键方式 ----
@@ -786,7 +800,7 @@ function onAccentInput(e: Event) {
                   type="text"
                   spellcheck="false"
                   :readonly="clipListening"
-                  placeholder="Ctrl+Alt+V"
+                  placeholder="Ctrl+`"
                   @keydown="onClipShortcutKeydown"
                   @keydown.enter="commitClipShortcut"
                   @blur="onClipShortcutBlur"
@@ -860,6 +874,40 @@ function onAccentInput(e: Event) {
               :aria-checked="store.state.config.clipboard_paused"
               :class="{ on: store.state.config.clipboard_paused }"
               @click="onToggleClipboardPause"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">记录图片</span>
+              <span class="setting-desc">复制图片/截图时落盘快照进历史（关闭后仅不记录新图片，历史保留）</span>
+            </div>
+            <button
+              class="toggle"
+              role="switch"
+              type="button"
+              :aria-checked="store.state.config.clipboard_image_enabled"
+              :class="{ on: store.state.config.clipboard_image_enabled }"
+              @click="onToggleClipboardImage"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">记录文件</span>
+              <span class="setting-desc">复制文件时记录路径进历史（关闭后仅不记录新文件，历史保留）</span>
+            </div>
+            <button
+              class="toggle"
+              role="switch"
+              type="button"
+              :aria-checked="store.state.config.clipboard_file_enabled"
+              :class="{ on: store.state.config.clipboard_file_enabled }"
+              @click="onToggleClipboardFile"
             >
               <span class="toggle-knob"></span>
             </button>

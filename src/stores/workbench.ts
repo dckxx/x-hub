@@ -3,6 +3,7 @@ import {
   tauriApi,
   isTauri,
   type AppConfig,
+  type ChatModelConfig,
   type Countdown,
   type DetachedSticky,
   type Note,
@@ -73,11 +74,13 @@ const state = reactive<StoreState>({
     chat_panel_opacity: 1,
     whats_new_enabled: true,
     last_seen_version: '',
-    clipboard_shortcut: IS_MAC_PREVIEW ? 'CommandOrControl+Alt+V' : 'Ctrl+Alt+V',
+    clipboard_shortcut: IS_MAC_PREVIEW ? 'CommandOrControl+Alt+V' : 'Ctrl+`',
     clipboard_max_items: 500,
     clipboard_ttl_days: 7,
     clipboard_paused: false,
     clipboard_paste_method: 'auto',
+    clipboard_image_enabled: true,
+    clipboard_file_enabled: true,
     font_scale: 1,
     font_sticky: 1,
     font_notes: 1,
@@ -262,11 +265,10 @@ export function useStore() {
     state.notes = state.notes.filter((x) => x.id !== id)
   }
 
-  /** 剪贴板浮层等外部保存速记后，主窗口刷新笔记列表 */
+  /** 剪贴板浮层等外部保存速记后，主窗口刷新笔记列表（仅拉元信息，轻量） */
   async function refreshNotes() {
     if (!isTauri()) return
-    const data = await tauriApi.getInitialData()
-    state.notes = data.notes
+    state.notes = await tauriApi.listNotes()
   }
 
   async function searchAll(keyword: string) {
@@ -579,6 +581,11 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** AI 模型配置同步进内存快照：save_chat_models 后调用，防止后续 saveConfig 用旧快照覆盖 */
+  function setChatModels(models: ChatModelConfig[]) {
+    state.config.chat_models = models
+  }
+
   /** AI 对话面板透明度（0.5–1.0） */
   async function setChatPanelOpacity(value: number) {
     state.config.chat_panel_opacity = Math.min(1, Math.max(0.5, value))
@@ -674,6 +681,14 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  async function setClipboardMediaEnabled(image: boolean, file: boolean) {
+    state.config.clipboard_image_enabled = image
+    state.config.clipboard_file_enabled = file
+    if (!isTauri()) return
+    await tauriApi.setClipboardMediaEnabled(image, file)
+    await tauriApi.saveConfig(state.config)
+  }
+
   return {
     state: readonly(state),
     loadInitialData,
@@ -722,14 +737,16 @@ export function useStore() {
     setGlobalShortcut,
     setDashboardMidContent,
     setCountdownSound,
-    setClockQuote,
-    setChatPanelOpacity,
+  setClockQuote,
+  setChatModels,
+  setChatPanelOpacity,
     setWhatsNewEnabled,
     setFontScale,
     setModuleFontScale,
     setClipboardShortcut,
     setClipboardPaused,
     setClipboardRetention,
+    setClipboardMediaEnabled,
     refreshUsage,
     loadUsageSummary,
     loadUsageDetail,

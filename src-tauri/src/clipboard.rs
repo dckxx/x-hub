@@ -11,8 +11,9 @@ use windows_sys::Win32::System::DataExchange::{
     RemoveClipboardFormatListener, SetClipboardData,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT};
-use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
+use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT};
+use windows_sys::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT};
+use windows_sys::Win32::UI::Shell::{DragQueryFileW, DROPFILES, HDROP};
 use windows_sys::Win32::System::Threading::AttachThreadInput;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     keybd_event, RegisterHotKey, SendInput, UnregisterHotKey, INPUT, INPUT_KEYBOARD, KEYBDINPUT,
@@ -27,8 +28,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, SetWindowsHookExW, SetWindowPos,
     ShowWindow, TranslateMessage, UnhookWindowsHookEx, UnregisterClassW, GWL_EXSTYLE,
     HWND_MESSAGE, HWND_TOPMOST, MSG, MSLLHOOKSTRUCT, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, SW_RESTORE, WH_MOUSE_LL, WNDCLASSW, WS_EX_NOACTIVATE, WM_APP,
-    WM_CLIPBOARDUPDATE, WM_HOTKEY, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_RBUTTONDOWN,
+    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, SW_RESTORE, WH_MOUSE_LL, WNDCLASSW, WS_EX_NOACTIVATE,
+    WM_APP, WM_CLIPBOARDUPDATE, WM_HOTKEY, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_RBUTTONDOWN,
 };
 
 /// 剪贴板浮窗窗口 label（App.vue 按此路由渲染 ClipboardOverlay）
@@ -43,6 +44,9 @@ const ECHO_SUPPRESS_SECONDS: u64 = 10;
 const HTML_RETRY_DELAYS_MS: [u64; 7] = [0, 40, 80, 140, 220, 360, 560];
 /// 剪贴板事件去抖：一次复制可能触发多次 WM_CLIPBOARDUPDATE（多格式逐步写入）
 const SETTLE_MS: u64 = 80;
+/// 剪贴板浮层「延迟回收」等待时间：收起后窗口先隐藏，超过该时长仍未再次唤起才销毁，
+/// 期间再次唤起直接复用窗口（无 WebView2 冷启动），兼顾体感与内存回收。
+const OVERLAY_RECYCLE_SECS: u64 = 30;
 
 /// 跨命令共享的剪贴板浮层状态
 pub struct ClipboardState {
@@ -69,6 +73,98 @@ static MOUSE_HOOK: Mutex<Option<isize>> = Mutex::new(None);
 /// 显示浮层时写入，钩子回调只读它做矩形判断。
 static OVERLAY_HWND: Mutex<Option<isize>> = Mutex::new(None);
 
+/// 延迟回收代际计数：每次隐藏/销毁都会递增，延迟销毁任务启动时记下当前代际，
+/// 到期后若代际已变（说明期间被再次唤起/重建），则不再执行销毁，避免误杀复用中的窗口。
+static OVERLAY_RECYCLE_GEN: Mutex<u64> = Mutex::new(0);
+
+/// 一次延迟窗口操作任务：粘贴后恢复焦点+注入按键，或收起后归还焦点。
+/// 统一交给单一 worker 线程串行执行，避免频繁 spawn 短命线程造成线程数波动。
+enum DelayedWinOp {
+    /// 粘贴到唤起前窗口：先释放修饰键、必要时恢复目标窗口焦点，再按目标应用注入粘贴快捷键
+    Paste {
+        hwnd: isize,
+        paste_method: &'static str,
+    },
+    /// 收起浮层后归还焦点给唤起前窗口（若前台仍在本进程）
+    RestoreFocus { hwnd: isize },
+}
+
+/// 延迟窗口操作 worker：所有粘贴/归还焦点在同一个线程上串行执行
+static WIN_OP_TX: Mutex<Option<std::sync::mpsc::Sender<DelayedWinOp>>> = Mutex::new(None);
+
+/// 提交一次延迟窗口操作（粘贴或归还焦点）
+fn submit_win_op(op: DelayedWinOp) {
+    let tx = WIN_OP_TX.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(tx) = tx.as_ref() {
+        let _ = tx.send(op);
+    }
+}
+
+/// 初始化延迟窗口操作 worker（应用启动时调用一次）
+pub fn init_win_op_worker() {
+    let (tx, rx) = std::sync::mpsc::channel::<DelayedWinOp>();
+    if let Ok(mut guard) = WIN_OP_TX.lock() {
+        *guard = Some(tx);
+    }
+    std::thread::spawn(move || {
+        while let Ok(op) = rx.recv() {
+            match op {
+                DelayedWinOp::Paste { hwnd, paste_method } => {
+                    // 先给系统一点时间完成窗口隐藏与焦点转移
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    release_modifier_keys();
+                    // 前台若仍是我们的窗口（浮层刚隐藏/被激活过），先恢复目标窗口焦点；
+                    // 浮层从未抢焦点时（无激活显示）前台始终是目标应用，无需恢复。
+                    let fg = unsafe { GetForegroundWindow() } as isize;
+                    let own_pid = std::process::id();
+                    let mut fg_pid: u32 = 0;
+                    unsafe {
+                        GetWindowThreadProcessId(fg as *mut core::ffi::c_void, &mut fg_pid);
+                    }
+                    log::info!(
+                        "剪贴板粘贴：隐藏后前台 hwnd={:#x} pid={}，本进程 pid={}，目标 hwnd={:#x}",
+                        fg,
+                        fg_pid,
+                        own_pid,
+                        hwnd
+                    );
+                    if fg_pid == own_pid {
+                        force_focus_window(hwnd as *mut core::ffi::c_void);
+                        log::info!("剪贴板粘贴：前台仍在本进程，已恢复目标窗口焦点");
+                    }
+                    // 沉降：等焦点真正移交到目标窗口
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    let fg_after = unsafe { GetForegroundWindow() } as isize;
+                    let visible = unsafe { IsWindowVisible(hwnd as *mut core::ffi::c_void) } != 0;
+                    log::info!(
+                        "剪贴板粘贴：沉降后前台 hwnd={:#x}，目标可见={}",
+                        fg_after,
+                        visible
+                    );
+                    // 验证目标窗口仍可见（可能已关闭/最小化），避免输入注入到错误窗口
+                    if !visible {
+                        log::warn!("剪贴板粘贴：目标窗口不可见，跳过输入注入");
+                        continue;
+                    }
+                    log::info!("剪贴板粘贴：采用粘贴方式 {:?}，注入按键", paste_method);
+                    send_paste_keystroke(paste_method);
+                }
+                DelayedWinOp::RestoreFocus { hwnd } => {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let fg = unsafe { GetForegroundWindow() } as isize;
+                    let mut pid: u32 = 0;
+                    unsafe {
+                        GetWindowThreadProcessId(fg as *mut core::ffi::c_void, &mut pid);
+                    }
+                    if pid == std::process::id() {
+                        force_focus_window(hwnd as *mut core::ffi::c_void);
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn content_hash(text: &str, html: Option<&str>) -> u64 {
     let mut h = DefaultHasher::new();
     text.hash(&mut h);
@@ -91,6 +187,59 @@ fn is_self_set(text: &str, html: Option<&str>) -> bool {
 pub fn clear_self_set_fingerprint() {
     if let Ok(mut guard) = LAST_SELF_SET.lock() {
         *guard = None;
+    }
+}
+
+/// 剪贴板读取结果（优先级：图片 > 文件 > 文本）
+pub enum ClipboardPayload {
+    Text { content: String, html: Option<String> },
+    Image { bytes: Vec<u8>, format: ImageFormat },
+    Files { paths: Vec<String> },
+}
+
+/// 图片原始格式（落盘快照时的编码依据）
+#[derive(Clone, Copy, PartialEq)]
+pub enum ImageFormat {
+    /// PNG 剪贴板格式（现代应用主流），原样存 .png
+    Png,
+    /// CF_DIB / CF_DIBV5 位图，包装 14 字节文件头存 .bmp
+    Dib,
+}
+
+/// 图片/文件字节指纹：用于回声抑制与「相同内容只留一条」去重
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut h = DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
+}
+
+/// 文件列表指纹：路径 + 各文件大小（同名不同内容也能区分），用于回声抑制
+fn hash_files(paths: &[String]) -> u64 {
+    let mut h = DefaultHasher::new();
+    for p in paths {
+        p.hash(&mut h);
+        if let Ok(meta) = std::fs::metadata(p) {
+            meta.len().hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+/// 判断给定哈希是否为「我们自己写入」的回声（图片/文件路径）
+fn is_self_set_hash(hash: u64) -> bool {
+    let Ok(guard) = LAST_SELF_SET.lock() else {
+        return false;
+    };
+    let Some((h, at)) = guard.as_ref() else {
+        return false;
+    };
+    at.elapsed().as_secs() < ECHO_SUPPRESS_SECONDS && *h == hash
+}
+
+/// 记录回声指纹（图片/文件写入后调用）
+fn record_self_set_hash(hash: u64) {
+    if let Ok(mut guard) = LAST_SELF_SET.lock() {
+        *guard = Some((hash, std::time::Instant::now()));
     }
 }
 
@@ -234,6 +383,118 @@ pub fn read_clipboard_with_retry() -> Option<(String, Option<String>)> {
     Some((text, html))
 }
 
+/// 读取剪贴板图片（调用方需已 OpenClipboard）：
+/// 优先 PNG 格式（浏览器/微信/QQ/截图工具均放置），否则 CF_DIBV5 → CF_DIB。
+/// 返回原始字节与格式（DIB 无文件头，落盘时补 BMP 头）。
+unsafe fn read_image_unlocked() -> Option<(Vec<u8>, ImageFormat)> {
+    let png_fmt = RegisterClipboardFormatW(windows_sys::core::w!("PNG"));
+    if png_fmt != 0 {
+        let h = GetClipboardData(png_fmt);
+        if !h.is_null() {
+            if let Some(bytes) = read_global_bytes(h) {
+                return Some((bytes, ImageFormat::Png));
+            }
+        }
+    }
+    for fmt in [CF_DIBV5 as u32, CF_DIB as u32] {
+        let h = GetClipboardData(fmt);
+        if !h.is_null() {
+            if let Some(bytes) = read_global_bytes(h) {
+                return Some((bytes, ImageFormat::Dib));
+            }
+        }
+    }
+    None
+}
+
+/// 读取剪贴板文件列表（CF_HDROP，调用方需已 OpenClipboard）
+unsafe fn read_files_unlocked() -> Option<Vec<String>> {
+    let h = GetClipboardData(CF_HDROP as u32);
+    if h.is_null() {
+        return None;
+    }
+    let hdrop = h as HDROP;
+    let count = DragQueryFileW(hdrop, 0xFFFF_FFFF, std::ptr::null_mut(), 0);
+    if count == 0 {
+        return None;
+    }
+    let mut paths = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        // 先取长度，再取内容（宽字符路径）
+        let len = DragQueryFileW(hdrop, i, std::ptr::null_mut(), 0) as usize;
+        if len == 0 {
+            continue;
+        }
+        let mut buf = vec![0u16; len + 1];
+        let got = DragQueryFileW(hdrop, i, buf.as_mut_ptr(), (len + 1) as u32) as usize;
+        if got > 0 {
+            paths.push(String::from_utf16_lossy(&buf[..got]));
+        }
+    }
+    if paths.is_empty() {
+        None
+    } else {
+        Some(paths)
+    }
+}
+
+/// 读取 Global 内存块为字节（GlobalSize 取准确长度，调用方需已 OpenClipboard）
+unsafe fn read_global_bytes(h: windows_sys::Win32::Foundation::HGLOBAL) -> Option<Vec<u8>> {
+    let ptr = GlobalLock(h);
+    if ptr.is_null() {
+        return None;
+    }
+    let size = GlobalSize(h);
+    let bytes = if size > 0 {
+        std::slice::from_raw_parts(ptr as *const u8, size).to_vec()
+    } else {
+        Vec::new()
+    };
+    GlobalUnlock(h);
+    if bytes.is_empty() {
+        None
+    } else {
+        Some(bytes)
+    }
+}
+
+/// 尝试读取图片（自带 Open/Close 剪贴板）
+fn try_read_image() -> Option<(Vec<u8>, ImageFormat)> {
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return None;
+        }
+        let result = read_image_unlocked();
+        CloseClipboard();
+        result
+    }
+}
+
+/// 尝试读取文件列表（自带 Open/Close 剪贴板）
+fn try_read_files() -> Option<Vec<String>> {
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return None;
+        }
+        let result = read_files_unlocked();
+        CloseClipboard();
+        result
+    }
+}
+
+/// 读取剪贴板并按类型分派：图片 > 文件 > 文本。
+/// 文本复用 read_clipboard_with_retry（含 Office 等分阶段写 HTML 的重试）。
+pub fn read_clipboard_payload() -> Option<ClipboardPayload> {
+    if let Some((bytes, format)) = try_read_image() {
+        return Some(ClipboardPayload::Image { bytes, format });
+    }
+    if let Some(paths) = try_read_files() {
+        return Some(ClipboardPayload::Files { paths });
+    }
+    let (text, html) = read_clipboard_with_retry()?;
+    Some(ClipboardPayload::Text { content: text, html })
+}
+
 // ---- 剪贴板写入 ----
 
 /// 构造 CF_HTML 数据（含 StartHTML/EndHTML/StartFragment/EndFragment 偏移）
@@ -325,6 +586,197 @@ pub fn set_clipboard(text: &str, html: Option<&str>) -> Result<(), String> {
         }
         Ok(())
     }
+}
+
+/// 把 CF_DIB 数据（BITMAPINFOHEADER + 调色板 + 像素，无文件头）包装成 BMP 文件字节。
+/// 只补 14 字节 BITMAPFILEHEADER，不做像素重编码。
+fn dib_to_bmp(dib: &[u8]) -> Vec<u8> {
+    if dib.len() < 40 {
+        return dib.to_vec();
+    }
+    let bi_size = u32::from_le_bytes([dib[0], dib[1], dib[2], dib[3]]) as usize;
+    let bit_count = u16::from_le_bytes([dib[14], dib[15]]) as usize;
+    let clr_used = if dib.len() >= 36 {
+        u32::from_le_bytes([dib[32], dib[33], dib[34], dib[35]]) as usize
+    } else {
+        0
+    };
+    let pal_entries = if clr_used != 0 {
+        clr_used
+    } else if bit_count <= 8 {
+        1usize << bit_count
+    } else {
+        0
+    };
+    let off_bits = 14 + bi_size + pal_entries * 4;
+    let file_size = 14 + dib.len();
+    let mut out = Vec::with_capacity(file_size);
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&(file_size as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    out.extend_from_slice(&(off_bits as u32).to_le_bytes());
+    out.extend_from_slice(dib);
+    out
+}
+
+/// 把 BMP 文件字节剥掉 14 字节文件头，得到 CF_DIB 数据（写回剪贴板用）
+fn bmp_to_dib(bmp: &[u8]) -> &[u8] {
+    if bmp.len() > 14 && &bmp[0..2] == b"BM" {
+        &bmp[14..]
+    } else {
+        bmp
+    }
+}
+
+/// 剪贴板图片快照目录：`app_data_dir/clipboard/images/`
+fn clipboard_images_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let dir = app.path().app_data_dir().ok()?.join("clipboard").join("images");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// 图片落盘快照：PNG 原样存 .png，DIB 补文件头存 .bmp。
+/// 返回快照绝对路径（失败返回 None，由调用方决定是否降级为文本）。
+fn save_image_snapshot(
+    app: &AppHandle,
+    bytes: &[u8],
+    format: ImageFormat,
+    hash: u64,
+) -> Option<String> {
+    let dir = clipboard_images_dir(app)?;
+    let ext = match format {
+        ImageFormat::Png => "png",
+        ImageFormat::Dib => "bmp",
+    };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let name = format!("{:016x}_{}.{}", hash, nanos, ext);
+    let path = dir.join(name);
+    let data = match format {
+        ImageFormat::Png => bytes.to_vec(),
+        ImageFormat::Dib => dib_to_bmp(bytes),
+    };
+    std::fs::write(&path, &data).ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// 分配 Global 内存并写入字节、SetClipboardData（调用方需已 OpenClipboard 且 EmptyClipboard）
+unsafe fn set_global_data(format: u32, data: &[u8]) -> Result<(), String> {
+    let mem = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, data.len());
+    if mem.is_null() {
+        return Err("剪贴板内存分配失败".into());
+    }
+    let dst = GlobalLock(mem);
+    if dst.is_null() {
+        GlobalFree(mem);
+        return Err("剪贴板内存锁定失败".into());
+    }
+    std::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut u8, data.len());
+    GlobalUnlock(mem);
+    if SetClipboardData(format, mem).is_null() {
+        GlobalFree(mem);
+        return Err("写入剪贴板失败".into());
+    }
+    Ok(())
+}
+
+/// 写入图片到剪贴板：BMP 快照写 CF_DIB，PNG 快照写 PNG 剪贴板格式。
+/// 写回后记录回声指纹，抑制监听线程重复入库。
+pub fn set_clipboard_image(path: &str) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("读取图片快照失败: {}", e))?;
+    let is_bmp = bytes.len() > 2 && &bytes[0..2] == b"BM";
+    let data: Vec<u8> = if is_bmp {
+        bmp_to_dib(&bytes).to_vec()
+    } else {
+        bytes.clone()
+    };
+    // 回声指纹基于「写回剪贴板的实际字节」（PNG 原始字节 / 剥掉文件头的 DIB），
+    // 与监听端读到的一致，确保粘贴后能被正确识别为自身写入回声。
+    let hash = hash_bytes(&data);
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Err("无法打开系统剪贴板".into());
+        }
+        if EmptyClipboard() == 0 {
+            CloseClipboard();
+            return Err("无法清空系统剪贴板".into());
+        }
+        let result = if is_bmp {
+            set_global_data(CF_DIB as u32, &data)
+        } else {
+            let fmt = RegisterClipboardFormatW(windows_sys::core::w!("PNG"));
+            if fmt == 0 {
+                Err("无法注册 PNG 格式".into())
+            } else {
+                set_global_data(fmt, &data)
+            }
+        };
+        CloseClipboard();
+        result?;
+    }
+    record_self_set_hash(hash);
+    Ok(())
+}
+
+/// 构造 CF_HDROP 数据：DROPFILES 结构 + 宽字符路径表（每条以 null 结尾，末尾额外 null）
+fn build_hdrop(paths: &[&str]) -> Vec<u8> {
+    let header_size = std::mem::size_of::<DROPFILES>();
+    let mut payload: Vec<u16> = Vec::new();
+    for p in paths {
+        payload.extend(p.encode_utf16());
+        payload.push(0);
+    }
+    payload.push(0); // 列表结束标记
+
+    let total = header_size + payload.len() * 2;
+    let mut out = vec![0u8; total];
+    let df = DROPFILES {
+        pFiles: header_size as u32,
+        pt: POINT { x: 0, y: 0 },
+        fNC: 0,
+        fWide: 1,
+    };
+    let df_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(&df as *const DROPFILES as *const u8, header_size)
+    };
+    out[..header_size].copy_from_slice(df_bytes);
+    for (i, u) in payload.iter().enumerate() {
+        let b = u.to_le_bytes();
+        out[header_size + i * 2..header_size + i * 2 + 2].copy_from_slice(&b);
+    }
+    out
+}
+
+/// 写入文件列表到剪贴板（CF_HDROP）：只引用原路径，不拷贝文件内容。
+/// 已不存在的路径会被剔除；全部失效则报错提示用户。
+pub fn set_clipboard_files(paths: &[String]) -> Result<(), String> {
+    let existing: Vec<&str> = paths
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|p| std::path::Path::new(p).exists())
+        .collect();
+    if existing.is_empty() {
+        return Err("文件已不存在，无法粘贴".into());
+    }
+    let owned: Vec<String> = existing.iter().map(|s| s.to_string()).collect();
+    let hash = hash_files(&owned);
+    let data = build_hdrop(&existing);
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Err("无法打开系统剪贴板".into());
+        }
+        if EmptyClipboard() == 0 {
+            CloseClipboard();
+            return Err("无法清空系统剪贴板".into());
+        }
+        let result = set_global_data(CF_HDROP as u32, &data);
+        CloseClipboard();
+        result?;
+    }
+    record_self_set_hash(hash);
+    Ok(())
 }
 
 // ---- 粘贴注入（恢复焦点 + 发送粘贴快捷键） ----
@@ -518,8 +970,9 @@ pub fn paste_to_previous_window(app: &AppHandle, content: &str, html: Option<&st
     };
     log::info!("剪贴板粘贴：唤起前窗口 hwnd={:#x}", hwnd);
 
-    // 本应用主窗口：直接派发内容给主窗口 JS 插入（浮层已隐藏，无需恢复焦点）
-    if is_main_window(app, hwnd) {
+    // 本应用主窗口 + 文本内容：直接派发内容给主窗口 JS 插入（浮层已隐藏，无需恢复焦点）。
+    // 图片/文件（content 为空）不在此分支——走下方 Ctrl+V 注入，目标应用读剪贴板对应格式。
+    if !content.is_empty() && is_main_window(app, hwnd) {
         let payload = serde_json::json!({
             "content": content,
             "html": html,
@@ -530,48 +983,9 @@ pub fn paste_to_previous_window(app: &AppHandle, content: &str, html: Option<&st
         return;
     }
 
-    std::thread::spawn(move || {
-        // 先给系统一点时间完成窗口隐藏与焦点转移
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        release_modifier_keys();
-        // 前台若仍是我们的窗口（浮层刚隐藏/被激活过），先恢复目标窗口焦点；
-        // 浮层从未抢焦点时（无激活显示）前台始终是目标应用，无需恢复。
-        let fg = unsafe { GetForegroundWindow() } as isize;
-        let own_pid = std::process::id();
-        let mut fg_pid: u32 = 0;
-        unsafe {
-            GetWindowThreadProcessId(fg as *mut core::ffi::c_void, &mut fg_pid);
-        }
-        log::info!(
-            "剪贴板粘贴：隐藏后前台 hwnd={:#x} pid={}，本进程 pid={}，目标 hwnd={:#x}",
-            fg,
-            fg_pid,
-            own_pid,
-            hwnd
-        );
-        if fg_pid == own_pid {
-            force_focus_window(hwnd as *mut core::ffi::c_void);
-            log::info!("剪贴板粘贴：前台仍在本进程，已恢复目标窗口焦点");
-        }
-        // 沉降：等焦点真正移交到目标窗口
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        let fg_after = unsafe { GetForegroundWindow() } as isize;
-        let visible = unsafe { IsWindowVisible(hwnd as *mut core::ffi::c_void) } != 0;
-        log::info!(
-            "剪贴板粘贴：沉降后前台 hwnd={:#x}，目标可见={}",
-            fg_after,
-            visible
-        );
-        // 验证目标窗口仍可见（可能已关闭/最小化），避免输入注入到错误窗口
-        if !visible {
-            log::warn!("剪贴板粘贴：目标窗口不可见，跳过输入注入");
-            return;
-        }
-        // 按配置/终端识别选择粘贴快捷键
-        let method = resolve_paste_method(&crate::config::load().clipboard_paste_method, hwnd);
-        log::info!("剪贴板粘贴：采用粘贴方式 {:?}，注入按键", method);
-        send_paste_keystroke(method);
-    });
+    // 提交到常驻 worker 串行执行（粘贴时序依赖窗口隐藏/焦点转移，延迟需按序进行）
+    let paste_method = resolve_paste_method(&crate::config::load().clipboard_paste_method, hwnd);
+    submit_win_op(DelayedWinOp::Paste { hwnd, paste_method });
 }
 
 // ---- 浮层窗口 ----
@@ -728,6 +1142,8 @@ pub fn toggle_overlay(app: &AppHandle) {
     }
 
     if let Some(win) = app.get_webview_window(CLIPBOARD_WINDOW_LABEL) {
+        // 取消任何挂起的延迟回收：该窗口即将被重新显示，不能让回收任务销毁它
+        bump_overlay_recycle_gen();
         // 每次唤起都重新定位到鼠标附近（窗口可能被拖走过、或显示器布局变化）
         if let Some((px, py)) = cursor_anchor_position() {
             let _ = win
@@ -829,20 +1245,62 @@ pub fn activate_overlay(app: &AppHandle) {
     }
 }
 
-/// 同步隐藏浮层窗口：直接用 Win32 ShowWindow(SW_HIDE)。
-/// 之前用 Tauri 的 win.hide()/set_focusable(false)——它们在非主线程（剪贴板监听线程）会经事件循环
-/// 异步执行，且 tao 会按内部标志重建窗口样式（to_window_styles 甚至给无边框窗口重新加回 WS_CAPTION）、
-/// 在 VISIBLE 标志仍置位时还会触发一次 ShowWindow 重新显示，与 show_overlay_no_activate 的直接
-/// Win32 调用互相打架，导致「第一次点击外部能收起、第二次收起失效」。统一改为直接调用，保证同步且一致。
+/// 收起浮层：先立即隐藏（视觉立刻消失），再启动「延迟回收」——等待 OVERLAY_RECYCLE_SECS
+/// 后若期间未被再次唤起（代际未变）才真正 destroy 释放 WebView2 renderer 内存。
+/// 纯隐藏时 renderer 常驻（约 60–120MB），立即销毁则每次唤起都要 WebView2 冷启动（数百 ms），
+/// 延迟回收在两者之间取平衡：短时间连续唤起零冷启动，长期不用才回收内存。
 fn hide_overlay_window(win: &tauri::WebviewWindow) {
-    #[cfg(target_os = "windows")]
-    if let Ok(hwnd) = win.hwnd() {
-        unsafe {
-            ShowWindow(hwnd.0, SW_HIDE);
-        }
-        return;
+    // 先清掉浮层窗口句柄缓存，避免低层鼠标钩子残留句柄对已隐藏窗口做矩形判断
+    if let Ok(mut guard) = OVERLAY_HWND.lock() {
+        *guard = None;
     }
-    let _ = win.hide();
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(hwnd) = win.hwnd() {
+            unsafe {
+                ShowWindow(hwnd.0, SW_HIDE);
+            }
+            schedule_overlay_recycle(win);
+            return;
+        }
+        let _ = win.hide();
+        schedule_overlay_recycle(win);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = win.hide();
+        schedule_overlay_recycle(win);
+    }
+}
+
+/// 记录一次「收起/唤起」代际变更，使任何已排期的延迟回收作废。
+/// 在 toggle_overlay 重新显示浮层时调用，避免延迟任务误销毁复用中的窗口。
+fn bump_overlay_recycle_gen() {
+    if let Ok(mut guard) = OVERLAY_RECYCLE_GEN.lock() {
+        *guard = guard.wrapping_add(1);
+    }
+}
+
+/// 排期延迟回收：等待 OVERLAY_RECYCLE_SECS 后，若代际未变且窗口仍处于隐藏态，
+/// 则销毁该窗口释放 WebView2 renderer。期间被再次唤起（代际已变）则不执行。
+fn schedule_overlay_recycle(win: &tauri::WebviewWindow) {
+    let app = win.app_handle().clone();
+    let label = win.label().to_string();
+    let gen = *OVERLAY_RECYCLE_GEN.lock().unwrap_or_else(|e| e.into_inner());
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(OVERLAY_RECYCLE_SECS));
+        let current = *OVERLAY_RECYCLE_GEN.lock().unwrap_or_else(|e| e.into_inner());
+        if current != gen {
+            return; // 期间被再次唤起/重建，作废本次回收
+        }
+        let Some(win) = app.get_webview_window(&label) else {
+            return;
+        };
+        if !win.is_visible().unwrap_or(false) {
+            log::info!("剪贴板浮层：延迟回收销毁（{}s 未再唤起）", OVERLAY_RECYCLE_SECS);
+            let _ = win.destroy();
+        }
+    });
 }
 
 /// 收起浮层：隐藏后若前台仍在本应用（浮层/主窗口），把焦点还给唤起前的窗口
@@ -866,18 +1324,8 @@ pub fn hide_overlay(app: &AppHandle) {
     let Some(hwnd) = prev else {
         return;
     };
-    let own_pid = std::process::id();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let fg = unsafe { GetForegroundWindow() } as isize;
-        let mut pid: u32 = 0;
-        unsafe {
-            GetWindowThreadProcessId(fg as *mut core::ffi::c_void, &mut pid);
-        }
-        if pid == own_pid {
-            force_focus_window(hwnd as *mut core::ffi::c_void);
-        }
-    });
+    // 提交到常驻 worker 串行执行：延迟 100ms 后归还焦点
+    submit_win_op(DelayedWinOp::RestoreFocus { hwnd });
 }
 
 /// 计算浮层初始位置：光标附近（工作区范围内），避免覆盖点击来源
@@ -935,6 +1383,10 @@ fn foreground_app_name() -> Option<String> {
     }
 }
 
+/// 进程名缓存容量上限：常驻托盘应用长期运行会累积大量 PID 条目（每个前台进程复制都新增一条），
+/// 超过上限时清空重建，避免缓存无限增长（缓慢泄漏）与 PID 复用后返回陈旧进程名。
+const MAX_PROCESS_CACHE: usize = 256;
+
 /// 按 PID 取进程名（带缓存）。`remove_dead_processes=false` 避免每次刷新都全量枚举所有进程，
 /// 否则一次复制会卡数百毫秒甚至数秒，拖慢入库并阻塞监听线程消息循环。
 /// 同一前台应用连续复制时 PID 不变，缓存命中后跳过 sysinfo 查询，进一步降低入库延迟。
@@ -960,44 +1412,102 @@ fn process_name_of_pid(pid: u32) -> Option<String> {
         .map(|p| p.name().to_string_lossy().to_string());
     if let Some(name) = &name {
         if let Ok(mut cached) = cache.lock() {
+            if cached.len() >= MAX_PROCESS_CACHE {
+                cached.clear();
+            }
             cached.insert(pid, name.clone());
         }
     }
     name
 }
 
+/// 入库辅助：拿数据库连接并执行给定 repo 操作（监听线程跨线程访问 DbState）
+fn insert_into_db<T>(
+    app: &AppHandle,
+    f: impl FnOnce(&rusqlite::Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    let state = app.try_state::<DbState>().ok_or("剪贴板状态未就绪")?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    f(&conn)
+}
+
 /// 处理一次剪贴板变化事件：读取（含 HTML 重试）→ 回声抑制 → 入库。
 /// 由独立 worker 线程调用（去抖已在 worker 完成），这里不做额外 sleep。
 fn handle_clipboard_update(app: &AppHandle) {
     // 暂停记录时跳过（暂停前已入库的数据保留）
-    if crate::config::load().clipboard_paused {
+    let cfg = crate::config::load();
+    if cfg.clipboard_paused {
         return;
     }
 
-    let payload = read_clipboard_with_retry().or_else(|| {
+    let payload = read_clipboard_payload().or_else(|| {
         // 读取失败（复制方仍占用剪贴板）：稍等重试同一条，避免内容被锁定时静默丢失
         std::thread::sleep(std::time::Duration::from_millis(120));
-        read_clipboard_with_retry()
+        read_clipboard_payload()
     });
-    let Some((text, html)) = payload else {
+    let Some(payload) = payload else {
         return;
     };
-    if text.trim().is_empty() {
-        return;
-    }
-    // 自复制回声：粘贴/复制历史项后系统会再次触发事件，跳过自身写入
-    if is_self_set(&text, html.as_deref()) {
-        log::debug!("剪贴板监听：忽略自身写入回声");
-        return;
-    }
-    let source = foreground_app_name();
 
-    let result: Result<(), String> = (|| {
-        let state = app.try_state::<DbState>().ok_or("剪贴板状态未就绪")?;
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        crate::repo::clipboard::insert(&conn, &text, html.as_deref(), source.as_deref())
-            .map_err(|e| e.to_string())
-    })();
+    let source = foreground_app_name();
+    let result: Result<(), String> = match payload {
+        ClipboardPayload::Text { content, html } => {
+            if content.trim().is_empty() {
+                return;
+            }
+            // 自复制回声：粘贴/复制历史项后系统会再次触发事件，跳过自身写入
+            if is_self_set(&content, html.as_deref()) {
+                log::debug!("剪贴板监听：忽略自身文本写入回声");
+                return;
+            }
+            insert_into_db(app, |conn| {
+                crate::repo::clipboard::insert(conn, &content, html.as_deref(), source.as_deref())
+                    .map_err(|e| e.to_string())
+            })
+        }
+        ClipboardPayload::Image { bytes, format } => {
+            if !cfg.clipboard_image_enabled {
+                return;
+            }
+            let hash = hash_bytes(&bytes);
+            if is_self_set_hash(hash) {
+                log::debug!("剪贴板监听：忽略自身图片写入回声");
+                return;
+            }
+            let Some(path) = save_image_snapshot(app, &bytes, format, hash) else {
+                log::warn!("剪贴板图片快照落盘失败，已跳过");
+                return;
+            };
+            let dedup_key = format!("{:016x}", hash);
+            match insert_into_db(app, |conn| {
+                crate::repo::clipboard::insert_image(conn, &dedup_key, &path, source.as_deref())
+                    .map_err(|e| e.to_string())
+            }) {
+                Ok(true) => Ok(()),
+                Ok(false) => {
+                    // 相同图片已存在（去重挪到最前），删除本次落盘的冗余快照
+                    let _ = std::fs::remove_file(&path);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
+        ClipboardPayload::Files { paths } => {
+            if !cfg.clipboard_file_enabled {
+                return;
+            }
+            let hash = hash_files(&paths);
+            if is_self_set_hash(hash) {
+                log::debug!("剪贴板监听：忽略自身文件写入回声");
+                return;
+            }
+            insert_into_db(app, |conn| {
+                crate::repo::clipboard::insert_files(conn, &paths, source.as_deref())
+                    .map_err(|e| e.to_string())
+            })
+        }
+    };
+
     if let Err(e) = result {
         log::warn!("剪贴板历史入库失败: {}", e);
     }

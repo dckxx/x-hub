@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "x-hub",
   "mainBinaryName": "x-hub",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "identifier": "x-hub",
   "build": {
     "frontendDist": "../dist",

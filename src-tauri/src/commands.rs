@@ -14,6 +14,10 @@ use tauri::{Emitter, Manager, State};
 
 pub struct DbState(pub Mutex<Connection>);
 
+/// AI 对话发送请求时携带的上下文窗口（消息条数）：长对话只取最近这段作为模型上下文，
+/// 避免历史越长加载越慢、内存/请求体按全量历史成倍膨胀。约合 15 轮对话。
+const CHAT_CONTEXT_WINDOW: i64 = 30;
+
 #[tauri::command]
 pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -209,6 +213,14 @@ pub fn delete_note(state: State<'_, DbState>, id: i64) -> Result<(), String> {
     note::delete(&conn, id).map_err(err_str)?;
     log::info!("删除笔记: id={}", id);
     Ok(())
+}
+
+/// 笔记列表（仅元信息，不拉正文）：外部浮层保存速记后主窗口刷新列表用，
+/// 轻量于 get_initial_data 的全量加载
+#[tauri::command]
+pub fn list_notes(state: State<'_, DbState>) -> Result<Vec<Note>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::list_meta(&conn).map_err(err_str)
 }
 
 // ---------- 待办清单 ----------
@@ -687,7 +699,7 @@ pub fn sync_ai_usage(
     state: State<'_, DbState>,
     path: Option<String>,
 ) -> Result<SyncResult, String> {
-    let mut config = crate::config::load();
+    let config = crate::config::load();
     let resolved = path.or(config.usage_db_path.clone()).or_else(usage::probe_opencode_path);
 
     let Some(db_path) = resolved else {
@@ -701,11 +713,13 @@ pub fn sync_ai_usage(
 
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let result = usage::sync_from_opencode(&conn, &db_path, config.usage_sync_cursor).map_err(err_str)?;
-    // 推进游标并记录路径
+    // 推进游标并记录路径（持配置写锁重新读盘，避免旧快照覆盖其它字段）
     if result.inserted > 0 || config.usage_db_path.as_deref() != Some(db_path.as_str()) {
-        config.usage_sync_cursor = result.cursor;
-        config.usage_db_path = Some(db_path.clone());
-        let _ = crate::config::save(&config);
+        let _guard = crate::config::lock();
+        let mut cfg = crate::config::load();
+        cfg.usage_sync_cursor = result.cursor;
+        cfg.usage_db_path = Some(db_path.clone());
+        let _ = crate::config::save(&cfg);
     }
     log::info!(
         "同步 AI 用量: 新增 {} 条, 游标 {} (db: {})",
@@ -818,6 +832,7 @@ pub fn get_app_info(app: tauri::AppHandle) -> Result<AppInfo, String> {
 /// 无论是否展示，都会推进 `last_seen_version`，避免开关事后开启时补弹历史弹窗。
 #[tauri::command]
 pub fn check_whats_new(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let _guard = crate::config::lock();
     let current = app.package_info().version.to_string();
     let mut config = crate::config::load();
     // 首次运行（无历史版本记录）：仅记录，不弹窗
@@ -844,17 +859,22 @@ pub fn check_whats_new(app: tauri::AppHandle) -> Result<Option<String>, String> 
 
 #[tauri::command]
 pub fn save_config(config: AppConfig) -> Result<AppConfig, String> {
-    crate::config::save(&config)?;
+    let _guard = crate::config::lock();
+    // 模型配置只经 save_chat_models 变更：这里以磁盘为准，防止前端启动时的旧快照
+    // （chat_models 可能为空/过期）在保存主题/快捷键等任意设置时整体覆盖掉模型配置
+    let mut merged = config;
+    merged.chat_models = crate::config::load().chat_models;
+    crate::config::save(&merged)?;
     log::info!(
         "配置已保存: theme_mode={} theme_preset={} accent_color={:?} window={}x{} always_on_top={}",
-        config.theme_mode,
-        config.theme_preset,
-        config.accent_color,
-        config.window.width,
-        config.window.height,
-        config.window.always_on_top
+        merged.theme_mode,
+        merged.theme_preset,
+        merged.accent_color,
+        merged.window.width,
+        merged.window.height,
+        merged.window.always_on_top
     );
-    Ok(config)
+    Ok(merged)
 }
 
 #[tauri::command]
@@ -868,6 +888,7 @@ pub fn set_window_always_on_top(window: tauri::WebviewWindow, value: bool) -> Re
 
 #[tauri::command]
 pub fn set_always_on_top_config(value: bool) -> Result<(), String> {
+    let _guard = crate::config::lock();
     let mut config = crate::config::load();
     config.window.always_on_top = value;
     crate::config::save(&config)?;
@@ -882,6 +903,7 @@ pub fn get_global_shortcut() -> Result<String, String> {
 
 #[tauri::command]
 pub fn set_global_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    let _guard = crate::config::lock();
     let shortcut = value.trim();
     if shortcut.is_empty() {
         return Err("快捷键不能为空".into());
@@ -1720,6 +1742,7 @@ pub fn get_chat_models() -> Result<Vec<ChatModelConfig>, String> {
 /// 保存模型配置：非空 api_key 写入钥匙串，落盘时一律清空；保证有且仅有一个默认模型
 #[tauri::command]
 pub fn save_chat_models(models: Vec<ChatModelConfig>) -> Result<Vec<ChatModelConfig>, String> {
+    let _guard = crate::config::lock();
     let mut config = config::load();
     let mut next = Vec::with_capacity(models.len());
     for m in models {
@@ -1747,10 +1770,17 @@ pub fn save_chat_models(models: Vec<ChatModelConfig>) -> Result<Vec<ChatModelCon
             }
         }
     }
+    // 供应商名称约束：不能为空。多账号可能共用同一 base_url，靠供应商名称区分，
+    // 因此不按 base_url 分组/归一名称
+    for m in &next {
+        if m.provider_name.trim().is_empty() {
+            return Err("供应商名称不能为空".into());
+        }
+    }
     config.chat_models = next;
     config::save(&config)?;
-    // 供应商级 Key 传播：同一 base_url 组内任意模型已存有 Key 时，补齐到组内其余模型
-    // （保证「获取模型」后新加入的模型无需重复填写 Key）
+    // 供应商级 Key 传播：同一「名称 + base_url」组内模型补齐 Key
+    // （保证「获取模型」后新加入的模型无需重复填写 Key；多账号同 URL 不串 Key）
     propagate_provider_keys(&config.chat_models);
     log::info!("保存对话模型配置: {} 条", config.chat_models.len());
     Ok(config
@@ -1764,28 +1794,29 @@ pub fn save_chat_models(models: Vec<ChatModelConfig>) -> Result<Vec<ChatModelCon
         .collect())
 }
 
-/// 同一 base_url（供应商）内的模型共享 API Key：
-/// 若组内任意模型已在钥匙串中存有 Key，则把该 Key 复制到组内尚未存 Key 的模型。
-/// 这样「获取模型」新增的模型无需再逐个填 Key。
+/// 供应商级 Key 传播：同一「供应商名称 + base_url」组内任意模型已存有 Key 时，
+/// 补齐到组内其余模型。以名称 + URL 为组，多账号同 URL（名称不同）互不串 Key。
 fn propagate_provider_keys(models: &[ChatModelConfig]) {
     use std::collections::HashMap;
-    let mut key_by_url: HashMap<&str, Option<String>> = HashMap::new();
+    let mut key_by_group: HashMap<(String, String), Option<String>> = HashMap::new();
     for m in models {
-        let base = m.base_url.trim();
-        if base.is_empty() {
+        let name = m.provider_name.trim().to_string();
+        let base = m.base_url.trim().to_string();
+        if name.is_empty() && base.is_empty() {
             continue;
         }
-        let slot = key_by_url.entry(base).or_insert(None);
+        let slot = key_by_group.entry((name, base)).or_insert(None);
         if slot.is_none() {
             *slot = crate::chat::get_api_key(&m.id);
         }
     }
     for m in models {
-        let base = m.base_url.trim();
-        if base.is_empty() {
+        let name = m.provider_name.trim().to_string();
+        let base = m.base_url.trim().to_string();
+        if name.is_empty() && base.is_empty() {
             continue;
         }
-        if let Some(Some(key)) = key_by_url.get(base) {
+        if let Some(Some(key)) = key_by_group.get(&(name, base)) {
             if crate::chat::get_api_key(&m.id).is_none() {
                 let _ = crate::chat::save_api_key(&m.id, key);
             }
@@ -1823,6 +1854,7 @@ pub fn get_chat_api_key(model_id: String) -> Result<String, String> {
 /// 设置右侧面板宽度与展开状态（持久化）
 #[tauri::command]
 pub fn set_chat_panel(width: f64, open: bool) -> Result<(), String> {
+    let _guard = crate::config::lock();
     let mut config = config::load();
     config.chat_panel_width = width.clamp(320.0, 640.0);
     config.chat_panel_open = open;
@@ -1891,10 +1923,11 @@ pub async fn send_chat_message(
         m
     };
 
-    // 3) 读取含新消息的完整历史作为上下文
+    // 3) 读取最近一段历史作为上下文窗口（长对话不再全量加载，
+    //    避免历史越长发送越慢、内存按全量历史成倍膨胀）
     let history = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        chat::list_messages(&conn, session_id).map_err(err_str)?
+        chat::list_recent_messages(&conn, session_id, CHAT_CONTEXT_WINDOW).map_err(err_str)?
     };
 
     // 4) 解析模型配置
@@ -1906,15 +1939,15 @@ pub async fn send_chat_message(
         .cloned()
         .ok_or_else(|| "未配置任何对话模型，请先在对话设置中添加".to_string())?;
 
-    let mut partial = String::new();
-    let mut full: Option<(String, crate::chat::ChatUsage)> = None;
+    // 5) 流式请求（history 已含刚落的 user 消息）；回复累积进 reply 单份 buffer，
+    //    成功即完整回复，出错时保留已生成部分（partial 语义），不再产生双份全量副本
+    let mut reply = String::new();
+    let mut usage: Option<crate::chat::ChatUsage> = None;
     let mut send_error: Option<String> = None;
 
-    // 5) 流式请求（history 已含刚落的 user 消息）；记录生成耗时用于 TPS
     let chunk_sender = on_event.clone();
     let started = std::time::Instant::now();
-    let result = crate::chat::stream_chat(&model, &history, |delta| {
-        partial.push_str(&delta);
+    let result = crate::chat::stream_chat(&model, &history, &mut reply, |delta| {
         chunk_sender
             .send(crate::chat::ChatStreamEvent::Chunk {
                 content: delta,
@@ -1925,11 +1958,11 @@ pub async fn send_chat_message(
     let elapsed_ms = started.elapsed().as_millis() as i64;
 
     match result {
-        Ok((text, usage)) => {
-            if text.trim().is_empty() {
+        Ok(u) => {
+            if reply.trim().is_empty() {
                 send_error = Some("模型未返回任何内容".to_string());
             } else {
-                full = Some((text, usage));
+                usage = Some(u);
             }
         }
         Err(e) => send_error = Some(e),
@@ -1937,36 +1970,48 @@ pub async fn send_chat_message(
 
     // 6) 落库完整回复 / 清空本次失败残留
     {
-        let conn = state.0.lock().map_err(|e| e.to_string())?;
-        // 清理可能残留的半截 assistant 消息（中断场景）
-        let _ = chat::delete_messages_from(&conn, session_id, user_msg.id);
-        if let Some((text, usage)) = &full {
-            let msg = chat::add_message(&conn, session_id, "assistant", text).map_err(err_str)?;
-            // token 统计累加失败不阻断主流程（回复已落库，前端仍需收到 Done）
-            let _ = chat::add_session_usage(
-                &conn,
-                session_id,
-                usage.input,
-                usage.output,
-                usage.cache_read,
-                usage.reasoning,
-                elapsed_ms,
-            );
-            let _ = chat::touch_session(&conn, session_id);
-            let updated = chat::get_session(&conn, session_id).map_err(err_str)?;
-            drop(conn);
+        let mut saved: Option<ChatMessage> = None;
+        let mut updated_session: Option<ChatSession> = None;
+        {
+            let conn = state.0.lock().map_err(|e| e.to_string())?;
+            // 清理可能残留的半截 assistant 消息（中断场景）
+            let _ = chat::delete_messages_from(&conn, session_id, user_msg.id);
+            if let Some(usage) = &usage {
+                if !reply.trim().is_empty() {
+                    let msg =
+                        chat::add_message(&conn, session_id, "assistant", &reply).map_err(err_str)?;
+                    // token 统计累加失败不阻断主流程（回复已落库，前端仍需收到 Done）
+                    let _ = chat::add_session_usage(
+                        &conn,
+                        session_id,
+                        usage.input,
+                        usage.output,
+                        usage.cache_read,
+                        usage.reasoning,
+                        elapsed_ms,
+                    );
+                    let _ = chat::touch_session(&conn, session_id);
+                    let updated = chat::get_session(&conn, session_id).map_err(err_str)?;
+                    saved = Some(msg);
+                    updated_session = Some(updated);
+                } else {
+                    send_error = Some("模型未返回任何内容".to_string());
+                }
+            }
+        }
+
+        if let Some(msg) = saved {
             on_event
                 .send(crate::chat::ChatStreamEvent::Done {
                     message: msg,
-                    session: updated,
+                    session: updated_session.expect("done 事件必须携带会话"),
                 })
                 .map_err(|e| e.to_string())?;
         } else if let Some(e) = send_error {
-            drop(conn);
             on_event
                 .send(crate::chat::ChatStreamEvent::Error {
                     message: e,
-                    partial,
+                    partial: reply,
                 })
                 .map_err(|e2| e2.to_string())?;
         }
@@ -1998,12 +2043,24 @@ pub fn clipboard_list(
     clipboard::list(&conn, keyword.as_deref(), limit.unwrap_or(50)).map_err(err_str)
 }
 
+/// 按条目类型把内容写入系统剪贴板（文本 / 图片 / 文件）
+fn set_item_clipboard(item: &ClipboardItem) -> Result<(), String> {
+    match item.kind.as_str() {
+        "image" => {
+            let path = item.image_path.as_deref().ok_or("图片快照缺失")?;
+            crate::clipboard::set_clipboard_image(path)
+        }
+        "file" => crate::clipboard::set_clipboard_files(&item.file_paths),
+        _ => crate::clipboard::set_clipboard(&item.content, item.html.as_deref()),
+    }
+}
+
 /// 仅复制到系统剪贴板（不注入粘贴）
 #[tauri::command]
 pub fn clipboard_copy(state: State<'_, DbState>, id: i64) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let item = clipboard::get(&conn, id).map_err(err_str)?;
-    crate::clipboard::set_clipboard(&item.content, item.html.as_deref())
+    set_item_clipboard(&item)
 }
 
 /// 粘贴到唤起前窗口：写入剪贴板 → 条目挪到最前 → 本应用主窗口直接插入 / 外部窗口注入 Ctrl+V
@@ -2011,10 +2068,15 @@ pub fn clipboard_copy(state: State<'_, DbState>, id: i64) -> Result<(), String> 
 pub fn clipboard_paste(app: tauri::AppHandle, state: State<'_, DbState>, id: i64) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let item = clipboard::get(&conn, id).map_err(err_str)?;
-    crate::clipboard::set_clipboard(&item.content, item.html.as_deref())?;
+    set_item_clipboard(&item)?;
     // 使用即前置：粘贴过的条目刷新时间挪到列表最前，配合入库去重不会产生重复条目
     clipboard::touch(&conn, id).map_err(err_str)?;
-    crate::clipboard::paste_to_previous_window(&app, &item.content, item.html.as_deref());
+    // 文本走主窗口 JS 直插 + 外部窗口 Ctrl+V；图片/文件统一走 Ctrl+V 注入（content 传空以绕过主窗口直插分支）
+    if item.kind == "text" {
+        crate::clipboard::paste_to_previous_window(&app, &item.content, item.html.as_deref());
+    } else {
+        crate::clipboard::paste_to_previous_window(&app, "", None);
+    }
     Ok(())
 }
 
@@ -2027,18 +2089,31 @@ pub fn clipboard_toggle_pin(state: State<'_, DbState>, id: i64) -> Result<Clipbo
 #[tauri::command]
 pub fn clipboard_delete(state: State<'_, DbState>, id: i64) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
+    // 删除前清理图片快照文件，避免磁盘泄漏
+    if let Ok(item) = clipboard::get(&conn, id) {
+        if let Some(path) = item.image_path.as_deref() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
     clipboard::delete(&conn, id).map_err(err_str)
 }
 
 #[tauri::command]
 pub fn clipboard_clear(state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
+    // 清空前清理所有图片快照文件
+    if let Ok(paths) = clipboard::image_paths(&conn) {
+        for p in paths {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
     clipboard::clear(&conn).map_err(err_str)
 }
 
 /// 暂停/恢复记录（配置持久化，监听线程每次变更前读取）
 #[tauri::command]
 pub fn clipboard_set_paused(paused: bool) -> Result<(), String> {
+    let _guard = crate::config::lock();
     let mut config = crate::config::load();
     config.clipboard_paused = paused;
     crate::config::save(&config)?;
@@ -2072,10 +2147,41 @@ pub fn set_clipboard_paste_method(method: String) -> Result<String, String> {
     if !["auto", "ctrl_v", "ctrl_shift_v", "shift_insert"].contains(&method.as_str()) {
         return Err("无效的粘贴方式".into());
     }
+    let _guard = crate::config::lock();
     let mut config = crate::config::load();
     config.clipboard_paste_method = method.clone();
     crate::config::save(&config)?;
     Ok(config.clipboard_paste_method)
+}
+
+/// 更新图片/文件记录开关（配置持久化，监听线程每次剪贴板变化时读取）
+#[tauri::command]
+pub fn set_clipboard_media_enabled(image: bool, file: bool) -> Result<(), String> {
+    let _guard = crate::config::lock();
+    let mut config = crate::config::load();
+    config.clipboard_image_enabled = image;
+    config.clipboard_file_enabled = file;
+    crate::config::save(&config)?;
+    log::info!(
+        "剪贴板记录开关：图片={} 文件={}",
+        config.clipboard_image_enabled,
+        config.clipboard_file_enabled
+    );
+    Ok(())
+}
+
+/// 导出图片快照到用户指定路径（复制快照文件，不移动）
+#[tauri::command]
+pub fn clipboard_export_image(
+    state: State<'_, DbState>,
+    id: i64,
+    dest: String,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let item = clipboard::get(&conn, id).map_err(err_str)?;
+    let src = item.image_path.as_deref().ok_or("图片快照缺失")?;
+    std::fs::copy(src, &dest).map_err(|e| format!("保存图片失败: {}", e))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2095,6 +2201,7 @@ pub fn clipboard_get_info(state: State<'_, DbState>) -> Result<ClipboardInfo, St
 /// 更新剪贴板全局快捷键（注册/反注册与配置持久化）
 #[tauri::command]
 pub fn set_clipboard_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    let _guard = crate::config::lock();
     let shortcut = value.trim();
     if shortcut.is_empty() {
         return Err("快捷键不能为空".into());
@@ -2140,6 +2247,7 @@ pub fn set_clipboard_retention(
 ) -> Result<(), String> {
     let max_items = max_items.clamp(20, 5000);
     let ttl_days = ttl_days.clamp(1, 365);
+    let _guard = crate::config::lock();
     let mut config = crate::config::load();
     config.clipboard_max_items = max_items;
     config.clipboard_ttl_days = ttl_days;

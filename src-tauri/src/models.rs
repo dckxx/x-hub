@@ -86,7 +86,7 @@ pub struct Snippet {
     pub updated_at: String,
 }
 
-/// 剪贴板历史单条（v1 仅文本；html 为可选富文本片段，粘贴时优先还原格式）
+/// 剪贴板历史单条（文本 / 图片 / 文件三类型；html 为可选富文本片段，粘贴时优先还原格式）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipboardItem {
     pub id: i64,
@@ -96,6 +96,12 @@ pub struct ClipboardItem {
     /// 来源应用（记录时取前台窗口所属进程名）
     pub source_app: Option<String>,
     pub is_pinned: bool,
+    /// 条目类型：text / image / file
+    pub kind: String,
+    /// 图片快照文件路径（kind=image 时非空，位于 app_data_dir/clipboard/images/）
+    pub image_path: Option<String>,
+    /// 文件路径列表（kind=file 时非空）
+    pub file_paths: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }

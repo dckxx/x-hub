@@ -27,6 +27,16 @@ pub fn list(conn: &Connection) -> Result<Vec<Note>> {
     rows.collect()
 }
 
+/// 笔记列表（仅元信息，不拉 content）：用于外部保存速记后主窗口刷新列表，
+/// 避免每次刷新都全量读取正文，数据量大时省内存省 IO。
+pub fn list_meta(conn: &Connection) -> Result<Vec<Note>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, '', created_at, updated_at FROM notes ORDER BY updated_at DESC, id DESC",
+    )?;
+    let rows = stmt.query_map([], row_to_note)?;
+    rows.collect()
+}
+
 pub fn update(conn: &Connection, id: i64, title: &str, content: &str) -> Result<Note> {
     conn.execute(
         "UPDATE notes SET title = ?1, content = ?2, updated_at = ?3 WHERE id = ?4",

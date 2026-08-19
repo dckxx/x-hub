@@ -2,8 +2,19 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::models::ChatModelConfig;
+
+/// 全局配置写锁：串行化所有「读-改-写」配置命令。
+/// 防止并发下旧快照互相覆盖——典型事故：`save_chat_models` 刚把新模型写入 app.json，
+/// 另一个命令用启动时读到的旧 `chat_models`（空/过期）整体覆写，导致配置的供应商「消失」。
+static CONFIG_LOCK: Mutex<()> = Mutex::new(());
+
+/// 获取配置写锁（所有读-改-写配置的调用点都必须持有它）
+pub fn lock() -> MutexGuard<'static, ()> {
+    CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowState {
@@ -76,6 +87,12 @@ pub struct AppConfig {
     /// 粘贴快捷键方式：auto(自动检测终端) / ctrl_v / ctrl_shift_v / shift_insert
     #[serde(default = "default_paste_method")]
     pub clipboard_paste_method: String,
+    /// 记录剪贴板图片（复制图片时落盘快照进历史，默认开启）
+    #[serde(default = "default_true")]
+    pub clipboard_image_enabled: bool,
+    /// 记录剪贴板文件（复制文件时记录路径进历史，默认开启）
+    #[serde(default = "default_true")]
+    pub clipboard_file_enabled: bool,
     /// 全局字体缩放系数（0.85–1.30，默认 1.0）
     #[serde(default = "one")]
     pub font_scale: f64,
@@ -137,6 +154,8 @@ impl Default for AppConfig {
             clipboard_ttl_days: 7,
             clipboard_paused: false,
             clipboard_paste_method: "auto".to_string(),
+            clipboard_image_enabled: true,
+            clipboard_file_enabled: true,
             font_scale: 1.0,
             font_sticky: 1.0,
             font_notes: 1.0,

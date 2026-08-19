@@ -2,8 +2,10 @@
 import { inject, onMounted, ref } from 'vue'
 import { ChevronDown, Copy, Eye, EyeOff, FlaskConical, ListPlus, Pencil, Plus, Trash2, X } from 'lucide-vue-next'
 import { isTauri, tauriApi, type ChatModelConfig } from '../api/tauri'
+import { useStore } from '../stores/workbench'
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
+const store = useStore()
 
 // ---- 供应商编辑态（一个供应商 = 一个 base_url + 共享 API Key + 多个模型） ----
 interface ProviderEdit {
@@ -30,6 +32,8 @@ const saving = ref(false)
 function groupKey(m: ChatModelConfig): string {
   const name = (m.provider_name ?? '').trim()
   const base = (m.base_url ?? '').trim()
+  // 一个供应商 = 一个供应商名称 + 多个模型；分组以名称为准：
+  // 多账号可能共用同一个 base_url，但供应商名称不同，必须各自成组
   return name || base
 }
 
@@ -241,8 +245,13 @@ function toggleFetched(p: ProviderEdit, id: string) {
   else p.selected.add(id)
 }
 
-// 把勾选的模型加入当前供应商
+// 把勾选的模型加入当前供应商（供应商名称不能为空，否则无法保存）
 function addSelected(p: ProviderEdit) {
+  const name = p.providerName.trim()
+  if (!name) {
+    p.msg = '请先填写供应商名称，再添加模型'
+    return
+  }
   const ids = p.fetched.filter((id) => p.selected.has(id))
   if (ids.length === 0) return
   for (const id of ids) {
@@ -251,7 +260,7 @@ function addSelected(p: ProviderEdit) {
     p.models.push({
       id: 'm' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
       name: id,
-      provider_name: p.providerName.trim() || id,
+      provider_name: name,
       base_url: p.baseUrl.trim(),
       model: id,
       api_key: '',
@@ -287,9 +296,26 @@ function collectAll(): ChatModelConfig[] {
 
 async function saveAll() {
   if (!isTauri() || saving.value) return
+  // 供应商名称约束：不能为空、不能重复（无模型的空卡片不参与校验）
+  const seen = new Set<string>()
+  for (const p of providers.value) {
+    if (p.models.length === 0) continue
+    const n = p.providerName.trim()
+    if (!n) {
+      showToast('供应商名称不能为空，请先填写')
+      return
+    }
+    if (seen.has(n)) {
+      showToast(`供应商名称不能重复：${n}`)
+      return
+    }
+    seen.add(n)
+  }
   saving.value = true
   try {
-    await tauriApi.saveChatModels(collectAll())
+    const saved = await tauriApi.saveChatModels(collectAll())
+    // 同步进内存快照：后续任意 saveConfig 都带着最新模型，不会被旧快照覆盖
+    store.setChatModels(saved)
     showToast('供应商配置已保存')
     await loadProviders()
   } catch (e) {

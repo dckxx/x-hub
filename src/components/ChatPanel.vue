@@ -22,6 +22,9 @@ const messages = ref<ChatMessage[]>([])
 const input = ref('')
 const sending = ref(false)
 const streamingContent = ref('')
+// 流式渲染节流产物：每次增量不再全量重解析 markdown，按 ~80ms 节流刷新，
+// 避免长回复 O(n²) 的 marked 重解析与整块 v-html 替换把主线程卡死、反压流式推送
+const streamHtml = ref('')
 const streamError = ref('')
 const models = ref<ChatModelConfig[]>([])
 const selectedModel = ref('')
@@ -254,8 +257,11 @@ async function send() {
     await tauriApi.sendChatMessage(activeSessionId.value, content, (e: ChatStreamEvent) => {
       if (e.type === 'chunk') {
         streamingContent.value += e.content
+        scheduleStreamRender()
         scrollToBottom()
       } else if (e.type === 'done') {
+        cancelStreamRender()
+        streamHtml.value = ''
         // 用后端落库的权威消息替换占位回复
         const i = messages.value.findIndex((m) => m.id === userMsg.id)
         messages.value = [...messages.value.slice(0, i + 1), e.message]
@@ -272,13 +278,16 @@ async function send() {
         }
         scrollToBottom(true)
       } else if (e.type === 'error') {
+        cancelStreamRender()
         streamError.value = e.message
         if (e.partial) streamingContent.value = e.partial
+        streamHtml.value = renderMd(streamingContent.value)
         sending.value = false
         scrollToBottom(true)
       }
     })
   } catch (err) {
+    cancelStreamRender()
     streamError.value = String(err)
     sending.value = false
   }
@@ -334,6 +343,28 @@ mdRenderer.code = ({ text, lang }) => {
 function renderMd(text: string): string {
   if (!text) return ''
   return marked.parse(text, { async: false, renderer: mdRenderer }) as string
+}
+
+// ---- 流式渲染节流 ----
+// 首个 chunk 立即渲染（保住首字延迟手感），后续 ~80ms 内合并多次增量只重渲染一次
+let lastRenderAt = 0
+let renderTimer: number | undefined
+function scheduleStreamRender() {
+  if (renderTimer) return
+  const now = performance.now()
+  const delay = lastRenderAt === 0 ? 0 : Math.max(0, 80 - (now - lastRenderAt))
+  renderTimer = window.setTimeout(() => {
+    renderTimer = undefined
+    lastRenderAt = performance.now()
+    streamHtml.value = renderMd(streamingContent.value)
+  }, delay)
+}
+// 结束/出错时清掉挂起的节流定时器，避免卸载后写入
+function cancelStreamRender() {
+  if (renderTimer) {
+    window.clearTimeout(renderTimer)
+    renderTimer = undefined
+  }
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -417,6 +448,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  cancelStreamRender()
   window.removeEventListener('click', onWindowClick)
   window.removeEventListener('keydown', onWindowKeydown)
   window.removeEventListener('resize', onWindowResize)
@@ -490,7 +522,7 @@ function autosize() {
           <div v-if="sending" class="msg ai">
             <div class="ava">A</div>
             <div v-if="streamingContent" class="bubble streaming md">
-              <span v-html="renderMd(streamingContent)"></span><span class="cursor"></span>
+              <span v-html="streamHtml"></span><span class="cursor"></span>
             </div>
             <div v-else class="bubble streaming">
               <span class="dots">思考中<span>.</span><span>.</span><span>.</span></span><span class="cursor"></span>

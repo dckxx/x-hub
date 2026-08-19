@@ -68,6 +68,20 @@ pub fn list_messages(conn: &Connection, session_id: i64) -> Result<Vec<ChatMessa
     rows.collect()
 }
 
+/// 最近 N 条消息（按 id 正序返回，用于发送请求时的上下文窗口）。
+/// 长对话只取最近一段作为模型上下文，避免全量历史带来的内存尖峰与请求体膨胀。
+pub fn list_recent_messages(conn: &Connection, session_id: i64, limit: i64) -> Result<Vec<ChatMessage>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, session_id, role, content, created_at FROM chat_messages
+         WHERE session_id = ?1
+         ORDER BY id DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![session_id, limit], row_to_message)?;
+    let mut msgs: Vec<ChatMessage> = rows.collect::<Result<_, _>>()?;
+    msgs.reverse();
+    Ok(msgs)
+}
+
 pub fn add_message(
     conn: &Connection,
     session_id: i64,

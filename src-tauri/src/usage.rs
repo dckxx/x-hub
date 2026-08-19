@@ -64,19 +64,16 @@ fn sync_from_messages(own: &Connection, src: &Connection, cursor: i64) -> Result
          WHERE time_created > ?1
          ORDER BY time_created ASC",
     )?;
-    let rows: Vec<(String, Option<String>, i64, String)> = stmt
-        .query_map(params![cursor], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
+    // 游标逐行迭代插入：不把全量结果 collect 进内存，首次同步大批量数据时
+    // 边读边写、内存占用恒定，避免一次性载入整个历史带来的峰值。
+    let mut rows = stmt.query(params![cursor])?;
     let mut inserted: i64 = 0;
     let mut last_created: i64 = cursor;
-    for (message_id, session_id, time_created, data) in rows {
+    while let Some(row) = rows.next()? {
+        let message_id: String = row.get(0)?;
+        let session_id: Option<String> = row.get(1)?;
+        let time_created: i64 = row.get(2)?;
+        let data: String = row.get(3)?;
         let Some(usage) = parse_message_usage(&data) else { continue };
         own.execute(
             "INSERT OR REPLACE INTO ai_usage
@@ -143,25 +140,21 @@ fn sync_from_session(
          WHERE tokens_input IS NOT NULL AND time_updated > ?1
          ORDER BY time_updated ASC",
     )?;
-    let rows: Vec<(String, i64, i64, i64, i64, i64, f64, i64, i64, Option<String>)> = stmt
-        .query_map(params![cursor], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, f64>(6)?,
-                row.get::<_, i64>(7)?,
-                row.get::<_, i64>(8)?,
-                row.get::<_, Option<String>>(9)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
+    // 游标逐行迭代插入：避免全量 collect 的内存峰值（首次同步大量会话时尤其明显）
+    let mut rows = stmt.query(params![cursor])?;
     let mut inserted: i64 = 0;
     let mut last_updated: i64 = cursor;
-    for (session_id, input, output, reasoning, cache_read, cache_write, cost, created, updated, model) in rows {
+    while let Some(row) = rows.next()? {
+        let session_id: String = row.get(0)?;
+        let input: i64 = row.get(1)?;
+        let output: i64 = row.get(2)?;
+        let reasoning: i64 = row.get(3)?;
+        let cache_read: i64 = row.get(4)?;
+        let cache_write: i64 = row.get(5)?;
+        let cost: f64 = row.get(6)?;
+        let created: i64 = row.get(7)?;
+        let updated: i64 = row.get(8)?;
+        let model: Option<String> = row.get(9)?;
         let (provider, model_name) = parse_model(&model);
         // 旧库无 message_id，用 session_id 占位保证唯一
         own.execute(

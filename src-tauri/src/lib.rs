@@ -172,6 +172,7 @@ fn persist_window_state(app: &tauri::AppHandle) {
         }
         if let Ok(pos) = window.outer_position() {
             if let Ok(size) = window.inner_size() {
+                let _guard = config::lock();
                 let mut cfg = config::load();
                 cfg.window.x = Some(pos.x as f64);
                 cfg.window.y = Some(pos.y as f64);
@@ -297,6 +298,9 @@ pub fn run() {
             // 启动剪贴板监听线程（启动零加载历史，仅剪贴板变化时落库）
             clipboard::start_monitor(app.handle().clone());
 
+            // 启动剪贴板延迟窗口操作 worker（粘贴/归还焦点统一串行执行，避免频繁 spawn 短命线程）
+            clipboard::init_win_op_worker();
+
             // 关闭事件：拦截默认关闭，改为隐藏至托盘
             if let Some(window) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
@@ -336,6 +340,7 @@ pub fn run() {
             commands::create_note,
             commands::update_note,
             commands::delete_note,
+            commands::list_notes,
             commands::list_todos,
             commands::create_todo,
             commands::toggle_todo,
@@ -415,6 +420,8 @@ commands::set_chat_panel,
             commands::clipboard_activate,
             commands::clipboard_hide,
             commands::set_clipboard_paste_method,
+            commands::set_clipboard_media_enabled,
+            commands::clipboard_export_image,
             commands::clipboard_get_info,
             commands::set_clipboard_shortcut,
             commands::set_clipboard_retention,

@@ -7,11 +7,12 @@ pub const DEFAULT_TOGGLE_SHORTCUT: &str = "CommandOrControl+Shift+Space";
 #[cfg(not(target_os = "macos"))]
 pub const DEFAULT_TOGGLE_SHORTCUT: &str = "Ctrl+Shift+Space";
 
-/// 剪贴板历史浮层默认呼出快捷键（避开 Ctrl+Shift+V「无格式粘贴」等高频组合）
+/// 剪贴板历史浮层默认呼出快捷键。
+/// Windows 用 Ctrl+`（Backquote）：避开 Ctrl+Shift+V「无格式粘贴」等高频组合。
 #[cfg(target_os = "macos")]
 pub const DEFAULT_CLIPBOARD_SHORTCUT: &str = "CommandOrControl+Alt+V";
 #[cfg(not(target_os = "macos"))]
-pub const DEFAULT_CLIPBOARD_SHORTCUT: &str = "Ctrl+Alt+V";
+pub const DEFAULT_CLIPBOARD_SHORTCUT: &str = "Ctrl+`";
 
 /// 判断两个快捷键字符串是否代表同一个物理按键组合
 /// （如 Windows 上 CommandOrControl 与 Ctrl 是同一个键，仅写法不同）

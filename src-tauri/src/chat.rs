@@ -78,16 +78,19 @@ fn load_key_file(model_id: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// 发送一次 OpenAI 兼容流式对话请求，逐段回调 on_chunk
+/// 发送一次 OpenAI 兼容流式对话请求，逐段回调 on_chunk，并把完整回复累积到 out
 ///
 /// - 协议：`POST {base_url}/chat/completions`，`stream: true`，SSE 逐行解析
 /// - 兼容：DeepSeek / OpenAI / 通义 / Moonshot / Ollama(vLLM, one-api 中转) 等一切
 ///   OpenAI 兼容实现，不绑定任何厂商 SDK
+/// - out 由调用方持有并持续追加，流式期间不产生第二份全量副本（成功即完整回复，
+///   出错时保留已生成部分供前端展示）
 pub async fn stream_chat<F>(
     model: &ChatModelConfig,
     messages: &[ChatMessage],
+    out: &mut String,
     mut on_chunk: F,
-) -> Result<(String, ChatUsage), String>
+) -> Result<ChatUsage, String>
 where
     F: FnMut(String) -> Result<(), String>,
 {
@@ -155,8 +158,13 @@ where
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
 
     let mut reader = BufReader::new(tokio_util::io::StreamReader::new(stream));
-    let mut full = String::new();
     let mut usage = ChatUsage::default();
+    // 流式推送攒批：首段立即推（保住首字延迟），后续增量先攒入 pending，
+    // 达到 ≥64 字符或间隔 ≥40ms 才合并推送一次——避免几千个 1~4 字符的小 chunk
+    // 逐个走 IPC，把主线程/渲染成本摊薄到 ~25 次/s，长回复整体明显更跟手
+    let mut pending = String::new();
+    let mut last_flush = std::time::Instant::now();
+    let mut sent_any = false;
     loop {
         let mut line = String::new();
         let n = reader
@@ -185,14 +193,29 @@ where
             }
             if let Some(delta) = parsed["choices"][0]["delta"]["content"].as_str() {
                 if !delta.is_empty() {
-                    full.push_str(delta);
-                    on_chunk(delta.to_string()).map_err(|e| e)?;
+                    out.push_str(delta);
+                    if !sent_any {
+                        sent_any = true;
+                        on_chunk(delta.to_string()).map_err(|e| e)?;
+                        last_flush = std::time::Instant::now();
+                    } else {
+                        pending.push_str(delta);
+                        if pending.len() >= 64 || last_flush.elapsed().as_millis() >= 40 {
+                            let batch = std::mem::take(&mut pending);
+                            on_chunk(batch).map_err(|e| e)?;
+                            last_flush = std::time::Instant::now();
+                        }
+                    }
                 }
             }
         }
     }
+    // 结束时补推残留的批量增量
+    if !pending.is_empty() {
+        on_chunk(pending).map_err(|e| e)?;
+    }
 
-    Ok((full, usage))
+    Ok(usage)
 }
 
 /// 解析 OpenAI 兼容 usage 字段（含 DeepSeek 的 prompt_cache_hit_tokens 别名）

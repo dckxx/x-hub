@@ -175,6 +175,9 @@ fn migrate(conn: &Connection) -> Result<()> {
           html TEXT,
           source_app TEXT,
           is_pinned INTEGER NOT NULL DEFAULT 0,
+          kind TEXT NOT NULL DEFAULT 'text',
+          image_path TEXT,
+          file_paths TEXT,
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
           updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
         );
@@ -286,6 +289,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         )?;
         log::info!("ai_usage 表升级为 message 粒度，等待重新同步");
         // 旧游标是 session.time_updated，新游标语义是 message.time_created，需归零全量重同步
+        let _guard = crate::config::lock();
         let mut cfg = crate::config::load();
         cfg.usage_sync_cursor = 0;
         let _ = crate::config::save(&cfg);
@@ -306,6 +310,24 @@ fn migrate(conn: &Connection) -> Result<()> {
         if !chat_cols.iter().any(|c| c == col) {
             conn.execute(
                 &format!("ALTER TABLE chat_sessions ADD COLUMN {col} {def}"),
+                [],
+            )?;
+        }
+    }
+
+    // 剪贴板历史从「纯文本」升级为「文本/图片/文件」三类型：逐列补齐（ALTER TABLE ADD COLUMN 幂等）
+    let clip_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(clipboard_history)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    for (col, def) in [
+        ("kind", "TEXT NOT NULL DEFAULT 'text'"),
+        ("image_path", "TEXT"),
+        ("file_paths", "TEXT"),
+    ] {
+        if !clip_cols.iter().any(|c| c == col) {
+            conn.execute(
+                &format!("ALTER TABLE clipboard_history ADD COLUMN {col} {def}"),
                 [],
             )?;
         }

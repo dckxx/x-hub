@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { convertFileSrc } from '@tauri-apps/api/core'
+import { save } from '@tauri-apps/plugin-dialog'
 import { emit, listen } from '@tauri-apps/api/event'
-import { Boxes, Copy, FileText, Pin, PinOff, Search, Trash2 } from 'lucide-vue-next'
+import { Boxes, Copy, Download, FileText, Pin, PinOff, Search, Trash2, X, ZoomIn } from 'lucide-vue-next'
 import { isTauri, tauriApi, type ClipboardInfo, type ClipboardItem } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useTheme } from '../composables/useTheme'
@@ -16,12 +18,15 @@ const keyword = ref('')
 const items = ref<ClipboardItem[]>([])
 const selected = ref(0)
 const loading = ref(false)
-const info = ref<ClipboardInfo>({ paused: false, max_items: 500, ttl_days: 7, total: 0, shortcut: 'Ctrl+Alt+V' })
+const info = ref<ClipboardInfo>({ paused: false, max_items: 500, ttl_days: 7, total: 0, shortcut: 'Ctrl+`' })
 const listRef = ref<HTMLElement | null>(null)
 const toasts = ref<{ id: number; text: string }[]>([])
 
 // 右键菜单状态
 const ctx = ref<{ x: number; y: number; item: ClipboardItem } | null>(null)
+
+// 图片预览状态
+const preview = ref<ClipboardItem | null>(null)
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 let toastId = 0
@@ -200,6 +205,34 @@ async function onDelete(item: ClipboardItem) {
   }
 }
 
+function previewImage(item: ClipboardItem) {
+  if (!item.image_path) return
+  ctx.value = null
+  preview.value = item
+}
+
+function closePreview() {
+  preview.value = null
+}
+
+async function onSaveImage(item: ClipboardItem) {
+  if (!isTauri()) return
+  const src = item.image_path
+  if (!src) return
+  const name = src.split(/[\\/]/).pop() ?? 'image.png'
+  try {
+    const dest = await save({
+      defaultPath: name,
+      filters: [{ name: '图片', extensions: ['png', 'bmp'] }],
+    })
+    if (!dest) return
+    await tauriApi.clipboardExportImage(item.id, dest)
+    toast('图片已保存')
+  } catch (e) {
+    toast(`保存失败：${String(e)}`)
+  }
+}
+
 async function onClear() {
   if (!isTauri()) return
   try {
@@ -265,6 +298,11 @@ function scrollSelectedIntoView() {
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') {
     e.preventDefault()
+    // 图片预览打开时先关预览，否则收起浮层
+    if (preview.value) {
+      preview.value = null
+      return
+    }
     // 收起并恢复唤起前窗口焦点（Esc 时前台仍是浮层，需主动归还焦点）
     if (isTauri()) void tauriApi.clipboardHide()
     else void appWindow?.hide()
@@ -309,9 +347,22 @@ function relTime(ts: string): string {
 }
 
 function typeLabel(item: ClipboardItem): string {
+  if (item.kind === 'image') return '图片'
+  if (item.kind === 'file') return '文件'
   if (/^https?:\/\//.test(item.content.trim())) return '链接'
   if (/[{}[\]]|=>|fn\s*\(|function|class\s+\w/.test(item.content)) return '代码'
   return '文本'
+}
+
+function imageSrc(item: ClipboardItem | null): string {
+  if (!item?.image_path) return ''
+  return isTauri() ? convertFileSrc(item.image_path) : ''
+}
+
+function fileName(item: ClipboardItem): string {
+  const first = item.file_paths[0] ?? ''
+  const name = first.split(/[\\/]/).pop() ?? ''
+  return name || first
 }
 </script>
 
@@ -354,9 +405,27 @@ function typeLabel(item: ClipboardItem): string {
             @contextmenu="onContextMenu($event, item)"
           >
             <Pin v-if="item.is_pinned" :size="12" :stroke-width="2.2" class="cb-pin" />
+            <img
+              v-else-if="item.kind === 'image' && imageSrc(item)"
+              :src="imageSrc(item)"
+              class="cb-thumb"
+              loading="lazy"
+              alt=""
+              title="点击放大预览"
+              @mousedown.stop="previewImage(item)"
+            />
             <span v-else class="cb-type">{{ typeLabel(item) }}</span>
             <div class="cb-body">
-              <div class="cb-content" :title="item.content">{{ item.content }}</div>
+              <template v-if="item.kind === 'image'">
+                <div class="cb-content">图片</div>
+              </template>
+              <template v-else-if="item.kind === 'file'">
+                <div class="cb-content" :title="item.file_paths.join('\n')">{{ fileName(item) }}</div>
+                <div v-if="item.file_paths.length > 1" class="cb-file-count">
+                  {{ item.file_paths.length }} 个文件
+                </div>
+              </template>
+              <div v-else class="cb-content" :title="item.content">{{ item.content }}</div>
               <div class="cb-meta">
                 <span v-if="item.source_app" class="cb-src">{{ item.source_app }}</span>
                 <span v-if="item.source_app" class="cb-dot">·</span>
@@ -367,10 +436,10 @@ function typeLabel(item: ClipboardItem): string {
               <button class="cb-a" title="复制" @click.stop="onCopy(item)">
                 <Copy :size="14" :stroke-width="2" />
               </button>
-              <button class="cb-a" title="存为速记" @click.stop="onSaveNote(item)">
+              <button v-if="item.kind === 'text'" class="cb-a" title="存为速记" @click.stop="onSaveNote(item)">
                 <FileText :size="14" :stroke-width="2" />
               </button>
-              <button class="cb-a" title="加入提示词库" @click.stop="onSavePrompt(item)">
+              <button v-if="item.kind === 'text'" class="cb-a" title="加入提示词库" @click.stop="onSavePrompt(item)">
                 <Boxes :size="14" :stroke-width="2" />
               </button>
               <button class="cb-a danger" title="删除" @click.stop="onDelete(item)">
@@ -414,10 +483,16 @@ function typeLabel(item: ClipboardItem): string {
           <div class="cb-ctx-item" @click="onCtxAction(() => onCopy(ctx!.item))">
             <Copy :size="13" :stroke-width="2" /> 复制
           </div>
-          <div class="cb-ctx-item" @click="onCtxAction(() => onSaveNote(ctx!.item))">
+          <div v-if="ctx.item.kind === 'image'" class="cb-ctx-item" @click="previewImage(ctx.item)">
+            <ZoomIn :size="13" :stroke-width="2" /> 查看大图
+          </div>
+          <div v-if="ctx.item.kind === 'image'" class="cb-ctx-item" @click="onCtxAction(() => onSaveImage(ctx!.item))">
+            <Download :size="13" :stroke-width="2" /> 保存图片
+          </div>
+          <div v-if="ctx.item.kind === 'text'" class="cb-ctx-item" @click="onCtxAction(() => onSaveNote(ctx!.item))">
             <FileText :size="13" :stroke-width="2" /> 存为速记
           </div>
-          <div class="cb-ctx-item" @click="onCtxAction(() => onSavePrompt(ctx!.item))">
+          <div v-if="ctx.item.kind === 'text'" class="cb-ctx-item" @click="onCtxAction(() => onSavePrompt(ctx!.item))">
             <Boxes :size="13" :stroke-width="2" /> 加入提示词库
           </div>
           <div class="cb-ctx-sep"></div>
@@ -428,6 +503,20 @@ function typeLabel(item: ClipboardItem): string {
           </div>
           <div class="cb-ctx-item danger" @click="onCtxAction(() => onDelete(ctx!.item))">
             <Trash2 :size="13" :stroke-width="2" /> 删除
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- 图片预览 -->
+    <Teleport to="body">
+      <Transition name="cb-fade">
+        <div v-if="preview" class="cb-preview" @click="closePreview">
+          <div class="cb-preview-card" @click.stop>
+            <img :src="imageSrc(preview)" class="cb-preview-img" alt="" />
+            <button class="cb-preview-close" title="关闭" @click="closePreview">
+              <X :size="16" :stroke-width="2" />
+            </button>
           </div>
         </div>
       </Transition>
@@ -570,6 +659,16 @@ function typeLabel(item: ClipboardItem): string {
   margin-top: 1px;
   letter-spacing: 0.02em;
 }
+.cb-thumb {
+  flex: none;
+  width: 42px;
+  height: 42px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-card-soft);
+  margin-top: 1px;
+}
 .cb-body {
   flex: 1;
   min-width: 0;
@@ -581,6 +680,11 @@ function typeLabel(item: ClipboardItem): string {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.cb-file-count {
+  margin-top: 3px;
+  font-size: 0.6875rem;
+  color: var(--text-3);
 }
 .cb-meta {
   display: flex;
@@ -775,6 +879,52 @@ function typeLabel(item: ClipboardItem): string {
   height: 1px;
   background: var(--border-soft);
   margin: 4px 6px;
+}
+
+/* 图片预览 */
+.cb-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+  padding: 16px;
+}
+.cb-preview-card {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cb-preview-img {
+  max-width: 100%;
+  max-height: calc(100vh - 32px);
+  border-radius: 10px;
+  box-shadow: var(--shadow-dock);
+  object-fit: contain;
+}
+.cb-preview-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.cb-preview-close:hover {
+  background: rgba(0, 0, 0, 0.65);
 }
 
 /* Toast */

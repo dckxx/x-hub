@@ -70,6 +70,12 @@ export interface ClipboardItem {
   /** 来源应用 */
   source_app: string | null
   is_pinned: boolean
+  /** 条目类型：text / image / file */
+  kind: 'text' | 'image' | 'file'
+  /** 图片快照文件路径（kind=image 时非空） */
+  image_path: string | null
+  /** 文件路径列表（kind=file 时非空） */
+  file_paths: string[]
   created_at: string
   updated_at: string
 }
@@ -119,6 +125,10 @@ export interface AppConfig {
   clipboard_paused: boolean
   /** 粘贴快捷键方式：auto / ctrl_v / ctrl_shift_v / shift_insert */
   clipboard_paste_method: string
+  /** 记录剪贴板图片（默认开启） */
+  clipboard_image_enabled: boolean
+  /** 记录剪贴板文件（默认开启） */
+  clipboard_file_enabled: boolean
   /** 全局字体缩放系数（0.85–1.30，默认 1.0） */
   font_scale: number
   /** 便签模块字体缩放系数（相对全局的额外缩放，默认 1.0） */
@@ -362,6 +372,7 @@ export const tauriApi = {
   updateNote: (id: number, title: string, content: string) =>
     invoke<Note>('update_note', { id, title, content }),
   deleteNote: (id: number) => invoke<void>('delete_note', { id }),
+  listNotes: () => invoke<Note[]>('list_notes'),
   searchAll: (keyword: string) => invoke<SearchResult>('search_all', { keyword }),
   listTodos: () => invoke<Todo[]>('list_todos'),
   createTodo: (title: string) => invoke<Todo>('create_todo', { title }),
@@ -502,6 +513,10 @@ export const tauriApi = {
   clipboardDelete: (id: number) => invoke<void>('clipboard_delete', { id }),
   clipboardClear: () => invoke<void>('clipboard_clear'),
   clipboardSetPaused: (paused: boolean) => invoke<void>('clipboard_set_paused', { paused }),
+  setClipboardMediaEnabled: (image: boolean, file: boolean) =>
+    invoke<void>('set_clipboard_media_enabled', { image, file }),
+  clipboardExportImage: (id: number, dest: string) =>
+    invoke<void>('clipboard_export_image', { id, dest }),
   clipboardActivate: () => invoke<void>('clipboard_activate'),
   clipboardHide: () => invoke<void>('clipboard_hide'),
   setClipboardPasteMethod: (method: string) => invoke<string>('set_clipboard_paste_method', { method }),

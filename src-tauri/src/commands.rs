@@ -2256,6 +2256,66 @@ pub fn set_clipboard_retention(
     clipboard::cleanup(&conn).map_err(err_str)
 }
 
+// ---------- 在线服务（天气 / 名言 / 连通性） ----------
+
+/// 外网连通性探活（前端据此切换在线/离线显隐）
+#[tauri::command]
+pub async fn check_connectivity() -> bool {
+    crate::online::check_connectivity().await
+}
+
+/// 获取当前天气：优先用已缓存的经纬度请求；未配置城市/未开启联网返回 None
+#[tauri::command]
+pub async fn get_weather() -> Result<Option<crate::online::WeatherCurrent>, String> {
+    let config = config::load();
+    if !config.online_enabled {
+        return Ok(None);
+    }
+    if config.weather_lat == 0.0 || config.weather_lng == 0.0 {
+        return Ok(None);
+    }
+    let weather =
+        crate::online::fetch_weather(config.weather_lat, config.weather_lng, &config.weather_city)
+            .await?;
+    Ok(Some(weather))
+}
+
+/// 随机获取一条名言（hitokoto）
+#[tauri::command]
+pub async fn get_quote() -> Result<crate::online::Quote, String> {
+    crate::online::fetch_quote().await
+}
+
+/// 按城市名解析经纬度并缓存到配置（设置里手动配城市）
+#[tauri::command]
+pub async fn set_weather_city(city: String) -> Result<crate::online::GeoLocation, String> {
+    let city = city.trim().to_string();
+    if city.is_empty() {
+        return Err("城市名不能为空".to_string());
+    }
+    let loc = crate::online::geocode_city(&city).await?;
+    let _guard = crate::config::lock();
+    let mut config = config::load();
+    config.weather_city = loc.name.clone();
+    config.weather_lat = loc.lat;
+    config.weather_lng = loc.lng;
+    crate::config::save(&config)?;
+    Ok(loc)
+}
+
+/// IP 自动定位并缓存经纬度（设置里「自动定位」按钮）
+#[tauri::command]
+pub async fn locate_weather_by_ip() -> Result<crate::online::GeoLocation, String> {
+    let loc = crate::online::ip_locate().await?;
+    let _guard = crate::config::lock();
+    let mut config = config::load();
+    config.weather_city = loc.name.clone();
+    config.weather_lat = loc.lat;
+    config.weather_lng = loc.lng;
+    crate::config::save(&config)?;
+    Ok(loc)
+}
+
 // ---------- 工具 ----------
 
 fn err_str(e: rusqlite::Error) -> String {

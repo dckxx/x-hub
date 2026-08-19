@@ -106,6 +106,11 @@ export interface AppConfig {
   dashboard_mid_content: string
   countdown_sound: boolean
   clock_quote: string // 时钟卡片语录（可配置，空串回退默认）
+  online_enabled: boolean // 联网功能总开关（默认开）
+  weather_city: string // 天气城市展示名（空串 = 未配置）
+  weather_lat: number // 天气纬度缓存
+  weather_lng: number // 天气经度缓存
+  quote_source: string // 名言来源：online / local
   chat_models: ChatModelConfig[]
   chat_panel_width: number
   chat_panel_open: boolean
@@ -147,6 +152,26 @@ export interface AppInfo {
   version: string
   changelog: string
   latest_section: string
+}
+
+export interface WeatherCurrent {
+  temperature: number
+  apparent_temperature: number
+  relative_humidity: number
+  wind_speed: number
+  weather_code: number
+  city: string
+}
+
+export interface Quote {
+  content: string
+  from: string
+}
+
+export interface GeoLocation {
+  name: string
+  lat: number
+  lng: number
 }
 
 export interface ClientErrorPayload {
@@ -524,4 +549,10 @@ export const tauriApi = {
   setClipboardShortcut: (value: string) => invoke<string>('set_clipboard_shortcut', { value }),
   setClipboardRetention: (maxItems: number, ttlDays: number) =>
     invoke<void>('set_clipboard_retention', { maxItems, ttlDays }),
+  // ---- 在线服务 ----
+  checkConnectivity: () => invoke<boolean>('check_connectivity'),
+  getWeather: () => invoke<WeatherCurrent | null>('get_weather'),
+  getQuote: () => invoke<Quote>('get_quote'),
+  setWeatherCity: (city: string) => invoke<GeoLocation>('set_weather_city', { city }),
+  locateWeatherByIp: () => invoke<GeoLocation>('locate_weather_by_ip'),
 }

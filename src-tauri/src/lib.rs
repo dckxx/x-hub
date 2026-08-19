@@ -8,6 +8,7 @@ mod countdown_window;
 mod db;
 mod models;
 mod notify;
+mod online;
 mod process;
 mod repo;
 mod shortcut;
@@ -426,6 +427,11 @@ commands::set_chat_panel,
             commands::set_clipboard_shortcut,
             commands::set_clipboard_retention,
             sysmon::get_system_info,
+            commands::check_connectivity,
+            commands::get_weather,
+            commands::get_quote,
+            commands::set_weather_city,
+            commands::locate_weather_by_ip,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

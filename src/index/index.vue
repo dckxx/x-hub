@@ -124,6 +124,7 @@ const BOOT_MAX_MS = 4000
 
 onMounted(async () => {
   store.loadInitialData().finally(() => {
+    store.startOnlineMonitor()
     const wait = Math.max(0, BOOT_MIN_MS - (performance.now() - bootStartAt))
     setTimeout(hideBootSplash, wait)
   })
@@ -176,6 +177,7 @@ let unlistenNotesChanged: (() => void) | null = null
 let unlistenSnippetsChanged: (() => void) | null = null
 
 onUnmounted(() => {
+  store.stopOnlineMonitor()
   unlistenStickies?.()
   unlistenCountdownFired?.()
   unlistenCountdownsChanged?.()

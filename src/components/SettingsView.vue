@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Download, Keyboard, Lock, Trash2, Upload } from 'lucide-vue-next'
+import { Download, Keyboard, LocateFixed, Lock, MapPin, Trash2, Upload } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import AppSelect from './AppSelect.vue'
 import AiProviders from './AiProviders.vue'
@@ -22,6 +22,7 @@ const SECTIONS = [
   { id: 'workbench', label: '工作台' },
   { id: 'shortcut', label: '快捷键' },
   { id: 'clipboard', label: '剪贴板' },
+  { id: 'online', label: '联网' },
   { id: 'data', label: '数据' },
   { id: 'about', label: '关于' },
 ] as const
@@ -152,7 +153,64 @@ function commitClockQuote() {
   if (value === savedClockQuote.value) return
   savedClockQuote.value = value
   void store.setClockQuote(value)
-  showToast(value ? '时钟卡片语录已更新' : '时钟卡片语录已恢复默认')
+  showToast(value ? '时钟卡片语录已更新' : '时钟卡片语录已改为随机名言金句')
+}
+
+// ---- 联网 / 在线服务 ----
+const weatherCityInput = ref(store.state.config.weather_city ?? '')
+const weatherSaving = ref(false)
+
+async function onToggleOnline() {
+  if (!isTauri()) return
+  const next = !store.state.config.online_enabled
+  await store.setOnlineEnabled(next)
+  showToast(next ? '已开启联网功能' : '已关闭联网功能')
+}
+
+async function applyWeatherCity() {
+  const city = weatherCityInput.value.trim()
+  if (!city) {
+    showToast('请输入城市名')
+    return
+  }
+  weatherSaving.value = true
+  try {
+    const loc = await store.setWeatherCity(city)
+    weatherCityInput.value = loc.name
+    showToast(`天气已设为 ${loc.name}`)
+  } catch (e) {
+    showToast(`设置城市失败：${String(e)}`)
+  } finally {
+    weatherSaving.value = false
+  }
+}
+
+async function onLocateByIp() {
+  weatherSaving.value = true
+  try {
+    const loc = await store.locateWeatherByIp()
+    weatherCityInput.value = loc.name
+    showToast(`已定位到 ${loc.name}`)
+  } catch (e) {
+    showToast(`自动定位失败：${String(e)}`)
+  } finally {
+    weatherSaving.value = false
+  }
+}
+
+const QUOTE_SOURCE_OPTIONS = [
+  { value: 'online', label: '在线名言（联网时随机，离线回退本地）' },
+  { value: 'local', label: '本地语料（仅内置金句）' },
+] as const
+
+const quoteSource = ref(store.state.config.quote_source ?? 'online')
+
+function onQuoteSourceChange(value: string) {
+  quoteSource.value = value
+  if (!isTauri()) return
+  void store.setQuoteSource(value as 'online' | 'local').then(() => {
+    showToast(value === 'online' ? '名言来源已设为在线' : '名言来源已设为本地语料')
+  })
 }
 
 // ---- 数据备份 / 恢复 ----
@@ -530,7 +588,7 @@ function onAccentInput(e: Event) {
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">时钟卡片语录</span>
-              <span class="setting-desc">工作台时间卡片下方显示的一句话（默认：日拱一卒，功不唐捐。）</span>
+              <span class="setting-desc">工作台时间卡片下方显示的一句话（留空则显示随机名言金句，点击可换一条）</span>
             </div>
             <div class="quote-edit">
               <input
@@ -538,7 +596,7 @@ function onAccentInput(e: Event) {
                 class="field-input"
                 type="text"
                 maxlength="50"
-                placeholder="日拱一卒，功不唐捐。"
+                placeholder="留空显示随机名言金句"
                 spellcheck="false"
                 @blur="commitClockQuote"
                 @keydown.enter="commitClockQuote"
@@ -925,6 +983,77 @@ function onAccentInput(e: Event) {
           </div>
         </section>
 
+        <!-- 联网 -->
+        <section id="sv-sec-online" class="sv-sec" aria-label="联网">
+          <h3 class="sv-sec-title">联网</h3>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">联网功能</span>
+              <span class="setting-desc">开启后：有网时显示天气与在线名言；无网时自动隐藏在线内容（不影响本地功能）</span>
+            </div>
+            <button
+              class="toggle"
+              role="switch"
+              type="button"
+              :aria-checked="store.state.config.online_enabled"
+              :class="{ on: store.state.config.online_enabled }"
+              @click="onToggleOnline"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">天气城市</span>
+              <span class="setting-desc">手动输入城市名（已内置全国主要城市，精确匹配）；IP 自动定位仅供参考、可能不准</span>
+            </div>
+            <div class="weather-edit">
+              <input
+                v-model="weatherCityInput"
+                class="field-input"
+                type="text"
+                maxlength="30"
+                placeholder="输入城市名，如：北京"
+                spellcheck="false"
+                @keydown.enter="applyWeatherCity"
+              />
+              <button
+                class="ghost-btn data-btn"
+                type="button"
+                :disabled="weatherSaving"
+                @click="applyWeatherCity"
+              >
+                <MapPin :size="14" :stroke-width="2" />
+                设置
+              </button>
+              <button
+                class="ghost-btn data-btn"
+                type="button"
+                :disabled="weatherSaving"
+                @click="onLocateByIp"
+              >
+                <LocateFixed :size="14" :stroke-width="2" />
+                自动定位
+              </button>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">名言来源</span>
+              <span class="setting-desc">时钟卡片语录：在线随机名言，或仅用本地内置金句（点击语录可随机换一条）</span>
+            </div>
+            <AppSelect
+              :model-value="quoteSource"
+              :options="QUOTE_SOURCE_OPTIONS"
+              aria-label="名言来源"
+              @update:model-value="onQuoteSourceChange"
+            />
+          </div>
+        </section>
+
         <!-- 数据 -->
         <section id="sv-sec-data" class="sv-sec" aria-label="数据">
           <h3 class="sv-sec-title">数据</h3>
@@ -1201,6 +1330,17 @@ function onAccentInput(e: Event) {
 .quote-edit {
   min-width: 240px;
   flex-shrink: 0;
+}
+.weather-edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 340px;
+  flex-shrink: 0;
+}
+.weather-edit .field-input {
+  flex: 1;
+  min-width: 0;
 }
 .num-edit {
   min-width: 120px;

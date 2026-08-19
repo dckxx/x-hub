@@ -62,6 +62,20 @@ pub struct AppConfig {
     pub countdown_sound: bool,
     /// 时钟卡片语录（工作台时间卡片下方显示的一句话，空串时回退默认）
     pub clock_quote: String,
+    /// 联网功能总开关（默认开启）：有网显示在线内容、无网自动隐藏；关闭后完全不发起网络请求
+    #[serde(default = "default_true")]
+    pub online_enabled: bool,
+    /// 天气城市展示名（空串 = 未配置，天气卡不显示）
+    #[serde(default)]
+    pub weather_city: String,
+    /// 天气经纬度缓存（geocoding / IP 定位后写入；0 表示未配置）
+    #[serde(default)]
+    pub weather_lat: f64,
+    #[serde(default)]
+    pub weather_lng: f64,
+    /// 名言来源：online（在线 hitokoto，离线回退本地语料）/ local（仅本地语料）
+    #[serde(default = "default_quote_source")]
+    pub quote_source: String,
     /// AI 对话自定义模型配置（不绑定厂商，统一 OpenAI 兼容协议；api_key 不落盘）
     pub chat_models: Vec<ChatModelConfig>,
     /// AI 对话右侧面板宽度（320–640px，持久化用户拖拽结果）
@@ -129,6 +143,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_quote_source() -> String {
+    "online".to_string()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -142,7 +160,12 @@ impl Default for AppConfig {
             usage_db_path: None,
             dashboard_mid_content: "countdown".to_string(),
             countdown_sound: false,
-            clock_quote: "日拱一卒，功不唐捐。".to_string(),
+            clock_quote: String::new(),
+            online_enabled: true,
+            weather_city: String::new(),
+            weather_lat: 0.0,
+            weather_lng: 0.0,
+            quote_source: "online".to_string(),
             chat_models: default_chat_models(),
             chat_panel_width: 420.0,
             chat_panel_open: false,
@@ -197,7 +220,11 @@ pub fn load() -> AppConfig {
 pub fn load_from(path: &Path) -> AppConfig {
     match fs::read_to_string(path) {
         Ok(content) => match serde_json::from_str::<AppConfig>(&content) {
-            Ok(config) => config,
+            Ok(config) => {
+                let mut config = config;
+                normalize(&mut config);
+                config
+            }
             Err(_) => {
                 // 配置文件损坏：备份并回退默认
                 let _ = fs::copy(path, path.with_extension("json.bak"));
@@ -207,6 +234,14 @@ pub fn load_from(path: &Path) -> AppConfig {
             }
         },
         Err(_) => AppConfig::default(),
+    }
+}
+
+/// 旧默认语录「日拱一卒」迁移：v0.1.19 起语录改为随机名言金句，
+/// 旧默认值视为「未自定义」，置空以启用随机金句。
+fn normalize(config: &mut AppConfig) {
+    if config.clock_quote == "日拱一卒，功不唐捐。" {
+        config.clock_quote = String::new();
     }
 }
 

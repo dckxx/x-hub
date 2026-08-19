@@ -6,7 +6,9 @@ import {
   type ChatModelConfig,
   type Countdown,
   type DetachedSticky,
+  type GeoLocation,
   type Note,
+  type Quote,
   type Resource,
   type Snippet,
   type Sticky,
@@ -16,6 +18,7 @@ import {
   type Todo,
   type UsageDetail,
   type UsageSummary,
+  type WeatherCurrent,
 } from '../api/tauri'
 
 // 浏览器预览环境的兜底默认值；真实默认由 Rust 端 shortcut.rs 决定
@@ -40,6 +43,9 @@ interface StoreState {
   usageDetail: UsageDetail | null
   usageListening: boolean
   systemInfo: SystemInfo | null
+  online: boolean
+  weather: WeatherCurrent | null
+  quote: Quote | null
   loaded: boolean
 }
 
@@ -68,6 +74,11 @@ const state = reactive<StoreState>({
     dashboard_mid_content: 'countdown',
     countdown_sound: false,
     clock_quote: '',
+    online_enabled: true,
+    weather_city: '',
+    weather_lat: 0,
+    weather_lng: 0,
+    quote_source: 'online',
     chat_models: [],
     chat_panel_width: 420,
     chat_panel_open: false,
@@ -92,6 +103,9 @@ const state = reactive<StoreState>({
   usageDetail: null,
   usageListening: false,
   systemInfo: null,
+  online: false,
+  weather: null,
+  quote: null,
   loaded: false,
 })
 
@@ -689,6 +703,129 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  // ---- 在线服务（天气 / 名言 / 连通性） ----
+  let onlineTimer: ReturnType<typeof setInterval> | null = null
+  let lastWeatherRefresh = 0
+  let failStreak = 0
+
+  /** 探测外网连通性并更新 state.online（滞回：连续 3 次失败才判离线，避免单次抖动） */
+  async function checkOnline(): Promise<boolean> {
+    if (!isTauri()) return false
+    try {
+      const ok = await tauriApi.checkConnectivity()
+      if (ok) {
+        failStreak = 0
+        state.online = true
+      } else {
+        failStreak++
+        if (failStreak >= 3) state.online = false
+      }
+      return state.online
+    } catch {
+      failStreak++
+      if (failStreak >= 3) state.online = false
+      return state.online
+    }
+  }
+
+  /** 拉取天气：未开启联网 / 未配置城市 → 清空（天气卡隐藏）；网络失败保留旧值避免闪烁 */
+  async function refreshWeather() {
+    if (!isTauri()) return
+    if (!state.config.online_enabled || !state.config.weather_lat || !state.config.weather_lng) {
+      state.weather = null
+      return
+    }
+    try {
+      state.weather = await tauriApi.getWeather()
+    } catch {
+      // 网络失败：保留旧值，天气卡不因单次抖动闪烁
+    }
+  }
+
+  /** 拉取名言（仅在线模式且开启联网时请求；失败静默，组件回退本地语料） */
+  async function refreshQuote() {
+    if (!isTauri()) return
+    if (!state.config.online_enabled || state.config.quote_source !== 'online') return
+    try {
+      state.quote = await tauriApi.getQuote()
+    } catch {
+      // 静默：离线/失败时组件回退本地语料
+    }
+  }
+
+  /** 联网功能总开关 */
+  async function setOnlineEnabled(value: boolean) {
+    state.config.online_enabled = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+    if (!value) {
+      state.online = false
+      state.weather = null
+      stopOnlineMonitor()
+    } else {
+      startOnlineMonitor()
+    }
+  }
+
+  /** 名言来源：online（在线 hitokoto）/ local（仅本地语料） */
+  async function setQuoteSource(value: 'online' | 'local') {
+    state.config.quote_source = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+    if (value === 'online') await refreshQuote()
+  }
+
+  /** 手动配城市：后端 geocoding 解析经纬度并缓存，随后刷新天气 */
+  async function setWeatherCity(city: string): Promise<GeoLocation> {
+    const loc = isTauri()
+      ? await tauriApi.setWeatherCity(city)
+      : { name: city, lat: 0, lng: 0 }
+    state.config.weather_city = loc.name
+    state.config.weather_lat = loc.lat
+    state.config.weather_lng = loc.lng
+    await refreshWeather()
+    return loc
+  }
+
+  /** IP 自动定位并缓存经纬度，随后刷新天气 */
+  async function locateWeatherByIp(): Promise<GeoLocation> {
+    const loc = await tauriApi.locateWeatherByIp()
+    state.config.weather_city = loc.name
+    state.config.weather_lat = loc.lat
+    state.config.weather_lng = loc.lng
+    await refreshWeather()
+    return loc
+  }
+
+  /** 启动在线状态监听：立即探测 + 每 60s 探测 + 天气每 30 分钟刷新 */
+  function startOnlineMonitor() {
+    if (onlineTimer || !isTauri()) return
+    const tick = async () => {
+      const prev = state.online
+      const ok = await checkOnline()
+      const now = Date.now()
+      // 天气：首次或距上次刷新 ≥30 分钟
+      if (ok && (state.weather === null || now - lastWeatherRefresh >= 30 * 60_000)) {
+        lastWeatherRefresh = now
+        await refreshWeather()
+      }
+      // 名言：首次上线 / 离线恢复在线时补拉
+      if (ok && (state.quote === null || !prev)) {
+        await refreshQuote()
+      }
+      if (!ok) {
+        state.weather = null
+      }
+    }
+    tick()
+    onlineTimer = setInterval(tick, 60_000)
+  }
+
+  function stopOnlineMonitor() {
+    if (onlineTimer) clearInterval(onlineTimer)
+    onlineTimer = null
+  }
+
   return {
     state: readonly(state),
     loadInitialData,
@@ -751,5 +888,14 @@ export function useStore() {
     loadUsageSummary,
     loadUsageDetail,
     refreshSystemInfo,
+    checkOnline,
+    refreshWeather,
+    refreshQuote,
+    setOnlineEnabled,
+    setQuoteSource,
+    setWeatherCity,
+    locateWeatherByIp,
+    startOnlineMonitor,
+    stopOnlineMonitor,
   }
 }

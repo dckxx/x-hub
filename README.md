@@ -121,6 +121,14 @@ src-tauri/
 <img width="1405" height="905" alt="076e394832d4e0feba0d46ef558bd3ea" src="https://github.com/user-attachments/assets/7f911d2a-bbf4-4d14-8b2d-9921928c55f4" />
 
 
+## 💬 交流群
+
+使用中遇到问题、有功能建议，或想交流效率工具心得，欢迎加入 **x-hub 交流群**：
+
+<img src="docs/wechat-group.png" alt="x-hub 交流群二维码" width="240" />
+
+> 二维码 7 天内有效，过期后重新进入会更新。若二维码失效，请到 [Issues](https://github.com/dckxx/x-hub/issues) 留言获取最新二维码。
+
 ## 📄 License
 
 MIT

@@ -15,6 +15,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 拉取全部历史与 tags：release notes 取自 tag annotation（%(contents)），
+          # 浅克隆不拉 tags 会导致读不到 annotation、正文回退成 commit message
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

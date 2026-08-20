@@ -42,12 +42,17 @@ async function onOpen(r: Resource) {
   <section class="card recent-bar" aria-label="最近使用">
     <header class="rb-header">
       <h3 class="rb-title">
-        <Flame :size="15" :stroke-width="2" aria-hidden="true" />
+        <Flame :size="14" :stroke-width="2" aria-hidden="true" />
         <span>最近使用</span>
       </h3>
-      <button class="rb-more" type="button" @click="emit('goSuda')">
-        全部速达
-        <ArrowRight :size="13" :stroke-width="2" aria-hidden="true" />
+      <button
+        class="rb-more"
+        type="button"
+        title="全部速达"
+        aria-label="全部速达"
+        @click="emit('goSuda')"
+      >
+        <ArrowRight :size="14" :stroke-width="2" aria-hidden="true" />
       </button>
     </header>
 
@@ -106,7 +111,7 @@ async function onOpen(r: Resource) {
 .recent-bar {
   display: flex;
   flex-direction: column;
-  padding: 16px;
+  padding: 12px;
   min-height: 0;
 }
 .rb-header {
@@ -114,30 +119,36 @@ async function onOpen(r: Resource) {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .rb-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 1rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
   margin: 0;
 }
+.rb-title :deep(svg) {
+  color: var(--brand-500);
+}
 .rb-more {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
   border: none;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-3);
-  font-size: 0.75rem;
   cursor: pointer;
-  transition: color 0.18s;
+  transition: background 0.18s, color 0.18s;
 }
 .rb-more:hover {
+  background: var(--bg-card-soft);
   color: var(--brand-500);
 }
 .rb-body {

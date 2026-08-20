@@ -1,25 +1,27 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Download, Keyboard, LocateFixed, Lock, MapPin, Trash2, Upload } from 'lucide-vue-next'
+import { ChevronDown, Download, Keyboard, LocateFixed, Lock, MapPin, Trash2, Upload } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import AppSelect from './AppSelect.vue'
 import AiProviders from './AiProviders.vue'
 import AboutSection from './AboutSection.vue'
 import { useStore } from '../stores/workbench'
 import { reportClientError } from '../utils/error-report'
+import { normalizeShortcutDisplay, useShortcutRecorder } from '../composables/useShortcutRecorder'
 
 const props = defineProps<{ initialSection?: string }>()
+
+const emit = defineEmits<{ (e: 'open-layout-editor'): void }>()
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
 
 // ---- 分类导航（左侧分类 = 右侧区块锚点，点击平滑滚动定位，不做内容切换） ----
 const SECTIONS = [
-  { id: 'general', label: '通用' },
-  { id: 'ai', label: 'AI 助手' },
   { id: 'appearance', label: '外观' },
   { id: 'workbench', label: '工作台' },
+  { id: 'ai', label: 'AI 助手' },
   { id: 'shortcut', label: '快捷键' },
   { id: 'clipboard', label: '剪贴板' },
   { id: 'online', label: '联网' },
@@ -28,7 +30,7 @@ const SECTIONS = [
 ] as const
 
 type SectionId = (typeof SECTIONS)[number]['id']
-const activeSection = ref<SectionId>('general')
+const activeSection = ref<SectionId>('appearance')
 const contentRef = ref<HTMLElement | null>(null)
 
 function goToSection(id: SectionId) {
@@ -56,26 +58,44 @@ function onContentScroll() {
 onMounted(() => contentRef.value?.addEventListener('scroll', onContentScroll))
 onBeforeUnmount(() => contentRef.value?.removeEventListener('scroll', onContentScroll))
 
-const IS_MAC =
-  /Mac|iPhone|iPad/.test(navigator.userAgent) || /Mac|iPhone|iPad/.test(navigator.platform)
+// ---- 快捷键录入：全局 / 剪贴板共用一套录制逻辑（见 composables/useShortcutRecorder.ts） ----
+const {
+  value: shortcut,
+  error: shortcutError,
+  listening: shortcutListening,
+  inputRef: shortcutInputRef,
+  commit: commitShortcut,
+  startListening: startListeningShortcut,
+  onBlur: onShortcutBlur,
+  onKeydown: onShortcutKeydown,
+} = useShortcutRecorder({
+  initial: normalizeShortcutDisplay(store.state.config.global_shortcut),
+  label: '全局快捷键',
+  save: (v) => store.setGlobalShortcut(v),
+  showToast,
+})
 
-function normalizeShortcutDisplay(s: string): string {
-  if (IS_MAC) return s
-  return s
-    .split('+')
-    .map((p) => (p === 'CommandOrControl' ? 'Ctrl' : p))
-    .join('+')
-}
+const {
+  value: clipShortcut,
+  saved: clipSavedShortcut,
+  error: clipError,
+  listening: clipListening,
+  inputRef: clipInputRef,
+  commit: commitClipShortcut,
+  startListening: startListenClipShortcut,
+  onBlur: onClipShortcutBlur,
+  onKeydown: onClipShortcutKeydown,
+} = useShortcutRecorder({
+  initial: normalizeShortcutDisplay(store.state.config.clipboard_shortcut ?? 'Ctrl+`'),
+  label: '剪贴板快捷键',
+  save: (v) => store.setClipboardShortcut(v),
+  showToast,
+})
 
-const shortcut = ref(normalizeShortcutDisplay(store.state.config.global_shortcut))
-const savedShortcut = ref(shortcut.value)
-const shortcutError = ref('')
-const shortcutListening = ref(false)
-const shortcutSaving = ref(false)
-const previousShortcut = ref('')
-const shortcutInputRef = ref<HTMLInputElement | null>(null)
-const pressedShortcutKeys = ref(new Set<string>())
-const shortcutNormalized = computed(() => shortcut.value.trim())
+// inputRef 仅在模板 ref 绑定中使用（把 DOM 输入框连到 recorder 内部，点击「录入」自动聚焦），
+// vue-tsc 不把模板 ref 视为「读取」，这里显式求值一次以通过 noUnusedLocals
+void shortcutInputRef
+void clipInputRef
 
 onMounted(async () => {
   if (!isTauri()) return
@@ -94,22 +114,6 @@ onMounted(async () => {
     }
   }
 })
-
-// ---- 主页面「中上区块」显示内容（Token 统计 / 速记统计 / 待办概览 / 速达数量 / 倒计时） ----
-const DASH_MID_OPTIONS = [
-  { value: 'token', label: 'Token 统计' },
-  { value: 'notes', label: '速记统计' },
-  { value: 'todo', label: '待办概览' },
-  { value: 'resources', label: '速达数量' },
-  { value: 'countdown', label: '倒计时' },
-] as const
-
-function onDashboardMidChange(value: string) {
-  void store.setDashboardMidContent(value)
-  showToast(`主页面中上区块已切换为 ${
-    DASH_MID_OPTIONS.find((o) => o.value === value)?.label ?? value
-  }`)
-}
 
 function onToggleCountdownSound() {
   void store.setCountdownSound(!store.state.config.countdown_sound)
@@ -134,6 +138,9 @@ const FONT_MODULES = [
 ] as const
 
 type FontModuleKey = (typeof FONT_MODULES)[number]['key']
+
+// 字体大小折叠块：默认收起，减少设置页纵向占用
+const fontExpanded = ref(false)
 
 function onFontScaleInput(e: Event) {
   void store.setFontScale(Number((e.target as HTMLInputElement).value))
@@ -251,181 +258,6 @@ async function restoreData() {
   }
 }
 
-// 自动保存：输入回车/失焦或录入完成后调用，无异常即生效，冲突或非法仅行内提示
-async function commitShortcut() {
-  if (!isTauri() || shortcutSaving.value) return
-  const value = shortcutNormalized.value
-  if (!value || value === savedShortcut.value) {
-    shortcutError.value = ''
-    return
-  }
-  shortcutSaving.value = true
-  shortcutError.value = ''
-  try {
-    const saved = await store.setGlobalShortcut(value)
-    savedShortcut.value = normalizeShortcutDisplay(saved)
-    shortcut.value = savedShortcut.value
-    showToast(`快捷键已更新为 ${saved}`)
-  } catch (e) {
-    shortcutError.value = String(e)
-    void reportClientError('设置全局快捷键失败', e)
-  } finally {
-    shortcutSaving.value = false
-  }
-}
-
-function startListeningShortcut() {
-  previousShortcut.value = shortcut.value
-  shortcutListening.value = true
-  shortcut.value = ''
-  pressedShortcutKeys.value = new Set()
-  void nextTick(() => shortcutInputRef.value?.focus())
-}
-
-function onShortcutBlur() {
-  if (shortcutListening.value) {
-    // 录制中焦点离开：取消录制并恢复原值
-    shortcutListening.value = false
-    pressedShortcutKeys.value = new Set()
-    shortcut.value = previousShortcut.value
-    return
-  }
-  void commitShortcut()
-}
-
-function normalizeShortcutKey(e: KeyboardEvent) {
-  // 仅依据 e.key 判断修饰键，切勿使用 e.ctrlKey / e.metaKey 状态判断，
-  // 否则组合键中的普通键（如 Ctrl 下的 K）会被误判为修饰键导致主键丢失
-  switch (e.key) {
-    case 'Control':
-      return IS_MAC ? 'CommandOrControl' : 'Ctrl'
-    case 'Meta':
-      // macOS: Cmd；Windows: Win 键（插件在 Windows 上 Super 才映射 Win）
-      return IS_MAC ? 'CommandOrControl' : 'Super'
-    case 'Alt':
-      return 'Alt'
-    case 'Shift':
-      return 'Shift'
-    case ' ':
-      return 'Space' // 插件只认 "SPACE"，不认空格字符
-    default:
-      return e.key.length === 1 ? e.key.toUpperCase() : e.key
-  }
-}
-
-const MODIFIER_ORDER = ['CommandOrControl', 'Ctrl', 'Super', 'Alt', 'Shift']
-
-function formatShortcutDisplay(keys: Set<string>) {
-  const parts: string[] = []
-  for (const mod of MODIFIER_ORDER) {
-    if (keys.has(mod)) parts.push(mod)
-  }
-  for (const key of keys) {
-    if (!MODIFIER_ORDER.includes(key)) parts.push(key)
-  }
-  return parts.join('+')
-}
-
-function onShortcutKeydown(e: KeyboardEvent) {
-  if (!shortcutListening.value) return
-  e.preventDefault()
-  e.stopPropagation()
-  if (e.key === 'Escape') {
-    shortcutListening.value = false
-    pressedShortcutKeys.value = new Set()
-    shortcut.value = previousShortcut.value
-    return
-  }
-  if (['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) {
-    pressedShortcutKeys.value.add(normalizeShortcutKey(e))
-    shortcut.value = formatShortcutDisplay(pressedShortcutKeys.value)
-    return
-  }
-  // 主键按下即完成录制（一个快捷键只有一个主键），避免后续按键污染组合，随后自动保存
-  pressedShortcutKeys.value.add(normalizeShortcutKey(e))
-  const display = formatShortcutDisplay(pressedShortcutKeys.value)
-  if (!display) return
-  shortcut.value = display
-  shortcutListening.value = false
-  pressedShortcutKeys.value = new Set()
-  void commitShortcut()
-}
-
-// ---- 剪贴板历史快捷键（复用同一套录入逻辑，独立状态） ----
-const clipShortcut = ref('')
-const clipSavedShortcut = ref('')
-const clipError = ref('')
-const clipListening = ref(false)
-const clipSaving = ref(false)
-const clipPrevious = ref('')
-const clipInputRef = ref<HTMLInputElement | null>(null)
-const clipPressedKeys = ref(new Set<string>())
-const clipShortcutNormalized = computed(() => clipShortcut.value.trim())
-
-async function commitClipShortcut() {
-  if (!isTauri() || clipSaving.value) return
-  const value = clipShortcutNormalized.value
-  if (!value || value === clipSavedShortcut.value) {
-    clipError.value = ''
-    return
-  }
-  clipSaving.value = true
-  clipError.value = ''
-  try {
-    const saved = await store.setClipboardShortcut(value)
-    clipSavedShortcut.value = normalizeShortcutDisplay(saved)
-    clipShortcut.value = clipSavedShortcut.value
-    showToast(`剪贴板快捷键已更新为 ${saved}`)
-  } catch (e) {
-    clipError.value = String(e)
-    void reportClientError('设置剪贴板快捷键失败', e)
-  } finally {
-    clipSaving.value = false
-  }
-}
-
-function startListenClipShortcut() {
-  clipPrevious.value = clipShortcut.value
-  clipListening.value = true
-  clipShortcut.value = ''
-  clipPressedKeys.value = new Set()
-  void nextTick(() => clipInputRef.value?.focus())
-}
-
-function onClipShortcutBlur() {
-  if (clipListening.value) {
-    clipListening.value = false
-    clipPressedKeys.value = new Set()
-    clipShortcut.value = clipPrevious.value
-    return
-  }
-  void commitClipShortcut()
-}
-
-function onClipShortcutKeydown(e: KeyboardEvent) {
-  if (!clipListening.value) return
-  e.preventDefault()
-  e.stopPropagation()
-  if (e.key === 'Escape') {
-    clipListening.value = false
-    clipPressedKeys.value = new Set()
-    clipShortcut.value = clipPrevious.value
-    return
-  }
-  if (['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) {
-    clipPressedKeys.value.add(normalizeShortcutKey(e))
-    clipShortcut.value = formatShortcutDisplay(clipPressedKeys.value)
-    return
-  }
-  clipPressedKeys.value.add(normalizeShortcutKey(e))
-  const display = formatShortcutDisplay(clipPressedKeys.value)
-  if (!display) return
-  clipShortcut.value = display
-  clipListening.value = false
-  clipPressedKeys.value = new Set()
-  void commitClipShortcut()
-}
-
 // ---- 剪贴板保留策略 ----
 const clipMaxItems = ref(500)
 const clipTtlDays = ref(7)
@@ -453,20 +285,6 @@ async function onToggleClipboardPause() {
   const next = !store.state.config.clipboard_paused
   await store.setClipboardPaused(next)
   showToast(next ? '剪贴板已暂停记录' : '剪贴板已恢复记录')
-}
-
-async function onToggleClipboardImage() {
-  if (!isTauri()) return
-  const next = !store.state.config.clipboard_image_enabled
-  await store.setClipboardMediaEnabled(next, store.state.config.clipboard_file_enabled)
-  showToast(next ? '已开启图片记录' : '已关闭图片记录')
-}
-
-async function onToggleClipboardFile() {
-  if (!isTauri()) return
-  const next = !store.state.config.clipboard_file_enabled
-  await store.setClipboardMediaEnabled(store.state.config.clipboard_image_enabled, next)
-  showToast(next ? '已开启文件记录' : '已关闭文件记录')
 }
 
 // ---- 粘贴快捷键方式 ----
@@ -565,46 +383,6 @@ function onAccentInput(e: Event) {
 
       <!-- 右侧内容：全量渲染，分类仅作滚动锚点 -->
       <div ref="contentRef" class="sv-content">
-        <!-- 通用 -->
-        <section id="sv-sec-general" class="sv-sec" aria-label="通用">
-          <h3 class="sv-sec-title">通用</h3>
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-name">侧边栏展开功能</span>
-              <span class="setting-desc">开启后侧栏底部显示展开/收起按钮（默认关闭，侧栏默认收起）</span>
-            </div>
-            <button
-              class="toggle"
-              role="switch"
-              type="button"
-              :aria-checked="store.state.config.sidebar_toggle"
-              :class="{ on: store.state.config.sidebar_toggle }"
-              @click="onToggleSidebar"
-            >
-              <span class="toggle-knob"></span>
-            </button>
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-name">时钟卡片语录</span>
-              <span class="setting-desc">工作台时间卡片下方显示的一句话（留空则显示随机名言金句，点击可换一条）</span>
-            </div>
-            <div class="quote-edit">
-              <input
-                v-model="clockQuote"
-                class="field-input"
-                type="text"
-                maxlength="50"
-                placeholder="留空显示随机名言金句"
-                spellcheck="false"
-                @blur="commitClockQuote"
-                @keydown.enter="commitClockQuote"
-              />
-            </div>
-          </div>
-        </section>
-
         <!-- AI 助手 -->
         <section id="sv-sec-ai" class="sv-sec" aria-label="AI 助手">
           <h3 class="sv-sec-title">AI 助手</h3>
@@ -635,6 +413,23 @@ function onAccentInput(e: Event) {
         <!-- 外观 -->
         <section id="sv-sec-appearance" class="sv-sec" aria-label="外观">
           <h3 class="sv-sec-title">外观</h3>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">侧边栏展开功能</span>
+              <span class="setting-desc">开启后侧栏底部显示展开/收起按钮（默认关闭，侧栏默认收起）</span>
+            </div>
+            <button
+              class="toggle"
+              role="switch"
+              type="button"
+              :aria-checked="store.state.config.sidebar_toggle"
+              :class="{ on: store.state.config.sidebar_toggle }"
+              @click="onToggleSidebar"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
           <!-- 主题设置：标签 + 控件布局 -->
           <div class="setting-group theme-group">
             <!-- ① 主题模式 + 明暗模式 -->
@@ -734,39 +529,54 @@ function onAccentInput(e: Event) {
             </div>
           </div>
 
-          <!-- ④ 字体大小：全局 + 单模块（模块系数为相对全局的额外缩放，默认 100%） -->
+          <!-- ④ 字体大小：全局 + 单模块（模块系数为相对全局的额外缩放，默认 100%）；折叠块默认收起 -->
           <div class="setting-group font-group">
-            <h4 class="font-group-title">字体大小</h4>
-            <div class="font-row">
-              <span class="font-label">全局字体大小</span>
-              <div class="font-edit">
-                <input
-                  class="opacity-slider"
-                  type="range"
-                  min="0.85"
-                  max="1.3"
-                  step="0.01"
-                  :value="store.state.config.font_scale"
-                  aria-label="全局字体大小"
-                  @input="onFontScaleInput"
-                />
-                <span class="opacity-value">{{ Math.round(store.state.config.font_scale * 100) }}%</span>
+            <button
+              class="font-group-head"
+              type="button"
+              :aria-expanded="fontExpanded"
+              @click="fontExpanded = !fontExpanded"
+            >
+              <h4 class="font-group-title">字体大小</h4>
+              <ChevronDown
+                :size="14"
+                :stroke-width="2"
+                class="font-group-chevron"
+                :class="{ open: fontExpanded }"
+              />
+            </button>
+            <div v-show="fontExpanded" class="font-group-body">
+              <div class="font-row">
+                <span class="font-label">全局字体大小</span>
+                <div class="font-edit">
+                  <input
+                    class="opacity-slider"
+                    type="range"
+                    min="0.85"
+                    max="1.3"
+                    step="0.01"
+                    :value="store.state.config.font_scale"
+                    aria-label="全局字体大小"
+                    @input="onFontScaleInput"
+                  />
+                  <span class="opacity-value">{{ Math.round(store.state.config.font_scale * 100) }}%</span>
+                </div>
               </div>
-            </div>
-            <div v-for="m in FONT_MODULES" :key="m.key" class="font-row">
-              <span class="font-label">{{ m.label }}</span>
-              <div class="font-edit">
-                <input
-                  class="opacity-slider"
-                  type="range"
-                  min="0.85"
-                  max="1.3"
-                  step="0.01"
-                  :value="store.state.config[m.configKey]"
-                  :aria-label="m.label + '字体大小'"
-                  @input="onModuleFontInput(m.key, $event)"
-                />
-                <span class="opacity-value">{{ Math.round(store.state.config[m.configKey] * 100) }}%</span>
+              <div v-for="m in FONT_MODULES" :key="m.key" class="font-row">
+                <span class="font-label">{{ m.label }}</span>
+                <div class="font-edit">
+                  <input
+                    class="opacity-slider"
+                    type="range"
+                    min="0.85"
+                    max="1.3"
+                    step="0.01"
+                    :value="store.state.config[m.configKey]"
+                    :aria-label="m.label + '字体大小'"
+                    @input="onModuleFontInput(m.key, $event)"
+                  />
+                  <span class="opacity-value">{{ Math.round(store.state.config[m.configKey] * 100) }}%</span>
+                </div>
               </div>
             </div>
           </div>
@@ -777,17 +587,10 @@ function onAccentInput(e: Event) {
           <h3 class="sv-sec-title">工作台</h3>
           <div class="setting-row">
             <div class="setting-info">
-              <span class="setting-name">工作台中上区块</span>
-              <span class="setting-desc">主页面中部展示的卡片内容（默认倒计时）</span>
+              <span class="setting-name">自定义布局</span>
+              <span class="setting-desc">拖拽排列主界面的模块位置与显隐（时钟、待办、提示词等），推荐布局为 12×15 棋盘，完成后回到主页面</span>
             </div>
-            <AppSelect
-              class="setting-select"
-              style="min-width: 220px"
-              :model-value="store.state.config.dashboard_mid_content"
-              :options="DASH_MID_OPTIONS"
-              aria-label="首页中部区块展示内容"
-              @update:model-value="onDashboardMidChange"
-            />
+            <button class="ghost-btn data-btn" @click="emit('open-layout-editor')">打开编辑器</button>
           </div>
 
           <div class="setting-row">
@@ -805,6 +608,38 @@ function onAccentInput(e: Event) {
             >
               <span class="toggle-knob"></span>
             </button>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">时钟卡片语录</span>
+              <span class="setting-desc">工作台时间卡片下方显示的一句话（留空则显示随机名言金句，点击可换一条）</span>
+            </div>
+            <div class="quote-edit">
+              <input
+                v-model="clockQuote"
+                class="field-input"
+                type="text"
+                maxlength="50"
+                placeholder="留空显示随机名言金句"
+                spellcheck="false"
+                @blur="commitClockQuote"
+                @keydown.enter="commitClockQuote"
+              />
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">名言来源</span>
+              <span class="setting-desc">时钟卡片语录：在线随机名言，或仅用本地内置金句（点击语录可随机换一条）</span>
+            </div>
+            <AppSelect
+              :model-value="quoteSource"
+              :options="QUOTE_SOURCE_OPTIONS"
+              aria-label="名言来源"
+              @update:model-value="onQuoteSourceChange"
+            />
           </div>
         </section>
 
@@ -838,11 +673,7 @@ function onAccentInput(e: Event) {
             </div>
           </div>
           <p v-if="shortcutError" class="shortcut-error">{{ shortcutError }}</p>
-        </section>
 
-        <!-- 剪贴板 -->
-        <section id="sv-sec-clipboard" class="sv-sec" aria-label="剪贴板">
-          <h3 class="sv-sec-title">剪贴板</h3>
           <div class="setting-row shortcut-row">
             <div class="setting-info">
               <span class="setting-name">剪贴板呼出快捷键</span>
@@ -870,7 +701,13 @@ function onAccentInput(e: Event) {
             </div>
           </div>
           <p v-if="clipError" class="shortcut-error">{{ clipError }}</p>
+        </section>
 
+        <!-- 剪贴板 -->
+        <section id="sv-sec-clipboard" class="sv-sec" aria-label="剪贴板">
+          <h3 class="sv-sec-title">剪贴板</h3>
+
+          <h4 class="sv-subtitle">保留策略</h4>
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">保留条数上限</span>
@@ -907,6 +744,7 @@ function onAccentInput(e: Event) {
             </div>
           </div>
 
+          <h4 class="sv-subtitle">记录行为</h4>
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">粘贴方式</span>
@@ -937,40 +775,7 @@ function onAccentInput(e: Event) {
             </button>
           </div>
 
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-name">记录图片</span>
-              <span class="setting-desc">复制图片/截图时落盘快照进历史（关闭后仅不记录新图片，历史保留）</span>
-            </div>
-            <button
-              class="toggle"
-              role="switch"
-              type="button"
-              :aria-checked="store.state.config.clipboard_image_enabled"
-              :class="{ on: store.state.config.clipboard_image_enabled }"
-              @click="onToggleClipboardImage"
-            >
-              <span class="toggle-knob"></span>
-            </button>
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-name">记录文件</span>
-              <span class="setting-desc">复制文件时记录路径进历史（关闭后仅不记录新文件，历史保留）</span>
-            </div>
-            <button
-              class="toggle"
-              role="switch"
-              type="button"
-              :aria-checked="store.state.config.clipboard_file_enabled"
-              :class="{ on: store.state.config.clipboard_file_enabled }"
-              @click="onToggleClipboardFile"
-            >
-              <span class="toggle-knob"></span>
-            </button>
-          </div>
-
+          <h4 class="sv-subtitle">操作</h4>
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">清空历史</span>
@@ -1038,19 +843,6 @@ function onAccentInput(e: Event) {
                 自动定位
               </button>
             </div>
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-name">名言来源</span>
-              <span class="setting-desc">时钟卡片语录：在线随机名言，或仅用本地内置金句（点击语录可随机换一条）</span>
-            </div>
-            <AppSelect
-              :model-value="quoteSource"
-              :options="QUOTE_SOURCE_OPTIONS"
-              aria-label="名言来源"
-              @update:model-value="onQuoteSourceChange"
-            />
           </div>
         </section>
 
@@ -1201,6 +993,18 @@ function onAccentInput(e: Event) {
   background: var(--brand-500);
   flex-shrink: 0;
 }
+/* 分类内的小组标题（如剪贴板「保留策略 / 记录行为 / 操作」） */
+.sv-subtitle {
+  margin: 16px 0 2px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.sv-subtitle:first-of-type {
+  margin-top: 0;
+}
 
 .setting-row {
   display: flex;
@@ -1302,11 +1106,34 @@ function onAccentInput(e: Event) {
   flex-direction: column;
   gap: 14px;
 }
+.font-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+}
 .font-group-title {
   margin: 0;
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--text-1);
+}
+.font-group-chevron {
+  color: var(--text-3);
+  transition: transform 0.18s ease-out;
+}
+.font-group-chevron.open {
+  transform: rotate(180deg);
+}
+.font-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 .font-row {
   display: flex;

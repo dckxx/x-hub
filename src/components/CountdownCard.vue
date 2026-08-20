@@ -252,7 +252,7 @@ async function onToggleFloat(c: Countdown) {
   <section class="card countdown-card" aria-label="倒计时">
     <header class="cc-header">
       <h3 class="cc-title">
-        <Timer :size="15" :stroke-width="2" aria-hidden="true" />
+        <Timer :size="14" :stroke-width="2" aria-hidden="true" />
         <span>倒计时</span>
       </h3>
       <button
@@ -568,12 +568,12 @@ async function onToggleFloat(c: Countdown) {
 
 <style scoped>
 .countdown-card {
-  /* 最小高度 = header 36 + 3 行列表(每行 ~56px×3 + gap 8×2=16) + padding 14×2 ≈ 248px，
+  /* 最小高度 = header 36 + 3 行列表(每行 ~56px×3 + gap 8×2=16) + padding 12×2 ≈ 244px，
      内容不足时保持 248px 稳定布局；存在已结束条目时按需增高，避免行高被压缩导致内容裁切 */
   min-height: 248px;
   display: flex;
   flex-direction: column;
-  padding: 14px;
+  padding: 12px;
   overflow: hidden;
 }
 .cc-header {
@@ -587,7 +587,7 @@ async function onToggleFloat(c: Countdown) {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 1rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -741,6 +741,7 @@ async function onToggleFloat(c: Countdown) {
   border-radius: var(--radius-md);
   background: var(--bg-card-soft);
   transition: opacity 0.15s;
+  position: relative;
 }
 .cc-item.paused {
   opacity: 0.62;
@@ -826,10 +827,28 @@ async function onToggleFloat(c: Countdown) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 操作按钮：默认隐藏（让左侧名称/剩余时间完整展示），悬停条目时浮现并盖在内容右侧；
+   绝对定位不占布局宽度，故隐藏后内容可用空间更大 */
 .cc-actions {
   display: flex;
   gap: 2px;
   flex-shrink: 0;
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--bg-card-solid);
+  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.12));
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.cc-item:hover .cc-actions,
+.cc-item:focus-within .cc-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 .cc-btn {
   width: 24px;

@@ -56,7 +56,7 @@ async function onCopy(s: Snippet) {
   <section class="card prompt-box" aria-label="提示词百宝箱">
     <header class="pb-header">
       <h3 class="pb-title">
-        <Boxes :size="15" :stroke-width="2" aria-hidden="true" />
+        <Boxes :size="14" :stroke-width="2" aria-hidden="true" />
         <span>提示词</span>
       </h3>
       <button
@@ -108,7 +108,7 @@ async function onCopy(s: Snippet) {
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 16px;
+  padding: 12px;
   min-height: 0;
   /* 提示词模块字号：全局基准 × 模块系数 */
   font-size: calc(1rem * var(--fs-prompt, 1));
@@ -118,17 +118,20 @@ async function onCopy(s: Snippet) {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .pb-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 1em;
+  font-size: 0.8125em;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
   margin: 0;
+}
+.pb-title :deep(svg) {
+  color: var(--brand-500);
 }
 .pb-more {
   display: inline-flex;

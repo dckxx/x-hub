@@ -85,7 +85,7 @@ onUnmounted(() => {
   <section class="card token-stats" aria-label="Token 统计">
     <header class="ts-header">
       <h3 class="ts-title">
-        <Gauge :size="15" :stroke-width="2" aria-hidden="true" />
+        <Gauge :size="14" :stroke-width="2" aria-hidden="true" />
         <span>Token 统计</span>
         <span
           class="ts-live-dot"
@@ -155,7 +155,7 @@ onUnmounted(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 16px;
+  padding: 12px;
   min-height: 0;
 }
 .ts-header {
@@ -163,17 +163,20 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .ts-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 1rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
   margin: 0;
+}
+.ts-title :deep(svg) {
+  color: var(--brand-500);
 }
 .ts-live-dot {
   width: 8px;

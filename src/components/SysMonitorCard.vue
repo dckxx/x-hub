@@ -105,6 +105,9 @@ onUnmounted(() => {
   letter-spacing: -0.01em;
   margin: 0;
 }
+.sm-title :deep(svg) {
+  color: var(--brand-500);
+}
 .sm-live-dot {
   width: 6px;
   height: 6px;

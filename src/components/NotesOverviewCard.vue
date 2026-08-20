@@ -47,12 +47,17 @@ function summary(title: string, content: string): string {
   <section class="card notes-overview" aria-label="速记统计">
     <header class="no-header">
       <h3 class="no-title">
-        <FileText :size="15" :stroke-width="2" aria-hidden="true" />
+        <FileText :size="14" :stroke-width="2" aria-hidden="true" />
         <span>速记统计</span>
       </h3>
-      <button class="no-more" type="button" @click="props.onOpenDetail?.()">
-        去速记
-        <ArrowRight :size="13" :stroke-width="2" aria-hidden="true" />
+      <button
+        class="no-more"
+        type="button"
+        title="去速记"
+        aria-label="去速记"
+        @click="props.onOpenDetail?.()"
+      >
+        <ArrowRight :size="14" :stroke-width="2" aria-hidden="true" />
       </button>
     </header>
 
@@ -88,7 +93,7 @@ function summary(title: string, content: string): string {
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 16px;
+  padding: 12px;
   min-height: 0;
 }
 .no-header {
@@ -96,13 +101,13 @@ function summary(title: string, content: string): string {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .no-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 1rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -114,15 +119,18 @@ function summary(title: string, content: string): string {
 .no-more {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
   border: none;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-3);
-  font-size: 0.75rem;
   cursor: pointer;
-  transition: color 0.18s;
+  transition: background 0.18s, color 0.18s;
 }
 .no-more:hover {
+  background: var(--bg-card-soft);
   color: var(--brand-500);
 }
 .no-metrics {

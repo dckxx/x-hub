@@ -36,12 +36,17 @@ const pendingLabel = computed(() => (pendingCount.value > 0 ? `还有 ${pendingC
   <section class="card todo-overview" aria-label="待办概览">
     <header class="to-header">
       <h3 class="to-title">
-        <ListTodo :size="15" :stroke-width="2" aria-hidden="true" />
+        <ListTodo :size="14" :stroke-width="2" aria-hidden="true" />
         <span>待办概览</span>
       </h3>
-      <button class="to-more" type="button" @click="props.onOpenDetail?.()">
-        去待办
-        <ArrowRight :size="13" :stroke-width="2" aria-hidden="true" />
+      <button
+        class="to-more"
+        type="button"
+        title="去待办"
+        aria-label="去待办"
+        @click="props.onOpenDetail?.()"
+      >
+        <ArrowRight :size="14" :stroke-width="2" aria-hidden="true" />
       </button>
     </header>
 
@@ -83,7 +88,7 @@ const pendingLabel = computed(() => (pendingCount.value > 0 ? `还有 ${pendingC
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 16px;
+  padding: 12px;
   min-height: 0;
 }
 .to-header {
@@ -91,13 +96,13 @@ const pendingLabel = computed(() => (pendingCount.value > 0 ? `还有 ${pendingC
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .to-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 1rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -109,15 +114,18 @@ const pendingLabel = computed(() => (pendingCount.value > 0 ? `还有 ${pendingC
 .to-more {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
   border: none;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-3);
-  font-size: 0.75rem;
   cursor: pointer;
-  transition: color 0.18s;
+  transition: background 0.18s, color 0.18s;
 }
 .to-more:hover {
+  background: var(--bg-card-soft);
   color: var(--brand-500);
 }
 .to-rate {

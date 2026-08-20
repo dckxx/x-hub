@@ -27,7 +27,10 @@ import { isTauri, tauriApi } from '../api/tauri'
 import type { Countdown, Note, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
 import { FileText, FolderOpen, Gauge, LayoutDashboard, MessageSquare, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import type { Component } from 'vue'
 import { useTheme } from '../composables/useTheme'
+import DashboardLayoutEditor from '../components/DashboardLayoutEditor.vue'
+import { useDashboardLayout, type DashPlacement } from '../composables/useDashboardLayout'
 
 const store = useStore()
 
@@ -47,7 +50,8 @@ const navigation = [
 const visibleNavigation = navigation.filter((item) => item.id !== 'chat')
 
 // 设置不在顶部导航列表，作为独立入口固定在侧栏左下角，但同样是视图切换逻辑
-type ViewId = (typeof navigation)[number]['id'] | 'settings'
+// 自定义布局编辑器也是独立视图（从设置进入，完成后回主页面）
+type ViewId = (typeof navigation)[number]['id'] | 'settings' | 'layout-editor'
 const activeView = ref<ViewId>('dashboard')
 
 // 对话入口：点击侧栏「对话」即唤起右侧面板（面板是主形态，视图仅占位说明）
@@ -73,37 +77,6 @@ function openPromptManage() {
   promptManageVisible.value = true
 }
 
-// ---- 主页面「中上区块」内容（Token 统计 / 速记统计 / 待办概览 / 速达数量 / 倒计时，设置中切换） ----
-const dashMidContent = computed(() => store.state.config.dashboard_mid_content)
-const dashMidCard = computed(() => {
-  switch (dashMidContent.value) {
-    case 'notes':
-      return NotesOverviewCard
-    case 'todo':
-      return TodoOverviewCard
-    case 'resources':
-      return ResourcesOverviewCard
-    case 'countdown':
-      return CountdownCard
-    default:
-      return TokenStatsCard
-  }
-})
-const dashMidProps = computed(() => {
-  switch (dashMidContent.value) {
-    case 'token':
-      return { onOpenDetail: openUsageDetail }
-    case 'notes':
-      return { onOpenDetail: openNotes }
-    case 'todo':
-      return { onOpenDetail: openTodo }
-    case 'resources':
-      return { onOpenDetail: openSuda }
-    default:
-      return {}
-  }
-})
-
 function openNotes() {
   activeView.value = 'notes'
 }
@@ -113,6 +86,73 @@ function openSuda() {
 // 待办概览卡的「去待办」：待办卡就在工作台，直接切回工作台即可
 function openTodo() {
   activeView.value = 'dashboard'
+}
+
+// ---- 工作台自定义布局（12 列单元格网格，模块库两栏编辑器） ----
+const layout = useDashboardLayout()
+
+// 模块 id → 组件 + props 映射（含原「中上可切换」的 5 个独立模块）
+const dashCardComponents: Record<string, Component> = {
+  clock: ClockCard,
+  sysmon: SysMonitorCard,
+  sticky1: StickyCard,
+  sticky2: StickyCard,
+  token: TokenStatsCard,
+  notes: NotesOverviewCard,
+  todo_overview: TodoOverviewCard,
+  resources: ResourcesOverviewCard,
+  countdown: CountdownCard,
+  prompts: PromptBoxCard,
+  todo: TodoCard,
+  recent: RecentBar,
+}
+
+function dashCardComponent(id: string): Component {
+  return dashCardComponents[id] ?? ClockCard
+}
+
+function dashCardProps(id: string): Record<string, unknown> {
+  switch (id) {
+    case 'sticky1':
+      return { slot: 1 }
+    case 'sticky2':
+      return { slot: 2 }
+    case 'token':
+      return { onOpenDetail: openUsageDetail }
+    case 'notes':
+      return { onOpenDetail: openNotes }
+    case 'todo_overview':
+      return { onOpenDetail: openTodo }
+    case 'resources':
+      return { onOpenDetail: openSuda }
+    case 'prompts':
+      return { onOpenManage: openPromptManage }
+    case 'todo':
+      return { highlightId: highlightTodoId.value }
+    default:
+      return {}
+  }
+}
+
+// 主界面行高按「总行数均分可用高度」自适应（1fr），窗口缩放/分辨率变化只改每格像素值、
+// 卡片占格比例不变 → 不滚动、不留白、不因缩放而错位
+const dashGridRows = computed(() => {
+  let m = 1
+  for (const p of layout.placements.value) {
+    m = Math.max(m, p.y + p.h)
+  }
+  return m
+})
+
+function dashCellStyle(p: DashPlacement) {
+  return {
+    gridColumn: `${p.x + 1} / span ${p.w}`,
+    gridRow: `${p.y + 1} / span ${p.h}`,
+  }
+}
+
+function openLayoutEditor() {
+  activeView.value = 'layout-editor'
 }
 
 // ---- 启动加载：数据就绪后隐藏欢迎页（窗口已改为启动即显示） ----
@@ -392,24 +432,30 @@ provide('showToast', showToast)
 
       <div class="main-area">
         <main class="workspace" aria-label="主工作区">
-        <!-- 工作台：时钟/系统/便签 + Token 统计/提示词 + 待办 + 最近使用 -->
-        <div v-if="activeView === 'dashboard'" class="dash-grid">
-          <div class="dash-panel dash-left">
-            <ClockCard class="dash-clock" />
-            <SysMonitorCard class="dash-sysmon" />
-            <div class="dash-stickies">
-              <StickyCard :slot="1" />
-              <StickyCard :slot="2" />
+        <!-- 工作台：可自定义布局（12 列单元格网格，模块库编辑器） -->
+        <div v-if="activeView === 'dashboard'" class="dash-wrap">
+          <div
+            v-if="layout.placements.value.length"
+            class="dash-grid"
+            :style="{ gridTemplateRows: `repeat(${dashGridRows}, minmax(0, 1fr))` }"
+          >
+            <div
+              v-for="p in layout.placements.value"
+              :key="p.id"
+              class="dash-cell"
+              :style="dashCellStyle(p)"
+            >
+              <component
+                :is="dashCardComponent(p.id)"
+                v-bind="dashCardProps(p.id)"
+                @go-suda="activeView = 'suda'"
+              />
             </div>
           </div>
-          <component
-            :is="dashMidCard"
-            class="dash-panel dash-usage"
-            :on-open-detail="dashMidProps.onOpenDetail"
-          />
-          <PromptBoxCard class="dash-panel dash-prompts" :on-open-manage="openPromptManage" />
-          <TodoCard class="dash-panel dash-todo" :highlight-id="highlightTodoId" />
-          <RecentBar class="dash-panel dash-recent" @go-suda="activeView = 'suda'" />
+          <div v-else class="dash-empty">
+            <p>工作台还没有模块，去设置里自定义布局吧</p>
+            <button class="pill-btn" type="button" @click="openLayoutEditor">自定义布局</button>
+          </div>
         </div>
 
         <!-- 速记：独立视图 -->
@@ -449,8 +495,13 @@ provide('showToast', showToast)
         </section>
 
         <!-- 设置：独立视图 -->
-        <section v-else class="view view-settings" tabindex="-1" aria-label="设置">
-          <SettingsView :initial-section="settingsSection" />
+        <section v-else-if="activeView === 'settings'" class="view view-settings" tabindex="-1" aria-label="设置">
+          <SettingsView :initial-section="settingsSection" @open-layout-editor="openLayoutEditor" />
+        </section>
+
+        <!-- 自定义布局编辑器：独立视图（从设置进入，完成后回主页面） -->
+        <section v-else class="view view-layout-editor" tabindex="-1" aria-label="自定义布局">
+          <DashboardLayoutEditor @done="activeView = 'dashboard'" />
         </section>
         </main>
 
@@ -703,46 +754,43 @@ provide('showToast', showToast)
   transform: translateX(100%);
 }
 
-/* 工作台布局：三列（时钟/系统/便签 | Token/提示词 | 待办）+ 底部最近使用通栏 */
-.dash-grid {
+/* 工作台布局：12 列 fr 比例网格 + 行高 1fr 均分填满（缩放/分辨率只改每格像素值，布局结构不变） */
+.dash-wrap {
+  position: relative;
   height: 100%;
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.8fr) minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: var(--space-4);
-  /* 仅右下保留外边距（左上与 0.1.15 原版一致贴边），与各视图统一 */
-  padding: 0 20px 20px 0;
+  min-height: 0;
+  overflow: hidden;
 }
-.dash-panel {
+.dash-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--space-4);
+  padding: 0 20px 20px 0;
+  height: 100%;
+}
+.dash-cell {
   min-width: 0;
   min-height: 0;
-}
-.dash-left {
-  grid-column: 1;
-  grid-row: 1 / 3;
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
 }
-.dash-left .dash-clock {
-  flex-shrink: 0;
-}
-.dash-left .dash-sysmon {
-  flex-shrink: 0;
-}
-.dash-stickies {
+.dash-cell > * {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-4);
 }
-.dash-usage { grid-column: 2; grid-row: 1; }
-.dash-prompts { grid-column: 2; grid-row: 2; }
-.dash-todo { grid-column: 3; grid-row: 1 / 3; }
-.dash-recent { grid-column: 1 / -1; grid-row: 3; }
+.dash-empty {
+  height: 100%;
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-3);
+  font-size: 0.8125rem;
+}
 
 /* 独立视图 */
 .view {
@@ -761,6 +809,9 @@ provide('showToast', showToast)
   padding: 0 20px 20px 0;
 }
 .view-settings {
+  padding: 0 20px 20px 0;
+}
+.view-layout-editor {
   padding: 0 20px 20px 0;
 }
 /* 用量页：覆盖组件内四边 20px padding，仅保留右下外边距（左上贴边与原版一致） */
@@ -811,19 +862,7 @@ provide('showToast', showToast)
   .view-settings { padding: 0; }
 }
 
-/* 960px 以下：三列改两列（左：时钟+系统+便签；右：Token+提示词/待办） */
-@media (max-width: 960px) {
-  .dash-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-rows: auto minmax(0, 1fr) auto auto;
-  }
-  .dash-left { grid-column: 1; grid-row: 1 / 3; }
-  .dash-usage { grid-column: 2; grid-row: 1; }
-  .dash-prompts { grid-column: 2; grid-row: 2; }
-  .dash-todo { grid-column: 1; grid-row: 3; }
-  .dash-recent { grid-column: 1 / -1; grid-row: 4; }
-}
-
+/* 窄窗口：保持 6 列（拖拽坐标与压缩算法固定按 6 列计算），仅收窄外边距 */
 @media (max-width: 720px) {
   .app-body { grid-template-columns: 1fr; }
   .app-body.collapsed { grid-template-columns: 1fr; }
@@ -839,15 +878,6 @@ provide('showToast', showToast)
     display: initial;
   }
   .workspace { padding: 0 var(--space-2) var(--space-2) 0; overflow-y: auto; }
-  .dash-grid { display: flex; flex-direction: column; gap: var(--space-4); }
-  .dash-panel { flex: none; }
-  .dash-clock { min-height: 120px; }
-  .dash-sysmon { min-height: 110px; }
-  .dash-stickies { min-height: 220px; }
-  .dash-todo { min-height: 320px; }
-  .dash-usage { min-height: 260px; }
-  .dash-prompts { min-height: 280px; }
-  .dash-recent { flex: none; }
 }
 
 /* 轻提示 */

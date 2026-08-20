@@ -104,6 +104,8 @@ export interface AppConfig {
   window: WindowState
   global_shortcut: string
   dashboard_mid_content: string
+  /** 工作台自定义布局（placements JSON 数组字符串；空串 = 未自定义，回退推荐布局） */
+  dashboard_layout: string
   countdown_sound: boolean
   clock_quote: string // 时钟卡片语录（可配置，空串回退默认）
   online_enabled: boolean // 联网功能总开关（默认开）

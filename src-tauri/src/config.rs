@@ -58,6 +58,9 @@ pub struct AppConfig {
     /// 主页面「中上区块」显示内容：
     /// countdown(默认倒计时) / token(Token 统计) / notes(速记统计) / todo(待办概览) / resources(速达数量)
     pub dashboard_mid_content: String,
+    /// 工作台自定义布局（placements JSON 数组字符串；空串 = 未自定义，回退推荐布局）
+    #[serde(default)]
+    pub dashboard_layout: String,
     /// 倒计时到点提示音（默认关闭）
     pub countdown_sound: bool,
     /// 时钟卡片语录（工作台时间卡片下方显示的一句话，空串时回退默认）
@@ -159,6 +162,7 @@ impl Default for AppConfig {
             usage_sync_cursor: 0,
             usage_db_path: None,
             dashboard_mid_content: "countdown".to_string(),
+            dashboard_layout: String::new(),
             countdown_sound: false,
             clock_quote: String::new(),
             online_enabled: true,

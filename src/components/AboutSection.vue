@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { marked } from 'marked'
+import { ChevronDown } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 
@@ -9,6 +10,8 @@ const store = useStore()
 const version = ref('')
 const loading = ref(true)
 const changelogHtml = ref('')
+// 版本历史折叠：默认收起，避免列表过长占满设置页
+const changelogExpanded = ref(false)
 
 onMounted(async () => {
   if (!isTauri()) {
@@ -75,9 +78,24 @@ function onToggleWhatsNew() {
     </div>
 
     <div class="about-changelog">
-      <h4 class="about-changelog-title">版本历史</h4>
-      <div v-if="loading" class="about-changelog-empty">加载中…</div>
-      <div v-else class="md-body" v-html="changelogHtml"></div>
+      <button
+        class="about-changelog-head"
+        type="button"
+        :aria-expanded="changelogExpanded"
+        @click="changelogExpanded = !changelogExpanded"
+      >
+        <h4 class="about-changelog-title">版本历史</h4>
+        <ChevronDown
+          :size="14"
+          :stroke-width="2"
+          class="about-changelog-chevron"
+          :class="{ open: changelogExpanded }"
+        />
+      </button>
+      <div v-show="changelogExpanded">
+        <div v-if="loading" class="about-changelog-empty">加载中…</div>
+        <div v-else class="md-body" v-html="changelogHtml"></div>
+      </div>
     </div>
   </div>
 </template>
@@ -156,11 +174,31 @@ function onToggleWhatsNew() {
   padding-top: var(--space-4);
   border-top: 1px solid var(--border-soft);
 }
+.about-changelog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  margin-bottom: var(--space-3);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+}
 .about-changelog-title {
-  margin: 0 0 var(--space-3);
+  margin: 0;
   font-size: 0.8125rem;
   font-weight: 700;
   color: var(--text-2);
+}
+.about-changelog-chevron {
+  color: var(--text-3);
+  transition: transform 0.18s ease-out;
+}
+.about-changelog-chevron.open {
+  transform: rotate(180deg);
 }
 .about-changelog-empty {
   font-size: 0.8125rem;

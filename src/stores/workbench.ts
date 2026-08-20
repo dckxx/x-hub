@@ -72,6 +72,7 @@ const state = reactive<StoreState>({
     },
     global_shortcut: DEFAULT_GLOBAL_SHORTCUT,
     dashboard_mid_content: 'countdown',
+    dashboard_layout: '',
     countdown_sound: false,
     clock_quote: '',
     online_enabled: true,
@@ -574,6 +575,13 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 工作台自定义布局（placements JSON 数组字符串，经 config.json 落盘） */
+  async function setDashboardLayout(value: string) {
+    state.config.dashboard_layout = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   /** 倒计时到点提示音开关 */
   async function setCountdownSound(value: boolean) {
     state.config.countdown_sound = value
@@ -873,6 +881,7 @@ export function useStore() {
     setAlwaysOnTop,
     setGlobalShortcut,
     setDashboardMidContent,
+    setDashboardLayout,
     setCountdownSound,
   setClockQuote,
   setChatModels,

@@ -25,12 +25,17 @@ const stats = computed(() => [
   <section class="card resources-overview" aria-label="速达数量">
     <header class="ro-header">
       <h3 class="ro-title">
-        <FolderOpen :size="15" :stroke-width="2" aria-hidden="true" />
+        <FolderOpen :size="14" :stroke-width="2" aria-hidden="true" />
         <span>速达</span>
       </h3>
-      <button class="ro-more" type="button" @click="props.onOpenDetail?.()">
-        去速达
-        <ArrowRight :size="13" :stroke-width="2" aria-hidden="true" />
+      <button
+        class="ro-more"
+        type="button"
+        title="去速达"
+        aria-label="去速达"
+        @click="props.onOpenDetail?.()"
+      >
+        <ArrowRight :size="14" :stroke-width="2" aria-hidden="true" />
       </button>
     </header>
 
@@ -67,7 +72,7 @@ const stats = computed(() => [
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 16px;
+  padding: 12px;
   min-height: 0;
 }
 .ro-header {
@@ -75,13 +80,13 @@ const stats = computed(() => [
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .ro-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 1rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
@@ -93,15 +98,18 @@ const stats = computed(() => [
 .ro-more {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
   border: none;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-3);
-  font-size: 0.75rem;
   cursor: pointer;
-  transition: color 0.18s;
+  transition: background 0.18s, color 0.18s;
 }
 .ro-more:hover {
+  background: var(--bg-card-soft);
   color: var(--brand-500);
 }
 .ro-total {

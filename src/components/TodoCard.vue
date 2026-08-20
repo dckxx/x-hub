@@ -162,7 +162,7 @@ watch(
   <section class="card todo-card" aria-label="待办">
     <header class="todo-header">
       <h3 class="todo-title">
-        <ListTodo :size="15" :stroke-width="2" aria-hidden="true" />
+        <ListTodo :size="14" :stroke-width="2" aria-hidden="true" />
         <span>待办</span>
       </h3>
       <div class="filter-tabs todo-seg" role="tablist" aria-label="视图切换">
@@ -285,7 +285,7 @@ watch(
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 16px;
+  padding: 12px;
   min-height: 0;
   --todo-pri-default: #c6cad4;
   /* 待办模块字号：全局基准 × 模块系数 */
@@ -299,18 +299,21 @@ watch(
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .todo-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 1em;
+  font-size: 0.8125em;
   font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.01em;
   white-space: nowrap;
   margin: 0;
+}
+.todo-title :deep(svg) {
+  color: var(--brand-500);
 }
 .todo-seg {
   gap: 4px;

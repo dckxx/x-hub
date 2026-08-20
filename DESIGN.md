@@ -1,6 +1,6 @@
 # x-hub Design System
 
-> 版本对齐：v0.1.18。本文档为当前实现的唯一设计基线，UI 改动以本文件 + `src/style.css` 为准。
+> 版本对齐：v0.1.19。本文档为当前实现的唯一设计基线，UI 改动以本文件 + `src/style.css` 为准。
 
 ## 1. Atmosphere & Identity
 

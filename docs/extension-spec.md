@@ -240,7 +240,7 @@ service 扩展的后端默认跑在 Node 运行时上，运行时由宿主统一
 4. `done` 跑通 `module` 卡片（扩展声明 module 形态 → 自动进布局编辑器模块库 → 拖入工作台网格，iframe 渲染 module 入口复用桥 API）。
 5. `done` 再补 `window` / `drawer`（window 走 Tauri 多窗口 + 复用 iframe 桥；drawer 右侧滑出 overlay）。
 6. `in-progress` **service 托管**：已落地进程托管（懒启动 / 动态端口 / TcpStream 探活 / 卸载清理 / 宿主退出停止）+ 运行时提供（复用系统 Node + 启动前版本校验）+ 代理（桥 API `service.request` + `/svc/<extId>/*` HTTP 反向代理 + WebSocket 升级双向隧道，统一 CORS）。待补：按需下载内置运行时与自动降级（依赖扩展市场）。
-7. `in-progress` 扩展中心补全：已落地扩展设置（信息/权限/卸载）+ 本地安装（选目录校验复制）+ 权限授权（运行时逐项开关，宿主侧 enforce）。待补：市场详情、在线安装页。
+7. `done` 扩展中心补全：扩展设置（信息/权限/卸载）+ 本地安装 + 权限授权 + 市场（本地清单文件 `market/registry.json` → 下载 zip → 解包安装；后续接远端市场替换清单数据源即可）。
 
 ## 附录：v2 → v3 差异
 

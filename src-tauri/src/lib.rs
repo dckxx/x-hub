@@ -7,6 +7,7 @@ mod countdown_ticker;
 mod countdown_window;
 mod db;
 mod extension;
+mod market;
 mod models;
 mod notify;
 mod online;
@@ -447,6 +448,8 @@ commands::set_chat_panel,
             extension::install_extension,
             extension::get_extension_permissions,
             extension::set_extension_permission,
+            market::get_market_registry,
+            market::install_from_market,
             xhub_api::xhub_call,
             commands::check_connectivity,
             commands::get_weather,

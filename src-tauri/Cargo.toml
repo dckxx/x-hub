@@ -38,6 +38,7 @@ futures-util = { version = "0.3", features = ["io"] }
 hyper = { version = "1", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "client"] }
 http-body-util = "0.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native", "sync-secret-service"] }
 sysinfo = "0.32"
 windows-sys = { version = "0.61", features = [

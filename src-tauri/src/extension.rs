@@ -392,7 +392,7 @@ pub fn uninstall_extension(app: tauri::AppHandle, id: String) -> Result<(), Stri
 }
 
 /// 递归复制目录
-fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;

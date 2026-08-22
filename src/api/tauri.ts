@@ -178,6 +178,18 @@ export interface ExtensionEntry {
   error: string | null
 }
 
+/** 市场清单里的一条扩展 */
+export interface MarketExtension {
+  id: string
+  name: string
+  version: string
+  description: string
+  runtime: string
+  author: string
+  /** 下载地址（zip 包） */
+  download_url: string
+}
+
 export interface WeatherCurrent {
   temperature: number
   apparent_temperature: number
@@ -596,6 +608,10 @@ export const tauriApi = {
   /** 设置扩展某权限开关 */
   setExtensionPermission: (id: string, permission: string, granted: boolean) =>
     invoke<void>('set_extension_permission', { id, permission, granted }),
+  // ---- 扩展市场 ----
+  getMarketRegistry: () => invoke<MarketExtension[]>('get_market_registry'),
+  installFromMarket: (downloadUrl: string) =>
+    invoke<string>('install_from_market', { downloadUrl }),
   /** 桥 API 统一分发：扩展 iframe 经主窗口转发调用 */
   xhubCall: (extId: string, namespace: string, method: string, args: unknown) =>
     invoke<unknown>('xhub_call', { extId, namespace, method, args }),

@@ -1,5 +1,5 @@
 import { computed, ref, watch } from 'vue'
-import { isTauri } from '../api/tauri'
+import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 
 /**
@@ -54,12 +54,20 @@ export const DASH_MODULES: DashModuleDef[] = [
 
 const moduleMap = new Map(DASH_MODULES.map((m) => [m.id, m]))
 
+/** 扩展 module 动态注册表（运行时从 listExtensions 填充；id 用 `ext:<扩展id>` 前缀与内置模块区分） */
+const extensionModules = ref<DashModuleDef[]>([])
+
+export function registerExtensionModules(mods: DashModuleDef[]) {
+  extensionModules.value = mods
+}
+
 export function dashModuleDef(id: string): DashModuleDef | undefined {
+  if (id.startsWith('ext:')) return extensionModules.value.find((m) => m.id === id)
   return moduleMap.get(id)
 }
 
 export function dashModuleTitle(id: string): string {
-  return moduleMap.get(id)?.title ?? id
+  return dashModuleDef(id)?.title ?? id
 }
 
 /** 推荐布局：8 个模块按 12×15 棋盘整齐拼满、无空洞；Token/速记/待办概览/速达数量等留待用户自行拖入 */
@@ -94,9 +102,9 @@ function parsePlacements(raw: string): DashPlacement[] | null {
   try {
     const saved = JSON.parse(raw) as Array<Partial<DashPlacement>>
     const valid = saved
-      .filter((s) => s && moduleMap.has(s.id!) && Number.isInteger(s.x) && Number.isInteger(s.y))
+      .filter((s) => s && dashModuleDef(s.id!) && Number.isInteger(s.x) && Number.isInteger(s.y))
       .map((s) => {
-        const def = moduleMap.get(s.id!)!
+        const def = dashModuleDef(s.id!)!
         const w = Number.isInteger(s.w) ? Math.min(clampSize(s.w as number), DASH_COLS) : def.w
         const h = Number.isInteger(s.h) ? clampSize(s.h as number) : def.h
         const x = Math.min(Math.max(s.x!, 0), DASH_COLS - w)
@@ -166,11 +174,28 @@ function cancelEdit() {
 // 初始先读 localStorage（浏览器预览 / 老数据），config 加载完成后再对齐到应用配置
 const placements = ref<DashPlacement[]>(loadFromLocalStorage() ?? defaultPlacements())
 
-// config 就绪后：优先读 AppConfig.dashboard_layout；为空则把 localStorage 老数据迁移进 config；否则回退推荐布局
+/** 加载声明 module 形态的扩展，注册进工作台模块库（id 用 `ext:<扩展id>` 前缀与内置模块区分） */
+async function loadExtensionModules() {
+  if (!isTauri()) return
+  try {
+    const exts = await tauriApi.listExtensions()
+    registerExtensionModules(
+      exts
+        .filter((e) => !e.invalid && e.surfaces.includes('module'))
+        .map((e) => ({ id: `ext:${e.id}`, title: e.name, w: 4, h: 3 })),
+    )
+  } catch {
+    // 命令未就绪时保持无扩展模块
+  }
+}
+
+// config 就绪后：先加载扩展模块再恢复布局（避免 config 里的 ext: 模块在 parse 时被过滤）
+// 优先读 AppConfig.dashboard_layout；为空则把 localStorage 老数据迁移进 config；否则回退推荐布局
 watch(
   () => store.state.loaded,
-  (loaded) => {
+  async (loaded) => {
     if (!loaded) return
+    await loadExtensionModules()
     const cfg = store.state.config.dashboard_layout
     if (cfg) {
       const parsed = parsePlacements(cfg)
@@ -200,10 +225,11 @@ watch(
   },
 )
 
-/** 左侧库 = 未放置的模块（保持目录顺序） */
-const available = computed(() =>
-  DASH_MODULES.filter((m) => !placements.value.some((p) => p.id === m.id)),
-)
+/** 左侧库 = 未放置的模块（内置 + 扩展，保持目录顺序） */
+const available = computed(() => {
+  const all = [...DASH_MODULES, ...extensionModules.value]
+  return all.filter((m) => !placements.value.some((p) => p.id === m.id))
+})
 
 /** 目标矩形是否与除自身外的其他模块重叠 */
 function overlaps(rect: DashPlacement, ignoreId: string): boolean {
@@ -232,7 +258,7 @@ export function findFreeSpot(
 
 function addModule(id: string, x: number, y: number): boolean {
   if (placements.value.some((p) => p.id === id)) return false
-  const def = moduleMap.get(id)!
+  const def = dashModuleDef(id)!
   // 目标位置被占时自动向下找最近的空位，拖入的模块总能落进布局
   const spot = findFreeSpot(placements.value, def.w, def.h, x, y)
   placements.value.push({ id, x: spot.x, y: spot.y, w: def.w, h: def.h })

@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "runtime": "web",
   "kind": "view",
-  "surfaces": ["view"],
+  "surfaces": ["module", "view"],
   "openIn": ["view"],
   "entry": {
+    "module": "./module/index.html",
     "view": "./view/index.html"
   },
   "permissions": ["data:read"],

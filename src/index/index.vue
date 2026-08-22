@@ -123,10 +123,15 @@ const dashCardComponents: Record<string, Component> = {
 }
 
 function dashCardComponent(id: string): Component {
+  // 扩展 module：id 形如 ext:<扩展id>，用 iframe 渲染其 module 入口（复用桥 API）
+  if (id.startsWith('ext:')) return ExtensionView
   return dashCardComponents[id] ?? ClockCard
 }
 
 function dashCardProps(id: string): Record<string, unknown> {
+  if (id.startsWith('ext:')) {
+    return { extId: id.slice('ext:'.length), surface: 'module' }
+  }
   switch (id) {
     case 'sticky1':
       return { slot: 1 }

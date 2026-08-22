@@ -45,12 +45,13 @@ function parseError(err: unknown): { code: string; message: string } {
 
 /** 处理扩展 iframe 发来的 xhub RPC：转发到宿主 xhub_call，回传结果 */
 function onMessage(e: MessageEvent) {
+  const frame = frameRef.value
+  // 只处理来自本 iframe 的消息：多实例并存（如多个 module 卡片）时避免互相串扰
+  if (!frame || !frame.contentWindow || e.source !== frame.contentWindow) return
   const m = e.data as
     | { __xhub?: boolean; type?: string; id?: number; namespace?: string; method?: string; args?: unknown }
     | undefined
   if (!m || m.__xhub !== true || m.type !== 'call' || typeof m.id !== 'number') return
-  const frame = frameRef.value
-  if (!frame || !frame.contentWindow) return
 
   const reply = (payload: Record<string, unknown>) => {
     frame.contentWindow?.postMessage({ __xhub: true, type: 'result', id: m.id, ...payload }, '*')

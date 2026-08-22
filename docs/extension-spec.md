@@ -237,7 +237,7 @@ service 扩展的后端默认跑在 Node 运行时上，运行时由宿主统一
 1. `done` 扩展 manifest 解析 + 注册表（本地目录扫描），manifest 支持 `runtime` 字段；含扩展中心列表骨架（`list_extensions` 命令 + `ExtensionCenter` 视图，入口在侧栏「设置」上方）。
 2. `done` 桥 API 骨架（`window.xhub.runtime / storage / data` 读，`xhub_call` 统一分发命令 + iframe postMessage 桥）。
 3. `done` `view` 形态（扩展中心点开 → 主区 iframe 加载扩展入口 HTML + 自动注入桥脚本；端到端加载待实际运行验证）。
-4. `planned` 跑通 `module` 卡片（复用工作台网格）。
+4. `done` 跑通 `module` 卡片（扩展声明 module 形态 → 自动进布局编辑器模块库 → 拖入工作台网格，iframe 渲染 module 入口复用桥 API）。
 5. `planned` 再补 `window` / `drawer`（Tauri 多窗口 / overlay）。
 6. `planned` **service 托管**：进程托管（启动 / 端口 / `/svc/<extId>/*` 代理 / 健康检查 / 清理）+ 运行时提供（复用系统 Node / 按需下载内置 / 启动前校验 / 自动降级）。
 7. `planned` 扩展中心补全（扩展设置、市场详情、安装页、权限授权；列表骨架已在第 1 步完成）。

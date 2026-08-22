@@ -24,13 +24,25 @@ fn load_manifest(app: &tauri::AppHandle, ext_id: &str) -> Option<ExtensionManife
     serde_json::from_str::<ExtensionManifest>(&content).ok()
 }
 
-/// 校验扩展是否声明了某权限；未声明返回带 PERMISSION_DENIED 前缀的 Err
-fn require_permission(manifest: &ExtensionManifest, perm: &str) -> Result<(), String> {
-    if manifest.permissions.iter().any(|p| p == perm) {
-        Ok(())
-    } else {
-        Err(format!("PERMISSION_DENIED: 需要 {perm} 权限"))
+/// manifest 是否声明了某权限（纯函数，供单测）
+fn declares(manifest: &ExtensionManifest, perm: &str) -> bool {
+    manifest.permissions.iter().any(|p| p == perm)
+}
+
+/// 校验扩展是否声明了某权限且未被用户关闭；否则返回带 PERMISSION_DENIED 前缀的 Err
+fn require_permission(
+    app: &tauri::AppHandle,
+    manifest: &ExtensionManifest,
+    ext_id: &str,
+    perm: &str,
+) -> Result<(), String> {
+    if !declares(manifest, perm) {
+        return Err(format!("PERMISSION_DENIED: 需要 {perm} 权限"));
     }
+    if !crate::extension::permission_granted(app, ext_id, perm) {
+        return Err(format!("PERMISSION_DENIED: 权限 {perm} 已被用户关闭"));
+    }
+    Ok(())
 }
 
 /// storage 文件路径：`extensions/<id>/.storage.json`（隔离，随扩展卸载可清除）
@@ -172,7 +184,7 @@ where
 {
     let manifest =
         load_manifest(app, ext_id).ok_or_else(|| format!("NOT_FOUND: 扩展 {ext_id} 不存在"))?;
-    require_permission(&manifest, "data:read")?;
+    require_permission(app, &manifest, ext_id, "data:read")?;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     f(&conn)
 }
@@ -281,7 +293,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn require_permission_checks_presence() {
+    fn declares_checks_permission_presence() {
         let manifest = ExtensionManifest {
             id: "t".into(),
             name: "t".into(),
@@ -297,7 +309,7 @@ mod tests {
             backend: None,
             description: String::new(),
         };
-        assert!(require_permission(&manifest, "data:read").is_ok());
-        assert!(require_permission(&manifest, "data:write").is_err());
+        assert!(declares(&manifest, "data:read"));
+        assert!(!declares(&manifest, "data:write"));
     }
 }

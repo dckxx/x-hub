@@ -26,14 +26,38 @@ const initial = computed(() => ((ext.value?.name ?? '?').charAt(0) || '?').toUpp
 
 const confirming = ref(false)
 const uninstalling = ref(false)
+const perms = ref<Record<string, boolean>>({})
+const permsLoading = ref(false)
 
 watch(
   () => props.extension,
-  () => {
+  async (e) => {
     confirming.value = false
     uninstalling.value = false
+    perms.value = {}
+    if (!e || e.invalid) return
+    permsLoading.value = true
+    try {
+      perms.value = await tauriApi.getExtensionPermissions(e.id)
+    } catch {
+      // 查询失败时按 manifest 声明默认授权
+      perms.value = Object.fromEntries(e.permissions.map((p) => [p, true]))
+    } finally {
+      permsLoading.value = false
+    }
   },
 )
+
+async function togglePermission(perm: string, granted: boolean) {
+  if (!ext.value) return
+  perms.value = { ...perms.value, [perm]: granted }
+  try {
+    await tauriApi.setExtensionPermission(ext.value.id, perm, granted)
+  } catch (err) {
+    showToast(`权限设置失败：${String(err)}`)
+    perms.value = { ...perms.value, [perm]: !granted }
+  }
+}
 
 function kindLabel(kind: string): string {
   switch (kind) {
@@ -117,8 +141,21 @@ async function confirmUninstall() {
 
             <section class="es-section">
               <h3 class="es-section-title">权限</h3>
-              <div v-if="ext.permissions.length" class="es-perms">
-                <span v-for="p in ext.permissions" :key="p" class="es-perm">{{ p }}</span>
+              <div v-if="ext.permissions.length" class="es-perm-list">
+                <div v-for="p in ext.permissions" :key="p" class="es-perm-row">
+                  <span class="es-perm-name">{{ p }}</span>
+                  <button
+                    class="toggle"
+                    role="switch"
+                    type="button"
+                    :aria-checked="perms[p] ?? true"
+                    :class="{ on: perms[p] ?? true }"
+                    :disabled="permsLoading"
+                    @click="togglePermission(p, !(perms[p] ?? true))"
+                  >
+                    <span class="toggle-knob"></span>
+                  </button>
+                </div>
               </div>
               <p v-else class="es-empty">无权限申请</p>
             </section>
@@ -251,18 +288,55 @@ async function confirmUninstall() {
   color: var(--text-2);
   line-height: 1.5;
 }
-.es-perms {
+.es-perm-list {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 2px;
 }
-.es-perm {
-  padding: 2px 9px;
+.es-perm-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+}
+.es-perm-name {
+  font-size: 0.8125rem;
+  color: var(--text-1);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.toggle {
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  border: none;
   border-radius: var(--radius-pill);
-  background: var(--brand-50);
-  color: var(--brand-500);
-  font-size: 0.75rem;
-  font-weight: 600;
+  background: var(--border-strong);
+  position: relative;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.18s;
+}
+.toggle.on {
+  background: var(--brand-500);
+}
+.toggle:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: var(--shadow-dock);
+  transition: transform 0.18s;
+}
+.toggle.on .toggle-knob {
+  transform: translateX(18px);
 }
 .es-empty {
   margin: 0;

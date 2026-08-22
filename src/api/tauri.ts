@@ -590,6 +590,12 @@ export const tauriApi = {
   uninstallExtension: (id: string) => invoke<void>('uninstall_extension', { id }),
   /** 从本地目录安装扩展，返回扩展 id */
   installExtension: (source: string) => invoke<string>('install_extension', { source }),
+  /** 查询扩展权限状态（manifest 声明 → 是否授予） */
+  getExtensionPermissions: (id: string) =>
+    invoke<Record<string, boolean>>('get_extension_permissions', { id }),
+  /** 设置扩展某权限开关 */
+  setExtensionPermission: (id: string, permission: string, granted: boolean) =>
+    invoke<void>('set_extension_permission', { id, permission, granted }),
   /** 桥 API 统一分发：扩展 iframe 经主窗口转发调用 */
   xhubCall: (extId: string, namespace: string, method: string, args: unknown) =>
     invoke<unknown>('xhub_call', { extId, namespace, method, args }),

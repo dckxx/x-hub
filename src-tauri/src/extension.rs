@@ -8,6 +8,7 @@
 //! 让扩展中心能展示「此扩展不可用」而非静默消失。
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use tauri::Manager;
@@ -424,6 +425,87 @@ pub fn install_extension(app: tauri::AppHandle, source: String) -> Result<String
     copy_dir_recursive(&src, &dest).map_err(|e| format!("复制扩展目录失败: {e}"))?;
     log::info!("扩展已安装: {id} <- {}", src.display());
     Ok(id)
+}
+
+// ---------- 权限授权（运行时逐项开关） ----------
+
+/// 权限覆盖文件路径：`<扩展目录>/.permissions.json`（只存用户显式关闭的权限，默认授权）
+fn permissions_path(app: &tauri::AppHandle, ext_id: &str) -> Result<std::path::PathBuf, String> {
+    Ok(extensions_root(app)?.join(ext_id).join(".permissions.json"))
+}
+
+fn read_permission_overrides(app: &tauri::AppHandle, ext_id: &str) -> Map<String, Value> {
+    let path = match permissions_path(app, ext_id) {
+        Ok(p) => p,
+        Err(_) => return Map::new(),
+    };
+    if !path.exists() {
+        return Map::new();
+    }
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<Value>(&c).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+}
+
+fn write_permission_overrides(
+    app: &tauri::AppHandle,
+    ext_id: &str,
+    map: &Map<String, Value>,
+) -> Result<(), String> {
+    let path = permissions_path(app, ext_id)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content =
+        serde_json::to_string_pretty(&Value::Object(map.clone())).map_err(|e| e.to_string())?;
+    std::fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+/// 某权限是否被授予：manifest 声明后默认授权，除非用户显式关闭。
+pub fn permission_granted(app: &tauri::AppHandle, ext_id: &str, perm: &str) -> bool {
+    let overrides = read_permission_overrides(app, ext_id);
+    overrides
+        .get(perm)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+/// 查询扩展权限状态：manifest 声明的权限 → 是否授予。
+#[tauri::command]
+pub fn get_extension_permissions(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<HashMap<String, bool>, String> {
+    let dir = extensions_root(&app)?.join(&id);
+    let manifest = read_manifest(&dir)?;
+    let overrides = read_permission_overrides(&app, &id);
+    let mut result = HashMap::new();
+    for p in manifest.permissions {
+        let granted = overrides.get(&p).and_then(|v| v.as_bool()).unwrap_or(true);
+        result.insert(p, granted);
+    }
+    Ok(result)
+}
+
+/// 设置扩展某权限开关（仅记录「关闭」项；开启则删除覆盖）。
+#[tauri::command]
+pub fn set_extension_permission(
+    app: tauri::AppHandle,
+    id: String,
+    permission: String,
+    granted: bool,
+) -> Result<(), String> {
+    let mut overrides = read_permission_overrides(&app, &id);
+    if granted {
+        overrides.remove(&permission);
+    } else {
+        overrides.insert(permission.clone(), Value::Bool(false));
+    }
+    write_permission_overrides(&app, &id, &overrides)?;
+    log::info!("扩展权限更新: {id} {permission} granted={granted}");
+    Ok(())
 }
 
 #[cfg(test)]

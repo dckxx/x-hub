@@ -52,6 +52,8 @@
 
 ## 4. manifest 字段
 
+> **entry 统一为 HTML**：所有形态的 `entry` 都指向一个 HTML 文件（可引用同目录下的 JS / CSS 资源，相对路径自动解析）。web 扩展入口即前端 HTML（如 Vue 构建产物的 `dist/index.html`）；service 扩展除前端 HTML 外，另有 `backend.entry` 指向后端服务入口（Node 的 `index.js`）。
+
 ### web 扩展示例
 
 ```jsonc
@@ -64,9 +66,9 @@
   "surfaces": ["module", "view"],    // 声明支持哪些形态
   "openIn": ["view", "window"],      // app 形态下支持哪些打开方式
   "entry": {
-    "module": "./card/index.js",     // module 形态入口
-    "view":   "./app/index.js",      // view/window/drawer 共用入口
-    "drawer": "./drawer/index.js"    // drawer 若要独立入口（可选）
+    "module": "./card/index.html",   // module 形态入口
+    "view":   "./app/index.html",    // view/window/drawer 共用入口
+    "drawer": "./drawer/index.html"  // drawer 若要独立入口（可选）
   },
   "permissions": ["clipboard"],      // 能力申请，按需授权
   "icon": "./icon.svg",
@@ -233,8 +235,8 @@ service 扩展的后端默认跑在 Node 运行时上，运行时由宿主统一
 > 本表是落地进度的单一事实来源，改动时更新状态。
 
 1. `done` 扩展 manifest 解析 + 注册表（本地目录扫描），manifest 支持 `runtime` 字段；含扩展中心列表骨架（`list_extensions` 命令 + `ExtensionCenter` 视图，入口在侧栏「设置」上方）。
-2. `planned` 桥 API 骨架（`window.xhub.runtime / storage / data` 最小集）。
-3. `planned` 跑通 `view` 形态（复用现有主区视图路由，成本最低）。
+2. `done` 桥 API 骨架（`window.xhub.runtime / storage / data` 读，`xhub_call` 统一分发命令 + iframe postMessage 桥）。
+3. `done` `view` 形态（扩展中心点开 → 主区 iframe 加载扩展入口 HTML + 自动注入桥脚本；端到端加载待实际运行验证）。
 4. `planned` 跑通 `module` 卡片（复用工作台网格）。
 5. `planned` 再补 `window` / `drawer`（Tauri 多窗口 / overlay）。
 6. `planned` **service 托管**：进程托管（启动 / 端口 / `/svc/<extId>/*` 代理 / 健康检查 / 清理）+ 运行时提供（复用系统 Node / 按需下载内置 / 启动前校验 / 自动降级）。

@@ -581,4 +581,10 @@ export const tauriApi = {
   locateWeatherByIp: () => invoke<GeoLocation>('locate_weather_by_ip'),
   // ---- 扩展系统 ----
   listExtensions: () => invoke<ExtensionEntry[]>('list_extensions'),
+  /** 读取扩展某形态入口（注入桥脚本后返回临时 HTML 绝对路径） */
+  readExtensionEntry: (id: string, surface?: string | null) =>
+    invoke<string>('read_extension_entry', { id, surface: surface ?? null }),
+  /** 桥 API 统一分发：扩展 iframe 经主窗口转发调用 */
+  xhubCall: (extId: string, namespace: string, method: string, args: unknown) =>
+    invoke<unknown>('xhub_call', { extId, namespace, method, args }),
 }

@@ -17,6 +17,7 @@ mod sticky_window;
 mod sysmon;
 mod tray;
 mod usage;
+mod xhub_api;
 
 /// WebView2 附加浏览器参数（主窗/倒计时浮窗/便签浮窗必须完全一致，
 /// 同一 user data folder 下不同参数的环境创建会失败）。
@@ -429,6 +430,8 @@ commands::set_chat_panel,
             commands::set_clipboard_retention,
             sysmon::get_system_info,
             extension::list_extensions,
+            extension::read_extension_entry,
+            xhub_api::xhub_call,
             commands::check_connectivity,
             commands::get_weather,
             commands::get_quote,

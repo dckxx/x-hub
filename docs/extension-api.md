@@ -21,37 +21,60 @@ interface XHubError {
 ## 1. 基础类型（与宿主数据模型对齐）
 
 ```typescript
+// 注：桥 API 直接返回宿主模型（snake_case 字段，与 src-tauri/src/models.rs 对齐）。
+// 早期草案的 camelCase 已按实现修正为实际字段。
 interface Note {
   id: number;
   title: string;
   content: string;
-  updatedAt: string;   // ISO 8601
+  created_at: string;
+  updated_at: string;   // ISO 8601
 }
 
 interface Todo {
   id: number;
-  content: string;
+  title: string;
   done: boolean;
-  priority: number;        // 0 低 / 1 中 / 2 高
-  createdAt: string;
-  completedAt: string | null;
+  priority: number;          // 0 低 / 1 中 / 2 高
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
 }
 
 interface Resource {
   id: number;
+  kind: 'app' | 'web' | 'file';
   name: string;
-  category: 'app' | 'web' | 'file';
-  icon: string;
-  args: string;
-  lastLaunchedAt: string | null;
+  target: string;
+  category: string | null;
+  icon: string | null;
+  args: string | null;
+  sort_order: number;
+  last_launched_at: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 interface UsageSummary {
-  today: number;       // 今日 token
-  week: number;        // 近 7 日 token
-  month: number;       // 本月 token
-  total: number;       // 累计 token
-  todayCalls: number;  // 今日调用次数
+  today_input: number;        // 今日输入 token
+  today_cache_input: number;  // 今日缓存输入
+  today_output: number;       // 今日输出
+  today_cost: number;         // 今日费用
+  today_count: number;        // 今日调用次数
+  seven_day_input: number;
+  seven_day_cache_input: number;
+  seven_day_output: number;
+  seven_day_cost: number;
+  month_input: number;
+  month_cache_input: number;
+  month_output: number;
+  month_cost: number;
+  total_input: number;
+  total_cache_input: number;
+  total_output: number;
+  total_cost: number;
+  record_count: number;
+  last_sync_at: number | null;
 }
 
 interface HttpResult {
@@ -235,9 +258,9 @@ namespace events {
 
 | 命名空间 / 方法组 | 优先级 | 状态 |
 |---|---|---|
-| `runtime.*` | 一期 | planned |
-| `storage.*` | 一期 | planned |
-| `data`（读） | 一期 | planned |
+| `runtime.*` | 一期 | done |
+| `storage.*` | 一期 | done |
+| `data`（读） | 一期 | done |
 | `data`（写） | 后补 | planned |
 | `clipboard.*` | 一期 | planned |
 | `ui.toast` | 一期 | planned |

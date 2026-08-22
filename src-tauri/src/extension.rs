@@ -158,6 +158,13 @@ pub fn scan_extensions(app: &tauri::AppHandle) -> Result<Vec<ExtensionEntry>, St
     Ok(entries)
 }
 
+/// 读取扩展目录下的 manifest.json。
+fn read_manifest(dir: &Path) -> Result<ExtensionManifest, String> {
+    let content = std::fs::read_to_string(dir.join("manifest.json"))
+        .map_err(|e| format!("读取 manifest.json 失败：{e}"))?;
+    serde_json::from_str(&content).map_err(|e| format!("manifest 解析失败：{e}"))
+}
+
 /// 加载单个扩展目录为注册表项（永不 panic，损坏时返回 invalid 项）。
 fn load_extension(dir: &Path) -> ExtensionEntry {
     let dir_str = dir.to_string_lossy().into_owned();
@@ -182,14 +189,9 @@ fn load_extension(dir: &Path) -> ExtensionEntry {
         error: Some(error),
     };
 
-    let manifest_path = dir.join("manifest.json");
-    let content = match std::fs::read_to_string(&manifest_path) {
-        Ok(c) => c,
-        Err(e) => return invalid(format!("读取 manifest.json 失败：{e}")),
-    };
-    let manifest: ExtensionManifest = match serde_json::from_str(&content) {
+    let manifest = match read_manifest(dir) {
         Ok(m) => m,
-        Err(e) => return invalid(format!("manifest 解析失败：{e}")),
+        Err(e) => return invalid(e),
     };
 
     let icon = manifest.icon.as_ref().and_then(|rel| {
@@ -220,6 +222,101 @@ pub fn list_extensions(app: tauri::AppHandle) -> Result<Vec<ExtensionEntry>, Str
     let entries = scan_extensions(&app)?;
     log::info!("扩展注册表扫描完成：{} 个扩展", entries.len());
     Ok(entries)
+}
+
+/// 注入到扩展入口 HTML 的桥脚本：在扩展 iframe 内挂载 `window.xhub`，
+/// 所有方法经 `window.parent.postMessage` 发 RPC 请求给主窗口，主窗口再 invoke `xhub_call`。
+/// 用普通 `<script>`（非 module）且在 `<head>` 靠前位置注入，保证早于扩展自身脚本执行。
+const XHUB_BRIDGE_SCRIPT: &str = r#"
+(function(){
+  var pending={};var seq=0;
+  function call(ns,method,args){
+    return new Promise(function(resolve,reject){
+      var id=++seq;pending[id]={resolve:resolve,reject:reject};
+      window.parent.postMessage({__xhub:true,type:'call',id:id,namespace:ns,method:method,args:args},'*');
+    });
+  }
+  window.addEventListener('message',function(e){
+    var m=e.data;if(!m||m.__xhub!==true||m.type!=='result')return;
+    var p=pending[m.id];if(!p)return;delete pending[m.id];
+    if(m.ok){p.resolve(m.data);}
+    else{var err=new Error(m.error&&m.error.message||'xhub error');err.code=m.error&&m.error.code;p.reject(err);}
+  });
+  window.xhub={
+    runtime:{info:function(){return call('runtime','info',{});}},
+    storage:{
+      get:function(k){return call('storage','get',{key:k});},
+      set:function(k,v){return call('storage','set',{key:k,value:v});},
+      remove:function(k){return call('storage','remove',{key:k});},
+      clear:function(){return call('storage','clear',{});}
+    },
+    data:{
+      notes:{list:function(){return call('data','notes.list',{});},get:function(id){return call('data','notes.get',{id:id});}},
+      todos:{list:function(){return call('data','todos.list',{});}},
+      resources:{list:function(){return call('data','resources.list',{});}},
+      usage:{summary:function(){return call('data','usage.summary',{});}}
+    }
+  };
+})();
+"#;
+
+/// 找到 `tag_open`（如 `<head`）首次出现后，其闭合 `>` 之后的字节位置。
+fn find_tag_end(html: &str, tag_open: &str) -> Option<usize> {
+    let start = html.find(tag_open)?;
+    let rest = &html[start..];
+    let gt = rest.find('>')?;
+    Some(start + gt + 1)
+}
+
+/// 把桥脚本注入 HTML：优先插到 `<head...>` 开始标签之后（head 内第一个元素，
+/// 早于扩展自身脚本执行）；无 head 则插到 `</head>` 前；再退到 body 前；都没有则插到最前。
+fn inject_bridge(html: &str, bridge: &str) -> String {
+    let script = format!("<script>{bridge}</script>");
+    if let Some(pos) = find_tag_end(html, "<head") {
+        return format!("{}{}{}", &html[..pos], script, &html[pos..]);
+    }
+    if let Some(pos) = html.find("</head>") {
+        return format!("{}{}{}", &html[..pos], script, &html[pos..]);
+    }
+    if let Some(pos) = html.find("<body") {
+        return format!("{}{}{}", &html[..pos], script, &html[pos..]);
+    }
+    format!("{script}{html}")
+}
+
+/// 读取某扩展某形态的入口 HTML，注入桥脚本后写到 `<扩展目录>/.xhub/<surface>.html`，
+/// 返回该临时文件的绝对路径（前端 `convertFileSrc` 后作为 iframe src）。
+///
+/// 写临时文件到扩展目录内是为了让入口引用的相对资源（Vite 产物的 module script / css）
+/// 与入口保持同 origin 加载，规避 srcdoc + asset protocol 的跨域 CORS 限制。
+#[tauri::command]
+pub fn read_extension_entry(
+    app: tauri::AppHandle,
+    id: String,
+    surface: Option<String>,
+) -> Result<String, String> {
+    let dir = extensions_root(&app)?.join(&id);
+    if !dir.is_dir() {
+        return Err(format!("NOT_FOUND: 扩展 {id} 不存在"));
+    }
+    let manifest = read_manifest(&dir)?;
+    let surface = surface.unwrap_or_else(|| manifest.kind.clone());
+    let rel = manifest
+        .entry
+        .get(&surface)
+        .or_else(|| manifest.entry.get("view"))
+        .ok_or_else(|| format!("NOT_FOUND: 扩展 {id} 没有 {surface} 入口"))?;
+    let html_path = dir.join(rel);
+    let html =
+        std::fs::read_to_string(&html_path).map_err(|e| format!("IO_ERROR: 读取入口失败：{e}"))?;
+    let injected = inject_bridge(&html, XHUB_BRIDGE_SCRIPT);
+
+    let out_dir = dir.join(".xhub");
+    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+    let out_path = out_dir.join(format!("{surface}.html"));
+    std::fs::write(&out_path, injected).map_err(|e| e.to_string())?;
+    log::info!("扩展入口就绪: {id} [{surface}] -> {}", out_path.display());
+    Ok(out_path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -351,5 +448,21 @@ mod tests {
         let entry = load_extension(&ext);
         assert!(entry.invalid);
         assert!(entry.error.unwrap().contains("manifest.json"));
+    }
+
+    #[test]
+    fn inject_bridge_inserts_before_head() {
+        let html = "<html><head><title>t</title></head><body>x</body></html>";
+        let out = inject_bridge(html, "BRIDGE");
+        assert!(out.contains("<script>BRIDGE</script>"));
+        assert!(out.find("<script>").unwrap() < out.find("<title>").unwrap());
+        assert!(out.ends_with("</head><body>x</body></html>"));
+    }
+
+    #[test]
+    fn inject_bridge_without_head_prepends() {
+        let html = "<body>hi</body>";
+        let out = inject_bridge(html, "BRIDGE");
+        assert!(out.starts_with("<script>BRIDGE</script>"));
     }
 }

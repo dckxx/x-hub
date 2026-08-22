@@ -23,9 +23,10 @@ import CountdownCard from '../components/CountdownCard.vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import WhatsNewDialog from '../components/WhatsNewDialog.vue'
 import ExtensionCenter from '../components/ExtensionCenter.vue'
+import ExtensionView from '../components/ExtensionView.vue'
 import { useStore } from '../stores/workbench'
 import { isTauri, tauriApi } from '../api/tauri'
-import type { Countdown, Note, Resource, Todo } from '../api/tauri'
+import type { Countdown, ExtensionEntry, Note, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
 import { FileText, FolderOpen, Gauge, LayoutDashboard, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
@@ -52,7 +53,7 @@ const visibleNavigation = navigation.filter((item) => item.id !== 'chat')
 
 // 设置不在顶部导航列表，作为独立入口固定在侧栏左下角，但同样是视图切换逻辑
 // 自定义布局编辑器也是独立视图（从设置进入，完成后回主页面）
-type ViewId = (typeof navigation)[number]['id'] | 'settings' | 'layout-editor' | 'extensions'
+type ViewId = (typeof navigation)[number]['id'] | 'settings' | 'layout-editor' | 'extensions' | 'extension'
 const activeView = ref<ViewId>('dashboard')
 
 // 对话入口：点击侧栏「对话」即唤起右侧面板（面板是主形态，视图仅占位说明）
@@ -61,6 +62,19 @@ function onNavClick(id: ViewId) {
   if (id === 'chat' && !chatOpen.value) {
     toggleChat()
   }
+}
+
+// ---- 扩展打开：扩展中心点开某个扩展 → 主区渲染扩展入口（view 形态） ----
+const openedExtension = ref<{ id: string; surface: string | null } | null>(null)
+
+function onOpenExtension(ext: ExtensionEntry) {
+  openedExtension.value = { id: ext.id, surface: null }
+  activeView.value = 'extension'
+}
+
+function closeExtension() {
+  openedExtension.value = null
+  activeView.value = 'extensions'
 }
 
 // ---- 侧边栏收起（展开功能默认关闭，侧栏默认收起；开启后显示展开/收起按钮） ----
@@ -501,7 +515,17 @@ provide('showToast', showToast)
 
         <!-- 扩展中心：独立视图 -->
         <section v-else-if="activeView === 'extensions'" class="view view-extensions" tabindex="-1" aria-label="扩展中心">
-          <ExtensionCenter />
+          <ExtensionCenter @open="onOpenExtension" />
+        </section>
+
+        <!-- 扩展运行视图：主区渲染扩展入口（iframe + window.xhub 桥 API） -->
+        <section v-else-if="activeView === 'extension'" class="view view-extension" tabindex="-1" aria-label="扩展">
+          <ExtensionView
+            v-if="openedExtension"
+            :ext-id="openedExtension.id"
+            :surface="openedExtension.surface"
+            @close="closeExtension"
+          />
         </section>
 
         <!-- 对话：独立视图（完整视图，与右侧面板共用会话数据） -->
@@ -831,6 +855,10 @@ provide('showToast', showToast)
 }
 /* 扩展中心：覆盖组件内四边 padding，仅保留右下外边距（左上贴边与原版一致） */
 .view-extensions :deep(.extension-center) {
+  padding: 0 20px 20px 0;
+}
+/* 扩展运行视图：iframe 全幅，仅右下外边距 */
+.view-extension :deep(.extension-view) {
   padding: 0 20px 20px 0;
 }
 .view-layout-editor {

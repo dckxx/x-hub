@@ -9,6 +9,18 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
   () => {},
 )
 
+const emit = defineEmits<{
+  open: [ext: ExtensionEntry]
+}>()
+
+function onRowClick(e: ExtensionEntry) {
+  if (e.invalid) {
+    showToast(`「${e.name}」无法打开：${e.error ?? 'manifest 缺失或损坏'}`)
+    return
+  }
+  emit('open', e)
+}
+
 const extensions = ref<ExtensionEntry[]>([])
 const loading = ref(true)
 const failedIcons = ref(new Set<string>())
@@ -109,7 +121,11 @@ function onMore(e: ExtensionEntry) {
         v-for="e in extensions"
         :key="e.id"
         class="ec-row"
-        :class="{ invalid: e.invalid }"
+        :class="{ invalid: e.invalid, clickable: !e.invalid }"
+        role="button"
+        :tabindex="e.invalid ? undefined : 0"
+        @click="onRowClick(e)"
+        @keydown.enter="onRowClick(e)"
       >
         <div class="ec-icon" :style="{ background: accentFor(e).soft }">
           <img
@@ -143,7 +159,7 @@ function onMore(e: ExtensionEntry) {
             type="button"
             :aria-label="`${e.name} 设置`"
             :data-tip="`${e.name} 设置`"
-            @click="onMore(e)"
+            @click.stop="onMore(e)"
           >
             <MoreHorizontal :size="16" :stroke-width="2" aria-hidden="true" />
           </button>
@@ -241,6 +257,9 @@ function onMore(e: ExtensionEntry) {
 .ec-row:hover {
   transform: translateY(-1px);
   box-shadow: var(--shadow-card-hover, var(--shadow-card));
+}
+.ec-row.clickable {
+  cursor: pointer;
 }
 .ec-row.invalid {
   opacity: 0.72;

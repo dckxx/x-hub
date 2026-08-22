@@ -110,7 +110,7 @@ namespace runtime {
     version: string;
     runtime: 'web' | 'service';
     serviceReady: boolean;       // service 扩展：后端是否已就绪
-    proxyPrefix: string | null;  // service 扩展：/svc/<extId>；web 扩展为 null
+    proxyPrefix: string | null;  // service 扩展：完整 URL（http://127.0.0.1:<代理端口>/svc/<extId>），可直接 fetch/WebSocket；web 扩展为 null
   }>;
 }
 ```
@@ -207,7 +207,7 @@ namespace service {
 }
 ```
 
-> 宿主把 `${proxyPrefix}/*` 反向代理到扩展后端的 `127.0.0.1:<port>`。流式 / 双向能力直接用 `new WebSocket('ws://' + location.host + proxyPrefix + '/...')`（一期先不封装，实现时再评估）。
+> 宿主把 `${proxyPrefix}/*` 反向代理到扩展后端的 `127.0.0.1:<port>`（响应统一加 CORS 头；`proxyPrefix` 为完整 URL）。流式 / 双向直接用 `new WebSocket(proxyPrefix.replace('http://', 'ws://') + '/...')`（WebSocket 升级待补，一期走 `service.request` 非流式）。
 
 ## 10. ui —— 界面与通知
 

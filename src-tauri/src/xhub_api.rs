@@ -15,7 +15,7 @@ use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tauri::State;
+use tauri::{Manager, State};
 
 /// 加载扩展 manifest（不存在或解析失败返回 None）
 fn load_manifest(app: &tauri::AppHandle, ext_id: &str) -> Option<ExtensionManifest> {
@@ -120,6 +120,17 @@ fn runtime_info(app: &tauri::AppHandle, ext_id: &str) -> Result<Value, String> {
         ExtensionRuntime::Service => "service",
     };
     let is_service = manifest.runtime == ExtensionRuntime::Service;
+    // 代理前缀：service 扩展返回完整 URL（前端可直接 fetch/WebSocket 该前缀访问后端）
+    let proxy_prefix = if is_service {
+        let proxy_port = app.state::<crate::proxy::ProxyState>().0;
+        if proxy_port > 0 {
+            Some(format!("http://127.0.0.1:{proxy_port}/svc/{ext_id}"))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     Ok(json!({
         "id": manifest.id,
         "name": manifest.name,
@@ -127,7 +138,7 @@ fn runtime_info(app: &tauri::AppHandle, ext_id: &str) -> Result<Value, String> {
         "runtime": runtime,
         // service 就绪 = 后端进程已启动且探活成功（打开扩展时懒启动）
         "serviceReady": is_service && crate::service::service_ready(app, ext_id),
-        "proxyPrefix": if is_service { Some(format!("/svc/{ext_id}")) } else { None },
+        "proxyPrefix": proxy_prefix,
     }))
 }
 

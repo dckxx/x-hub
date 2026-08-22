@@ -11,6 +11,7 @@ mod models;
 mod notify;
 mod online;
 mod process;
+mod proxy;
 mod repo;
 mod service;
 mod shortcut;
@@ -244,6 +245,14 @@ pub fn run() {
             app.manage(DbState(std::sync::Mutex::new(conn)));
             app.manage(clipboard::ClipboardState::default());
             app.manage(service::ServiceState::default());
+
+            // 启动扩展反向代理（/svc/<extId>/* → 127.0.0.1:<service 端口>，统一加 CORS 头）
+            let proxy_port = tauri::async_runtime::block_on(proxy::start(app.handle().clone()))
+                .unwrap_or_else(|e| {
+                    log::warn!("扩展反向代理启动失败: {e}");
+                    0
+                });
+            app.manage(proxy::ProxyState(proxy_port));
 
             tray::setup(app)?;
             shortcut::setup(app)?;

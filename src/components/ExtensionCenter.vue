@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, ref } from 'vue'
+import { open } from '@tauri-apps/plugin-dialog'
 import { FolderOpen, MoreHorizontal, PackageOpen, Plus } from 'lucide-vue-next'
 import { isTauri, tauriApi, type ExtensionEntry } from '../api/tauri'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
@@ -76,8 +77,20 @@ function onInstall() {
   showToast('安装扩展功能即将上线')
 }
 
-function onLocalInstall() {
-  showToast('本地安装功能即将上线')
+async function onLocalInstall() {
+  if (!isTauri()) {
+    showToast('本地安装需在桌面应用中操作')
+    return
+  }
+  try {
+    const dir = await open({ multiple: false, directory: true })
+    if (typeof dir !== 'string') return // 取消
+    const id = await tauriApi.installExtension(dir)
+    showToast(`已安装「${id}」`)
+    await load()
+  } catch (e) {
+    showToast(`安装失败：${String(e)}`)
+  }
 }
 
 const settingsExt = ref<ExtensionEntry | null>(null)

@@ -6,6 +6,7 @@ mod config;
 mod countdown_ticker;
 mod countdown_window;
 mod db;
+mod extension;
 mod models;
 mod notify;
 mod online;
@@ -427,6 +428,7 @@ commands::set_chat_panel,
             commands::set_clipboard_shortcut,
             commands::set_clipboard_retention,
             sysmon::get_system_info,
+            extension::list_extensions,
             commands::check_connectivity,
             commands::get_weather,
             commands::get_quote,

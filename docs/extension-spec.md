@@ -229,13 +229,16 @@ service 扩展的后端默认跑在 Node 运行时上，运行时由宿主统一
 
 ## 12. 建议落地顺序
 
-1. 扩展 manifest 解析 + 注册表（本地目录扫描），manifest 支持 `runtime` 字段。
-2. 桥 API 骨架（`window.xhub.runtime / storage / data` 最小集）。
-3. 跑通 `view` 形态（复用现有主区视图路由，成本最低）。
-4. 跑通 `module` 卡片（复用工作台网格）。
-5. 再补 `window` / `drawer`（Tauri 多窗口 / overlay）。
-6. **service 托管**：进程托管（启动 / 端口 / `/svc/<extId>/*` 代理 / 健康检查 / 清理）+ 运行时提供（复用系统 Node / 按需下载内置 / 启动前校验 / 自动降级）。
-7. 最后加扩展中心、扩展设置、市场详情、安装页与权限授权。
+> 状态图例：`done` 已完成 · `in-progress` 实现中 · `planned` 已规划未开始
+> 本表是落地进度的单一事实来源，改动时更新状态。
+
+1. `done` 扩展 manifest 解析 + 注册表（本地目录扫描），manifest 支持 `runtime` 字段；含扩展中心列表骨架（`list_extensions` 命令 + `ExtensionCenter` 视图，入口在侧栏「设置」上方）。
+2. `planned` 桥 API 骨架（`window.xhub.runtime / storage / data` 最小集）。
+3. `planned` 跑通 `view` 形态（复用现有主区视图路由，成本最低）。
+4. `planned` 跑通 `module` 卡片（复用工作台网格）。
+5. `planned` 再补 `window` / `drawer`（Tauri 多窗口 / overlay）。
+6. `planned` **service 托管**：进程托管（启动 / 端口 / `/svc/<extId>/*` 代理 / 健康检查 / 清理）+ 运行时提供（复用系统 Node / 按需下载内置 / 启动前校验 / 自动降级）。
+7. `planned` 扩展中心补全（扩展设置、市场详情、安装页、权限授权；列表骨架已在第 1 步完成）。
 
 ## 附录：v2 → v3 差异
 

@@ -22,11 +22,12 @@ import StickyCard from '../components/StickyCard.vue'
 import CountdownCard from '../components/CountdownCard.vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import WhatsNewDialog from '../components/WhatsNewDialog.vue'
+import ExtensionCenter from '../components/ExtensionCenter.vue'
 import { useStore } from '../stores/workbench'
 import { isTauri, tauriApi } from '../api/tauri'
 import type { Countdown, Note, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
-import { FileText, FolderOpen, Gauge, LayoutDashboard, MessageSquare, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { FileText, FolderOpen, Gauge, LayoutDashboard, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import { useTheme } from '../composables/useTheme'
 import DashboardLayoutEditor from '../components/DashboardLayoutEditor.vue'
@@ -51,7 +52,7 @@ const visibleNavigation = navigation.filter((item) => item.id !== 'chat')
 
 // 设置不在顶部导航列表，作为独立入口固定在侧栏左下角，但同样是视图切换逻辑
 // 自定义布局编辑器也是独立视图（从设置进入，完成后回主页面）
-type ViewId = (typeof navigation)[number]['id'] | 'settings' | 'layout-editor'
+type ViewId = (typeof navigation)[number]['id'] | 'settings' | 'layout-editor' | 'extensions'
 const activeView = ref<ViewId>('dashboard')
 
 // 对话入口：点击侧栏「对话」即唤起右侧面板（面板是主形态，视图仅占位说明）
@@ -403,6 +404,18 @@ provide('showToast', showToast)
 
         <button
           class="sidebar-status"
+          :class="{ active: activeView === 'extensions' }"
+          type="button"
+          aria-label="打开扩展中心"
+          data-tip="扩展中心"
+          @click="activeView = 'extensions'"
+        >
+          <Puzzle :size="15" :stroke-width="2" aria-hidden="true" />
+          <span>扩展中心</span>
+        </button>
+
+        <button
+          class="sidebar-status"
           :class="{ active: activeView === 'settings' }"
           type="button"
           aria-label="打开设置"
@@ -484,6 +497,11 @@ provide('showToast', showToast)
         <!-- 用量：独立视图 -->
         <section v-else-if="activeView === 'usage'" class="view view-usage" tabindex="-1" aria-label="用量">
           <UsageView />
+        </section>
+
+        <!-- 扩展中心：独立视图 -->
+        <section v-else-if="activeView === 'extensions'" class="view view-extensions" tabindex="-1" aria-label="扩展中心">
+          <ExtensionCenter />
         </section>
 
         <!-- 对话：独立视图（完整视图，与右侧面板共用会话数据） -->
@@ -809,6 +827,10 @@ provide('showToast', showToast)
   padding: 0 20px 20px 0;
 }
 .view-settings {
+  padding: 0 20px 20px 0;
+}
+/* 扩展中心：覆盖组件内四边 padding，仅保留右下外边距（左上贴边与原版一致） */
+.view-extensions :deep(.extension-center) {
   padding: 0 20px 20px 0;
 }
 .view-layout-editor {

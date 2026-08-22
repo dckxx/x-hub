@@ -156,6 +156,28 @@ export interface AppInfo {
   latest_section: string
 }
 
+/** 已安装扩展的注册表项（后端 extension.rs 扫描返回） */
+export interface ExtensionEntry {
+  id: string
+  name: string
+  version: string
+  /** web | service */
+  runtime: 'web' | 'service'
+  /** module | view | window | drawer */
+  kind: string
+  surfaces: string[]
+  open_in: string[]
+  permissions: string[]
+  description: string
+  /** 图标文件绝对路径（存在时才非空） */
+  icon: string | null
+  /** 扩展目录绝对路径 */
+  dir: string
+  /** manifest 缺失 / 解析失败时为 true */
+  invalid: boolean
+  error: string | null
+}
+
 export interface WeatherCurrent {
   temperature: number
   apparent_temperature: number
@@ -557,4 +579,6 @@ export const tauriApi = {
   getQuote: () => invoke<Quote>('get_quote'),
   setWeatherCity: (city: string) => invoke<GeoLocation>('set_weather_city', { city }),
   locateWeatherByIp: () => invoke<GeoLocation>('locate_weather_by_ip'),
+  // ---- 扩展系统 ----
+  listExtensions: () => invoke<ExtensionEntry[]>('list_extensions'),
 }

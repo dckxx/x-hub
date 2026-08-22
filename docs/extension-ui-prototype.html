@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>x-hub 扩展系统 UI 原型</title>
+<style>
+  :root {
+    --accent: #5b5bf5;
+    --brand-500: #5b5bf5;
+    --brand-600: color-mix(in srgb, var(--accent) 78%, #000);
+    --brand-50: color-mix(in srgb, var(--accent) 12%, transparent);
+    --brand-glow: color-mix(in srgb, var(--accent) 18%, transparent);
+    --bg-page: #eceff6;
+    --bg-sidebar: rgba(255,255,255,.62);
+    --bg-card: rgba(255,255,255,.74);
+    --bg-card-solid: rgba(255,255,255,.92);
+    --bg-card-soft: rgba(255,255,255,.55);
+    --input-bg: rgba(255,255,255,.86);
+    --frost-tint-a: rgba(91,91,245,.10);
+    --frost-tint-b: rgba(236,72,153,.07);
+    --frost-tint-c: rgba(59,130,246,.09);
+    --frost-base-a: rgba(255,255,255,.76);
+    --frost-base-b: rgba(255,255,255,.66);
+    --frost-surface:
+      radial-gradient(180% 130% at 0% -12%, var(--frost-tint-a), transparent 55%),
+      radial-gradient(150% 120% at 105% 6%, var(--frost-tint-b), transparent 55%),
+      radial-gradient(170% 130% at 50% 116%, var(--frost-tint-c), transparent 55%),
+      linear-gradient(150deg, var(--frost-base-a) 0%, var(--frost-base-b) 100%);
+    --frost-edge: inset 0 1px 0 rgba(255,255,255,.55);
+    --glow-a: rgba(91,91,245,.18);
+    --glow-b: rgba(236,72,153,.12);
+    --glow-c: rgba(59,130,246,.16);
+    --bg-base-a: #edf0fa;
+    --bg-base-b: #f6f2ea;
+    --bg-page-surface:
+      radial-gradient(1200px 800px at 12% -8%, var(--glow-a), transparent 55%),
+      radial-gradient(1000px 700px at 100% 4%, var(--glow-b), transparent 55%),
+      radial-gradient(1200px 900px at 55% 118%, var(--glow-c), transparent 55%),
+      linear-gradient(150deg, var(--bg-base-a) 0%, var(--bg-base-b) 100%);
+    --border-soft: rgba(255,255,255,.55);
+    --border-strong: rgba(40,35,60,.22);
+    --text-1: #26231d;
+    --text-2: #57524a;
+    --text-3: #8d877d;
+    --text-4: #6f6a63;
+    --text-on-accent: #fff;
+    --c-blue: #3b82f6; --c-blue-soft: #bfdbfe; --c-blue-ink: #1d4ed8;
+    --c-green: #22c55e; --c-green-soft: #bbf7d0; --c-green-ink: #15803d;
+    --c-orange: #f59e0b; --c-orange-soft: #fde68a; --c-orange-ink: #b45309;
+    --c-purple: #a78bfa; --c-purple-soft: #ddd6fe; --c-purple-ink: #6d28d9;
+    --c-pink: #ec4899; --c-pink-soft: #fbcfe8; --c-pink-ink: #be185d;
+    --c-red: #ef4444; --c-red-soft: #fecaca; --c-red-ink: #b91c1c;
+    --c-gray: #9ca3af; --c-gray-soft: #e5e7eb; --c-gray-ink: #4b5563;
+    --radius-sm: 8px; --radius-md: 8px; --radius-lg: 12px; --radius-xl: 16px; --radius-pill: 999px;
+    --shadow-card: 0 1px 2px rgba(72,62,46,.05), 0 8px 24px rgba(72,62,46,.06);
+    --shadow-dock: 0 12px 32px rgba(72,62,46,.13), 0 28px 64px rgba(72,62,46,.1);
+    --shadow-focus: 0 0 0 3px var(--brand-glow);
+    --scrim: rgba(38,35,29,.35);
+    --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px; --space-6:24px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg-page-surface);
+    color: var(--text-1);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    font-size: 14px;
+  }
+  .app-shell { height: 100vh; display: flex; flex-direction: column; }
+  .title-bar { height: 48px; flex: 0 0 48px; display: flex; align-items: center; padding: 0 16px; gap: 10px; }
+  .brand { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .brand .logo { width: 20px; height: 20px; border-radius: 6px; background: var(--brand-500); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; }
+  .title-bar .hint { font-size: 12px; color: var(--text-3); margin-left: auto; }
+  .app-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 220px minmax(0,1fr); }
+  .sidebar { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 4px; }
+  .sidebar .nav-item { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 8px; border-radius: 8px; color: var(--text-2); font-size: 13px; font-weight: 600; cursor: pointer; }
+  .sidebar .nav-item:hover { background: var(--brand-50); color: var(--brand-500); }
+  .sidebar .nav-item.active { background: var(--brand-50); color: var(--brand-500); font-weight: 700; }
+  .sidebar .nav-item .ico { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; }
+  .sidebar .spacer { flex: 1; }
+  .sidebar .nav-item.setting { color: var(--text-3); font-weight: 500; font-size: 12px; }
+
+  .main-area { min-width: 0; min-height: 0; position: relative; display: flex; align-items: stretch; overflow: hidden; }
+  .workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 0 20px 20px 0; }
+
+  /* 场景切换条 */
+  .scene-bar { display: flex; gap: 6px; padding: 4px 0 14px; }
+  .scene-tab { border: none; background: transparent; padding: 6px 14px; border-radius: 999px; font: inherit; font-size: 12.5px; font-weight: 500; color: var(--text-3); cursor: pointer; white-space: nowrap; }
+  .scene-tab:hover { background: var(--brand-50); color: var(--brand-500); }
+  .scene-tab.active { background: var(--brand-500); color: #fff; font-weight: 600; }
+
+  .panel { background: var(--frost-surface); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); box-shadow: var(--frost-edge), var(--shadow-card); }
+  .scene { display: none; flex: 1; min-height: 0; }
+  .scene.active { display: flex; flex-direction: column; }
+
+  /* 通用 */
+  .page-head { display: flex; align-items: center; gap: 12px; padding: 2px 0 16px; }
+  .page-head h2 { font-size: 20px; font-weight: 700; }
+  .page-head .sub { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+  .pill-btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 18px; border: none; border-radius: 999px; background: var(--brand-500); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .ghost-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg-card-solid); color: var(--text-2); font-size: 13px; font-weight: 500; cursor: pointer; }
+  .tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .tag.service { background: var(--c-orange-soft); color: var(--c-orange-ink); }
+  .tag.app { background: var(--c-blue-soft); color: var(--c-blue-ink); }
+  .tag.module { background: var(--c-green-soft); color: var(--c-green-ink); }
+  .tag.perm { background: var(--c-gray-soft); color: var(--c-gray-ink); }
+
+  select.field { border: 1px solid var(--border-soft); border-radius: 8px; background: var(--input-bg); color: var(--text-1); font-size: 12.5px; padding: 6px 8px; outline: none; min-width: 104px; }
+  select.field:focus { border-color: var(--brand-500); box-shadow: var(--shadow-focus); }
+
+  .icon-btn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border: none; background: transparent; border-radius: 8px; color: var(--text-3); cursor: pointer; font-size: 16px; }
+  .icon-btn:hover { background: var(--bg-card-soft); color: var(--text-1); }
+
+  /* ===== 场景 A：扩展中心 ===== */
+  .ext-list { display: flex; flex-direction: column; gap: 10px; overflow: auto; flex: 1; min-height: 0; padding-bottom: 12px; }
+  .ext-row { display: flex; align-items: center; gap: 14px; padding: 14px 16px; }
+  .ext-row .app-icon { width: 40px; height: 40px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; font-size: 18px; color: #fff; flex: 0 0 40px; }
+  .ext-row .meta { flex: 1; min-width: 0; }
+  .ext-row .meta .name { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .ext-row .meta .desc { font-size: 12px; color: var(--text-3); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ext-row .ctrl { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  .ext-row .ctrl .lbl { font-size: 11.5px; color: var(--text-3); }
+
+  .banner { display: flex; gap: 14px; align-items: center; padding: 14px 16px; margin-bottom: 14px; border-radius: var(--radius-lg); border: 1px dashed var(--border-strong); background: color-mix(in srgb, var(--brand-500) 4%, transparent); }
+  .banner .txt { flex: 1; font-size: 12.5px; color: var(--text-2); }
+  .banner .txt b { color: var(--brand-500); }
+
+  /* ===== 场景 B：工作台 module 形态 ===== */
+  .dash-grid { display: grid; grid-template-columns: repeat(12, minmax(0,1fr)); grid-template-rows: repeat(3, minmax(0,1fr)); gap: 16px; flex: 1; min-height: 0; }
+  .cell { border-radius: var(--radius-lg); display: flex; flex-direction: column; overflow: hidden; }
+  .card { background: var(--frost-surface); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); box-shadow: var(--frost-edge), var(--shadow-card); padding: 12px; display: flex; flex-direction: column; min-height: 0; }
+  .card .hd { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .card .hd .ti { font-size: 13px; font-weight: 600; }
+  .card .hd .ti-ico { color: var(--brand-500); display: inline-flex; }
+  .card .hd .sp { margin-left: auto; }
+  .cell .card { flex: 1; }
+  .placeholder { display: flex; align-items: center; justify-content: center; color: var(--text-3); font-size: 12px; }
+
+  .mod-card .stat { display: flex; gap: 14px; flex: 1; align-items: center; }
+  .mod-card .stat .num { font-size: 22px; font-weight: 700; }
+  .mod-card .stat .unit { font-size: 11px; color: var(--text-3); }
+  .mod-card .foot { margin-top: auto; }
+  .badge-note { position: absolute; bottom: 10px; right: 10px; font-size: 10.5px; padding: 2px 8px; border-radius: 6px; background: var(--brand-500); color: #fff; font-weight: 600; }
+
+  /* ===== 场景 C：view 形态 ===== */
+  .view-full { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .view-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border-soft); }
+  .view-toolbar .back { font-size: 12.5px; color: var(--text-3); display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .view-toolbar .t { font-size: 14px; font-weight: 600; }
+  .view-toolbar .sp { margin-left: auto; }
+  .api-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 200px 1fr 1fr; gap: 0; }
+  .api-body .col { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--border-soft); }
+  .api-body .col:last-child { border-right: none; }
+  .api-col-hd { font-size: 11px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: .03em; padding: 10px 14px; border-bottom: 1px solid var(--border-soft); }
+  .api-col-body { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
+  .req-item { padding: 8px 10px; border-radius: 8px; font-size: 12.5px; cursor: pointer; display: flex; gap: 6px; align-items: center; }
+  .req-item:hover { background: var(--bg-card-soft); }
+  .req-item .m { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 5px; }
+  .req-item .m.get { background: var(--c-green-soft); color: var(--c-green-ink); }
+  .req-item .m.post { background: var(--c-orange-soft); color: var(--c-orange-ink); }
+  .req-item.active { background: var(--brand-50); }
+  .code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; }
+  .kv-row { display: grid; grid-template-columns: 1fr 1fr 24px; gap: 6px; margin-bottom: 6px; }
+  .kv-row input { border: 1px solid var(--border-soft); border-radius: 6px; background: var(--input-bg); color: var(--text-1); font-size: 12px; padding: 5px 8px; outline: none; }
+
+  /* ===== 场景 D：window 形态 ===== */
+  .scene-window { position: relative; }
+  .desk-backdrop { flex: 1; border-radius: var(--radius-lg); border: 1px solid var(--border-soft); background: var(--bg-card); display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
+  .win { width: 560px; max-width: 80%; border-radius: 12px; box-shadow: var(--shadow-dock); background: var(--bg-card-solid); overflow: hidden; border: 1px solid var(--border-soft); }
+  .win-bar { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--border-soft); }
+  .win-bar .dots { display: flex; gap: 5px; }
+  .win-bar .dots i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+  .win-bar .dots i:nth-child(1){ background:#f87171; } .win-bar .dots i:nth-child(2){ background:#fbbf24; } .win-bar .dots i:nth-child(3){ background:#34d399; }
+  .win-bar .wt { font-size: 12.5px; font-weight: 600; margin-left: 6px; }
+  .win-body { height: 260px; display: grid; grid-template-columns: 1fr 1fr; }
+  .win-body .col { border-right: 1px solid var(--border-soft); padding: 10px; }
+  .win-body .col:last-child { border-right: none; }
+  .float-tag { position: absolute; top: 12px; right: 12px; font-size: 11px; color: var(--text-3); background: var(--bg-card-solid); padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border-soft); }
+
+  /* ===== 场景 E：drawer 形态 ===== */
+  .scene-drawer { position: relative; }
+  .drawer-base { flex: 1; border-radius: var(--radius-lg); border: 1px solid var(--border-soft); background: var(--bg-card); display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
+  .drawer { position: absolute; top: 0; right: 0; bottom: 0; width: 420px; max-width: 70%; background: var(--bg-card-solid); border-left: 1px solid var(--border-soft); box-shadow: var(--shadow-dock); display: flex; flex-direction: column; }
+  .drawer-bar { height: 40px; display: flex; align-items: center; padding: 0 14px; gap: 8px; border-bottom: 1px solid var(--border-soft); }
+  .drawer-bar .dt { font-size: 13px; font-weight: 600; }
+  .drawer-body { flex: 1; padding: 12px; overflow: auto; }
+  .drawer-mask { position: absolute; inset: 0; background: rgba(0,0,0,.10); }
+  .base-hint { color: var(--text-3); font-size: 12.5px; }
+
+  .footnote { padding: 12px 16px; font-size: 11.5px; color: var(--text-3); border-top: 1px solid var(--border-soft); margin-top: 12px; line-height: 1.5; }
+  .footnote b { color: var(--text-2); }
+
+  /* ===== F 扩展设置页 ===== */
+  .ext-detail { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:12px; padding-bottom:12px; }
+  .detail-hero { display:flex; align-items:center; gap:16px; padding:18px; }
+  .detail-hero .app-icon { width:52px; height:52px; border-radius:14px; font-size:24px; flex:0 0 52px; }
+  .sec-title { font-size:13px; font-weight:700; padding:14px 16px 4px; }
+  .perm-row { display:flex; align-items:center; gap:10px; padding:10px 16px; border-top:1px solid var(--border-soft); }
+  .perm-row .p-name { font-weight:600; font-size:13px; width:100px; flex-shrink:0; }
+  .perm-row .p-desc { flex:1; font-size:12px; color:var(--text-3); }
+  .switch { position:relative; width:38px; height:22px; border-radius:999px; background:var(--c-gray-soft); cursor:pointer; flex-shrink:0; }
+  .switch.on { background:var(--brand-500); }
+  .switch::after { content:''; position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:#fff; transition:left .15s; box-shadow:0 1px 2px rgba(0,0,0,.2); }
+  .switch.on::after { left:18px; }
+  .row-field { display:flex; align-items:center; gap:10px; padding:10px 16px; }
+  .row-field .rf-l { flex:1; }
+  .row-field .rf-l .rf-t { font-size:13px; font-weight:600; }
+  .row-field .rf-l .rf-d { font-size:11.5px; color:var(--text-3); margin-top:2px; }
+  .danger-btn { display:inline-flex; align-items:center; gap:6px; padding:8px 18px; border:1px solid var(--c-red-soft); border-radius:999px; background:var(--c-red-soft); color:var(--c-red-ink); font-size:13px; font-weight:600; cursor:pointer; }
+
+  /* ===== G 安装扩展页 ===== */
+  .store-tabs { display:flex; gap:6px; padding:0 0 12px; }
+  .store-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:12px; overflow:auto; flex:1; min-height:0; padding-bottom:12px; align-content:start; }
+  .store-card { padding:16px; display:flex; flex-direction:column; gap:10px; }
+  .store-card .sc-head { display:flex; align-items:center; gap:10px; }
+  .store-card .sc-head .app-icon { width:36px; height:36px; border-radius:9px; font-size:16px; flex:0 0 36px; }
+  .store-card .sc-name { font-size:13px; font-weight:600; }
+  .store-card .sc-desc { font-size:11.5px; color:var(--text-3); line-height:1.5; flex:1; }
+  .drop-zone { border:2px dashed var(--border-strong); border-radius:var(--radius-lg); padding:44px; text-align:center; color:var(--text-3); font-size:13px; }
+
+  /* ===== H 扩展详情（市场） ===== */
+  .shots-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:0 16px 16px; }
+  .shot { aspect-ratio:16/10; border-radius:8px; border:1px solid var(--border-soft); background:linear-gradient(150deg,var(--brand-50),var(--bg-card-soft)); display:flex; align-items:center; justify-content:center; color:var(--text-3); font-size:11px; }
+  .meta-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:0 16px 16px; }
+  .meta-item .k { color:var(--text-3); font-size:11px; }
+  .meta-item .v { font-weight:600; margin-top:2px; font-size:12.5px; }
+  .link { color:var(--brand-500); text-decoration:none; font-weight:600; }
+  .prose { padding:0 16px 16px; font-size:12.5px; color:var(--text-2); line-height:1.7; }
+  .steps { padding:0 16px 16px; font-size:12.5px; color:var(--text-2); line-height:1.9; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <div class="title-bar">
+    <span class="brand"><span class="logo">X</span>x-hub</span>
+    <span class="hint">扩展系统 UI 原型 · 点击顶部标签切换五种形态</span>
+  </div>
+
+  <div class="app-body">
+    <aside class="sidebar">
+      <div class="nav-item"><span class="ico">▦</span> 工作台</div>
+      <div class="nav-item"><span class="ico">▤</span> 速记</div>
+      <div class="nav-item"><span class="ico">▥</span> 速达</div>
+      <div class="nav-item"><span class="ico">▨</span> 用量</div>
+      <div class="spacer"></div>
+      <div class="nav-item active"><span class="ico">▧</span> 扩展中心</div>
+      <div class="nav-item setting"><span class="ico">⚙</span> 设置</div>
+    </aside>
+
+    <div class="main-area">
+      <div class="workspace">
+        <div class="scene-bar">
+          <button class="scene-tab active" data-scene="a">A · 扩展中心</button>
+          <button class="scene-tab" data-scene="b">B · 工作台 module 卡</button>
+          <button class="scene-tab" data-scene="c">C · app 视图（占满主区）</button>
+          <button class="scene-tab" data-scene="d">D · app 独立窗口</button>
+          <button class="scene-tab" data-scene="e">E · app 侧边抽屉</button>
+          <button class="scene-tab" data-scene="f">F · 扩展设置</button>
+          <button class="scene-tab" data-scene="g">G · 安装扩展</button>
+          <button class="scene-tab" data-scene="h">H · 扩展详情（市场）</button>
+        </div>
+
+        <!-- A 扩展中心 -->
+        <div class="scene active" id="scene-a">
+          <div class="page-head">
+            <div>
+              <h2>扩展中心</h2>
+              <div class="sub">统一扩展（module / app）+ 三层打开方式配置</div>
+            </div>
+            <div style="margin-left:auto" class="ghost-btn">+ 从本地安装</div>
+            <div class="pill-btn">+ 安装扩展</div>
+          </div>
+
+          <div class="banner">
+            <div class="txt">
+              <b>打开方式优先级：</b>用户偏好 &gt; 扩展作者声明（openIn） &gt; 全局默认（视图）。
+              同一个扩展可同时提供 <b>module 摘要卡</b> 和 <b>app 完整工具</b> 两种形态。
+              带 <b>service</b> 标识的是带后端的 <b>service</b> 扩展，会随扩展运行一个由宿主托管的本地后台服务。
+            </div>
+          </div>
+
+          <div class="ext-list">
+            <div class="panel ext-row">
+              <span class="app-icon" style="background:linear-gradient(135deg,#6366f1,#8b5cf6)">⌁</span>
+              <div class="meta">
+                <div class="name">API 调试助手 <span class="tag app">app</span> <span class="tag module">module</span></div>
+                <div class="desc">请求管理 · 参数编辑 · 响应面板，可加工作台摘要卡</div>
+              </div>
+              <div class="ctrl">
+                <span class="lbl">默认打开</span>
+                <select class="field"><option>主区视图</option><option>独立窗口</option></select>
+                <span class="icon-btn goto-settings">⋯</span>
+              </div>
+            </div>
+
+            <div class="panel ext-row">
+              <span class="app-icon" style="background:linear-gradient(135deg,#0ea5e9,#22d3ee)">⚡</span>
+              <div class="meta">
+                <div class="name">AI 用量摘要 <span class="tag module">module</span></div>
+                <div class="desc">工作台卡片显示今日 Token / 调用次数 / 花费</div>
+              </div>
+              <div class="ctrl">
+                <span class="lbl">默认打开</span>
+                <select class="field" disabled><option>视图</option></select>
+                <span class="icon-btn goto-settings">⋯</span>
+              </div>
+            </div>
+
+            <div class="panel ext-row">
+              <span class="app-icon" style="background:linear-gradient(135deg,#f59e0b,#ef4444)">✂</span>
+              <div class="meta">
+                <div class="name">ctool 工具箱 <span class="tag app">app</span></div>
+                <div class="desc">哈希 / 编码 / 时间戳 / JSON 格式化等开发者工具集</div>
+              </div>
+              <div class="ctrl">
+                <span class="lbl">默认打开</span>
+                <select class="field"><option>独立窗口</option><option>主区视图</option><option>侧边抽屉</option></select>
+                <span class="icon-btn goto-settings">⋯</span>
+              </div>
+            </div>
+
+            <div class="panel ext-row">
+              <span class="app-icon" style="background:linear-gradient(135deg,#10b981,#34d399)">▦</span>
+              <div class="meta">
+                <div class="name">图床速传 <span class="tag app">app</span></div>
+                <div class="desc">拖拽图片上传并回填 Markdown 链接</div>
+              </div>
+              <div class="ctrl">
+                <span class="lbl">默认打开</span>
+                <select class="field"><option>侧边抽屉</option><option>主区视图</option><option>独立窗口</option></select>
+                <span class="icon-btn goto-settings">⋯</span>
+              </div>
+            </div>
+
+            <div class="panel ext-row">
+              <span class="app-icon" style="background:linear-gradient(135deg,#2563eb,#60a5fa)">✦</span>
+              <div class="meta">
+                <div class="name">DeepSeek Harness <span class="tag app">app</span> <span class="tag service">service</span></div>
+                <div class="desc">AI 编码 Agent · 文件编辑 / Shell / 子代理 / 工作流（需本地 Node 服务）</div>
+              </div>
+              <div class="ctrl">
+                <span class="lbl">默认打开</span>
+                <select class="field"><option>主区视图</option><option>独立窗口</option></select>
+                <span class="icon-btn goto-settings">⋯</span>
+              </div>
+            </div>
+
+            <div class="panel ext-row">
+              <span class="app-icon" style="background:linear-gradient(135deg,#22c55e,#84cc16)">✍</span>
+              <div class="meta">
+                <div class="name">公众号助手 <span class="tag app">app</span> <span class="tag service">service</span></div>
+                <div class="desc">MD 排版 · 封面生成 · 创建草稿 · 发布（调微信公众平台 API）</div>
+              </div>
+              <div class="ctrl">
+                <span class="lbl">默认打开</span>
+                <select class="field"><option>主区视图</option><option>侧边抽屉</option></select>
+                <span class="icon-btn goto-settings">⋯</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="footnote">
+            <b>字段示意</b>：<code style="font-family:monospace">runtime</code> 运行时（web / service） ·
+            <code>kind</code> 默认形态 · <code>surfaces</code> 支持形态 ·
+            <code>openIn</code> 支持打开方式 · <code>permissions</code> 能力申请（仅在详情页展示）。
+            默认打开方式下拉对应「用户偏好」层，每个扩展可单独覆盖。
+          </div>
+        </div>
+
+        <!-- B 工作台 module -->
+        <div class="scene" id="scene-b">
+          <div class="page-head">
+            <div>
+              <h2>工作台 · module 形态</h2>
+              <div class="sub">扩展作为一张摘要卡，与其他卡片并存，点「打开」进入 app 形态</div>
+            </div>
+          </div>
+          <div class="dash-grid">
+            <div class="cell card" style="grid-column:1/4;grid-row:1"><div class="hd"><span class="ti-ico">🕐</span><span class="ti">时钟</span></div><div class="placeholder" style="flex:1">10:24</div></div>
+            <div class="cell card" style="grid-column:4/8;grid-row:1"><div class="hd"><span class="ti-ico">⏳</span><span class="ti">倒计时</span></div><div class="placeholder" style="flex:1">03:12</div></div>
+            <div class="cell card" style="grid-column:8/13;grid-row:1/3"><div class="hd"><span class="ti-ico">✓</span><span class="ti">待办清单</span></div><div class="placeholder" style="flex:1">…</div></div>
+
+            <div class="cell card mod-card" style="grid-column:1/4;grid-row:2; position:relative;">
+              <div class="hd"><span class="ti-ico" style="color:var(--brand-500)">⌁</span><span class="ti">API 调试助手</span><span class="sp"><span class="tag module">module</span></span></div>
+              <div class="stat">
+                <div><div class="num">28</div><div class="unit">今日请求</div></div>
+                <div><div class="num">120<span style="font-size:12px">ms</span></div><div class="unit">平均耗时</div></div>
+                <div><div class="num" style="color:#15803d">2</div><div class="unit">失败</div></div>
+              </div>
+              <div class="foot"><button class="pill-btn" style="padding:5px 14px;font-size:12px">打开 app →</button></div>
+              <span class="badge-note">扩展 module 卡</span>
+            </div>
+
+            <div class="cell card" style="grid-column:4/8;grid-row:2"><div class="hd"><span class="ti-ico">📝</span><span class="ti">提示词</span></div><div class="placeholder" style="flex:1">…</div></div>
+            <div class="cell card" style="grid-column:1/13;grid-row:3"><div class="hd"><span class="ti-ico">🕘</span><span class="ti">最近使用</span></div><div class="placeholder" style="flex:1">…</div></div>
+          </div>
+          <div class="footnote">
+            <b>module 形态</b>：manifest 里 <code>surfaces</code> 含 <code>module</code> 时，扩展可被拖入工作台任意格子（复用现有 12 列网格），
+            卡片右上「…」菜单 → 打开 app / 在窗口打开 / 在抽屉打开。
+          </div>
+        </div>
+
+        <!-- C view 形态 -->
+        <div class="scene" id="scene-c">
+          <div class="page-head">
+            <div>
+              <h2>app · 主区视图（view）</h2>
+              <div class="sub">点开后占满右侧主工作区，左侧栏始终保留</div>
+            </div>
+          </div>
+          <div class="panel view-full">
+            <div class="view-toolbar">
+              <span class="back">← 返回</span>
+              <span class="t">API 调试助手</span>
+              <span style="margin-left:auto"></span>
+              <span class="ghost-btn" style="padding:4px 12px;font-size:12px">⇱ 在窗口打开</span>
+              <span class="ghost-btn" style="padding:4px 12px;font-size:12px">▤ 在抽屉打开</span>
+              <span class="pill-btn" style="padding:5px 16px;font-size:12px">发送</span>
+            </div>
+            <div class="api-body">
+              <div class="col">
+                <div class="api-col-hd">请求历史</div>
+                <div class="api-col-body">
+                  <div class="req-item active"><span class="m get">GET</span> /v1/users</div>
+                  <div class="req-item"><span class="m get">GET</span> /v1/models</div>
+                  <div class="req-item"><span class="m post">POST</span> /v1/chat</div>
+                  <div class="req-item"><span class="m get">GET</span> /v1/usage</div>
+                </div>
+              </div>
+              <div class="col">
+                <div class="api-col-hd">请求</div>
+                <div class="api-col-body">
+                  <div class="kv-row"><input value="Authorization" readonly><input value="Bearer sk-••••" readonly><span class="icon-btn">×</span></div>
+                  <div class="kv-row"><input value="Content-Type" readonly><input value="application/json" readonly><span class="icon-btn">×</span></div>
+                  <div style="font-size:11px;color:var(--text-3);margin:6px 0">Body</div>
+                  <div class="code">{
+  "model": "deepseek-v4",
+  "prompt": "hi"
+}</div>
+                </div>
+              </div>
+              <div class="col">
+                <div class="api-col-hd">响应 · 200 OK</div>
+                <div class="api-col-body">
+                  <div class="code">{
+  "id": "chatcmpl-…",
+  "choices": [{
+    "message": {
+      "content": "你好！"
+    }
+  }]
+}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="footnote">
+            <b>view 形态</b>：复用现有「速记/速达/用量」视图切换链路，只是右侧渲染的是扩展入口。成本最低、体验最统一，为默认推荐形态。
+          </div>
+        </div>
+
+        <!-- D window 形态 -->
+        <div class="scene scene-window" id="scene-d">
+          <div class="page-head">
+            <div>
+              <h2>app · 独立窗口（window）</h2>
+              <div class="sub">新开子窗口，可与主窗口并排 / 拖到副屏</div>
+            </div>
+          </div>
+          <div class="desk-backdrop">
+            <div class="win">
+              <div class="win-bar"><span class="dots"><i></i><i></i><i></i></span><span class="wt">API 调试助手</span></div>
+              <div class="win-body">
+                <div class="col">
+                  <div style="font-size:11px;color:var(--text-3);margin-bottom:6px">请求</div>
+                  <div class="kv-row"><input value="URL" readonly><input value="https://api…" readonly><span></span></div>
+                  <div class="code" style="margin-top:8px">GET /v1/users</div>
+                </div>
+                <div class="col">
+                  <div style="font-size:11px;color:var(--text-3);margin-bottom:6px">响应</div>
+                  <div class="code">200 OK
+{
+  "total": 3,
+  …
+}</div>
+                </div>
+              </div>
+            </div>
+            <div class="float-tag">独立 WebviewWindow · 可拖到副屏</div>
+          </div>
+          <div class="footnote">
+            <b>window 形态</b>：Tauri 多窗口（WebviewWindow）。适合需要「主窗口 + 工具并排对照」的场景；有窗口管理成本，仅在扩展声明或用户偏好时启用。
+          </div>
+        </div>
+
+        <!-- E drawer 形态 -->
+        <div class="scene scene-drawer" id="scene-e">
+          <div class="page-head">
+            <div>
+              <h2>app · 侧边抽屉（drawer）</h2>
+              <div class="sub">从右侧滑出面板，主界面仍在，可对照操作</div>
+            </div>
+          </div>
+          <div class="drawer-base">
+            <div class="base-hint">主工作区（保持可见）</div>
+            <div class="drawer-mask"></div>
+            <div class="drawer">
+              <div class="drawer-bar"><span class="dt">图床速传</span><span class="tag app" style="margin-left:auto">app</span><span class="icon-btn">×</span></div>
+              <div class="drawer-body">
+                <div style="border:1px dashed var(--border-strong);border-radius:10px;padding:26px;text-align:center;color:var(--text-3);font-size:12.5px;margin-bottom:12px">拖拽图片到这里上传</div>
+                <div class="code" style="font-size:11px;color:var(--text-3)">![](&nbsp;https://img.example/a.png&nbsp;)</div>
+                <button class="pill-btn" style="width:100%;justify-content:center;margin-top:12px;padding:8px">复制 Markdown</button>
+              </div>
+            </div>
+          </div>
+          <div class="footnote">
+            <b>drawer 形态</b>：右侧 overlay 滑入，宽度受 manifest <code>minSize.w</code> 约束。适合轻量速查类工具，不适合放大型工具。
+          </div>
+        </div>
+
+        <!-- F 扩展设置 -->
+        <div class="scene" id="scene-f">
+          <div class="page-head">
+            <button class="ghost-btn" style="padding:5px 14px" onclick="switchScene('a')">← 返回列表</button>
+            <div>
+              <h2>扩展设置</h2>
+              <div class="sub">单个扩展的详情、权限、打开方式与数据管理（列表右侧 ⋯ 进入）</div>
+            </div>
+          </div>
+          <div class="ext-detail">
+            <div class="panel detail-hero">
+              <span class="app-icon" style="background:linear-gradient(135deg,#6366f1,#8b5cf6)">⌁</span>
+              <div style="flex:1">
+                <div style="font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px">API 调试助手 <span class="tag app">app</span><span class="tag module">module</span></div>
+                <div style="font-size:12px;color:var(--text-3);margin-top:4px">com.x-hub.apidebug · v1.0.0 · 作者 demo · web 运行时</div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="sec-title">打开方式</div>
+              <div class="row-field">
+                <div class="rf-l"><div class="rf-t">默认形态</div><div class="rf-d">点开扩展后进入的形态</div></div>
+                <select class="field"><option>app · 主区视图</option><option>module 卡片</option></select>
+              </div>
+              <div class="row-field">
+                <div class="rf-l"><div class="rf-t">app 打开方式</div><div class="rf-d">主区视图 / 独立窗口 / 侧边抽屉</div></div>
+                <select class="field"><option>主区视图</option><option>独立窗口</option><option>侧边抽屉</option></select>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="sec-title">权限</div>
+              <div class="perm-row"><span class="p-name">网络访问</span><span class="p-desc">发起 HTTP 请求（调试必需）</span><span class="switch on"></span></div>
+              <div class="perm-row"><span class="p-name">剪贴板</span><span class="p-desc">读取 / 写入剪贴板内容</span><span class="switch"></span></div>
+              <div class="perm-row"><span class="p-name">文件系统</span><span class="p-desc">读写本地文件</span><span class="switch"></span></div>
+            </div>
+
+            <div class="panel">
+              <div class="sec-title">数据</div>
+              <div class="row-field">
+                <div class="rf-l"><div class="rf-t">本地数据</div><div class="rf-d">请求历史、环境变量等，占用 128 KB</div></div>
+                <span class="ghost-btn" style="padding:5px 14px;font-size:12px">清除数据</span>
+              </div>
+            </div>
+
+            <div class="panel" style="padding:14px 16px;display:flex;align-items:center;gap:12px">
+              <span style="font-size:12.5px;color:var(--text-3);flex:1">卸载会同时移除扩展程序与其本地数据（可勾选保留数据）。</span>
+              <button class="danger-btn">卸载扩展</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- G 安装扩展 -->
+        <div class="scene" id="scene-g">
+          <div class="page-head">
+            <button class="ghost-btn" style="padding:5px 14px" onclick="switchScene('a')">← 返回</button>
+            <div>
+              <h2>安装扩展</h2>
+              <div class="sub">从扩展市场安装，或本地加载 .xhpack 包</div>
+            </div>
+          </div>
+          <div class="store-tabs">
+            <button class="scene-tab active">扩展市场</button>
+            <button class="scene-tab">本地安装</button>
+          </div>
+          <div class="store-grid">
+            <div class="panel store-card">
+              <div class="sc-head"><span class="app-icon" style="background:linear-gradient(135deg,#6366f1,#8b5cf6)">⌁</span><span class="sc-name">API 调试助手</span></div>
+              <div class="sc-desc">请求管理 · 参数编辑 · 响应面板</div>
+              <button class="pill-btn" style="justify-content:center" disabled>已安装</button>
+            </div>
+            <div class="panel store-card">
+              <div class="sc-head"><span class="app-icon" style="background:linear-gradient(135deg,#0ea5e9,#22d3ee)">{} </span><span class="sc-name">JSON 格式化</span></div>
+              <div class="sc-desc">格式化 / 校验 / 压缩 JSON</div>
+              <button class="pill-btn" style="justify-content:center">安装</button>
+            </div>
+            <div class="panel store-card">
+              <div class="sc-head"><span class="app-icon" style="background:linear-gradient(135deg,#f59e0b,#ef4444)">✂</span><span class="sc-name">ctool 工具箱</span></div>
+              <div class="sc-desc">哈希 / 编码 / 时间戳工具集</div>
+              <button class="pill-btn" style="justify-content:center">安装</button>
+            </div>
+            <div class="panel store-card">
+              <div class="sc-head"><span class="app-icon" style="background:linear-gradient(135deg,#10b981,#34d399)">▦</span><span class="sc-name">图床速传</span></div>
+              <div class="sc-desc">拖拽图片上传并回填链接</div>
+              <button class="pill-btn" style="justify-content:center">安装</button>
+            </div>
+            <div class="panel store-card">
+              <div class="sc-head"><span class="app-icon" style="background:linear-gradient(135deg,#ec4899,#f472b6)">◈</span><span class="sc-name">正则测试器</span></div>
+              <div class="sc-desc">正则匹配高亮与替换预览</div>
+              <button class="pill-btn" style="justify-content:center">安装</button>
+            </div>
+            <div class="panel store-card">
+              <div class="sc-head"><span class="app-icon" style="background:linear-gradient(135deg,#2563eb,#60a5fa)">✦</span><span class="sc-name">DeepSeek Harness <span class="tag service">service</span></span></div>
+              <div class="sc-desc">AI 编码 Agent · 多步任务 / 文件编辑 / Shell</div>
+              <button class="pill-btn" style="justify-content:center">安装</button>
+            </div>
+            <div class="panel store-card">
+              <div class="sc-head"><span class="app-icon" style="background:linear-gradient(135deg,#22c55e,#84cc16)">✍</span><span class="sc-name">公众号助手 <span class="tag service">service</span></span></div>
+              <div class="sc-desc">排版 · 封面 · 草稿 · 发布（调微信 API）</div>
+              <button class="pill-btn" style="justify-content:center">安装</button>
+            </div>
+          </div>
+          <div class="footnote">
+            <b>本地安装</b>：切到「本地安装」tab 后显示拖拽区，支持拖入 <code>.xhpack</code> 包或选择扩展文件夹加载。
+          </div>
+        </div>
+
+        <!-- H 扩展详情（市场） -->
+        <div class="scene" id="scene-h">
+          <div class="page-head">
+            <button class="ghost-btn" style="padding:5px 14px" onclick="switchScene('g')">← 返回市场</button>
+            <div>
+              <h2>扩展详情</h2>
+              <div class="sub">扩展的完整介绍与安装入口</div>
+            </div>
+          </div>
+          <div class="ext-detail">
+            <div class="panel detail-hero">
+              <span class="app-icon" style="background:linear-gradient(135deg,#0ea5e9,#22d3ee)">{}</span>
+              <div style="flex:1">
+                <div style="font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px">JSON 格式化 <span class="tag app">app</span></div>
+                <div style="font-size:12px;color:var(--text-3);margin-top:4px">com.x-hub.jsonfmt · v2.1.0</div>
+              </div>
+              <button class="pill-btn">安装</button>
+            </div>
+
+            <div class="panel">
+              <div class="sec-title">截图</div>
+              <div class="shots-grid">
+                <div class="shot">截图 1</div>
+                <div class="shot">截图 2</div>
+                <div class="shot">截图 3</div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="sec-title">介绍</div>
+              <div class="prose">一键格式化、校验、压缩 JSON。支持大文件流式处理，格式化结果可折叠，路径点选提取字段，出错时精确定位到行号。</div>
+            </div>
+
+            <div class="panel">
+              <div class="sec-title">使用说明</div>
+              <div class="steps">1. 打开扩展，粘贴或拖入 JSON 文本。<br>2. 点击「格式化」自动缩进，或「压缩」转单行。<br>3. 出错时右侧定位到首个语法错误位置。<br>4. 点字段路径即可复制对应值。</div>
+            </div>
+
+            <div class="panel">
+              <div class="sec-title">权限</div>
+              <div class="perm-row"><span class="p-name">剪贴板</span><span class="p-desc">复制格式化结果</span><span class="switch on"></span></div>
+              <div class="perm-row"><span class="p-name">网络访问</span><span class="p-desc">未申请（本地处理）</span><span class="switch"></span></div>
+            </div>
+
+            <div class="panel">
+              <div class="sec-title">信息</div>
+              <div class="meta-grid">
+                <div class="meta-item"><div class="k">作者</div><div class="v">dckxx</div></div>
+                <div class="meta-item"><div class="k">开源地址</div><div class="v"><a class="link" href="#">GitHub ↗</a></div></div>
+                <div class="meta-item"><div class="k">许可证</div><div class="v">MIT</div></div>
+                <div class="meta-item"><div class="k">更新时间</div><div class="v">2026-08-18</div></div>
+                <div class="meta-item"><div class="k">安装量</div><div class="v">1.2k</div></div>
+                <div class="meta-item"><div class="k">版本</div><div class="v">v2.1.0</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const tabs = document.querySelectorAll('.scene-tab');
+  const scenes = { a:'scene-a', b:'scene-b', c:'scene-c', d:'scene-d', e:'scene-e', f:'scene-f', g:'scene-g', h:'scene-h' };
+  function switchScene(key) {
+    tabs.forEach(x => x.classList.toggle('active', x.dataset.scene === key));
+    document.querySelectorAll('.scene').forEach(s => s.classList.remove('active'));
+    document.getElementById(scenes[key]).classList.add('active');
+  }
+  window.switchScene = switchScene;
+  tabs.forEach(t => t.addEventListener('click', () => switchScene(t.dataset.scene)));
+  document.querySelectorAll('.goto-settings').forEach(b => b.addEventListener('click', () => switchScene('f')));
+</script>
+</body>
+</html>

@@ -208,9 +208,9 @@ pub fn default_chat_models() -> Vec<ChatModelConfig> {
 }
 
 pub fn config_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("x-hub")
+    // 配置与数据库同挂数据根：更改数据目录后 app.json 也随数据走，
+    // U 盘便携时配置一并继承（数据根解析见 paths.rs）
+    crate::paths::data_root().to_path_buf()
 }
 
 pub fn config_file() -> PathBuf {

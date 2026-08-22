@@ -45,9 +45,21 @@ jobs:
           $version = $env:GITHUB_REF_NAME -replace '^v',''
           $exe = 'src-tauri/target/release/x-hub.exe'
           if (-not (Test-Path $exe)) { Write-Error "未找到 $exe" }
+
+          # 标准版：纯 exe，数据默认在用户级目录
           $zip = "x-hub-$version-win-x64.zip"
           Compress-Archive -Path $exe -DestinationPath $zip -Force
           Write-Output "zip_name=$zip" >> $env:GITHUB_OUTPUT
+
+          # 便携版：exe + portable 标志（同级），数据默认在 exe 同目录
+          $portableDir = Join-Path $env:RUNNER_TEMP 'x-hub-portable'
+          if (Test-Path $portableDir) { Remove-Item $portableDir -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+          Copy-Item $exe (Join-Path $portableDir 'x-hub.exe')
+          New-Item -ItemType File -Force -Path (Join-Path $portableDir 'portable') | Out-Null
+          $portableZip = "x-hub-$version-win-x64-portable.zip"
+          Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath $portableZip -Force
+          Write-Output "portable_zip_name=$portableZip" >> $env:GITHUB_OUTPUT
 
       - name: Get tag annotation
         id: tag_note
@@ -63,6 +75,8 @@ jobs:
           tag_name: ${{ github.ref_name }}
           release_name: 'x-hub ${{ github.ref_name }}'
           body_path: tag_note.md
-          files: ${{ steps.package.outputs.zip_name }}
+          files: |
+            ${{ steps.package.outputs.zip_name }}
+            ${{ steps.package.outputs.portable_zip_name }}
           draft: true
           prerelease: false

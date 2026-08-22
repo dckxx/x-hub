@@ -1051,67 +1051,222 @@ pub struct PathInfo {
 
 // ---------- 数据备份 / 恢复 ----------
 
-/// 备份数据到指定目录：在线备份数据库（SQLite backup API）+ 复制图标目录
+/// 备份数据到指定目录：把在线备份的数据库（SQLite backup API）与图标目录
+/// 打包成单个压缩包（如 `x-hub-backup-20260815-143022.zip`），避免散落。
+/// 返回生成的压缩包文件名。
 #[tauri::command]
-pub fn backup_data(
-    app: tauri::AppHandle,
-    state: State<'_, DbState>,
-    target_dir: String,
-) -> Result<(), String> {
-    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+pub fn backup_data(state: State<'_, DbState>, target_dir: String) -> Result<String, String> {
+    let app_data = crate::paths::data_root().to_path_buf();
     let target = std::path::Path::new(&target_dir);
     std::fs::create_dir_all(target).map_err(|e| format!("创建备份目录失败: {}", e))?;
 
-    // 数据库在线备份（WAL 安全）
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let db_path = target.join("app.db");
-    conn.backup("main", &db_path, None)
-        .map_err(|e| format!("备份失败: {}", e))?;
-    drop(conn);
-
-    // 复制图标目录
-    let src_icons = app_data.join("icons");
-    let dst_icons = target.join("icons");
-    if src_icons.exists() {
-        let _ = copy_dir_recursive(&src_icons, &dst_icons);
+    // 1. 在线备份数据库到临时文件（运行中数据库被占用，不能直接复制；WAL 安全）
+    let tmp_db = std::env::temp_dir().join(format!("x-hub-backup-{}.db", std::process::id()));
+    {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        conn.backup("main", &tmp_db, None)
+            .map_err(|e| format!("备份数据库失败: {}", e))?;
     }
 
-    log::info!("数据备份完成 -> {}", target_dir);
+    // 2. 生成压缩包文件名（带时间戳，多次备份互不覆盖）
+    let name = format!(
+        "x-hub-backup-{}.zip",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    );
+    let zip_path = target.join(&name);
+
+    // 3. 打包成单个压缩包
+    let out = std::fs::File::create(&zip_path)
+        .map_err(|e| format!("创建备份压缩包失败: {}", e))?;
+    let mut zip = zip::ZipWriter::new(out);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    // app.db
+    zip.start_file("app.db", opts).map_err(|e| e.to_string())?;
+    {
+        let mut f = std::fs::File::open(&tmp_db).map_err(|e| e.to_string())?;
+        std::io::copy(&mut f, &mut zip).map_err(|e| format!("写入数据库失败: {}", e))?;
+    }
+
+    // icons/
+    let icons = app_data.join("icons");
+    if icons.exists() {
+        write_dir_to_zip(&mut zip, &icons, "icons", opts)?;
+    }
+
+    zip.finish()
+        .map_err(|e| format!("完成备份压缩包失败: {}", e))?;
+    let _ = std::fs::remove_file(&tmp_db);
+
+    log::info!("数据备份完成 -> {}", zip_path.display());
+    Ok(name)
+}
+
+/// 递归把目录写入压缩包（压缩包内路径统一用 `/` 分隔）
+fn write_dir_to_zip(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    dir: &std::path::Path,
+    prefix: &str,
+    opts: zip::write::SimpleFileOptions,
+) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let fname = entry.file_name().to_string_lossy().into_owned();
+        let zname = if prefix.is_empty() {
+            fname
+        } else {
+            format!("{}/{}", prefix, fname)
+        };
+        if path.is_dir() {
+            write_dir_to_zip(zip, &path, &zname, opts)?;
+        } else {
+            zip.start_file(&zname, opts).map_err(|e| e.to_string())?;
+            let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut f, zip).map_err(|e| e.to_string())?;
+        }
+    }
     Ok(())
 }
 
-/// 从备份目录恢复数据：暂存数据库与图标，重启应用后生效
+/// 从备份压缩包恢复数据：解压出数据库与图标暂存，重启应用后生效
 /// （运行中的数据库文件被占用，无法直接覆盖，采用启动时应用的方式）
 #[tauri::command]
-pub fn restore_data(
-    app: tauri::AppHandle,
-    source_dir: String,
-) -> Result<(), String> {
-    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let source = std::path::Path::new(&source_dir);
-    let src_db = source.join("app.db");
-    if !src_db.exists() {
-        return Err("备份目录中未找到 app.db".into());
+pub fn restore_data(source: String) -> Result<(), String> {
+    let app_data = crate::paths::data_root().to_path_buf();
+    let zip_path = std::path::Path::new(&source);
+    if !zip_path.exists() {
+        return Err("备份压缩包不存在".into());
     }
 
-    // 暂存备份文件
-    let restore_db = app_data.join("restore.db");
-    std::fs::copy(&src_db, &restore_db).map_err(|e| format!("暂存备份失败: {}", e))?;
+    let file = std::fs::File::open(zip_path).map_err(|e| format!("打开备份压缩包失败: {}", e))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("备份压缩包无效或已损坏: {}", e))?;
 
-    // 暂存图标目录
-    let src_icons = source.join("icons");
+    // 清理旧的暂存内容
+    let restore_db = app_data.join("restore.db");
     let restore_icons = app_data.join("restore_icons");
-    if src_icons.exists() {
+    let _ = std::fs::remove_file(&restore_db);
+    let _ = std::fs::remove_dir_all(&restore_icons);
+
+    let mut found_db = false;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        // enclosed_name 防止路径穿越（zip slip）；非法路径条目直接跳过
+        let Some(rel) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
+            continue;
+        };
+        if entry.is_dir() {
+            continue;
+        }
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        if rel_str == "app.db" {
+            let mut out = std::fs::File::create(&restore_db).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut out)
+                .map_err(|e| format!("恢复数据库失败: {}", e))?;
+            found_db = true;
+        } else if let Some(inner) = rel_str.strip_prefix("icons/") {
+            let dst = restore_icons.join(inner);
+            if let Some(parent) = dst.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let mut out = std::fs::File::create(&dst).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut out).map_err(|e| format!("恢复图标失败: {}", e))?;
+        }
+    }
+
+    if !found_db {
+        let _ = std::fs::remove_file(&restore_db);
         let _ = std::fs::remove_dir_all(&restore_icons);
-        let _ = copy_dir_recursive(&src_icons, &restore_icons);
+        return Err("备份压缩包中未找到 app.db".into());
     }
 
     // 写入待恢复标志
     std::fs::write(app_data.join(".restore_pending"), "1")
         .map_err(|e| format!("写入恢复标志失败: {}", e))?;
 
-    log::info!("数据恢复已暂存，重启后生效 <- {}", source_dir);
+    log::info!("数据恢复已暂存，重启后生效 <- {}", source);
     Ok(())
+}
+
+// ---------- 数据存储路径（可迁移 / 便携） ----------
+
+#[derive(serde::Serialize)]
+pub struct DataPathInfo {
+    pub path: String,
+    /// default（默认 %APPDATA% 路径）/ custom（用户自定义）/ portable（便携模式，跟随程序目录）
+    pub mode: String,
+}
+
+/// 返回当前数据根路径与模式
+#[tauri::command]
+pub fn get_data_path() -> Result<DataPathInfo, String> {
+    let (path, mode) = crate::paths::data_path_info();
+    Ok(DataPathInfo {
+        path,
+        mode: mode.to_string(),
+    })
+}
+
+/// 更改数据存储目录：把现有数据（数据库 / 图标 / 剪贴板图片 / 配置 / 密钥）复制到新目录，
+/// 写引导文件指向新目录，重启后生效。旧目录保留（安全起见不删除，由用户自行清理）。
+#[tauri::command]
+pub fn change_data_dir(state: State<'_, DbState>, new_dir: String) -> Result<(), String> {
+    // 便携版数据固定跟随程序目录（exe\data），不支持更改
+    if crate::paths::is_portable() {
+        return Err("便携版数据跟随程序目录，不支持更改".into());
+    }
+    let target = std::path::Path::new(&new_dir);
+    if !target.is_absolute() {
+        return Err("数据目录必须是绝对路径".into());
+    }
+    std::fs::create_dir_all(target).map_err(|e| format!("创建数据目录失败: {}", e))?;
+
+    let src = crate::paths::data_root();
+    if src.canonicalize().ok() == target.canonicalize().ok() {
+        return Err("新路径与当前路径相同".into());
+    }
+
+    // 1. 数据库在线备份到新目录（运行中数据库被占用，不能直接复制文件；WAL 安全）
+    {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        conn.backup("main", &target.join("app.db"), None)
+            .map_err(|e| format!("迁移数据库失败: {}", e))?;
+    }
+
+    // 2. 复制图标 / 剪贴板图片目录
+    for name in ["icons", "clipboard"] {
+        let s = src.join(name);
+        let d = target.join(name);
+        if s.exists() {
+            let _ = copy_dir_recursive(&s, &d);
+        }
+    }
+
+    // 3. 复制配置与密钥文件（app.json 随数据走，实现 U 盘换机配置一并继承）
+    for name in ["app.json", "chat_keys.json"] {
+        let s = src.join(name);
+        if s.exists() {
+            let _ = std::fs::copy(&s, target.join(name));
+        }
+    }
+
+    // 4. 写引导文件指向新目录（重启后 init_database 读它）
+    crate::paths::set_data_root(target)?;
+
+    log::info!(
+        "数据目录已迁移: {} -> {}",
+        src.display(),
+        target.display()
+    );
+    Ok(())
+}
+
+/// 重启应用（更改数据目录 / 恢复数据后前端调用）
+#[tauri::command]
+pub fn restart_app(app: tauri::AppHandle) {
+    app.restart();
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
@@ -1140,10 +1295,7 @@ pub struct DroppedAppInfo {
 
 /// 解析拖入的文件信息：.exe 直接读取，.lnk 快捷方式解析其目标路径；均尝试提取程序图标
 #[tauri::command]
-pub fn parse_dropped_path(
-    app: tauri::AppHandle,
-    path: String,
-) -> Result<DroppedAppInfo, String> {
+pub fn parse_dropped_path(path: String) -> Result<DroppedAppInfo, String> {
     let p = std::path::Path::new(&path);
     let ext = p
         .extension()
@@ -1158,7 +1310,7 @@ pub fn parse_dropped_path(
                 .unwrap_or("本地应用")
                 .to_string();
             let target = path.clone();
-            let icon = extract_app_icon(&app, &target);
+            let icon = extract_app_icon(&target);
             (name, target, icon)
         }
         "lnk" => {
@@ -1167,7 +1319,7 @@ pub fn parse_dropped_path(
                 .and_then(|s| s.to_str())
                 .unwrap_or("快捷方式")
                 .to_string();
-            let (target, icon) = resolve_lnk_target_and_icon(&app, &path)?;
+            let (target, icon) = resolve_lnk_target_and_icon(&path)?;
             (name, target, icon)
         }
         _ => {
@@ -1197,18 +1349,11 @@ fn powershell() -> std::process::Command {
 /// 单次 PowerShell 进程内解析 .lnk 目标并提取图标
 /// （原两段式需要先后启动两次 PowerShell，合并为一次调用可省约一半耗时）
 /// 图标仍按「目标路径」命名缓存，与 .exe 导入共用缓存键
-fn resolve_lnk_target_and_icon(
-    app: &tauri::AppHandle,
-    lnk_path: &str,
-) -> Result<(String, Option<String>), String> {
+fn resolve_lnk_target_and_icon(lnk_path: &str) -> Result<(String, Option<String>), String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("无法获取数据目录: {}", e))?
-        .join("icons");
+    let dir = crate::paths::data_root().join("icons");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     // 先用 lnk 路径生成临时输出路径；解析出目标后再按目标路径（既有缓存键）重命名
@@ -1265,11 +1410,11 @@ fn resolve_lnk_target_and_icon(
 
 /// 提取程序图标（System.Drawing.ExtractAssociatedIcon），保存 PNG 到 app_data_dir/icons/
 /// 提取失败或无图标时返回 None（前端回退到名称首字母）
-fn extract_app_icon(app: &tauri::AppHandle, source: &str) -> Option<String> {
+fn extract_app_icon(source: &str) -> Option<String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let dir = app.path().app_data_dir().ok()?.join("icons");
+    let dir = crate::paths::data_root().join("icons");
     std::fs::create_dir_all(&dir).ok()?;
 
     let mut hasher = DefaultHasher::new();
@@ -1310,18 +1455,11 @@ fn extract_app_icon(app: &tauri::AppHandle, source: &str) -> Option<String> {
 /// - png/jpg 等图片直接复制
 /// 返回存储后的 PNG 路径（失败返回 None）
 #[tauri::command]
-pub fn import_icon_file(
-    app: tauri::AppHandle,
-    source: String,
-) -> Result<Option<String>, String> {
+pub fn import_icon_file(source: String) -> Result<Option<String>, String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("icons");
+    let dir = crate::paths::data_root().join("icons");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let ext = std::path::Path::new(&source)
@@ -1386,12 +1524,12 @@ pub struct InstalledAppInfo {
 /// 去重、过滤系统噪音后批量提取程序图标（icons/<hash>.png，与拖拽导入共用缓存键）。
 /// 必须 async：扫描 + 图标提取耗时数秒，同步命令会卡死主线程冻结 UI。
 #[tauri::command]
-pub async fn scan_installed_apps(app: tauri::AppHandle) -> Result<Vec<InstalledAppInfo>, String> {
+pub async fn scan_installed_apps() -> Result<Vec<InstalledAppInfo>, String> {
     let candidates = scan_app_candidates()?;
     if candidates.is_empty() {
         return Ok(vec![]);
     }
-    let icons = batch_extract_icons(&app, &candidates)?;
+    let icons = batch_extract_icons(&candidates)?;
     Ok(candidates
         .into_iter()
         .zip(icons)
@@ -1538,17 +1676,12 @@ foreach ($a in $out) {
 /// 再按 DefaultHasher(target) 重命名为正式缓存键（与 extract_app_icon 共用缓存，
 /// 已缓存的目标直接复用，重复扫描零开销）。
 fn batch_extract_icons(
-    app: &tauri::AppHandle,
     apps: &[(String, String)],
 ) -> Result<Vec<Option<String>>, String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let icons_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("icons");
+    let icons_dir = crate::paths::data_root().join("icons");
     std::fs::create_dir_all(&icons_dir).map_err(|e| e.to_string())?;
 
     // 已缓存目标直接复用，只收集未缓存的索引

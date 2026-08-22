@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.2.1"
+version = "0.2.2"
 description = "本地个人效率工作台"
 authors = ["you"]
 license = ""
@@ -37,6 +37,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 futures-util = { version = "0.3", features = ["io"] }
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native", "sync-secret-service"] }
 sysinfo = "0.32"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

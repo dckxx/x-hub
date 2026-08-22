@@ -99,6 +99,7 @@ const state = reactive<StoreState>({
     font_prompt: 1,
     font_todo: 1,
     font_usage: 1,
+    runtime_strategy: 'auto',
   },
   usageSummary: null,
   usageDetail: null,
@@ -645,6 +646,13 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** service 扩展运行时策略：auto（自动检测）/ builtin（始终内置）/ system（始终系统） */
+  async function setRuntimeStrategy(value: 'auto' | 'builtin' | 'system') {
+    state.config.runtime_strategy = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   // ---- AI 用量 ----
   async function refreshUsage(path?: string): Promise<SyncResult> {
     if (!isTauri()) {
@@ -889,6 +897,7 @@ export function useStore() {
     setWhatsNewEnabled,
     setFontScale,
     setModuleFontScale,
+    setRuntimeStrategy,
     setClipboardShortcut,
     setClipboardPaused,
     setClipboardRetention,

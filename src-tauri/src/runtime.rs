@@ -96,26 +96,52 @@ async fn download_builtin_node(_app: &tauri::AppHandle) -> Result<PathBuf, Strin
     Err("当前平台暂不支持内置运行时下载，请安装 Node.js".to_string())
 }
 
-/// 解析用于启动后端的 node 可执行文件：系统 Node 满足要求 → 用系统（PATH 命令）；
-/// 否则降级内置（已缓存直接用，未缓存则下载）；都失败返回友好错误。
-pub fn resolve_node(app: &tauri::AppHandle, min_version: Option<&str>) -> Result<PathBuf, String> {
-    let system_err = match check_system_node(min_version) {
-        Ok(_ver) => return Ok(PathBuf::from("node")),
-        Err(e) => e,
-    };
+/// 解析用于启动后端的 node 可执行文件。策略（config.runtime_strategy）：
+/// - `system`：始终用系统 Node，不降级、不下载；
+/// - `builtin`：始终用内置（已缓存直接用，未缓存下载）；
+/// - `auto`（默认）：系统优先，版本不符/缺失降级内置，未缓存则下载。
+pub fn resolve_node(
+    app: &tauri::AppHandle,
+    min_version: Option<&str>,
+    strategy: &str,
+) -> Result<PathBuf, String> {
+    match strategy {
+        "system" => {
+            check_system_node(min_version).map_err(|e| {
+                format!(
+                    "{e}（运行时策略为「始终系统」，请安装 Node ≥ {}）",
+                    min_version.unwrap_or("18")
+                )
+            })?;
+            Ok(PathBuf::from("node"))
+        }
+        "builtin" => {
+            if let Some(exe) = builtin_node_exe(app) {
+                return Ok(exe);
+            }
+            log::info!("运行时策略「始终内置」，下载内置运行时…");
+            tauri::async_runtime::block_on(download_builtin_node(app))
+        }
+        _ => {
+            let system_err = match check_system_node(min_version) {
+                Ok(_ver) => return Ok(PathBuf::from("node")),
+                Err(e) => e,
+            };
 
-    if let Some(exe) = builtin_node_exe(app) {
-        log::info!("系统 Node 不可用（{system_err}），降级使用内置运行时");
-        return Ok(exe);
-    }
+            if let Some(exe) = builtin_node_exe(app) {
+                log::info!("系统 Node 不可用（{system_err}），降级使用内置运行时");
+                return Ok(exe);
+            }
 
-    log::info!("系统 Node 不可用，下载内置运行时（首次，一次性）…");
-    match tauri::async_runtime::block_on(download_builtin_node(app)) {
-        Ok(exe) => Ok(exe),
-        Err(e) => Err(format!(
-            "系统 Node 不可用（{system_err}），内置运行时下载失败（{e}）。请安装 Node ≥ {}",
-            min_version.unwrap_or("18")
-        )),
+            log::info!("系统 Node 不可用，下载内置运行时（首次，一次性）…");
+            match tauri::async_runtime::block_on(download_builtin_node(app)) {
+                Ok(exe) => Ok(exe),
+                Err(e) => Err(format!(
+                    "系统 Node 不可用（{system_err}），内置运行时下载失败（{e}）。请安装 Node ≥ {}",
+                    min_version.unwrap_or("18")
+                )),
+            }
+        }
     }
 }
 

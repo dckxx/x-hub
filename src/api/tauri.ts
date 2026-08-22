@@ -148,6 +148,8 @@ export interface AppConfig {
   font_todo: number
   /** 用量模块字体缩放系数 */
   font_usage: number
+  /** service 扩展运行时策略：auto / builtin / system */
+  runtime_strategy: string
 }
 
 export interface AppInfo {

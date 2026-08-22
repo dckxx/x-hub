@@ -220,6 +220,18 @@ function onQuoteSourceChange(value: string) {
   })
 }
 
+const RUNTIME_STRATEGY_OPTIONS = [
+  { value: 'auto', label: '自动检测（系统优先，缺失自动下载内置）' },
+  { value: 'builtin', label: '始终内置（统一用下载的内置运行时）' },
+  { value: 'system', label: '始终系统（只用系统 Node，不下载）' },
+] as const
+
+function onRuntimeStrategyChange(value: string) {
+  void store.setRuntimeStrategy(value as 'auto' | 'builtin' | 'system').then(() => {
+    showToast('运行时策略已更新，下次启动 service 扩展生效')
+  })
+}
+
 // ---- 数据备份 / 恢复 ----
 const confirmRestore = ref(false)
 let confirmTimer: ReturnType<typeof setTimeout> | null = null
@@ -405,6 +417,19 @@ function onAccentInput(e: Event) {
               />
               <span class="opacity-value">{{ Math.round((store.state.config.chat_panel_opacity ?? 1) * 100) }}%</span>
             </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">service 运行时策略</span>
+              <span class="setting-desc">service 扩展后端的 Node 运行时来源：自动检测 / 始终内置 / 始终系统</span>
+            </div>
+            <AppSelect
+              :model-value="store.state.config.runtime_strategy || 'auto'"
+              :options="RUNTIME_STRATEGY_OPTIONS"
+              aria-label="service 运行时策略"
+              @update:model-value="onRuntimeStrategyChange"
+            />
           </div>
 
           <AiProviders />

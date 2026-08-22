@@ -86,7 +86,8 @@ pub fn start_service(
         .engine
         .as_ref()
         .and_then(|e| e.min_version.as_deref());
-    let node_exe = crate::runtime::resolve_node(app, min_version)?;
+    let strategy = crate::config::load().runtime_strategy;
+    let node_exe = crate::runtime::resolve_node(app, min_version, &strategy)?;
 
     let entry = dir.join(&backend.entry);
     if !entry.is_file() {

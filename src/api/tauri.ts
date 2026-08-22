@@ -584,6 +584,8 @@ export const tauriApi = {
   /** 读取扩展某形态入口（注入桥脚本后返回临时 HTML 绝对路径） */
   readExtensionEntry: (id: string, surface?: string | null) =>
     invoke<string>('read_extension_entry', { id, surface: surface ?? null }),
+  /** 打开扩展的独立窗口（window 形态） */
+  openExtensionWindow: (id: string) => invoke<void>('open_extension_window', { id }),
   /** 桥 API 统一分发：扩展 iframe 经主窗口转发调用 */
   xhubCall: (extId: string, namespace: string, method: string, args: unknown) =>
     invoke<unknown>('xhub_call', { extId, namespace, method, args }),

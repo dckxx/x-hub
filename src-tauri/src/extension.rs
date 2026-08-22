@@ -319,6 +319,41 @@ pub fn read_extension_entry(
     Ok(out_path.to_string_lossy().into_owned())
 }
 
+/// 打开扩展的独立窗口（window 形态）。窗口 label 为 `ext-<扩展id>`，已存在则聚焦复用。
+/// 窗口加载宿主 `index.html`（App.vue 按 `ext-` 前缀路由到 ExtensionWindow），
+/// 内容仍走 iframe + 桥 API，与 view/module 同一条注入链路。
+#[tauri::command]
+pub fn open_extension_window(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let label = format!("ext-{id}");
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+
+    let dir = extensions_root(&app)?.join(&id);
+    if !dir.is_dir() {
+        return Err(format!("NOT_FOUND: 扩展 {id} 不存在"));
+    }
+    let manifest = read_manifest(&dir)?;
+    let (w, h) = manifest
+        .min_size
+        .as_ref()
+        .map(|m| (m.w.max(360.0), m.h.max(260.0)))
+        .unwrap_or((800.0, 600.0));
+
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html".into()))
+        .title(manifest.name)
+        .inner_size(w, h)
+        .min_inner_size(360.0, 260.0)
+        .additional_browser_args(crate::ADDITIONAL_BROWSER_ARGS)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    log::info!("扩展窗口已打开: {id} [{label}] {w}x{h}");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -65,16 +65,33 @@ function onNavClick(id: ViewId) {
 }
 
 // ---- 扩展打开：扩展中心点开某个扩展 → 主区渲染扩展入口（view 形态） ----
-const openedExtension = ref<{ id: string; surface: string | null } | null>(null)
+const openedExtension = ref<{ id: string; surface: string | null; name: string } | null>(null)
+const drawerExtension = ref<{ id: string; surface: string | null; name: string } | null>(null)
 
 function onOpenExtension(ext: ExtensionEntry) {
-  openedExtension.value = { id: ext.id, surface: null }
+  openedExtension.value = { id: ext.id, surface: null, name: ext.name }
   activeView.value = 'extension'
 }
 
 function closeExtension() {
   openedExtension.value = null
   activeView.value = 'extensions'
+}
+
+function openExtensionWindow() {
+  if (!openedExtension.value) return
+  tauriApi.openExtensionWindow(openedExtension.value.id).catch((e) => {
+    showToast(`打开窗口失败：${String(e)}`)
+  })
+}
+
+function openExtensionDrawer() {
+  if (!openedExtension.value) return
+  drawerExtension.value = { ...openedExtension.value }
+}
+
+function closeExtensionDrawer() {
+  drawerExtension.value = null
 }
 
 // ---- 侧边栏收起（展开功能默认关闭，侧栏默认收起；开启后显示展开/收起按钮） ----
@@ -525,6 +542,12 @@ provide('showToast', showToast)
 
         <!-- 扩展运行视图：主区渲染扩展入口（iframe + window.xhub 桥 API） -->
         <section v-else-if="activeView === 'extension'" class="view view-extension" tabindex="-1" aria-label="扩展">
+          <div class="ext-toolbar">
+            <button class="ghost-btn" type="button" @click="closeExtension">← 扩展中心</button>
+            <div class="ext-toolbar-spacer" />
+            <button class="ghost-btn" type="button" @click="openExtensionWindow">在窗口打开</button>
+            <button class="ghost-btn" type="button" @click="openExtensionDrawer">在抽屉打开</button>
+          </div>
           <ExtensionView
             v-if="openedExtension"
             :ext-id="openedExtension.id"
@@ -563,6 +586,26 @@ provide('showToast', showToast)
               @toggle="onChatToggle"
               @open-model-settings="onOpenChatSettings"
             />
+          </div>
+        </Transition>
+
+        <!-- 扩展抽屉（覆盖式，右侧滑出） -->
+        <Transition name="chat-drawer">
+          <div v-if="drawerExtension" class="ext-drawer">
+            <div class="ext-drawer-header">
+              <span class="ext-drawer-title">{{ drawerExtension.name }}</span>
+              <button
+                class="ext-drawer-close"
+                type="button"
+                aria-label="关闭抽屉"
+                @click="closeExtensionDrawer"
+              >
+                <ChevronRight :size="16" :stroke-width="2" aria-hidden="true" />
+              </button>
+            </div>
+            <div class="ext-drawer-body">
+              <ExtensionView :ext-id="drawerExtension.id" :surface="drawerExtension.surface" />
+            </div>
           </div>
         </Transition>
       </div>
@@ -862,9 +905,79 @@ provide('showToast', showToast)
 .view-extensions :deep(.extension-center) {
   padding: 0 20px 20px 0;
 }
-/* 扩展运行视图：iframe 全幅，仅右下外边距 */
-.view-extension :deep(.extension-view) {
+/* 扩展运行视图：仅右下外边距 */
+.view-extension {
   padding: 0 20px 20px 0;
+}
+.ext-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 12px;
+}
+.ext-toolbar-spacer {
+  flex: 1;
+}
+
+/* 扩展抽屉：absolute 悬浮于工作区之上，右侧滑入 */
+.ext-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  width: 480px;
+  max-width: 82vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card-solid);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-dock);
+  pointer-events: auto;
+}
+.ext-drawer-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.ext-drawer-title {
+  font-size: 0.875rem;
+  font-weight: 650;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ext-drawer-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.ext-drawer-close:hover {
+  background: var(--brand-50);
+  color: var(--brand-500);
+}
+.ext-drawer-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.ext-drawer-body :deep(.extension-view) {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 .view-layout-editor {
   padding: 0 20px 20px 0;

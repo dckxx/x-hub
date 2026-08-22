@@ -239,7 +239,7 @@ service 扩展的后端默认跑在 Node 运行时上，运行时由宿主统一
 3. `done` `view` 形态（扩展中心点开 → 主区 iframe 加载扩展入口 HTML + 自动注入桥脚本；端到端加载待实际运行验证）。
 4. `done` 跑通 `module` 卡片（扩展声明 module 形态 → 自动进布局编辑器模块库 → 拖入工作台网格，iframe 渲染 module 入口复用桥 API）。
 5. `done` 再补 `window` / `drawer`（window 走 Tauri 多窗口 + 复用 iframe 桥；drawer 右侧滑出 overlay）。
-6. `planned` **service 托管**：进程托管（启动 / 端口 / `/svc/<extId>/*` 代理 / 健康检查 / 清理）+ 运行时提供（复用系统 Node / 按需下载内置 / 启动前校验 / 自动降级）。
+6. `in-progress` **service 托管**：已落地进程托管（懒启动 / 动态端口 / TcpStream 探活 / 卸载清理 / 宿主退出停止）+ 运行时提供（复用系统 Node + 启动前版本校验）+ 非流式代理（桥 API `service.request`）。待补：`/svc/<extId>/*` 反向代理服务器与 WebSocket 流式、按需下载内置运行时与自动降级（依赖扩展市场）。
 7. `planned` 扩展中心补全（扩展设置、市场详情、安装页、权限授权；列表骨架已在第 1 步完成）。
 
 ## 附录：v2 → v3 差异

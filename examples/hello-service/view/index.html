@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>Hello Service</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: #12131b;
+      color: #e8e9f0;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    .sub { color: #8a8ba8; font-size: 13px; margin: 0 0 20px; }
+    h2 { font-size: 13px; color: #8b8bff; margin: 20px 0 8px; }
+    pre {
+      background: #1c1d2a;
+      padding: 12px;
+      border-radius: 8px;
+      overflow: auto;
+      font-size: 12px;
+      margin: 0;
+    }
+    code { background: #1c1d2a; padding: 1px 6px; border-radius: 4px; }
+    .err { color: #ff6b6b; }
+  </style>
+</head>
+<body>
+  <h1>Hello Service</h1>
+  <p class="sub">service 扩展：宿主启动 Node 后端并探活，前端经 <code>window.xhub.service.request</code> 调用。</p>
+
+  <h2>runtime.info()（注意 serviceReady 应为 true）</h2>
+  <pre id="info">加载中…</pre>
+
+  <h2>service.request('/api/hello')</h2>
+  <pre id="hello">加载中…</pre>
+
+  <script>
+    function render(id, p) {
+      p.then((v) => {
+        document.getElementById(id).textContent = JSON.stringify(v, null, 2)
+      }).catch((e) => {
+        document.getElementById(id).textContent = '错误 ' + (e.code || '') + ': ' + e.message
+        document.getElementById(id).classList.add('err')
+      })
+    }
+
+    render('info', window.xhub.runtime.info())
+    render(
+      'hello',
+      window.xhub.service.request('/api/hello').then((r) => r.json()),
+    )
+  </script>
+</body>
+</html>

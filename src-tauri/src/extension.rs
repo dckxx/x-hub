@@ -159,7 +159,7 @@ pub fn scan_extensions(app: &tauri::AppHandle) -> Result<Vec<ExtensionEntry>, St
 }
 
 /// 读取扩展目录下的 manifest.json。
-fn read_manifest(dir: &Path) -> Result<ExtensionManifest, String> {
+pub fn read_manifest(dir: &Path) -> Result<ExtensionManifest, String> {
     let content = std::fs::read_to_string(dir.join("manifest.json"))
         .map_err(|e| format!("读取 manifest.json 失败：{e}"))?;
     serde_json::from_str(&content).map_err(|e| format!("manifest 解析失败：{e}"))
@@ -255,6 +255,20 @@ const XHUB_BRIDGE_SCRIPT: &str = r#"
       todos:{list:function(){return call('data','todos.list',{});}},
       resources:{list:function(){return call('data','resources.list',{});}},
       usage:{summary:function(){return call('data','usage.summary',{});}}
+    },
+    service:{
+      request:function(path,init){
+        init=init||{};
+        return call('service','request',{path:path,method:init.method,headers:init.headers,body:init.body})
+          .then(function(res){
+            return {
+              status:res.status,
+              headers:res.headers,
+              text:function(){return Promise.resolve(res.body);},
+              json:function(){return Promise.resolve(JSON.parse(res.body));}
+            };
+          });
+      }
     }
   };
 })();
@@ -300,6 +314,15 @@ pub fn read_extension_entry(
         return Err(format!("NOT_FOUND: 扩展 {id} 不存在"));
     }
     let manifest = read_manifest(&dir)?;
+
+    // service 扩展：打开时懒启动后端（探活成功则后续 runtime.info 返回 serviceReady=true）
+    if manifest.runtime == ExtensionRuntime::Service {
+        if let Err(e) = crate::service::start_service(&app, &id) {
+            // 不阻断前端加载：前端仍能打开，runtime.info 会返回 serviceReady=false
+            log::warn!("service 扩展 {id} 后端启动失败: {e}");
+        }
+    }
+
     let surface = surface.unwrap_or_else(|| manifest.kind.clone());
     let rel = manifest
         .entry
@@ -351,6 +374,19 @@ pub fn open_extension_window(app: tauri::AppHandle, id: String) -> Result<(), St
         .map_err(|e| e.to_string())?;
 
     log::info!("扩展窗口已打开: {id} [{label}] {w}x{h}");
+    Ok(())
+}
+
+/// 卸载扩展：停止其 service 后端进程（如有）并删除扩展目录。
+/// （卸载 UI 在 §12.7 扩展中心补全时接入，此处先落地服务端清理逻辑）
+#[tauri::command]
+pub fn uninstall_extension(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    crate::service::stop_service(&app, &id);
+    let dir = extensions_root(&app)?.join(&id);
+    if dir.is_dir() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    log::info!("扩展已卸载: {id}");
     Ok(())
 }
 

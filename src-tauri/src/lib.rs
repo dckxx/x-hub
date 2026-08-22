@@ -12,6 +12,7 @@ mod notify;
 mod online;
 mod process;
 mod repo;
+mod service;
 mod shortcut;
 mod sticky_window;
 mod sysmon;
@@ -242,6 +243,7 @@ pub fn run() {
             fix_icon_paths(&conn, app);
             app.manage(DbState(std::sync::Mutex::new(conn)));
             app.manage(clipboard::ClipboardState::default());
+            app.manage(service::ServiceState::default());
 
             tray::setup(app)?;
             shortcut::setup(app)?;
@@ -432,6 +434,7 @@ commands::set_chat_panel,
             extension::list_extensions,
             extension::read_extension_entry,
             extension::open_extension_window,
+            extension::uninstall_extension,
             xhub_api::xhub_call,
             commands::check_connectivity,
             commands::get_weather,
@@ -439,6 +442,12 @@ commands::set_chat_panel,
             commands::set_weather_city,
             commands::locate_weather_by_ip,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // 宿主退出：停止所有 service 后端进程，避免 Node 子进程残留
+            if let tauri::RunEvent::Exit = event {
+                service::stop_all(app);
+            }
+        });
 }

@@ -1,0 +1,21 @@
+{
+  "id": "com.x-hub.hello-service",
+  "name": "Hello Service",
+  "version": "0.1.0",
+  "runtime": "service",
+  "kind": "view",
+  "surfaces": ["view"],
+  "openIn": ["view"],
+  "entry": {
+    "view": "./view/index.html"
+  },
+  "backend": {
+    "entry": "./service/index.js",
+    "engine": { "type": "node", "minVersion": "18" },
+    "cwd": "./service",
+    "port": 0,
+    "health": "/healthz"
+  },
+  "permissions": [],
+  "description": "示例 service 扩展：零依赖 Node 后端 + window.xhub.service.request 调用"
+}

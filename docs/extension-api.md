@@ -269,6 +269,6 @@ namespace events {
 | `net.*` | 后补 | planned |
 | `system.*` | 后补 | planned |
 | `ui.notify` | 后补 | planned |
-| `service.*` | 后补 | planned |
+| `service.*` | 后补 | in-progress |
 
 > 每完成一个命名空间，同步生成对应 `.d.ts` 供扩展开发者使用。

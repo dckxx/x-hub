@@ -13,6 +13,7 @@ use crate::repo;
 use crate::usage;
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::State;
 
@@ -60,8 +61,9 @@ fn write_storage(app: &tauri::AppHandle, ext_id: &str, map: &Map<String, Value>)
 }
 
 /// 桥 API 统一分发命令（Tauri 命令；参数由主窗口以 camelCase 转发：extId/namespace/method/args）
+/// async：service.request 走 reqwest 网络转发，避免阻塞主线程。
 #[tauri::command]
-pub fn xhub_call(
+pub async fn xhub_call(
     app: tauri::AppHandle,
     state: State<'_, DbState>,
     ext_id: String,
@@ -69,10 +71,10 @@ pub fn xhub_call(
     method: String,
     args: Value,
 ) -> Result<Value, String> {
-    dispatch(&app, &state, &ext_id, &namespace, &method, args)
+    dispatch(&app, &state, &ext_id, &namespace, &method, args).await
 }
 
-fn dispatch(
+async fn dispatch(
     app: &tauri::AppHandle,
     state: &DbState,
     ext_id: &str,
@@ -91,6 +93,7 @@ fn dispatch(
         ("data", "todos.list") => data_todos_list(app, state, ext_id),
         ("data", "resources.list") => data_resources_list(app, state, ext_id),
         ("data", "usage.summary") => data_usage_summary(app, state, ext_id),
+        ("service", "request") => service_request(app, ext_id, args).await,
         _ => Err(format!("INVALID_ARGUMENT: 未知方法 {namespace}.{method}")),
     }
 }
@@ -104,18 +107,15 @@ fn runtime_info(app: &tauri::AppHandle, ext_id: &str) -> Result<Value, String> {
         ExtensionRuntime::Web => "web",
         ExtensionRuntime::Service => "service",
     };
+    let is_service = manifest.runtime == ExtensionRuntime::Service;
     Ok(json!({
         "id": manifest.id,
         "name": manifest.name,
         "version": manifest.version,
         "runtime": runtime,
-        // service 托管（§12.6）实现前恒为 false；实现后由宿主管进程状态决定
-        "serviceReady": false,
-        "proxyPrefix": if manifest.runtime == ExtensionRuntime::Service {
-            Some(format!("/svc/{ext_id}"))
-        } else {
-            None
-        },
+        // service 就绪 = 后端进程已启动且探活成功（打开扩展时懒启动）
+        "serviceReady": is_service && crate::service::service_ready(app, ext_id),
+        "proxyPrefix": if is_service { Some(format!("/svc/{ext_id}")) } else { None },
     }))
 }
 
@@ -227,6 +227,53 @@ fn data_usage_summary(
         let summary = usage::query_summary(conn).map_err(|e| e.to_string())?;
         serde_json::to_value(summary).map_err(|e| e.to_string())
     })
+}
+
+// ---------- service ----------
+
+/// service 扩展调用自身受托管后端（非流式代理转发，无需权限）。
+/// 返回 `{ status, headers, body }`；前端桥据此构造带 text()/json() 的 HttpResult。
+async fn service_request(app: &tauri::AppHandle, ext_id: &str, args: Value) -> Result<Value, String> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "INVALID_ARGUMENT: 缺少 path".to_string())?;
+    let method = args
+        .get("method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("GET");
+    let port = crate::service::service_port(app, ext_id)
+        .ok_or_else(|| format!("NOT_FOUND: service 未启动（{ext_id}）"))?;
+    let url = format!("http://127.0.0.1:{port}{path}");
+
+    let client = reqwest::Client::new();
+    let mut req = match method.to_uppercase().as_str() {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        "PUT" => client.put(&url),
+        "DELETE" => client.delete(&url),
+        "PATCH" => client.patch(&url),
+        other => return Err(format!("INVALID_ARGUMENT: 不支持的 method {other}")),
+    };
+    if let Some(headers) = args.get("headers").and_then(|v| v.as_object()) {
+        for (k, v) in headers {
+            if let Some(val) = v.as_str() {
+                req = req.header(k.as_str(), val);
+            }
+        }
+    }
+    if let Some(body) = args.get("body").and_then(|v| v.as_str()) {
+        req = req.body(body.to_string());
+    }
+    let resp = req.send().await.map_err(|e| format!("NETWORK_ERROR: {e}"))?;
+    let status = resp.status().as_u16();
+    let headers: HashMap<String, String> = resp
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+    Ok(json!({ "status": status, "headers": headers, "body": body }))
 }
 
 #[cfg(test)]

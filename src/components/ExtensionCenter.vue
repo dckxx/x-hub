@@ -3,6 +3,7 @@ import { computed, inject, onMounted, ref } from 'vue'
 import { FolderOpen, MoreHorizontal, PackageOpen, Plus } from 'lucide-vue-next'
 import { isTauri, tauriApi, type ExtensionEntry } from '../api/tauri'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
+import ExtensionSettingsDialog from './ExtensionSettingsDialog.vue'
 
 const showToast = inject<(msg: string, action?: { label: string; onClick: () => void }) => void>(
   'showToast',
@@ -79,8 +80,10 @@ function onLocalInstall() {
   showToast('本地安装功能即将上线')
 }
 
+const settingsExt = ref<ExtensionEntry | null>(null)
+
 function onMore(e: ExtensionEntry) {
-  showToast(`「${e.name}」的扩展设置即将上线`)
+  settingsExt.value = e
 }
 </script>
 
@@ -166,6 +169,12 @@ function onMore(e: ExtensionEntry) {
         </div>
       </div>
     </div>
+
+    <ExtensionSettingsDialog
+      :extension="settingsExt"
+      @close="settingsExt = null"
+      @uninstalled="load"
+    />
   </div>
 </template>
 

@@ -14,6 +14,7 @@ mod online;
 mod process;
 mod proxy;
 mod repo;
+mod runtime;
 mod service;
 mod shortcut;
 mod sticky_window;

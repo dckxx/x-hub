@@ -56,7 +56,7 @@ pub fn get_market_registry(app: tauri::AppHandle) -> Result<Vec<MarketExtension>
 }
 
 /// 解包 zip 到目标目录（enclosed_name 防 zip-slip 路径逃逸）
-fn extract_zip(bytes: &[u8], dest: &Path) -> Result<(), String> {
+pub fn extract_zip(bytes: &[u8], dest: &Path) -> Result<(), String> {
     let reader = std::io::Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(reader).map_err(|e| format!("解包失败: {e}"))?;
     for i in 0..archive.len() {

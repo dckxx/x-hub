@@ -40,39 +40,7 @@ fn alloc_port() -> Result<u16, String> {
     Ok(port)
 }
 
-/// 解析 Node 版本号的主版本（"v22.11.0" → 22）
-fn node_major(version: &str) -> u32 {
-    version
-        .trim()
-        .trim_start_matches('v')
-        .split('.')
-        .next()
-        .unwrap_or("0")
-        .parse()
-        .unwrap_or(0)
-}
-
-/// 检测系统 Node 是否可用且主版本 ≥ min_version（min_version 形如 "22"）
-fn check_node(min_version: Option<&str>) -> Result<(), String> {
-    let out = std::process::Command::new("node")
-        .arg("--version")
-        .output()
-        .map_err(|_| "未检测到 Node.js（后续支持按需下载内置运行时）".to_string())?;
-    if !out.status.success() {
-        return Err("Node.js 不可用".to_string());
-    }
-    let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if let Some(min) = min_version {
-        let min_major = node_major(min);
-        let cur_major = node_major(&ver);
-        if cur_major < min_major {
-            return Err(format!(
-                "系统 Node {ver} 低于要求 ≥ {min}，请升级（后续支持自动下载内置运行时）"
-            ));
-        }
-    }
-    Ok(())
-}
+// 运行时解析（系统 Node 优先 + 内置兜底下载）见 runtime.rs
 
 /// 探活：轮询 connect 端口直到成功或超时
 fn probe_ready(port: u16, timeout: Duration) -> bool {
@@ -118,7 +86,7 @@ pub fn start_service(
         .engine
         .as_ref()
         .and_then(|e| e.min_version.as_deref());
-    check_node(min_version)?;
+    let node_exe = crate::runtime::resolve_node(app, min_version)?;
 
     let entry = dir.join(&backend.entry);
     if !entry.is_file() {
@@ -127,7 +95,7 @@ pub fn start_service(
     let cwd = backend.cwd.as_ref().map(|c| dir.join(c)).unwrap_or_else(|| dir.clone());
     let port = alloc_port()?;
 
-    let mut cmd = std::process::Command::new("node");
+    let mut cmd = std::process::Command::new(node_exe);
     cmd.arg(&entry)
         .current_dir(&cwd)
         .env("PORT", port.to_string())
@@ -208,14 +176,6 @@ pub fn service_ready(app: &tauri::AppHandle, ext_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn node_major_parses() {
-        assert_eq!(node_major("v22.11.0"), 22);
-        assert_eq!(node_major("v18.20.4"), 18);
-        assert_eq!(node_major("22"), 22);
-        assert_eq!(node_major("bogus"), 0);
-    }
 
     #[test]
     fn alloc_port_returns_valid_port() {

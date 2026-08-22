@@ -10,6 +10,7 @@ use crate::service::service_port;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
+use hyper::header::{CONNECTION, UPGRADE};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
@@ -134,6 +135,11 @@ async fn handle(
         Err(_) => return Ok(error_response(StatusCode::BAD_REQUEST, "bad uri")),
     };
 
+    // WebSocket 升级请求 → 双向隧道（DSH 流式等）
+    if is_upgrade(&req) {
+        return Ok(handle_upgrade(req, port, &backend_uri).await);
+    }
+
     // 完整读客户端 body（一期非流式）
     let (parts, body) = req.into_parts();
     let body_bytes = match body.collect().await {
@@ -197,6 +203,102 @@ async fn handle(
     *out.headers_mut() = rparts.headers;
     add_cors(&mut out);
     Ok(out)
+}
+
+/// 是否为 WebSocket 升级请求（Upgrade 头 + Connection: upgrade）
+fn is_upgrade(req: &Request<Incoming>) -> bool {
+    req.headers().get(UPGRADE).is_some()
+        && req
+            .headers()
+            .get(CONNECTION)
+            .map(|v| v.to_str().unwrap_or("").to_ascii_lowercase().contains("upgrade"))
+            .unwrap_or(false)
+}
+
+/// WebSocket 升级反向代理：客户端 ↔ 后端各建升级连接，双向 copy 隧道。
+/// 返回客户端侧的 101 Switching Protocols 响应。
+async fn handle_upgrade(
+    mut req: Request<Incoming>,
+    port: u16,
+    backend_uri: &hyper::Uri,
+) -> Response<BoxBody<Bytes, Infallible>> {
+    // 客户端侧升级句柄（先登记，后 await 拿 Upgraded 流）
+    let client_on_upgrade = hyper::upgrade::on(&mut req);
+
+    // 连接后端
+    let stream = match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+        Ok(s) => s,
+        Err(_) => return error_response(StatusCode::BAD_GATEWAY, "backend unreachable"),
+    };
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
+        Ok(x) => x,
+        Err(_) => return error_response(StatusCode::BAD_GATEWAY, "backend handshake failed"),
+    };
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+
+    // 构造后端请求：透传 headers（保留 upgrade/connection，剔除 host 由 hyper 按 URI 重建）
+    let (parts, _body) = req.into_parts();
+    let mut builder = Request::builder()
+        .method(parts.method)
+        .uri(backend_uri.clone());
+    for (k, v) in parts.headers.iter() {
+        if k.as_str().to_ascii_lowercase() == "host" {
+            continue;
+        }
+        builder = builder.header(k, v);
+    }
+    let backend_req = match builder.body(Full::new(Bytes::new())) {
+        Ok(r) => r,
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "bad request"),
+    };
+
+    let mut backend_resp = match sender.send_request(backend_req).await {
+        Ok(r) => r,
+        Err(_) => return error_response(StatusCode::BAD_GATEWAY, "backend error"),
+    };
+    if backend_resp.status() != StatusCode::SWITCHING_PROTOCOLS {
+        return error_response(StatusCode::BAD_GATEWAY, "backend not switching protocols");
+    }
+    let backend_on_upgrade = hyper::upgrade::on(&mut backend_resp);
+
+    // 客户端 101 响应
+    let resp = match Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header(UPGRADE, "websocket")
+        .header(CONNECTION, "upgrade")
+        .body(BoxBody::new(Full::new(Bytes::new())))
+    {
+        Ok(r) => r,
+        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "bad upgrade response"),
+    };
+
+    // 双向隧道：两端 Upgraded 流互相转发
+    tokio::spawn(async move {
+        let client = match client_on_upgrade.await {
+            Ok(u) => u,
+            Err(e) => {
+                log::debug!("客户端升级失败: {e}");
+                return;
+            }
+        };
+        let backend = match backend_on_upgrade.await {
+            Ok(u) => u,
+            Err(e) => {
+                log::debug!("后端升级失败: {e}");
+                return;
+            }
+        };
+        // TokioIo 包装：Upgraded 实现的是 hyper 的 Read/Write trait，转成 tokio 的 AsyncRead/AsyncWrite
+        let (mut client, mut backend) = (TokioIo::new(client), TokioIo::new(backend));
+        if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut backend).await {
+            log::debug!("WebSocket 隧道结束: {e}");
+        }
+    });
+
+    resp
 }
 
 #[cfg(test)]

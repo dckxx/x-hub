@@ -207,7 +207,7 @@ namespace service {
 }
 ```
 
-> 宿主把 `${proxyPrefix}/*` 反向代理到扩展后端的 `127.0.0.1:<port>`（响应统一加 CORS 头；`proxyPrefix` 为完整 URL）。流式 / 双向直接用 `new WebSocket(proxyPrefix.replace('http://', 'ws://') + '/...')`（WebSocket 升级待补，一期走 `service.request` 非流式）。
+> 宿主把 `${proxyPrefix}/*` 反向代理到扩展后端的 `127.0.0.1:<port>`（响应统一加 CORS 头；`proxyPrefix` 为完整 URL）。流式 / 双向直接用 `new WebSocket(proxyPrefix.replace('http://', 'ws://') + '/...')`（代理已支持 WebSocket 升级）。
 
 ## 10. ui —— 界面与通知
 

@@ -1,0 +1,15 @@
+{
+  "id": "com.x-hub.hello",
+  "name": "Hello 扩展",
+  "version": "0.1.0",
+  "runtime": "web",
+  "kind": "view",
+  "surfaces": ["view"],
+  "openIn": ["view"],
+  "entry": {
+    "view": "./view/index.html"
+  },
+  "permissions": ["data:read"],
+  "icon": "./icon.svg",
+  "description": "示例扩展：调用 window.xhub 读取宿主笔记 / 待办 / 用量，并演示 storage 读写"
+}

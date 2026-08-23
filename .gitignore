@@ -43,3 +43,6 @@ src-tauri/target/
 # Build artifacts
 x-hub-*.zip
 
+# Promotional materials (local drafts)
+promo/
+

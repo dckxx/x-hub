@@ -100,6 +100,8 @@ async function openSession(id: number) {
   activeSessionId.value = id
   streamingContent.value = ''
   streamError.value = ''
+  // 切换会话时清掉上一会话的渲染缓存，避免缓存随会话数量无限累积
+  mdCache.clear()
   if (!isTauri()) return
   const [msgs, s] = await Promise.all([
     tauriApi.listChatMessages(id),
@@ -345,6 +347,23 @@ function renderMd(text: string): string {
   return marked.parse(text, { async: false, renderer: mdRenderer }) as string
 }
 
+// assistant 消息的 Markdown 渲染缓存（按消息 id 惰性缓存）。
+// 模板里若直接写 `v-html="renderMd(m.content)"`，每次组件 re-render 都会对**每条历史消息**
+// 重新全量 marked.parse：流式期间 streamingContent 每个 chunk 都在变 → 每 ~40ms 触发一次
+// 全组件 re-render → 历史消息越长、条数越多，parse 越重，主线程被反复阻塞，表现为
+// 对话越用越慢、滚动/输入不跟手。缓存后每条消息只 parse 一次，后续命中缓存零开销。
+const mdCache = new Map<number, string>()
+
+function mdHtml(m: ChatMessage): string {
+  if (m.role !== 'assistant') return ''
+  let html = mdCache.get(m.id)
+  if (html === undefined) {
+    html = renderMd(m.content)
+    mdCache.set(m.id, html)
+  }
+  return html
+}
+
 // ---- 流式渲染节流 ----
 // 首个 chunk 立即渲染（保住首字延迟手感），后续 ~80ms 内合并多次增量只重渲染一次
 let lastRenderAt = 0
@@ -515,7 +534,7 @@ function autosize() {
             :class="m.role === 'user' ? 'user' : 'ai'"
           >
             <div class="ava">{{ m.role === 'user' ? '你' : 'A' }}</div>
-            <div v-if="m.role === 'assistant'" class="bubble md" v-html="renderMd(m.content)"></div>
+            <div v-if="m.role === 'assistant'" class="bubble md" v-html="mdHtml(m)"></div>
             <div v-else class="bubble">{{ m.content }}</div>
           </div>
 

@@ -192,6 +192,13 @@ export interface MarketExtension {
   download_url: string
 }
 
+export interface DataPathInfo {
+  /** 当前数据根绝对路径 */
+  path: string
+  /** default（默认 %APPDATA% 路径）/ custom（用户自定义）/ portable（便携模式，跟随程序目录） */
+  mode: 'default' | 'custom' | 'portable'
+}
+
 export interface WeatherCurrent {
   temperature: number
   apparent_temperature: number
@@ -472,8 +479,11 @@ export const tauriApi = {
   setNoteTags: (noteId: number, tagIds: number[]) =>
     invoke<void>('set_note_tags', { noteId, tagIds }),
   listNoteTags: () => invoke<NoteTagRow[]>('list_note_tags'),
-  backupData: (targetDir: string) => invoke<void>('backup_data', { targetDir }),
-  restoreData: (sourceDir: string) => invoke<void>('restore_data', { sourceDir }),
+  backupData: (targetDir: string) => invoke<string>('backup_data', { targetDir }),
+  restoreData: (source: string) => invoke<void>('restore_data', { source }),
+  getDataPath: () => invoke<DataPathInfo>('get_data_path'),
+  changeDataDir: (newDir: string) => invoke<void>('change_data_dir', { newDir }),
+  restartApp: () => invoke<void>('restart_app'),
   saveConfig: (config: AppConfig) => invoke<AppConfig>('save_config', { config }),
   setWindowAlwaysOnTop: (value: boolean) =>
     invoke<void>('set_window_always_on_top', { value }),

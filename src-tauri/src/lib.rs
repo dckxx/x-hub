@@ -11,6 +11,7 @@ mod market;
 mod models;
 mod notify;
 mod online;
+mod paths;
 mod process;
 mod proxy;
 mod repo;
@@ -35,8 +36,8 @@ use rusqlite::Connection;
 use tauri::{Listener, Manager};
 
 /// 初始化数据库并返回连接
-fn init_database(app: &tauri::App) -> Result<Connection, Box<dyn std::error::Error>> {
-    let app_data_dir = app.path().app_data_dir()?;
+fn init_database() -> Result<Connection, Box<dyn std::error::Error>> {
+    let app_data_dir = crate::paths::data_root().to_path_buf();
     std::fs::create_dir_all(&app_data_dir)?;
 
     // 启动时应用待恢复的数据（恢复命令只暂存，重启后替换）
@@ -73,11 +74,8 @@ fn apply_pending_restore(app_data: &std::path::Path) {
 }
 
 /// 一次性迁移旧目录（com.workbench.desktop）数据到新目录（x-hub）
-fn migrate_legacy_data(app: &tauri::App) {
-    let new_dir = match app.path().app_data_dir() {
-        Ok(d) => d,
-        Err(_) => return,
-    };
+fn migrate_legacy_data() {
+    let new_dir = crate::paths::data_root().to_path_buf();
     if new_dir.exists() {
         return;
     }
@@ -121,10 +119,8 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
 
 /// 将数据库中旧目录（com.workbench.desktop）的图标路径替换为当前目录（x-hub）
 /// 幂等：重复执行无副作用，每次启动调用
-fn fix_icon_paths(conn: &Connection, app: &tauri::App) {
-    let Ok(new_dir) = app.path().app_data_dir() else {
-        return;
-    };
+fn fix_icon_paths(conn: &Connection) {
+    let new_dir = crate::paths::data_root();
     let Some(old_dir) = dirs::data_dir().map(|d| d.join("com.workbench.desktop")) else {
         return;
     };
@@ -212,11 +208,9 @@ pub fn run() {
                 .targets([
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
-                    // 文件日志写到 x-hub 数据目录（默认 app_log_dir 是 %LOCALAPPDATA%\logs，不符合统一目录约定）
+                    // 文件日志写到数据根目录（默认 app_log_dir 是 %LOCALAPPDATA%\logs，不符合统一目录约定）
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Folder {
-                        path: dirs::data_dir()
-                            .map(|d| d.join("x-hub").join("logs"))
-                            .unwrap_or_default(),
+                        path: crate::paths::data_root().join("logs"),
                         file_name: Some("x-hub".into()),
                     }),
                 ])
@@ -226,6 +220,12 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             log::info!("========== x-hub 启动 ==========");
+
+            // 把数据根动态加入 asset 协议作用域：图标 / 剪贴板图片经 convertFileSrc 渲染，
+            // 当数据目录被改到 %APPDATA% 之外（自定义目录 / U 盘便携）时仍能正常访问
+            let _ = app
+                .asset_protocol_scope()
+                .allow_directory(crate::paths::data_root(), true);
 
             // 系统通知权限：Prompt 时请求一次（Windows 通常直接放行）
             {
@@ -240,10 +240,10 @@ pub fn run() {
             }
 
             // 旧版本（com.workbench.desktop 标识）数据迁移到 x-hub 目录
-            migrate_legacy_data(app);
+            migrate_legacy_data();
 
-            let conn = init_database(app)?;
-            fix_icon_paths(&conn, app);
+            let conn = init_database()?;
+            fix_icon_paths(&conn);
             app.manage(DbState(std::sync::Mutex::new(conn)));
             app.manage(clipboard::ClipboardState::default());
             app.manage(service::ServiceState::default());
@@ -408,6 +408,9 @@ pub fn run() {
             commands::list_note_tags,
             commands::backup_data,
             commands::restore_data,
+            commands::get_data_path,
+            commands::change_data_dir,
+            commands::restart_app,
             commands::sync_ai_usage,
             commands::get_usage_summary,
             commands::get_usage_detail,

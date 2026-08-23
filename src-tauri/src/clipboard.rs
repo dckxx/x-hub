@@ -628,9 +628,9 @@ fn bmp_to_dib(bmp: &[u8]) -> &[u8] {
     }
 }
 
-/// 剪贴板图片快照目录：`app_data_dir/clipboard/images/`
-fn clipboard_images_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
-    let dir = app.path().app_data_dir().ok()?.join("clipboard").join("images");
+/// 剪贴板图片快照目录：`数据根/clipboard/images/`
+fn clipboard_images_dir() -> Option<std::path::PathBuf> {
+    let dir = crate::paths::data_root().join("clipboard").join("images");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }
@@ -638,12 +638,11 @@ fn clipboard_images_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
 /// 图片落盘快照：PNG 原样存 .png，DIB 补文件头存 .bmp。
 /// 返回快照绝对路径（失败返回 None，由调用方决定是否降级为文本）。
 fn save_image_snapshot(
-    app: &AppHandle,
     bytes: &[u8],
     format: ImageFormat,
     hash: u64,
 ) -> Option<String> {
-    let dir = clipboard_images_dir(app)?;
+    let dir = clipboard_images_dir()?;
     let ext = match format {
         ImageFormat::Png => "png",
         ImageFormat::Dib => "bmp",
@@ -1474,7 +1473,7 @@ fn handle_clipboard_update(app: &AppHandle) {
                 log::debug!("剪贴板监听：忽略自身图片写入回声");
                 return;
             }
-            let Some(path) = save_image_snapshot(app, &bytes, format, hash) else {
+            let Some(path) = save_image_snapshot(&bytes, format, hash) else {
                 log::warn!("剪贴板图片快照落盘失败，已跳过");
                 return;
             };

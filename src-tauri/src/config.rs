@@ -128,6 +128,9 @@ pub struct AppConfig {
     /// 用量模块字体缩放系数（默认 1.0）
     #[serde(default = "one")]
     pub font_usage: f64,
+    /// service 扩展运行时策略：auto（自动检测，默认）/ builtin（始终内置）/ system（始终系统）
+    #[serde(default = "default_runtime_strategy")]
+    pub runtime_strategy: String,
 }
 
 fn one() -> f64 {
@@ -148,6 +151,10 @@ fn default_true() -> bool {
 
 fn default_quote_source() -> String {
     "online".to_string()
+}
+
+fn default_runtime_strategy() -> String {
+    "auto".to_string()
 }
 
 impl Default for AppConfig {
@@ -189,6 +196,7 @@ impl Default for AppConfig {
             font_prompt: 1.0,
             font_todo: 1.0,
             font_usage: 1.0,
+            runtime_strategy: "auto".to_string(),
         }
     }
 }

@@ -7,6 +7,7 @@ import Index from './index/index.vue'
 import DetachedStickyWindow from './components/DetachedStickyWindow.vue'
 import CountdownFloat from './components/CountdownFloat.vue'
 import ClipboardOverlay from './components/ClipboardOverlay.vue'
+import ExtensionWindow from './components/ExtensionWindow.vue'
 import { isTauri } from './api/tauri'
 
 const label = isTauri() ? getCurrentWindow().label : ''
@@ -14,6 +15,7 @@ const isMainWindow = label === 'main'
 const isStickyWindow = label.startsWith('sticky-')
 const isCountdownFloat = label.startsWith('countdown-')
 const isClipboardOverlay = label === 'clipboard'
+const isExtensionWindow = label.startsWith('ext-')
 
 // 主窗口：记录最后聚焦的可编辑元素。剪贴板浮层粘贴到主窗口输入框时，
 // Rust 侧会派发 clipboard-paste-request（带内容），这里直接把内容插回原输入框。
@@ -121,5 +123,6 @@ onBeforeUnmount(() => {
   <ClipboardOverlay v-if="isClipboardOverlay" />
   <CountdownFloat v-else-if="isCountdownFloat" />
   <DetachedStickyWindow v-else-if="isStickyWindow" />
+  <ExtensionWindow v-else-if="isExtensionWindow" />
   <Index v-else />
 </template>

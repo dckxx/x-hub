@@ -26,6 +26,7 @@ const SECTIONS = [
   { id: 'shortcut', label: '快捷键' },
   { id: 'clipboard', label: '剪贴板' },
   { id: 'online', label: '联网' },
+  { id: 'extensions', label: '扩展' },
   { id: 'data', label: '数据' },
   { id: 'about', label: '关于' },
 ] as const
@@ -219,6 +220,18 @@ function onQuoteSourceChange(value: string) {
   if (!isTauri()) return
   void store.setQuoteSource(value as 'online' | 'local').then(() => {
     showToast(value === 'online' ? '名言来源已设为在线' : '名言来源已设为本地语料')
+  })
+}
+
+const RUNTIME_STRATEGY_OPTIONS = [
+  { value: 'auto', label: '自动检测（系统优先，缺失自动下载内置）' },
+  { value: 'builtin', label: '始终内置（统一用下载的内置运行时）' },
+  { value: 'system', label: '始终系统（只用系统 Node，不下载）' },
+] as const
+
+function onRuntimeStrategyChange(value: string) {
+  void store.setRuntimeStrategy(value as 'auto' | 'builtin' | 'system').then(() => {
+    showToast('运行时策略已更新，下次启动 service 扩展生效')
   })
 }
 
@@ -900,6 +913,23 @@ function onAccentInput(e: Event) {
                 自动定位
               </button>
             </div>
+          </div>
+        </section>
+
+        <!-- 扩展 -->
+        <section id="sv-sec-extensions" class="sv-sec" aria-label="扩展">
+          <h3 class="sv-sec-title">扩展</h3>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">service 运行时策略</span>
+              <span class="setting-desc">service 扩展后端的 Node 运行时来源：自动检测 / 始终内置 / 始终系统</span>
+            </div>
+            <AppSelect
+              :model-value="store.state.config.runtime_strategy || 'auto'"
+              :options="RUNTIME_STRATEGY_OPTIONS"
+              aria-label="service 运行时策略"
+              @update:model-value="onRuntimeStrategyChange"
+            />
           </div>
         </section>
 

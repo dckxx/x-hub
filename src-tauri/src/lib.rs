@@ -6,17 +6,23 @@ mod config;
 mod countdown_ticker;
 mod countdown_window;
 mod db;
+mod extension;
+mod market;
 mod models;
 mod notify;
 mod online;
 mod paths;
 mod process;
+mod proxy;
 mod repo;
+mod runtime;
+mod service;
 mod shortcut;
 mod sticky_window;
 mod sysmon;
 mod tray;
 mod usage;
+mod xhub_api;
 
 /// WebView2 附加浏览器参数（主窗/倒计时浮窗/便签浮窗必须完全一致，
 /// 同一 user data folder 下不同参数的环境创建会失败）。
@@ -240,6 +246,15 @@ pub fn run() {
             fix_icon_paths(&conn);
             app.manage(DbState(std::sync::Mutex::new(conn)));
             app.manage(clipboard::ClipboardState::default());
+            app.manage(service::ServiceState::default());
+
+            // 启动扩展反向代理（/svc/<extId>/* → 127.0.0.1:<service 端口>，统一加 CORS 头）
+            let proxy_port = tauri::async_runtime::block_on(proxy::start(app.handle().clone()))
+                .unwrap_or_else(|e| {
+                    log::warn!("扩展反向代理启动失败: {e}");
+                    0
+                });
+            app.manage(proxy::ProxyState(proxy_port));
 
             tray::setup(app)?;
             shortcut::setup(app)?;
@@ -430,12 +445,28 @@ commands::set_chat_panel,
             commands::set_clipboard_shortcut,
             commands::set_clipboard_retention,
             sysmon::get_system_info,
+            extension::list_extensions,
+            extension::read_extension_entry,
+            extension::open_extension_window,
+            extension::uninstall_extension,
+            extension::install_extension,
+            extension::get_extension_permissions,
+            extension::set_extension_permission,
+            market::get_market_registry,
+            market::install_from_market,
+            xhub_api::xhub_call,
             commands::check_connectivity,
             commands::get_weather,
             commands::get_quote,
             commands::set_weather_city,
             commands::locate_weather_by_ip,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // 宿主退出：停止所有 service 后端进程，避免 Node 子进程残留
+            if let tauri::RunEvent::Exit = event {
+                service::stop_all(app);
+            }
+        });
 }

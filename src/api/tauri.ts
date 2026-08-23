@@ -148,12 +148,48 @@ export interface AppConfig {
   font_todo: number
   /** 用量模块字体缩放系数 */
   font_usage: number
+  /** service 扩展运行时策略：auto / builtin / system */
+  runtime_strategy: string
 }
 
 export interface AppInfo {
   version: string
   changelog: string
   latest_section: string
+}
+
+/** 已安装扩展的注册表项（后端 extension.rs 扫描返回） */
+export interface ExtensionEntry {
+  id: string
+  name: string
+  version: string
+  /** web | service */
+  runtime: 'web' | 'service'
+  /** module | view | window | drawer */
+  kind: string
+  surfaces: string[]
+  open_in: string[]
+  permissions: string[]
+  description: string
+  /** 图标文件绝对路径（存在时才非空） */
+  icon: string | null
+  /** 扩展目录绝对路径 */
+  dir: string
+  /** manifest 缺失 / 解析失败时为 true */
+  invalid: boolean
+  error: string | null
+}
+
+/** 市场清单里的一条扩展 */
+export interface MarketExtension {
+  id: string
+  name: string
+  version: string
+  description: string
+  runtime: string
+  author: string
+  /** 下载地址（zip 包） */
+  download_url: string
 }
 
 export interface DataPathInfo {
@@ -567,4 +603,28 @@ export const tauriApi = {
   getQuote: () => invoke<Quote>('get_quote'),
   setWeatherCity: (city: string) => invoke<GeoLocation>('set_weather_city', { city }),
   locateWeatherByIp: () => invoke<GeoLocation>('locate_weather_by_ip'),
+  // ---- 扩展系统 ----
+  listExtensions: () => invoke<ExtensionEntry[]>('list_extensions'),
+  /** 读取扩展某形态入口（注入桥脚本后返回临时 HTML 绝对路径） */
+  readExtensionEntry: (id: string, surface?: string | null) =>
+    invoke<string>('read_extension_entry', { id, surface: surface ?? null }),
+  /** 打开扩展的独立窗口（window 形态） */
+  openExtensionWindow: (id: string) => invoke<void>('open_extension_window', { id }),
+  /** 卸载扩展（停止 service 后端进程并删除目录） */
+  uninstallExtension: (id: string) => invoke<void>('uninstall_extension', { id }),
+  /** 从本地目录安装扩展，返回扩展 id */
+  installExtension: (source: string) => invoke<string>('install_extension', { source }),
+  /** 查询扩展权限状态（manifest 声明 → 是否授予） */
+  getExtensionPermissions: (id: string) =>
+    invoke<Record<string, boolean>>('get_extension_permissions', { id }),
+  /** 设置扩展某权限开关 */
+  setExtensionPermission: (id: string, permission: string, granted: boolean) =>
+    invoke<void>('set_extension_permission', { id, permission, granted }),
+  // ---- 扩展市场 ----
+  getMarketRegistry: () => invoke<MarketExtension[]>('get_market_registry'),
+  installFromMarket: (downloadUrl: string) =>
+    invoke<string>('install_from_market', { downloadUrl }),
+  /** 桥 API 统一分发：扩展 iframe 经主窗口转发调用 */
+  xhubCall: (extId: string, namespace: string, method: string, args: unknown) =>
+    invoke<unknown>('xhub_call', { extId, namespace, method, args }),
 }

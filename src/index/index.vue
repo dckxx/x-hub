@@ -22,11 +22,13 @@ import StickyCard from '../components/StickyCard.vue'
 import CountdownCard from '../components/CountdownCard.vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import WhatsNewDialog from '../components/WhatsNewDialog.vue'
+import ExtensionCenter from '../components/ExtensionCenter.vue'
+import ExtensionView from '../components/ExtensionView.vue'
 import { useStore } from '../stores/workbench'
 import { isTauri, tauriApi } from '../api/tauri'
-import type { Countdown, Note, Resource, Todo } from '../api/tauri'
+import type { Countdown, ExtensionEntry, Note, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
-import { FileText, FolderOpen, Gauge, LayoutDashboard, MessageSquare, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { FileText, FolderOpen, Gauge, LayoutDashboard, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import { useTheme } from '../composables/useTheme'
 import DashboardLayoutEditor from '../components/DashboardLayoutEditor.vue'
@@ -51,7 +53,7 @@ const visibleNavigation = navigation.filter((item) => item.id !== 'chat')
 
 // 设置不在顶部导航列表，作为独立入口固定在侧栏左下角，但同样是视图切换逻辑
 // 自定义布局编辑器也是独立视图（从设置进入，完成后回主页面）
-type ViewId = (typeof navigation)[number]['id'] | 'settings' | 'layout-editor'
+type ViewId = (typeof navigation)[number]['id'] | 'settings' | 'layout-editor' | 'extensions' | 'extension'
 const activeView = ref<ViewId>('dashboard')
 
 // 对话入口：点击侧栏「对话」即唤起右侧面板（面板是主形态，视图仅占位说明）
@@ -60,6 +62,36 @@ function onNavClick(id: ViewId) {
   if (id === 'chat' && !chatOpen.value) {
     toggleChat()
   }
+}
+
+// ---- 扩展打开：扩展中心点开某个扩展 → 主区渲染扩展入口（view 形态） ----
+const openedExtension = ref<{ id: string; surface: string | null; name: string } | null>(null)
+const drawerExtension = ref<{ id: string; surface: string | null; name: string } | null>(null)
+
+function onOpenExtension(ext: ExtensionEntry) {
+  openedExtension.value = { id: ext.id, surface: null, name: ext.name }
+  activeView.value = 'extension'
+}
+
+function closeExtension() {
+  openedExtension.value = null
+  activeView.value = 'extensions'
+}
+
+function openExtensionWindow() {
+  if (!openedExtension.value) return
+  tauriApi.openExtensionWindow(openedExtension.value.id).catch((e) => {
+    showToast(`打开窗口失败：${String(e)}`)
+  })
+}
+
+function openExtensionDrawer() {
+  if (!openedExtension.value) return
+  drawerExtension.value = { ...openedExtension.value }
+}
+
+function closeExtensionDrawer() {
+  drawerExtension.value = null
 }
 
 // ---- 侧边栏收起（展开功能默认关闭，侧栏默认收起；开启后显示展开/收起按钮） ----
@@ -108,10 +140,15 @@ const dashCardComponents: Record<string, Component> = {
 }
 
 function dashCardComponent(id: string): Component {
+  // 扩展 module：id 形如 ext:<扩展id>，用 iframe 渲染其 module 入口（复用桥 API）
+  if (id.startsWith('ext:')) return ExtensionView
   return dashCardComponents[id] ?? ClockCard
 }
 
 function dashCardProps(id: string): Record<string, unknown> {
+  if (id.startsWith('ext:')) {
+    return { extId: id.slice('ext:'.length), surface: 'module' }
+  }
   switch (id) {
     case 'sticky1':
       return { slot: 1 }
@@ -403,6 +440,18 @@ provide('showToast', showToast)
 
         <button
           class="sidebar-status"
+          :class="{ active: activeView === 'extensions' }"
+          type="button"
+          aria-label="打开扩展中心"
+          data-tip="扩展中心"
+          @click="activeView = 'extensions'"
+        >
+          <Puzzle :size="15" :stroke-width="2" aria-hidden="true" />
+          <span>扩展中心</span>
+        </button>
+
+        <button
+          class="sidebar-status"
           :class="{ active: activeView === 'settings' }"
           type="button"
           aria-label="打开设置"
@@ -486,6 +535,27 @@ provide('showToast', showToast)
           <UsageView />
         </section>
 
+        <!-- 扩展中心：独立视图 -->
+        <section v-else-if="activeView === 'extensions'" class="view view-extensions" tabindex="-1" aria-label="扩展中心">
+          <ExtensionCenter @open="onOpenExtension" />
+        </section>
+
+        <!-- 扩展运行视图：主区渲染扩展入口（iframe + window.xhub 桥 API） -->
+        <section v-else-if="activeView === 'extension'" class="view view-extension" tabindex="-1" aria-label="扩展">
+          <div class="ext-toolbar">
+            <button class="ghost-btn" type="button" @click="closeExtension">← 扩展中心</button>
+            <div class="ext-toolbar-spacer" />
+            <button class="ghost-btn" type="button" @click="openExtensionWindow">在窗口打开</button>
+            <button class="ghost-btn" type="button" @click="openExtensionDrawer">在抽屉打开</button>
+          </div>
+          <ExtensionView
+            v-if="openedExtension"
+            :ext-id="openedExtension.id"
+            :surface="openedExtension.surface"
+            @close="closeExtension"
+          />
+        </section>
+
         <!-- 对话：独立视图（完整视图，与右侧面板共用会话数据） -->
         <section v-else-if="activeView === 'chat'" class="view view-chat" tabindex="-1" aria-label="对话">
           <div class="view-chat-hint">
@@ -516,6 +586,26 @@ provide('showToast', showToast)
               @toggle="onChatToggle"
               @open-model-settings="onOpenChatSettings"
             />
+          </div>
+        </Transition>
+
+        <!-- 扩展抽屉（覆盖式，右侧滑出） -->
+        <Transition name="chat-drawer">
+          <div v-if="drawerExtension" class="ext-drawer">
+            <div class="ext-drawer-header">
+              <span class="ext-drawer-title">{{ drawerExtension.name }}</span>
+              <button
+                class="ext-drawer-close"
+                type="button"
+                aria-label="关闭抽屉"
+                @click="closeExtensionDrawer"
+              >
+                <ChevronRight :size="16" :stroke-width="2" aria-hidden="true" />
+              </button>
+            </div>
+            <div class="ext-drawer-body">
+              <ExtensionView :ext-id="drawerExtension.id" :surface="drawerExtension.surface" />
+            </div>
           </div>
         </Transition>
       </div>
@@ -810,6 +900,84 @@ provide('showToast', showToast)
 }
 .view-settings {
   padding: 0 20px 20px 0;
+}
+/* 扩展中心：覆盖组件内四边 padding，仅保留右下外边距（左上贴边与原版一致） */
+.view-extensions :deep(.extension-center) {
+  padding: 0 20px 20px 0;
+}
+/* 扩展运行视图：仅右下外边距 */
+.view-extension {
+  padding: 0 20px 20px 0;
+}
+.ext-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 12px;
+}
+.ext-toolbar-spacer {
+  flex: 1;
+}
+
+/* 扩展抽屉：absolute 悬浮于工作区之上，右侧滑入 */
+.ext-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  width: 480px;
+  max-width: 82vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card-solid);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-dock);
+  pointer-events: auto;
+}
+.ext-drawer-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.ext-drawer-title {
+  font-size: 0.875rem;
+  font-weight: 650;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ext-drawer-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.ext-drawer-close:hover {
+  background: var(--brand-50);
+  color: var(--brand-500);
+}
+.ext-drawer-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.ext-drawer-body :deep(.extension-view) {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 .view-layout-editor {
   padding: 0 20px 20px 0;

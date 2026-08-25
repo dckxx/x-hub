@@ -475,6 +475,8 @@ export const tauriApi = {
   recordSnippetCopy: (id: number) => invoke<Snippet>('record_snippet_copy', { id }),
   togglePromptFloat: () => invoke<void>('toggle_prompt_float'),
   toggleTodoFloat: () => invoke<void>('toggle_todo_float'),
+  toggleFloatPin: (label: string, alwaysOnTop: boolean) =>
+    invoke<void>('toggle_float_pin', { label, alwaysOnTop }),
   listCountdowns: () => invoke<Countdown[]>('list_countdowns'),
   // ---- AI 对话 ----
   listChatSessions: () => invoke<ChatSession[]>('list_chat_sessions'),

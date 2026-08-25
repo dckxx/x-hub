@@ -1,14 +1,28 @@
 <script setup lang="ts">
-import { inject, onBeforeUnmount, onMounted } from 'vue'
+import { inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen } from '@tauri-apps/api/event'
-import { Boxes, Pin, X } from 'lucide-vue-next'
+import { Boxes, Pin, PinOff, X } from 'lucide-vue-next'
 import { isTauri } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useTheme } from '../composables/useTheme'
 
 const store = useStore()
 const showToast = inject<(msg: string) => void>('showToast', () => {})
+
+// 从窗口 label 取浮窗标识（prompt-float），用于置顶切换
+const floatLabel = isTauri() ? getCurrentWindow().label : 'prompt-float'
+const pinned = ref(true)
+
+async function togglePin() {
+  const next = !pinned.value
+  pinned.value = next
+  try {
+    await store.toggleFloatPin(floatLabel, next)
+  } catch {
+    pinned.value = !next
+  }
+}
 
 // 标记为提示词浮窗：body 透明，只显示卡片本体
 document.documentElement.dataset.promptFloat = ''
@@ -107,9 +121,21 @@ function onDragEnd() {
         <Boxes :size="14" :stroke-width="2" aria-hidden="true" />
         <span>提示词</span>
       </h3>
-      <button class="pf-close" title="关闭" aria-label="关闭" @click="onClose">
-        <X :size="14" :stroke-width="2" />
-      </button>
+      <div class="pf-controls">
+        <button
+          class="pf-btn"
+          :class="{ active: pinned }"
+          :title="pinned ? '取消置顶' : '置顶'"
+          type="button"
+          @click="togglePin"
+        >
+          <Pin v-if="pinned" :size="13" :stroke-width="2" />
+          <PinOff v-else :size="13" :stroke-width="2" />
+        </button>
+        <button class="pf-btn pf-close" title="关闭" aria-label="关闭" @click="onClose">
+          <X :size="13" :stroke-width="2" />
+        </button>
+      </div>
     </header>
 
     <div v-if="store.state.snippets.length > 0" class="pf-body">
@@ -167,7 +193,11 @@ function onDragEnd() {
 .pf-title :deep(svg) {
   color: var(--brand-500);
 }
-.pf-close {
+.pf-controls {
+  display: flex;
+  gap: 2px;
+}
+.pf-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -180,7 +210,14 @@ function onDragEnd() {
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
-.pf-close:hover {
+.pf-btn:hover {
+  background: var(--bg-card-soft);
+  color: var(--text-1);
+}
+.pf-btn.active {
+  color: var(--brand-500);
+}
+.pf-btn.pf-close:hover {
   background: var(--window-close);
   color: var(--text-on-accent);
 }

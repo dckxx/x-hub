@@ -1,13 +1,28 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, type ComponentPublicInstance } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen } from '@tauri-apps/api/event'
-import { Check, ListTodo, Trash2, X } from 'lucide-vue-next'
+import { Check, ListTodo, Pin, PinOff, Trash2, X } from 'lucide-vue-next'
 import { isTauri } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useTheme } from '../composables/useTheme'
+import { parseTodoItems } from '../utils/todoParse'
 
 const store = useStore()
+
+// 从窗口 label 取浮窗标识（todo-float），用于置顶切换
+const floatLabel = isTauri() ? getCurrentWindow().label : 'todo-float'
+const pinned = ref(true)
+
+async function togglePin() {
+  const next = !pinned.value
+  pinned.value = next
+  try {
+    await store.toggleFloatPin(floatLabel, next)
+  } catch {
+    pinned.value = !next
+  }
+}
 
 // 标记为待办浮窗：body 透明，只显示卡片本体
 document.documentElement.dataset.todoFloat = ''
@@ -30,13 +45,34 @@ onBeforeUnmount(() => {
 
 const input = ref('')
 
+// 新增输入框：单行 textarea，随内容自动增高（封顶见 CSS max-height），粘贴多行序号列表时临时撑高
+const addInputRef = ref<HTMLTextAreaElement | null>(null)
+function setAddInput(el: Element | ComponentPublicInstance | null) {
+  addInputRef.value = el instanceof HTMLTextAreaElement ? el : null
+}
+function autoResizeAdd() {
+  const el = addInputRef.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
+}
+
 const pendingTodos = computed(() => store.state.todos.filter((t) => !t.done))
 
 async function onAdd() {
   const v = input.value.trim()
   if (!v) return
-  await store.createTodo(v)
+  // 支持「1. a 2. b 3. c」这类序号列表一次拆成多条；非序号文本原样一条
+  await Promise.all(parseTodoItems(v).map((title) => store.createTodo(title)))
   input.value = ''
+  if (addInputRef.value) addInputRef.value.style.height = 'auto'
+}
+
+// 回车提交；IME 组合（中文输入法选词）期间不提交，避免误触
+function onAddKeydown(e: KeyboardEvent) {
+  if (e.isComposing) return
+  e.preventDefault()
+  void onAdd()
 }
 
 async function toggle(id: number) {
@@ -89,19 +125,34 @@ function onDragEnd() {
         <ListTodo :size="14" :stroke-width="2" aria-hidden="true" />
         <span>待办</span>
       </h3>
-      <button class="tf-close" title="关闭" aria-label="关闭" @click="onClose">
-        <X :size="14" :stroke-width="2" />
-      </button>
+      <div class="tf-controls">
+        <button
+          class="tf-btn"
+          :class="{ active: pinned }"
+          :title="pinned ? '取消置顶' : '置顶'"
+          type="button"
+          @click="togglePin"
+        >
+          <Pin v-if="pinned" :size="13" :stroke-width="2" />
+          <PinOff v-else :size="13" :stroke-width="2" />
+        </button>
+        <button class="tf-btn tf-close" title="关闭" aria-label="关闭" @click="onClose">
+          <X :size="13" :stroke-width="2" />
+        </button>
+      </div>
     </header>
 
     <div class="tf-add">
-      <input
+      <textarea
+        :ref="setAddInput"
         v-model="input"
         class="tf-input"
-        placeholder="添加待办，回车确认"
+        rows="2"
+        placeholder="添加待办，回车确认（粘贴 1. 2. 3. 序号列表可一次拆多条）"
         aria-label="添加待办"
-        @keydown.enter.prevent="onAdd"
-      />
+        @input="autoResizeAdd"
+        @keydown.enter.exact="onAddKeydown"
+      ></textarea>
     </div>
 
     <div class="tf-body">
@@ -162,7 +213,11 @@ function onDragEnd() {
 .tf-title :deep(svg) {
   color: var(--brand-500);
 }
-.tf-close {
+.tf-controls {
+  display: flex;
+  gap: 2px;
+}
+.tf-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -175,7 +230,14 @@ function onDragEnd() {
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
-.tf-close:hover {
+.tf-btn:hover {
+  background: var(--bg-card-soft);
+  color: var(--text-1);
+}
+.tf-btn.active {
+  color: var(--brand-500);
+}
+.tf-btn.tf-close:hover {
   background: var(--window-close);
   color: var(--text-on-accent);
 }
@@ -194,6 +256,12 @@ function onDragEnd() {
   outline: none;
   box-sizing: border-box;
   transition: border-color 0.18s, box-shadow 0.18s;
+  display: block;
+  resize: none;
+  line-height: 1.45;
+  max-height: 110px;
+  max-height: calc(5lh + 16px);
+  overflow-y: auto;
 }
 .tf-input:focus {
   border-color: var(--brand-500);

@@ -264,7 +264,7 @@ watch(
           </div>
 
           <div v-else-if="!adding" class="pm-empty">
-            <p>暂无提示词，点击右上角 ＋ 添加第一条</p>
+            <p>暂无提示词，点击左上角 ＋ 添加第一条</p>
           </div>
         </div>
       </div>
@@ -307,6 +307,7 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 8px;
+  width: 100%;
   margin-bottom: 12px;
 }
 .pm-textarea {

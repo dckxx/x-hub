@@ -214,6 +214,11 @@ export function useStore() {
     await tauriApi.toggleTodoFloat()
   }
 
+  async function toggleFloatPin(label: string, value: boolean) {
+    if (!isTauri()) return
+    await tauriApi.toggleFloatPin(label, value)
+  }
+
   async function recordSnippetCopy(id: number) {
     if (!isTauri()) {
       const cur = state.snippets.find((x) => x.id === id)
@@ -861,6 +866,7 @@ export function useStore() {
     recordSnippetCopy,
     togglePromptFloat,
     toggleTodoFloat,
+    toggleFloatPin,
     addResource,
     editResource,
     removeResource,

@@ -368,6 +368,7 @@ pub fn run() {
             commands::record_snippet_copy,
             commands::toggle_prompt_float,
             commands::toggle_todo_float,
+            commands::toggle_float_pin,
             commands::search_all,
             commands::save_config,
             commands::set_window_always_on_top,

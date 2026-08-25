@@ -473,6 +473,8 @@ export const tauriApi = {
   deleteSnippet: (id: number) => invoke<void>('delete_snippet', { id }),
   toggleSnippetPin: (id: number) => invoke<Snippet>('toggle_snippet_pin', { id }),
   recordSnippetCopy: (id: number) => invoke<Snippet>('record_snippet_copy', { id }),
+  togglePromptFloat: () => invoke<void>('toggle_prompt_float'),
+  toggleTodoFloat: () => invoke<void>('toggle_todo_float'),
   listCountdowns: () => invoke<Countdown[]>('list_countdowns'),
   // ---- AI 对话 ----
   listChatSessions: () => invoke<ChatSession[]>('list_chat_sessions'),

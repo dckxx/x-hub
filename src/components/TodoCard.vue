@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, ref, type ComponentPublicInstance, watch } from 'vue'
-import { Check, ListTodo, Trash2 } from 'lucide-vue-next'
+import { Check, ListTodo, PanelTopClose, Trash2 } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Todo } from '../api/tauri'
 
@@ -165,7 +165,17 @@ watch(
         <ListTodo :size="14" :stroke-width="2" aria-hidden="true" />
         <span>待办</span>
       </h3>
-      <div class="filter-tabs todo-seg" role="tablist" aria-label="视图切换">
+      <div class="todo-header-actions">
+        <button
+          class="todo-float"
+          type="button"
+          :title="'待办浮窗'"
+          :aria-label="'待办浮窗'"
+          @click="store.toggleTodoFloat()"
+        >
+          <PanelTopClose :size="14" :stroke-width="2" aria-hidden="true" />
+        </button>
+        <div class="filter-tabs todo-seg" role="tablist" aria-label="视图切换">
         <button
           class="filter-tab filter-tab--primary"
           :class="{ active: view === 'pending' }"
@@ -184,6 +194,7 @@ watch(
         >
           已完成 {{ doneTodos.length }}
         </button>
+        </div>
       </div>
     </header>
 
@@ -314,6 +325,30 @@ watch(
 }
 .todo-title :deep(svg) {
   color: var(--brand-500);
+}
+.todo-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.todo-float {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+  cursor: pointer;
+  transition: color 0.18s, background 0.18s;
+}
+.todo-float:hover {
+  color: var(--brand-500);
+  background: var(--brand-50);
 }
 .todo-seg {
   gap: 4px;

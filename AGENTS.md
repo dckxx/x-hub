@@ -146,6 +146,7 @@ x-hub/
 28. **侧栏默认收起（v0.1.15）：** `sidebarCollapsed` 默认 `true`（56px 图标态，hover 出名称气泡）；展开/收起按钮仅在设置开启 `sidebar_toggle` 后出现（默认关闭）；720px 以下强制恢复文字导航
 29. **关于 / 更新日志（v0.1.16）：** 设置「关于」区（`AboutSection.vue`）展示版本号 + 开源声明 + 内置版本历史；changelog 单一来源为仓库根 `RELEASE_NOTES.md`，经 `about.rs` `include_str!` 打包进二进制（**零网络**），`get_app_info` 返回 `{version, changelog, latest_section}`。版本号运行时读 `app.package_info().version`（随 `tauri.conf.json` 烘焙），README badge 是文档侧唯一真相。升级检测 `check_whats_new` 在启动时调用：`last_seen_version` 空→首跑仅记录；与当前版本不同→推进记录，且仅当 `whats_new_enabled`（默认开）开启才返回最新说明给 `WhatsNewDialog.vue` 弹一次。RELEASE_NOTES 累积式：每发版在顶部新增一节 `# vX.Y.Z 发布说明`（`version_sections()` 按 `# ` 一级标题切分，最新在前）
 30. **优先复用现成组件：** 需要下拉选择、弹窗、输入等交互控件时，先查 `src/components/` 已有通用组件（如 `AppSelect.vue` 下拉选择器、`ContextMenu.vue` 右键菜单、`useFocusTrap` 焦点陷阱），优先复用而非新写原生控件（如原生 `<select>`）——保证交互与视觉一致、避免样式重复（反例：设置「粘贴方式」曾用原生 `<select>` 加 `min-width` 撑宽，应改用 `AppSelect`）
+31. **新增浮窗窗口必须同步多处 label 配置（否则浮窗闪出「欢迎回来」启动页）：** 启动欢迎页 `#boot-splash` 内联在 `index.html`（所有窗口共用），head 内联脚本用**白名单**判定——只要 `window.__TAURI_INTERNALS__.metadata.currentWindow.label !== 'main'` 就 `data-no-splash` 隐藏 splash（切勿改回黑名单逐个罗列，漏加即复现本 bug）。新增浮窗需同步：① `capabilities/default.json` 的 `windows` 数组加 label；② `App.vue` 按 label 路由到浮窗组件；③ Rust 侧窗口 label 常量（如 `float_window.rs`）；④ `lib.rs` 注册对应命令。
 
 ## 命令速查
 

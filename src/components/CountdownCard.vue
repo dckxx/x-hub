@@ -36,11 +36,16 @@ import type { Countdown } from '../api/tauri'
 const store = useStore()
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 
-// 上限：工作台中上区块两列三行，最多展示/创建 6 个
-const MAX_COUNTDOWNS = 6
+// 倒计时卡片尺寸（网格单元数 w×h），由工作台布局传入；默认 5×4（推荐布局）
+const props = defineProps<{ sizeW?: number; sizeH?: number }>()
+
+// 上限：默认 6 个；卡片为 5×4 时最多 4 个（推荐布局的倒计时卡是 5 列 4 行，仅容得下 2×2）
+const MAX_COUNTDOWNS = computed(() =>
+  props.sizeW === 5 && props.sizeH === 4 ? 4 : 6,
+)
 
 const atLimit = computed(
-  () => store.state.countdowns.length >= MAX_COUNTDOWNS,
+  () => store.state.countdowns.length >= MAX_COUNTDOWNS.value,
 )
 
 // ---- 新建弹窗 ----
@@ -147,7 +152,7 @@ function toggleCreate() {
     return
   }
   if (atLimit.value) {
-    showToast(`最多创建 ${MAX_COUNTDOWNS} 个倒计时，请先删除已结束的`)
+    showToast(`最多创建 ${MAX_COUNTDOWNS.value} 个倒计时，请先删除已结束的`)
     return
   }
   creating.value = true
@@ -201,7 +206,7 @@ const repeatModeFor = computed(() => {
 
 async function onCreate() {
   if (atLimit.value) {
-    showToast(`最多创建 ${MAX_COUNTDOWNS} 个倒计时，请先删除已结束的`)
+    showToast(`最多创建 ${MAX_COUNTDOWNS.value} 个倒计时，请先删除已结束的`)
     return
   }
   const name = form.value.name.trim()
@@ -313,6 +318,7 @@ async function onToggleFloat(c: Countdown) {
           </button>
         </div>
       </div>
+      <div class="cc-spacer" aria-hidden="true"></div>
     </div>
 
     <!-- 已结束灰态 -->
@@ -395,6 +401,7 @@ async function onToggleFloat(c: Countdown) {
                   :min="1"
                   :max="1440"
                   :step="5"
+                  :step-snapping="false"
                   :format-options="{ style: 'decimal', maximumFractionDigits: 0 }"
                   disable-wheel-change
                   class="cc-number-field"
@@ -538,6 +545,7 @@ async function onToggleFloat(c: Countdown) {
                   :min="1"
                   :max="1440"
                   :step="5"
+                  :step-snapping="false"
                   :format-options="{ style: 'decimal', maximumFractionDigits: 0 }"
                   disable-wheel-change
                   class="cc-number-field"
@@ -726,17 +734,30 @@ async function onToggleFloat(c: Countdown) {
 }
 
 /* 列表：两列自适应行数（上限 6 个 = 3 行），每行最小 48px 保证条目内容完整（icon 32 + padding 8×2），
-   行数随条目数量变化，不存在空行占位；不因已结束区块而把行高压扁导致内容裁切 */
+   行数随条目数量变化，不存在空行占位；不因已结束区块而把行高压扁导致内容裁切。
+   自适应间距：第一行始终贴顶（原始位置不动），多余高度只分摊到「行与行之间」和「末行与下边框内边距」，
+   且两者相等 —— 用 align-content: space-between + 末尾零高占位行（.cc-spacer 跨满两列）实现：
+   space-between 在 首行 / 中间行 / 占位行 之间均分空隙，首行贴顶、占位行（高 0）贴底，
+   于是「行间间距」=「末行与下边框内边距」。行高保持自然高度（不把条目块拉高），
+   最小行高改由 .cc-item 的 min-height: 48px 承担。 */
 .cc-list {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-auto-rows: minmax(48px, auto);
+  grid-auto-rows: auto;
   gap: 8px;
+  align-content: space-between;
+}
+.cc-spacer {
+  grid-column: 1 / -1;
+  height: 0;
 }
 .cc-item {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-height: 48px;
   padding: 8px 10px;
   border-radius: var(--radius-md);
   background: var(--bg-card-soft);

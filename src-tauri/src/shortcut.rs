@@ -46,6 +46,8 @@ pub fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         tauri_plugin_global_shortcut::Builder::new()
             .with_handler(move |app, shortcut: &Shortcut, event| {
                 if event.state == ShortcutState::Pressed {
+                    // 诊断：确认全局热键事件是否到达本进程（用于定位「录入成功但呼出/隐藏不生效」）
+                    log::info!("[快捷键] 事件触发: {} state={:?}", shortcut, event.state);
                     // 按当前配置分发：剪贴板快捷键 → 剪贴板浮层；其余 → 主窗口显隐
                     let clip = crate::config::load().clipboard_shortcut;
                     if same_hotkey(&clip, &shortcut.to_string()) {
@@ -61,10 +63,14 @@ pub fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let config = crate::config::load();
     // 注册默认快捷键，注册失败仅记录日志不阻塞启动
     if let Err(e) = register_toggle_shortcut(&handle, &config.global_shortcut) {
-        log::warn!("{}", e);
+        log::warn!("[快捷键] 注册主窗口快捷键失败: {}", e);
+    } else {
+        log::info!("[快捷键] 已注册主窗口快捷键: {}", config.global_shortcut);
     }
     if let Err(e) = register_toggle_shortcut(&handle, &config.clipboard_shortcut) {
-        log::warn!("{}", e);
+        log::warn!("[快捷键] 注册剪贴板快捷键失败: {}", e);
+    } else {
+        log::info!("[快捷键] 已注册剪贴板快捷键: {}", config.clipboard_shortcut);
     }
     Ok(())
 }

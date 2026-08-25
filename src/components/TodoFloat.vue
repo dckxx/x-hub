@@ -1,0 +1,293 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { listen } from '@tauri-apps/api/event'
+import { Check, ListTodo, Trash2, X } from 'lucide-vue-next'
+import { isTauri } from '../api/tauri'
+import { useStore } from '../stores/workbench'
+import { useTheme } from '../composables/useTheme'
+
+const store = useStore()
+
+// 标记为待办浮窗：body 透明，只显示卡片本体
+document.documentElement.dataset.todoFloat = ''
+useTheme()
+
+let unlisten: (() => void) | null = null
+
+onMounted(async () => {
+  await store.loadInitialData()
+  if (isTauri()) {
+    unlisten = await listen('todos-changed', () => {
+      void store.refreshTodos()
+    })
+  }
+})
+
+onBeforeUnmount(() => {
+  unlisten?.()
+})
+
+const input = ref('')
+
+const pendingTodos = computed(() => store.state.todos.filter((t) => !t.done))
+
+async function onAdd() {
+  const v = input.value.trim()
+  if (!v) return
+  await store.createTodo(v)
+  input.value = ''
+}
+
+async function toggle(id: number) {
+  await store.toggleTodo(id)
+}
+
+async function remove(id: number) {
+  await store.deleteTodo(id)
+}
+
+async function onClose() {
+  if (isTauri()) await getCurrentWindow().close()
+}
+
+// 窗口拖动
+const appWindow = isTauri() ? getCurrentWindow() : null
+const DRAG_THRESHOLD = 4
+let dragPending: { x: number; y: number } | null = null
+
+function onMouseDown(e: MouseEvent) {
+  if (!appWindow || e.button !== 0) return
+  const target = e.target as HTMLElement
+  if (target.closest('button, input')) return
+  dragPending = { x: e.screenX, y: e.screenY }
+}
+function onMouseMove(e: MouseEvent) {
+  if (!dragPending || !appWindow) return
+  const dx = e.screenX - dragPending.x
+  const dy = e.screenY - dragPending.y
+  if (dx * dx + dy * dy >= DRAG_THRESHOLD * DRAG_THRESHOLD) {
+    dragPending = null
+    void appWindow.startDragging()
+  }
+}
+function onDragEnd() {
+  dragPending = null
+}
+</script>
+
+<template>
+  <div
+    class="tf-root"
+    @mousedown="onMouseDown"
+    @mousemove="onMouseMove"
+    @mouseup="onDragEnd"
+    @mouseleave="onDragEnd"
+  >
+    <header class="tf-header">
+      <h3 class="tf-title">
+        <ListTodo :size="14" :stroke-width="2" aria-hidden="true" />
+        <span>待办</span>
+      </h3>
+      <button class="tf-close" title="关闭" aria-label="关闭" @click="onClose">
+        <X :size="14" :stroke-width="2" />
+      </button>
+    </header>
+
+    <div class="tf-add">
+      <input
+        v-model="input"
+        class="tf-input"
+        placeholder="添加待办，回车确认"
+        aria-label="添加待办"
+        @keydown.enter.prevent="onAdd"
+      />
+    </div>
+
+    <div class="tf-body">
+      <div v-if="pendingTodos.length === 0" class="tf-empty">
+        <p>暂无待办</p>
+      </div>
+
+      <div v-else>
+        <div v-for="t in pendingTodos" :key="t.id" class="tf-row">
+          <button
+            class="tf-check"
+            :class="{ checked: t.done }"
+            :title="'标记完成'"
+            aria-label="标记完成"
+            @click="toggle(t.id)"
+          >
+            <Check v-if="t.done" :size="11" :stroke-width="3" />
+          </button>
+          <span class="tf-label">{{ t.title }}</span>
+          <button class="tf-del" title="删除" aria-label="删除" @click="remove(t.id)">
+            <Trash2 :size="12" :stroke-width="2" />
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.tf-root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  box-sizing: border-box;
+  -webkit-app-region: no-drag;
+  font-size: calc(1rem * var(--fs-todo, 1));
+}
+.tf-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  margin-bottom: 8px;
+  cursor: move;
+}
+.tf-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125em;
+  font-weight: 600;
+  color: var(--text-1);
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+.tf-title :deep(svg) {
+  color: var(--brand-500);
+}
+.tf-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.tf-close:hover {
+  background: var(--window-close);
+  color: var(--text-on-accent);
+}
+.tf-add {
+  flex-shrink: 0;
+  margin-bottom: 8px;
+}
+.tf-input {
+  width: 100%;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  color: var(--text-1);
+  font-size: 0.8125em;
+  padding: 7px 10px;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+.tf-input:focus {
+  border-color: var(--brand-500);
+  box-shadow: var(--shadow-focus);
+}
+.tf-input::placeholder {
+  color: var(--text-4);
+}
+.tf-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+.tf-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+}
+.tf-row:hover {
+  background: var(--bg-card-soft);
+}
+.tf-row.done {
+  opacity: 0.6;
+}
+.tf-check {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-on-accent);
+  padding: 0;
+  cursor: pointer;
+}
+.tf-check.checked {
+  background: var(--brand-500);
+  border-color: var(--brand-500);
+}
+.tf-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8125em;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tf-row.done .tf-label {
+  text-decoration: line-through;
+  color: var(--text-3);
+}
+.tf-del {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.18s, background 0.18s, color 0.18s;
+}
+.tf-row:hover .tf-del,
+.tf-row:focus-within .tf-del {
+  opacity: 1;
+}
+.tf-del:hover {
+  background: var(--c-red-soft);
+  color: var(--c-red-ink);
+}
+.tf-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-4);
+}
+.tf-empty p {
+  margin: 0;
+  font-size: 0.8125em;
+}
+</style>

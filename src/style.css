@@ -759,6 +759,22 @@ html[data-clipboard-window] body {
 html[data-clipboard-window] #app {
   padding: 0;
 }
+/* 提示词 / 待办浮窗：窗口透明，body 透明，只显示卡片本体 */
+html[data-prompt-float] body,
+html[data-todo-float] body {
+  background: transparent !important;
+}
+html[data-prompt-float] #app,
+html[data-todo-float] #app {
+  padding: 0;
+}
+html[data-prompt-float] .pf-root,
+html[data-todo-float] .tf-root {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card-solid);
+  box-shadow: var(--shadow-dock);
+}
 /* 根字号基准：全局字体缩放通过 --fs-global 调整 rem 基准（1rem = 16px × 缩放） */
 html {
   font-size: calc(16px * var(--fs-global, 1));

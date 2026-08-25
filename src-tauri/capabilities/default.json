@@ -6,7 +6,9 @@
     "main",
     "sticky-*",
     "countdown-*",
-    "clipboard"
+    "clipboard",
+    "prompt-float",
+    "todo-float"
   ],
   "permissions": [
     "core:default",

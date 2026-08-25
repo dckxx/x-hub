@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { inject } from 'vue'
-import { Boxes, Pin, Settings2 } from 'lucide-vue-next'
+import { Boxes, PanelTopClose, Pin, Settings2 } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Snippet } from '../api/tauri'
 
@@ -60,13 +60,22 @@ async function onCopy(s: Snippet) {
         <span>提示词</span>
       </h3>
       <button
-        class="pb-more"
+        class="pb-more pb-push"
         type="button"
         :title="'管理提示词'"
         :aria-label="'管理提示词'"
         @click="props.onOpenManage?.()"
       >
         <Settings2 :size="14" :stroke-width="2" aria-hidden="true" />
+      </button>
+      <button
+        class="pb-more"
+        type="button"
+        :title="'提示词浮窗'"
+        :aria-label="'提示词浮窗'"
+        @click="store.togglePromptFloat()"
+      >
+        <PanelTopClose :size="14" :stroke-width="2" aria-hidden="true" />
       </button>
     </header>
 
@@ -149,6 +158,9 @@ async function onCopy(s: Snippet) {
 .pb-more:hover {
   color: var(--brand-500);
   background: var(--brand-50);
+}
+.pb-push {
+  margin-left: auto;
 }
 .pb-body {
   flex: 1;

@@ -318,7 +318,6 @@ async function onToggleFloat(c: Countdown) {
           </button>
         </div>
       </div>
-      <div class="cc-spacer" aria-hidden="true"></div>
     </div>
 
     <!-- 已结束灰态 -->
@@ -735,23 +734,16 @@ async function onToggleFloat(c: Countdown) {
 
 /* 列表：两列自适应行数（上限 6 个 = 3 行），每行最小 48px 保证条目内容完整（icon 32 + padding 8×2），
    行数随条目数量变化，不存在空行占位；不因已结束区块而把行高压扁导致内容裁切。
-   自适应间距：第一行始终贴顶（原始位置不动），多余高度只分摊到「行与行之间」和「末行与下边框内边距」，
-   且两者相等 —— 用 align-content: space-between + 末尾零高占位行（.cc-spacer 跨满两列）实现：
-   space-between 在 首行 / 中间行 / 占位行 之间均分空隙，首行贴顶、占位行（高 0）贴底，
-   于是「行间间距」=「末行与下边框内边距」。行高保持自然高度（不把条目块拉高），
-   最小行高改由 .cc-item 的 min-height: 48px 承担。 */
+   列表高度随内容自适应（不撑满剩余空间），使紧邻的已结束区块跟随在下方，
+   多余高度留在卡片底部，避免「进行中」与「已结束」两行之间被拉开一大段空白。 */
 .cc-list {
-  flex: 1;
+  flex: 0 0 auto;
   min-height: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-auto-rows: auto;
   gap: 8px;
-  align-content: space-between;
-}
-.cc-spacer {
-  grid-column: 1 / -1;
-  height: 0;
+  align-content: start;
 }
 .cc-item {
   display: flex;
@@ -761,6 +753,8 @@ async function onToggleFloat(c: Countdown) {
   padding: 8px 10px;
   border-radius: var(--radius-md);
   background: var(--bg-card-soft);
+  /* 与卡片底色拉开层级：轻阴影，避免白底条目融进白底卡片看不清 */
+  box-shadow: var(--shadow-item);
   transition: opacity 0.15s;
   position: relative;
 }
@@ -776,7 +770,8 @@ async function onToggleFloat(c: Countdown) {
   align-items: center;
   justify-content: center;
   background: var(--brand-50);
-  color: var(--brand-500);
+  /* 图标用比背景深一档的强调色（brand-600），避免与 12% 同色相背景融成一片 */
+  color: var(--brand-600);
   border: 1px solid var(--border-soft);
 }
 .cc-mode-icon.interval {

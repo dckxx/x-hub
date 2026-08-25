@@ -205,6 +205,21 @@ export function useStore() {
     return updated
   }
 
+  async function togglePromptFloat() {
+    if (!isTauri()) return
+    await tauriApi.togglePromptFloat()
+  }
+
+  async function toggleTodoFloat() {
+    if (!isTauri()) return
+    await tauriApi.toggleTodoFloat()
+  }
+
+  async function toggleFloatPin(label: string, value: boolean) {
+    if (!isTauri()) return
+    await tauriApi.toggleFloatPin(label, value)
+  }
+
   async function recordSnippetCopy(id: number) {
     if (!isTauri()) {
       const cur = state.snippets.find((x) => x.id === id)
@@ -337,6 +352,12 @@ export function useStore() {
   async function deleteTodo(id: number) {
     if (isTauri()) await tauriApi.deleteTodo(id)
     state.todos = state.todos.filter((t) => t.id !== id)
+  }
+
+  /** 待办浮窗等外部修改后刷新列表 */
+  async function refreshTodos() {
+    if (!isTauri()) return
+    state.todos = await tauriApi.listTodos()
   }
 
   // ---- 便签 ----
@@ -851,6 +872,9 @@ export function useStore() {
     removeSnippet,
     toggleSnippetPin,
     recordSnippetCopy,
+    togglePromptFloat,
+    toggleTodoFloat,
+    toggleFloatPin,
     addResource,
     editResource,
     removeResource,
@@ -864,6 +888,7 @@ export function useStore() {
     toggleTodo,
     updateTodo,
     deleteTodo,
+    refreshTodos,
     saveSticky,
     detachSticky,
     focusDetachedSticky,

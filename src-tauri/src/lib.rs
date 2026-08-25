@@ -7,6 +7,7 @@ mod countdown_ticker;
 mod countdown_window;
 mod db;
 mod extension;
+mod float_window;
 mod market;
 mod models;
 mod notify;
@@ -196,11 +197,7 @@ pub fn run() {
         // 单实例：重复双击 exe 时不另起新进程（避免再冷启动一个 WebView2、窗口出现在后台），
         // 而是直接把已运行实例的主窗口唤起并置前
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
+            crate::tray::show_window(app);
         }))
         .plugin(
             tauri_plugin_log::Builder::default()
@@ -320,13 +317,12 @@ pub fn run() {
             // 关闭事件：拦截默认关闭，改为隐藏至托盘
             if let Some(window) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
-                let win = window.clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         log::info!("收到关闭请求：保存状态并隐藏至托盘");
                         persist_window_state(&app_handle);
                         api.prevent_close();
-                        let _ = win.hide();
+                        crate::tray::hide_window(&app_handle);
                     }
                 });
             }
@@ -385,6 +381,9 @@ pub fn run() {
             commands::delete_snippet,
             commands::toggle_snippet_pin,
             commands::record_snippet_copy,
+            commands::toggle_prompt_float,
+            commands::toggle_todo_float,
+            commands::toggle_float_pin,
             commands::search_all,
             commands::save_config,
             commands::set_window_always_on_top,

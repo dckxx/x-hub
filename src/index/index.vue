@@ -145,7 +145,8 @@ function dashCardComponent(id: string): Component {
   return dashCardComponents[id] ?? ClockCard
 }
 
-function dashCardProps(id: string): Record<string, unknown> {
+function dashCardProps(p: DashPlacement): Record<string, unknown> {
+  const id = p.id
   if (id.startsWith('ext:')) {
     return { extId: id.slice('ext:'.length), surface: 'module' }
   }
@@ -166,6 +167,8 @@ function dashCardProps(id: string): Record<string, unknown> {
       return { onOpenManage: openPromptManage }
     case 'todo':
       return { highlightId: highlightTodoId.value }
+    case 'countdown':
+      return { sizeW: p.w, sizeH: p.h }
     default:
       return {}
   }
@@ -232,6 +235,9 @@ onMounted(async () => {
     unlistenSnippetsChanged = await listen('snippets-changed', () => {
       void store.loadSnippets()
     })
+    unlistenTodosChanged = await listen('todos-changed', () => {
+      void store.refreshTodos()
+    })
   }
   window.addEventListener('keydown', onSearchKeydown)
   window.addEventListener('keydown', onChatKeydown)
@@ -252,6 +258,7 @@ let unlistenCountdownFired: (() => void) | null = null
 let unlistenCountdownsChanged: (() => void) | null = null
 let unlistenNotesChanged: (() => void) | null = null
 let unlistenSnippetsChanged: (() => void) | null = null
+let unlistenTodosChanged: (() => void) | null = null
 
 onUnmounted(() => {
   store.stopOnlineMonitor()
@@ -260,6 +267,7 @@ onUnmounted(() => {
   unlistenCountdownsChanged?.()
   unlistenNotesChanged?.()
   unlistenSnippetsChanged?.()
+  unlistenTodosChanged?.()
   window.removeEventListener('keydown', onSearchKeydown)
   window.removeEventListener('keydown', onChatKeydown)
 })
@@ -496,7 +504,7 @@ provide('showToast', showToast)
             >
               <component
                 :is="dashCardComponent(p.id)"
-                v-bind="dashCardProps(p.id)"
+                v-bind="dashCardProps(p)"
                 @go-suda="activeView = 'suda'"
               />
             </div>

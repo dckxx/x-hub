@@ -234,27 +234,32 @@ pub fn list_todos(state: State<'_, DbState>) -> Result<Vec<Todo>, String> {
 }
 
 #[tauri::command]
-pub fn create_todo(state: State<'_, DbState>, title: String) -> Result<Todo, String> {
+pub fn create_todo(app: tauri::AppHandle, state: State<'_, DbState>, title: String) -> Result<Todo, String> {
     let t = title.trim();
     if t.is_empty() {
         return Err("标题不能为空".into());
     }
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let todo = todo::create(&conn, t).map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("todos-changed", ());
     log::info!("添加待办: id={} {}", todo.id, todo.title);
     Ok(todo)
 }
 
 #[tauri::command]
-pub fn toggle_todo(state: State<'_, DbState>, id: i64) -> Result<Todo, String> {
+pub fn toggle_todo(app: tauri::AppHandle, state: State<'_, DbState>, id: i64) -> Result<Todo, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let todo = todo::toggle(&conn, id).map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("todos-changed", ());
     log::info!("切换待办状态: id={} done={}", todo.id, todo.done);
     Ok(todo)
 }
 
 #[tauri::command]
 pub fn update_todo(
+    app: tauri::AppHandle,
     state: State<'_, DbState>,
     id: i64,
     title: String,
@@ -269,14 +274,18 @@ pub fn update_todo(
     }
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let todo = todo::update(&conn, id, t, priority).map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("todos-changed", ());
     log::info!("更新待办: id={} {} (优先级 {})", todo.id, todo.title, todo.priority);
     Ok(todo)
 }
 
 #[tauri::command]
-pub fn delete_todo(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+pub fn delete_todo(app: tauri::AppHandle, state: State<'_, DbState>, id: i64) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     todo::delete(&conn, id).map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("todos-changed", ());
     log::info!("删除待办: id={}", id);
     Ok(())
 }
@@ -627,6 +636,7 @@ pub fn list_snippets(state: State<'_, DbState>) -> Result<Vec<Snippet>, String> 
 
 #[tauri::command]
 pub fn create_snippet(
+    app: tauri::AppHandle,
     state: State<'_, DbState>,
     title: String,
     content: String,
@@ -641,12 +651,15 @@ pub fn create_snippet(
     }
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let snippet = snippet::create(&conn, t, c).map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("snippets-changed", ());
     log::info!("添加提示词: id={} {}", snippet.id, snippet.title);
     Ok(snippet)
 }
 
 #[tauri::command]
 pub fn update_snippet(
+    app: tauri::AppHandle,
     state: State<'_, DbState>,
     id: i64,
     title: String,
@@ -662,22 +675,28 @@ pub fn update_snippet(
     }
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let snippet = snippet::update(&conn, id, t, c).map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("snippets-changed", ());
     log::info!("更新提示词: id={} {}", snippet.id, snippet.title);
     Ok(snippet)
 }
 
 #[tauri::command]
-pub fn delete_snippet(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+pub fn delete_snippet(app: tauri::AppHandle, state: State<'_, DbState>, id: i64) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     snippet::delete(&conn, id).map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("snippets-changed", ());
     log::info!("删除提示词: id={}", id);
     Ok(())
 }
 
 #[tauri::command]
-pub fn toggle_snippet_pin(state: State<'_, DbState>, id: i64) -> Result<Snippet, String> {
+pub fn toggle_snippet_pin(app: tauri::AppHandle, state: State<'_, DbState>, id: i64) -> Result<Snippet, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let snippet = snippet::toggle_pin(&conn, id).map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("snippets-changed", ());
     log::info!("切换提示词置顶: id={} pinned={}", snippet.id, snippet.is_pinned);
     Ok(snippet)
 }
@@ -688,6 +707,54 @@ pub fn record_snippet_copy(state: State<'_, DbState>, id: i64) -> Result<Snippet
     let snippet = snippet::record_copy(&conn, id).map_err(err_str)?;
     log::debug!("提示词已复制: id={} 累计 {} 次", snippet.id, snippet.copy_count);
     Ok(snippet)
+}
+
+/// 提示词浮窗：打开（或聚焦）/ 关闭切换
+#[tauri::command]
+pub async fn toggle_prompt_float(app: tauri::AppHandle) -> Result<(), String> {
+    let label = crate::float_window::PROMPT_FLOAT_LABEL;
+    if crate::float_window::is_visible(&app, label) {
+        crate::float_window::destroy(&app, label);
+    } else {
+        crate::float_window::create_or_focus(&app, label, "提示词", 300.0, 420.0)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 待办浮窗：打开（或聚焦）/ 关闭切换
+#[tauri::command]
+pub async fn toggle_todo_float(app: tauri::AppHandle) -> Result<(), String> {
+    let label = crate::float_window::TODO_FLOAT_LABEL;
+    if crate::float_window::is_visible(&app, label) {
+        crate::float_window::destroy(&app, label);
+    } else {
+        crate::float_window::create_or_focus(&app, label, "待办", 320.0, 440.0)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 切换提示词/待办浮窗的置顶状态（与便签浮窗一致的「是否置顶」开关）
+#[tauri::command]
+pub async fn toggle_float_pin(
+    app: tauri::AppHandle,
+    label: String,
+    always_on_top: bool,
+) -> Result<(), String> {
+    let valid = matches!(
+        label.as_str(),
+        crate::float_window::PROMPT_FLOAT_LABEL | crate::float_window::TODO_FLOAT_LABEL
+    );
+    if !valid {
+        return Err("未知的浮窗 label".into());
+    }
+    let win = app
+        .get_webview_window(&label)
+        .ok_or_else(|| "浮窗不存在".to_string())?;
+    win.set_always_on_top(always_on_top).map_err(|e| e.to_string())?;
+    log::info!("浮窗置顶切换: label={} 置顶={}", label, always_on_top);
+    Ok(())
 }
 
 // ---------- AI 用量统计 ----------

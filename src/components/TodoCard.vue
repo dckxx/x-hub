@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, ref, type ComponentPublicInstance, watch } from 'vue'
-import { Check, ListTodo, Trash2 } from 'lucide-vue-next'
+import { Check, ListTodo, PanelTopClose, Trash2 } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Todo } from '../api/tauri'
+import { parseTodoItems } from '../utils/todoParse'
 
 const props = defineProps<{ highlightId?: number | null }>()
 
@@ -14,6 +15,18 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
 
 const view = ref<'pending' | 'done'>('pending')
 const input = ref('')
+
+// 新增输入框：单行 textarea，随内容自动增高（封顶见 CSS max-height），粘贴多行序号列表时临时撑高
+const addInputRef = ref<HTMLTextAreaElement | null>(null)
+function setAddInput(el: Element | ComponentPublicInstance | null) {
+  addInputRef.value = el instanceof HTMLTextAreaElement ? el : null
+}
+function autoResizeAdd() {
+  const el = addInputRef.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
+}
 
 // 编辑状态
 const editingId = ref<number | null>(null)
@@ -82,8 +95,17 @@ const list = computed(() => (view.value === 'pending' ? pendingTodos.value : don
 async function onAdd() {
   const v = input.value.trim()
   if (!v) return
-  await store.createTodo(v)
+  // 支持「1. a 2. b 3. c」这类序号列表一次拆成多条；非序号文本原样一条
+  await Promise.all(parseTodoItems(v).map((title) => store.createTodo(title)))
   input.value = ''
+  if (addInputRef.value) addInputRef.value.style.height = 'auto'
+}
+
+// 回车提交；IME 组合（中文输入法选词）期间不提交，避免误触
+function onAddKeydown(e: KeyboardEvent) {
+  if (e.isComposing) return
+  e.preventDefault()
+  void onAdd()
 }
 
 async function toggle(t: Todo) {
@@ -165,7 +187,17 @@ watch(
         <ListTodo :size="14" :stroke-width="2" aria-hidden="true" />
         <span>待办</span>
       </h3>
-      <div class="filter-tabs todo-seg" role="tablist" aria-label="视图切换">
+      <div class="todo-header-actions">
+        <button
+          class="todo-float"
+          type="button"
+          :title="'待办浮窗'"
+          :aria-label="'待办浮窗'"
+          @click="store.toggleTodoFloat()"
+        >
+          <PanelTopClose :size="14" :stroke-width="2" aria-hidden="true" />
+        </button>
+        <div class="filter-tabs todo-seg" role="tablist" aria-label="视图切换">
         <button
           class="filter-tab filter-tab--primary"
           :class="{ active: view === 'pending' }"
@@ -184,17 +216,21 @@ watch(
         >
           已完成 {{ doneTodos.length }}
         </button>
+        </div>
       </div>
     </header>
 
     <div v-if="view === 'pending'" class="todo-add">
-      <input
+      <textarea
+        :ref="setAddInput"
         v-model="input"
         class="todo-input"
-        placeholder="添加待办，回车确认"
+        rows="2"
+        placeholder="添加待办，回车确认（粘贴 1. 2. 3. 序号列表可一次拆多条）"
         aria-label="添加待办"
-        @keydown.enter.prevent="onAdd"
-      />
+        @input="autoResizeAdd"
+        @keydown.enter.exact="onAddKeydown"
+      ></textarea>
     </div>
 
     <div class="todo-body">
@@ -315,6 +351,30 @@ watch(
 .todo-title :deep(svg) {
   color: var(--brand-500);
 }
+.todo-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.todo-float {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+  cursor: pointer;
+  transition: color 0.18s, background 0.18s;
+}
+.todo-float:hover {
+  color: var(--brand-500);
+  background: var(--brand-50);
+}
 .todo-seg {
   gap: 4px;
   flex-shrink: 0;
@@ -337,6 +397,12 @@ watch(
   padding: 7px 10px;
   outline: none;
   transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
+  display: block;
+  resize: none;
+  line-height: 1.45;
+  max-height: 110px;
+  max-height: calc(5lh + 16px);
+  overflow-y: auto;
 }
 .todo-input:focus {
   border-color: var(--brand-500);

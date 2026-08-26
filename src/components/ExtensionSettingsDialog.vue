@@ -4,6 +4,7 @@ import { Trash2, X } from 'lucide-vue-next'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
 import { tauriApi, type ExtensionEntry } from '../api/tauri'
+import { useStore } from '../stores/workbench'
 
 const props = defineProps<{ extension: ExtensionEntry | null }>()
 const emit = defineEmits<{
@@ -76,6 +77,34 @@ function kindLabel(kind: string): string {
 
 function runtimeLabel(runtime: 'web' | 'service'): string {
   return runtime === 'service' ? 'service（含本地后端进程）' : 'web（纯前端）'
+}
+
+const store = useStore()
+
+// 固定到侧栏：点击左栏菜单即在主区打开该扩展（view 形态）
+const pinnedSidebar = computed(() =>
+  ext.value ? (store.state.config.sidebar_extensions ?? []).includes(ext.value.id) : false,
+)
+
+function togglePinned() {
+  if (!ext.value) return
+  store.setSidebarExtension(ext.value.id, !pinnedSidebar.value)
+}
+
+// 默认打开方式：视图 / 窗口 / 抽屉（侧栏点击等入口按此打开）
+const openMode = computed(() => store.state.config.extension_open_modes?.[ext.value?.id ?? ''] ?? 'view')
+
+const OPEN_MODES = [
+  { value: 'view', label: '视图' },
+  { value: 'window', label: '窗口' },
+  { value: 'drawer', label: '抽屉' },
+] as const
+
+function setOpenMode(mode: (typeof OPEN_MODES)[number]['value']) {
+  if (!ext.value) return
+  store.setExtensionOpenMode(ext.value.id, mode)
+  const label = OPEN_MODES.find((m) => m.value === mode)?.label ?? mode
+  showToast(`已设为默认在「${label}」打开`)
 }
 
 async function confirmUninstall() {
@@ -158,6 +187,41 @@ async function confirmUninstall() {
                 </div>
               </div>
               <p v-else class="es-empty">无权限申请</p>
+            </section>
+
+            <section v-if="!ext.invalid" class="es-section">
+              <h3 class="es-section-title">侧边栏</h3>
+              <div class="es-kv-row es-openmode-row">
+                <dt>打开方式</dt>
+                <dd>
+                  <div class="es-seg" role="group" aria-label="默认打开方式">
+                    <button
+                      v-for="m in OPEN_MODES"
+                      :key="m.value"
+                      class="es-seg-btn"
+                      :class="{ active: openMode === m.value }"
+                      type="button"
+                      @click="setOpenMode(m.value)"
+                    >
+                      {{ m.label }}
+                    </button>
+                  </div>
+                </dd>
+              </div>
+              <div class="es-perm-row">
+                <span class="es-setting-name">在左侧栏固定此扩展</span>
+                <button
+                  class="toggle"
+                  role="switch"
+                  type="button"
+                  :aria-checked="pinnedSidebar"
+                  :class="{ on: pinnedSidebar }"
+                  @click="togglePinned"
+                >
+                  <span class="toggle-knob"></span>
+                </button>
+              </div>
+              <p class="es-empty">固定后，点击左栏菜单即按上方「打开方式」打开该扩展。</p>
             </section>
           </div>
 
@@ -342,6 +406,40 @@ async function confirmUninstall() {
   margin: 0;
   font-size: 0.8125rem;
   color: var(--text-3);
+}
+/* 侧边栏区块：普通字体（避免复用权限行的等宽字），打开方式分段选择 */
+.es-setting-name {
+  font-size: 0.8125rem;
+  color: var(--text-1);
+}
+.es-openmode-row {
+  align-items: center;
+}
+.es-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-card-soft);
+  border: 1px solid var(--border-soft);
+}
+.es-seg-btn {
+  padding: 3px 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 150ms ease-out, color 150ms ease-out;
+}
+.es-seg-btn:hover {
+  color: var(--text-1);
+}
+.es-seg-btn.active {
+  background: var(--brand-500);
+  color: #fff;
 }
 .es-foot {
   display: flex;

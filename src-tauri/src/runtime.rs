@@ -2,7 +2,6 @@
 //! 内置未缓存则按需下载（Node 官方分发）。返回用于启动后端的可执行文件路径。
 
 use std::path::PathBuf;
-use tauri::Manager;
 
 /// 内置 Node 版本（Node 官方 LTS）
 const NODE_VERSION: &str = "v24.9.0";
@@ -40,14 +39,11 @@ fn check_system_node(min_version: Option<&str>) -> Result<String, String> {
     Ok(ver)
 }
 
-/// 内置 Node 缓存目录：`app_data_dir/runtime/node`
+/// 内置 Node 缓存目录：`data_root()/runtime/node`
+/// 必须用 `paths::data_root()`（便携版跟随 exe 目录\data），不能用 `app_data_dir()`。
 fn builtin_node_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("runtime")
-        .join("node"))
+    let _ = app;
+    Ok(crate::paths::data_root().join("runtime").join("node"))
 }
 
 /// 内置 Node 可执行文件路径（已缓存则 Some）

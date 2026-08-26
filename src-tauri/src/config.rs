@@ -124,6 +124,12 @@ pub struct AppConfig {
     /// service 扩展运行时策略：auto（自动检测，默认）/ builtin（始终内置）/ system（始终系统）
     #[serde(default = "default_runtime_strategy")]
     pub runtime_strategy: String,
+    /// 固定到左侧栏的扩展 id 列表（点击侧栏菜单即在主区打开对应扩展）
+    #[serde(default)]
+    pub sidebar_extensions: Vec<String>,
+    /// 扩展「默认打开方式」映射：extId → view / window / drawer（未设置时默认 view）
+    #[serde(default)]
+    pub extension_open_modes: std::collections::HashMap<String, String>,
 }
 
 fn one() -> f64 {
@@ -187,6 +193,8 @@ impl Default for AppConfig {
             font_prompt: 1.0,
             font_todo: 1.0,
             runtime_strategy: "auto".to_string(),
+            sidebar_extensions: Vec::new(),
+            extension_open_modes: std::collections::HashMap::new(),
         }
     }
 }

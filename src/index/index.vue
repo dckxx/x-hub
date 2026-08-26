@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, ref } from 'vue'
+import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import TitleBar from '../components/TitleBar.vue'
 import TodoCard from '../components/TodoCard.vue'
@@ -29,6 +29,7 @@ import { playChime } from '../utils/chime'
 import { FileText, FolderOpen, LayoutDashboard, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import { useTheme } from '../composables/useTheme'
+import { iconSrc } from '../composables/useResourceIcon'
 import DashboardLayoutEditor from '../components/DashboardLayoutEditor.vue'
 import { useDashboardLayout, type DashPlacement } from '../composables/useDashboardLayout'
 
@@ -70,6 +71,39 @@ function onOpenExtension(ext: ExtensionEntry) {
   openedExtension.value = { id: ext.id, surface: null, name: ext.name }
   activeView.value = 'extension'
 }
+
+async function refreshInstalledExtensions() {
+  if (!isTauri()) return
+  try {
+    installedExtensions.value = await tauriApi.listExtensions()
+  } catch {
+    // 忽略：扩展列表加载失败时侧栏仅保留已缓存的条目
+  }
+}
+
+// 固定到左侧栏的扩展：点击侧栏菜单即在主区打开（view 形态）
+const pinnedExtensionIds = computed(() => store.state.config.sidebar_extensions ?? [])
+
+const sidebarExtensions = computed(() =>
+  installedExtensions.value.filter(
+    (e) =>
+      pinnedExtensionIds.value.includes(e.id) &&
+      !e.invalid &&
+      !e.disabled &&
+      (e.missing_dependencies ?? []).length === 0,
+  ),
+)
+
+function openSidebarExtension(ext: ExtensionEntry) {
+  // 按扩展设置的「默认打开方式」打开：view（主区）/ window（独立窗口）/ drawer（抽屉）
+  const mode = store.state.config.extension_open_modes?.[ext.id] ?? 'view'
+  openExtensionSurface(ext.id, mode)
+}
+
+// 进出扩展中心时刷新侧栏扩展列表（新装/卸载/固定后即时反映）
+watch(activeView, (v) => {
+  if (v === 'extensions') void refreshInstalledExtensions()
+})
 
 // 扩展 module 内通过 runtime.open(surface) 请求打开自身某个形态（通用能力）
 const VALID_EXT_SURFACES = new Set(['view', 'window', 'drawer'])
@@ -228,11 +262,7 @@ onMounted(async () => {
   setTimeout(hideBootSplash, BOOT_MAX_MS)
   // 浮窗便签还原/删除后，主窗口实时同步便签与脱离状态
   if (isTauri()) {
-    try {
-      installedExtensions.value = await tauriApi.listExtensions()
-    } catch {
-      // 扩展列表加载失败时忽略（runtime.open 打开 view 时 name 用 id 兜底）
-    }
+    void refreshInstalledExtensions()
     unlistenStickies = await listen('stickies-changed', () => {
       store.refreshStickies()
     })
@@ -467,6 +497,34 @@ provide('showToast', showToast)
           </button>
         </nav>
 
+        <!-- 固定到侧栏的扩展：点击即在主区打开（view 形态） -->
+        <div v-if="sidebarExtensions.length" class="sidebar-ext">
+          <p class="sidebar-ext-label">扩展</p>
+          <button
+            v-for="ext in sidebarExtensions"
+            :key="ext.id"
+            class="sidebar-nav-item"
+            :class="{ active: activeView === 'extension' && openedExtension?.id === ext.id }"
+            :aria-current="activeView === 'extension' && openedExtension?.id === ext.id ? 'page' : undefined"
+            :data-tip="ext.name"
+            type="button"
+            @click="openSidebarExtension(ext)"
+          >
+            <span class="sidebar-nav-icon" aria-hidden="true">
+              <img
+                v-if="ext.icon"
+                class="sidebar-ext-img"
+                :src="iconSrc(ext.icon)"
+                :alt="ext.name"
+                draggable="false"
+              />
+              <Puzzle v-else :size="15" :stroke-width="2" />
+            </span>
+            <span>{{ ext.name }}</span>
+          </button>
+        </div>
+
+        <div class="sidebar-foot">
         <button
           class="sidebar-status"
           :class="{ active: activeView === 'extensions' }"
@@ -506,6 +564,7 @@ provide('showToast', showToast)
           />
           <span v-if="!sidebarCollapsed">收起</span>
         </button>
+        </div>
       </aside>
 
       <div class="main-area">
@@ -570,7 +629,7 @@ provide('showToast', showToast)
         <!-- 扩展运行视图：主区渲染扩展入口（iframe + window.xhub 桥 API） -->
         <section v-else-if="activeView === 'extension'" class="view view-extension" tabindex="-1" aria-label="扩展">
           <div class="ext-toolbar">
-            <button class="ghost-btn" type="button" @click="closeExtension">← 扩展中心</button>
+            <span class="ext-toolbar-name">{{ openedExtension?.name ?? '扩展' }}</span>
             <div class="ext-toolbar-spacer" />
             <button class="ghost-btn" type="button" @click="openExtensionWindow">在窗口打开</button>
             <button class="ghost-btn" type="button" @click="openExtensionDrawer">在抽屉打开</button>
@@ -760,6 +819,50 @@ provide('showToast', showToast)
   cursor: pointer;
 }
 .sidebar-nav + .sidebar-status { margin-top: auto; }
+.sidebar-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+/* 固定到侧栏的扩展组：独立区块，与主导航视觉一致，可滚动 */
+.sidebar-ext {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: 0;
+  overflow-y: auto;
+}
+.sidebar-ext-label {
+  margin: 0;
+  padding: 0 var(--space-2);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* 扩展图标：统一「应用图标」质感——中性软底 + 细描边 + 内边距，与主导航线形图标视觉协调 */
+.sidebar-ext .sidebar-nav-icon {
+  background: var(--bg-card-soft);
+  box-shadow: inset 0 0 0 1px var(--border-soft);
+}
+.sidebar-ext-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 4px;
+}
+.sidebar.collapsed .sidebar-ext {
+  align-items: center;
+  gap: 6px;
+}
+.sidebar.collapsed .sidebar-ext-label {
+  display: none;
+}
+.sidebar.collapsed .sidebar-ext .sidebar-nav-icon {
+  overflow: hidden;
+}
 .sidebar-status:hover { color: var(--text-1); }
 .sidebar-status.active {
   background: var(--brand-50);
@@ -945,6 +1048,14 @@ provide('showToast', showToast)
 }
 .ext-toolbar-spacer {
   flex: 1;
+}
+.ext-toolbar-name {
+  font-size: 0.8125rem;
+  font-weight: 650;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 扩展抽屉：absolute 悬浮于工作区之上，右侧滑入 */

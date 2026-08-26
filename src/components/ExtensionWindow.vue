@@ -8,9 +8,27 @@ import { useTheme } from '../composables/useTheme'
 // 扩展 iframe 拉到的主题令牌是 :root 默认值，无法跟随用户换色/换主题
 useTheme()
 
-// 窗口 label 形如 ext-<扩展id>；独立窗口自带系统标题栏，这里只渲染扩展内容
+// 窗口 label 形如 ext-<id 的 base64url>；独立窗口自带系统标题栏，这里只渲染扩展内容。
+// Rust 侧因窗口 label 只允许字母数字与 -/_ 等字符（扩展 id 含点号），用 base64url 编码。
+function decodeExtWindowId(label: string): string {
+  if (!label.startsWith('ext-')) return label
+  let s = label.slice('ext-'.length)
+  let b64 = s.replace(/-/g, '+').replace(/_/g, '/')
+  while (b64.length % 4) b64 += '='
+  try {
+    return decodeURIComponent(
+      atob(b64)
+        .split('')
+        .map((c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'))
+        .join(''),
+    )
+  } catch {
+    return label.slice('ext-'.length) // 兼容旧未编码 label
+  }
+}
+
 const label = getCurrentWindow().label
-const extId = computed(() => (label.startsWith('ext-') ? label.slice('ext-'.length) : label))
+const extId = computed(() => decodeExtWindowId(label))
 
 const { frameRef, loading, error } = useExtensionFrame(
   () => extId.value,

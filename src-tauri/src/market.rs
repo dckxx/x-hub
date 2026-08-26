@@ -1,6 +1,6 @@
 //! 扩展市场（spec §11 安装页「市场」tab）。
 //!
-//! 数据源一期为**本地市场清单文件**：`app_data_dir/market/registry.json`，
+//! 数据源一期为**本地市场清单文件**：`data_root()/market/registry.json`，
 //! 格式 `{ "extensions": [{ "id", "name", "version", "description", "runtime", "author", "downloadUrl" }] }`。
 //! 后续接远端市场时，把「读本地文件」换成「fetch 清单 URL」即可，机制不变。
 //!
@@ -9,7 +9,6 @@
 use crate::extension::{copy_dir_recursive, extensions_root, read_manifest};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tauri::Manager;
 
 /// 市场清单里的一条扩展
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,14 +32,11 @@ struct MarketRegistry {
     extensions: Vec<MarketExtension>,
 }
 
-/// 市场清单文件路径：`app_data_dir/market/registry.json`
+/// 市场清单文件路径：`data_root()/market/registry.json`
+/// 必须用 `paths::data_root()`（便携版跟随 exe 目录\data），不能用 `app_data_dir()`。
 fn registry_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("market")
-        .join("registry.json"))
+    let _ = app;
+    Ok(crate::paths::data_root().join("market").join("registry.json"))
 }
 
 /// 读取市场清单（不存在或损坏返回空列表）

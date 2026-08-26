@@ -93,6 +93,8 @@ const state = reactive<StoreState>({
     font_prompt: 1,
     font_todo: 1,
     runtime_strategy: 'auto',
+    sidebar_extensions: [],
+    extension_open_modes: {},
   },
   systemInfo: null,
   online: false,
@@ -663,6 +665,26 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 固定/取消固定扩展到左侧栏：点击侧栏菜单即在主区打开对应扩展（view 形态） */
+  function setSidebarExtension(id: string, pinned: boolean) {
+    const cur = state.config.sidebar_extensions ?? []
+    state.config.sidebar_extensions = pinned
+      ? cur.includes(id)
+        ? cur
+        : [...cur, id]
+      : cur.filter((x) => x !== id)
+    if (!isTauri()) return
+    void tauriApi.saveConfig(state.config)
+  }
+
+  /** 扩展默认打开方式：view / window / drawer（侧栏点击等入口按此打开） */
+  function setExtensionOpenMode(id: string, mode: string) {
+    const modes = state.config.extension_open_modes ?? {}
+    state.config.extension_open_modes = { ...modes, [id]: mode }
+    if (!isTauri()) return
+    void tauriApi.saveConfig(state.config)
+  }
+
   // ---- 系统资源 ----
   async function refreshSystemInfo() {
     if (!isTauri()) return null
@@ -888,6 +910,8 @@ export function useStore() {
     setFontScale,
     setModuleFontScale,
     setRuntimeStrategy,
+    setSidebarExtension,
+    setExtensionOpenMode,
     setClipboardShortcut,
     setClipboardPaused,
     setClipboardRetention,

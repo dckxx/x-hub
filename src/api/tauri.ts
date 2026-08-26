@@ -148,6 +148,10 @@ export interface AppConfig {
   font_todo: number
   /** service 扩展运行时策略：auto / builtin / system */
   runtime_strategy: string
+  /** 固定到左侧栏的扩展 id 列表（点击侧栏菜单即在主区打开对应扩展） */
+  sidebar_extensions: string[]
+  /** 扩展「默认打开方式」映射：extId → view / window / drawer（未设置时侧栏点击默认 view） */
+  extension_open_modes: Record<string, string>
 }
 
 export interface AppInfo {

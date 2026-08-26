@@ -3,7 +3,7 @@
 //! 第 1 步只做「扫描 + 解析 + 列出」，不涉及安装 / 卸载 / 打开 / service 进程托管。
 //! service 托管（启动 / 端口 / 代理 / 健康检查 / 运行时提供）见 spec §5，后续步骤实现。
 //!
-//! 目录约定：`app_data_dir()/extensions/<extId>/manifest.json`。
+//! 目录约定：`data_root()/extensions/<extId>/manifest.json`。
 //! 每个子目录是一个已安装扩展；manifest 损坏或缺失的目录会被标记为 invalid 返回，
 //! 让扩展中心能展示「此扩展不可用」而非静默消失。
 
@@ -196,13 +196,12 @@ fn runtime_str(r: &ExtensionRuntime) -> &'static str {
     }
 }
 
-/// 扩展根目录：`app_data_dir()/extensions/`
+/// 扩展根目录：`data_root()/extensions/`
+/// 注意必须用 `paths::data_root()`（便携版跟随 exe 目录\data），
+/// 不能用 `app_data_dir()`——后者永远返回 %APPDATA% 下的目录，便携版会装到用户目录。
 pub fn extensions_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("extensions"))
+    let _ = app;
+    Ok(crate::paths::data_root().join("extensions"))
 }
 
 /// 扫描扩展根目录，解析每个子目录的 manifest.json。
@@ -568,24 +567,60 @@ pub fn read_extension_entry(
         .or_else(|| manifest.entry.get("view"))
         .ok_or_else(|| format!("NOT_FOUND: 扩展 {id} 没有 {surface} 入口"))?;
     let html_path = dir.join(rel);
-    let html =
-        std::fs::read_to_string(&html_path).map_err(|e| format!("IO_ERROR: 读取入口失败：{e}"))?;
+    log::info!("扩展入口读取: {id} [{surface}] dir={} html={}", dir.display(), html_path.display());
+    let html = std::fs::read_to_string(&html_path).map_err(|e| {
+        log::error!("扩展入口读取失败: {id} [{surface}] {} -> {e}", html_path.display());
+        format!("IO_ERROR: 读取入口失败：{e}")
+    })?;
     let injected = inject_bridge(&html, XHUB_BRIDGE_SCRIPT);
 
     let out_dir = dir.join(".xhpack");
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let out_path = out_dir.join(format!("{surface}.html"));
     std::fs::write(&out_path, injected).map_err(|e| e.to_string())?;
+    // 兜底日志：记录最终交给前端 convertFileSrc 的绝对路径，白屏排查时据此核对
+    // asset 协议作用域（$APPDATA/** + 启动时 allow_directory(data_root)）是否覆盖该路径
     log::info!("扩展入口就绪: {id} [{surface}] -> {}", out_path.display());
     Ok(out_path.to_string_lossy().into_owned())
 }
 
-/// 打开扩展的独立窗口（window 形态）。窗口 label 为 `ext-<扩展id>`，已存在则聚焦复用。
+/// Tauri 窗口 label 只允许字母数字与 `-`/`/`/`:`/`_`；扩展 id 形如反向域名
+/// `com.x-hub.ctool`（含点号），直接作为 label 会报
+/// "Window labels must only include alphanumeric characters"。
+/// 这里用 base64url（字符集恰好∈合法集合，且无填充）编码后拼 `ext-` 前缀，
+/// 前端 `ExtensionWindow.vue` 再解码回真实 id。
+const B64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+fn ext_window_label(id: &str) -> String {
+    let bytes = id.as_bytes();
+    let mut out = String::from("ext-");
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b0 = bytes[i] as u32;
+        let b1 = if i + 1 < bytes.len() { bytes[i + 1] as u32 } else { 0 };
+        let b2 = if i + 2 < bytes.len() { bytes[i + 2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(B64URL[((n >> 18) & 63) as usize] as char);
+        out.push(B64URL[((n >> 12) & 63) as usize] as char);
+        if i + 1 < bytes.len() {
+            out.push(B64URL[((n >> 6) & 63) as usize] as char);
+        }
+        if i + 2 < bytes.len() {
+            out.push(B64URL[(n & 63) as usize] as char);
+        }
+        i += 3;
+    }
+    out
+}
+
+/// 打开扩展的独立窗口（window 形态）。窗口 label 为 `ext-<id 的 base64url>`，已存在则聚焦复用。
 /// 窗口加载宿主 `index.html`（App.vue 按 `ext-` 前缀路由到 ExtensionWindow），
 /// 内容仍走 iframe + 桥 API，与 view/module 同一条注入链路。
+/// 必须 async：同步命令运行在主线程，会与 WebviewWindow 创建互相阻塞（死锁），
+/// 与 detach_sticky 等建窗命令同一约束。
 #[tauri::command]
-pub fn open_extension_window(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    let label = format!("ext-{id}");
+pub async fn open_extension_window(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let label = ext_window_label(&id);
     if let Some(win) = app.get_webview_window(&label) {
         let _ = win.show();
         let _ = win.set_focus();
@@ -928,5 +963,26 @@ mod tests {
         assert!(!entry.disabled);
         // dependsOn 原样记录（缺失依赖在 scan_extensions 后处理）
         assert_eq!(entry.depends_on, vec!["com.x-hub.other".to_string()]);
+    }
+
+    #[test]
+    fn ext_window_label_is_valid_and_roundtrips() {
+        // 窗口 label 只允许字母数字与 -/_ 等字符；扩展 id 含点号，必须可逆编码
+        let cases = ["com.x-hub.ctool", "com.x-hub.hello-service", "abc", "windows"];
+        for id in cases {
+            let label = ext_window_label(id);
+            assert!(label.starts_with("ext-"), "label={label} id={id}");
+            let stripped = &label["ext-".len()..];
+            assert!(
+                !stripped.is_empty()
+                    && stripped
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/' || c == ':'),
+                "invalid chars in label={label} id={id}"
+            );
+        }
+        assert_eq!(ext_window_label("com.x-hub.ctool"), "ext-Y29tLngtaHViLmN0b29s");
+        // 同一 id 编码稳定
+        assert_eq!(ext_window_label("com.x-hub.ctool"), ext_window_label("com.x-hub.ctool"));
     }
 }

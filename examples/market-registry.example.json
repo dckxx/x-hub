@@ -7,7 +7,7 @@
       "description": "示例扩展：调用 window.xhub 读取宿主笔记 / 待办 / 用量",
       "runtime": "web",
       "author": "x-hub",
-      "downloadUrl": "https://example.com/extensions/hello.zip"
+      "downloadUrl": "https://example.com/extensions/hello.xhpack"
     },
     {
       "id": "com.x-hub.hello-service",
@@ -16,7 +16,7 @@
       "description": "示例 service 扩展：零依赖 Node 后端 + window.xhub.service.request",
       "runtime": "service",
       "author": "x-hub",
-      "downloadUrl": "https://example.com/extensions/hello-service.zip"
+      "downloadUrl": "https://example.com/extensions/hello-service.xhpack"
     }
   ]
 }

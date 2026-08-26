@@ -109,10 +109,9 @@ x-hub/
 | `todos` | 待办（done/priority/completed_at） |
 | `stickies` / `detached_stickies` | 便签（slot 1/2）与脱离浮窗 |
 | `snippets` | 提示词（is_pinned/copy_count/last_copied_at） |
-| `ai_usage` | AI 用量明细（session_id/provider/model/tokens*/cost/time_created/source） |
 | `countdowns` | 倒计时（repeat_mode once/daily/interval + end_at/total_ms/interval_minutes/paused/finished/floated/float_x/float_y） |
 
-> 旧版 `groups`/`files` 表已并入 `resources`（Speed-to-launch 合一）；索引含 `idx_notes_updated`、`idx_todos_created`、`idx_ai_usage_time`、`idx_resources_category`、`idx_countdowns_end` 等。
+> 旧版 `groups`/`files` 表已并入 `resources`（Speed-to-launch 合一）；索引含 `idx_notes_updated`、`idx_todos_created`、`idx_resources_category`、`idx_countdowns_end` 等。
 
 ## 关键约定
 
@@ -132,7 +131,7 @@ x-hub/
 14. **拖拽导入：** 拖入 exe/lnk 到窗口 → `onDragDropEvent`（Suda.vue）→ `parse_dropped_path` 命令（.lnk 经 PowerShell COM 解析目标 + System.Drawing 提取图标存 `app_data_dir/icons/`）→ 自动预填资源弹窗；图标经 `convertFileSrc`（assetProtocol 已启用，scope `$APPDATA/**`）渲染，提取失败回退名称 hash 首字母
 15. **PowerShell 调用约定：** 一律用**环境变量传参**（`Command::env`）而非 `$args`——实测 `-Command` 模式下 `$args` 不可靠；输出前设 `[Console]::OutputEncoding=UTF8` 防中文乱码
 16. **文件选择：** 已集成 tauri-plugin-dialog（`dialog:allow-open` 权限）；SudaFormDialog 路径/图标输入框右侧有选择按钮，选 exe/lnk 自动解析名称与图标，选图标文件经 `import_icon_file` 存入 icons 目录
-17. **AI 用量：** `usage.rs` 从 opencode 数据库按 message 粒度同步到 `ai_usage` 表（游标 `usage_sync_cursor` 持久化在 config），避免长会话跨天归因错误；`sync_ai_usage`/`get_usage_summary`/`get_usage_detail` 三命令；汇总含今日/7日/月/累计与今日调用次数
+17. **AI 用量：** 已拆分为 service 扩展 `com.x-hub.token-stats`（实时读 opencode 数据库聚合，宿主零 token 代码）；详见 `x-hub-extensions/extensions/com.x-hub.token-stats`
 18. **系统监视：** `sysmon.rs` 用 sysinfo crate 返回 CPU/内存，2s 轮询（SysMonitorCard.vue）
 19. **GPU 性能约束（v0.1.13）：** 常驻卡片禁用 `backdrop-filter`，一律用 `--frost-surface` 静态烘焙渐变模拟毛玻璃；`backdrop-filter` 只允许出现在瞬态层（弹窗/菜单/下拉/tooltip）；周期性更新的进度条用 `transform: scaleX` 而非 `width`，避免触发布局重排
 20. **倒计时驱动（v0.1.13）：** 到期判定、通知、顺延全部在 Rust `countdown_ticker.rs` 后台线程（1s 轮询），**不能依赖前端 setInterval**（WebView 隐藏/最小化会节流）；前端只做展示与用户操作。到点发系统通知（tauri-plugin-notification）+ emit `countdown-fired` / `countdowns-changed` 事件；完全退出/休眠期间错过的提醒（超 5s）静默顺延不补发。`once` 到点置 finished 灰态，`daily` 按 24h 顺延，`interval` 按 `interval_minutes` 顺延
@@ -147,6 +146,7 @@ x-hub/
 29. **关于 / 更新日志（v0.1.16）：** 设置「关于」区（`AboutSection.vue`）展示版本号 + 开源声明 + 内置版本历史；changelog 单一来源为仓库根 `RELEASE_NOTES.md`，经 `about.rs` `include_str!` 打包进二进制（**零网络**），`get_app_info` 返回 `{version, changelog, latest_section}`。版本号运行时读 `app.package_info().version`（随 `tauri.conf.json` 烘焙），README badge 是文档侧唯一真相。升级检测 `check_whats_new` 在启动时调用：`last_seen_version` 空→首跑仅记录；与当前版本不同→推进记录，且仅当 `whats_new_enabled`（默认开）开启才返回最新说明给 `WhatsNewDialog.vue` 弹一次。RELEASE_NOTES 累积式：每发版在顶部新增一节 `# vX.Y.Z 发布说明`（`version_sections()` 按 `# ` 一级标题切分，最新在前）
 30. **优先复用现成组件：** 需要下拉选择、弹窗、输入等交互控件时，先查 `src/components/` 已有通用组件（如 `AppSelect.vue` 下拉选择器、`ContextMenu.vue` 右键菜单、`useFocusTrap` 焦点陷阱），优先复用而非新写原生控件（如原生 `<select>`）——保证交互与视觉一致、避免样式重复（反例：设置「粘贴方式」曾用原生 `<select>` 加 `min-width` 撑宽，应改用 `AppSelect`）
 31. **新增浮窗窗口必须同步多处 label 配置（否则浮窗闪出「欢迎回来」启动页）：** 启动欢迎页 `#boot-splash` 内联在 `index.html`（所有窗口共用），head 内联脚本用**白名单**判定——只要 `window.__TAURI_INTERNALS__.metadata.currentWindow.label !== 'main'` 就 `data-no-splash` 隐藏 splash（切勿改回黑名单逐个罗列，漏加即复现本 bug）。新增浮窗需同步：① `capabilities/default.json` 的 `windows` 数组加 label；② `App.vue` 按 label 路由到浮窗组件；③ Rust 侧窗口 label 常量（如 `float_window.rs`）；④ `lib.rs` 注册对应命令。
+32. **扩展桥 API 能力注册表（v0.2.3）：** 桥 API 不再在 `xhub_api.rs` 手工 `match` 分发，而是集中在一张 `CAPABILITIES` 静态表（每项 `namespace`/`method`/`permission`/`handler`）；**新增能力 = 表里加一行 + 写 handler**，`runtime.info` 返回 `capabilities` 清单供扩展探测。manifest 支持 `requires`（依赖宿主能力，写 `namespace.method`）/`dependsOn`（依赖其它扩展 id，驼峰）/`disabled`（条件禁用 `{platform}`）/`expose`（跨扩展调用白名单）/`actions`（快捷动作，扩展中心渲染按钮）；扫描器求值后在扩展中心标「缺能力/缺依赖/已禁用」并拦截打开。扩展配置走 `config.*` 桥 API：`manifest.config` 为作者默认，`.config.json` 为「用户覆盖」层（覆盖优先，升级扩展不冲掉）；`storage.*` 仍是扩展私有键值、与 `config.*` 各自独立；`sharedStorage.*` 为跨扩展共享键值（需 `shared-storage` 权限）。扩展间协作两条路：事件总线 `events.emit/on`（emit 需 `events` 权限，广播走前端 `broadcastExtensionEvent`）+ 跨扩展调用 `runtime.callExtension`（前端 `routeExtensionCall` 路由 + Rust 校验 expose 白名单 + 目标扩展 `xhub.expose(method, fn)` 注册）。运行时热更新：`extensions_stamp` 命令对 manifest 的路径+mtime 做 FNV 哈希，扩展中心 5s 轮询变化即刷新列表（无需重启）
 
 ## 命令速查
 

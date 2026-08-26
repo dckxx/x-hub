@@ -96,8 +96,10 @@ interface HttpResult {
 | `network` | `net.*` |
 | `system` | `system.*` |
 | `notify` | `ui.notify` |
+| `events` | `events.emit` |
+| `shared-storage` | `sharedStorage.*` |
 
-无需权限的基础能力：`runtime.*`、`storage.*`、`ui.toast`、`service.*`、`events.*`。
+无需权限的基础能力：`runtime.*`、`storage.*`、`theme.*`、`ui.toast`、`service.*`、`events.*`。
 
 ## 3. runtime —— 扩展自身信息
 
@@ -129,8 +131,8 @@ namespace data {
 
   todos: {
     list(): Promise<Todo[]>;                                        // data:read
-    create(payload: { content: string; priority?: number }): Promise<Todo>;          // data:write
-    update(id: number, payload: Partial<Pick<Todo, 'content' | 'done' | 'priority'>>): Promise<Todo>; // data:write
+    create(payload: { title: string; priority?: number }): Promise<Todo>;          // data:write
+    update(id: number, payload: Partial<Pick<Todo, 'title' | 'done' | 'priority'>>): Promise<Todo>; // data:write
     remove(id: number): Promise<void>;                              // data:write
   };
 
@@ -240,17 +242,63 @@ namespace events {
 }
 ```
 
-一期预定义事件：
+预定义事件：
 
-| 事件名 | payload | 说明 |
-|---|---|---|
-| `usage-updated` | `UsageSummary` | AI 用量更新 |
-| `countdown-fired` | `{ id: number }` | 倒计时触发 |
-| `theme-changed` | `{ mode: string }` | 主题变化 |
+| 事件名 | payload | 说明 | 状态 |
+|---|---|---|---|
+| `theme-changed` | `XHubTheme`（见 §13） | 宿主主题变化（换色 / 换主题 / 明暗切换） | done |
+| `usage-updated` | `UsageSummary` | AI 用量更新 | planned |
+| `countdown-fired` | `{ id: number }` | 倒计时触发 | planned |
 
 > 事件名走版本化（如 `v1:usage-updated`），实现时确定最终命名。
 
-## 13. 实现进度
+## 13. theme —— 宿主主题跟随
+
+扩展页面自动跟随宿主主题，**无需写任何 JS**：宿主在加载入口时把主题令牌写成
+iframe 根元素的 CSS 变量（`--xhub-*`）与 `data-xhub-theme`，扩展 CSS 直接引用即可；
+用户换强调色 / 换预设 / 切明暗，扩展实时联动。
+
+| CSS 变量 | 来源（宿主令牌） | 说明 |
+|---|---|---|
+| `--xhub-accent` | `--accent` | 强调色 |
+| `--xhub-brand` | `--brand-500` | 品牌主色 |
+| `--xhub-brand-soft` | `--brand-50` | 品牌弱色（半透明背景） |
+| `--xhub-bg-page` | `--bg-page` | 页面背景 |
+| `--xhub-bg-card` | `--bg-card-solid` | 卡片背景（不透明） |
+| `--xhub-surface` | `--frost-surface` | 玻璃表面（渐变） |
+| `--xhub-text-1` | `--text-1` | 主文字 |
+| `--xhub-text-2` | `--text-2` | 次文字 |
+| `--xhub-text-3` | `--text-3` | 弱文字 |
+| `--xhub-border` | `--border-soft` | 边框 |
+| `--xhub-red` / `--xhub-green` / `--xhub-yellow` / `--xhub-blue` / `--xhub-orange` | `--c-*` | 语义色 |
+| `--xhub-radius-lg` | `--radius-lg` | 圆角 |
+
+根元素属性：`data-xhub-theme="dark" | "light"`（明暗）、`data-xhub-preset`（预设名）。
+
+```typescript
+namespace theme {
+  get(): Promise<{
+    mode: 'light' | 'dark';
+    preset: string | null;     // 主题预设名（如 'green' / 'midnight' / ...）
+    accent: string;            // 当前强调色
+    tokens: {                  // 与上表 --xhub-* 一一对应的解析后颜色值
+      accent: string; brand: string; brandSoft: string; bgPage: string; bgCard: string;
+      surface: string; text1: string; text2: string; text3: string; border: string;
+      red: string; green: string; yellow: string; blue: string; orange: string; radiusLg: string;
+    };
+  }>;
+}
+```
+
+```typescript
+// 订阅主题变化（通常无需手动处理：CSS 变量已自动更新，这只用于需要读值的场景）
+window.xhub.events.on('theme-changed', (theme) => { /* theme 即上表 XHubTheme */ })
+```
+
+> 约定：扩展入口样式用 `var(--xhub-*, fallback)` 形式写（fallback 兜底注入前的首帧）。
+> `theme.get()` 无需权限；CSS 变量注入是自动的，绝大多数扩展无需调用任何主题 API。
+
+## 14. 实现进度
 
 > 本表是桥 API 实现进度的单一事实来源，改动时更新状态。
 
@@ -260,11 +308,13 @@ namespace events {
 |---|---|---|
 | `runtime.*` | 一期 | done |
 | `storage.*` | 一期 | done |
+| `theme.*` | 一期 | done |
+| `events.theme-changed` | 一期 | done |
 | `data`（读） | 一期 | done |
 | `data`（写） | 后补 | planned |
 | `clipboard.*` | 一期 | planned |
 | `ui.toast` | 一期 | planned |
-| `events.*` | 一期 | planned |
+| `events.*`（其余） | 一期 | planned |
 | `fs.*` | 后补 | planned |
 | `net.*` | 后补 | planned |
 | `system.*` | 后补 | planned |

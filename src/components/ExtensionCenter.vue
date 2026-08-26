@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { FolderOpen, MoreHorizontal, PackageOpen, Plus } from 'lucide-vue-next'
 import { isTauri, tauriApi, type ExtensionEntry, type MarketExtension } from '../api/tauri'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
+import { loadExtensionModules } from '../composables/useDashboardLayout'
 import ExtensionSettingsDialog from './ExtensionSettingsDialog.vue'
 
 const showToast = inject<(msg: string, action?: { label: string; onClick: () => void }) => void>(
@@ -13,11 +14,24 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
 
 const emit = defineEmits<{
   open: [ext: ExtensionEntry]
+  openSurface: [ext: ExtensionEntry, surface: string]
 }>()
+
+function onAction(e: ExtensionEntry, surface: string) {
+  emit('openSurface', e, surface)
+}
 
 function onRowClick(e: ExtensionEntry) {
   if (e.invalid) {
     showToast(`「${e.name}」无法打开：${e.error ?? 'manifest 缺失或损坏'}`)
+    return
+  }
+  if (e.disabled) {
+    showToast(`「${e.name}」已在当前环境被禁用（manifest.disabled 条件命中）`)
+    return
+  }
+  if (e.missing_dependencies.length > 0) {
+    showToast(`「${e.name}」缺少依赖扩展：${e.missing_dependencies.join('、')}`)
     return
   }
   emit('open', e)
@@ -60,10 +74,38 @@ function kindLabel(kind: string): string {
   }
 }
 
+/** 汇总缺失的能力 / 依赖，供描述行提示 */
+function issuesText(e: ExtensionEntry): string {
+  const parts: string[] = []
+  if (e.missing_capabilities.length > 0) parts.push(`缺少宿主能力：${e.missing_capabilities.join('、')}`)
+  if (e.missing_dependencies.length > 0) parts.push(`缺少依赖扩展：${e.missing_dependencies.join('、')}`)
+  return parts.join('；')
+}
+
+function descText(e: ExtensionEntry): string {
+  if (e.invalid) return e.error ?? '此扩展无法加载'
+  const issues = issuesText(e)
+  if (issues) return issues
+  return e.description || e.id
+}
+
 async function load() {
   loading.value = true
   try {
-    extensions.value = isTauri() ? await tauriApi.listExtensions() : []
+    extensions.value = isTauri()
+      ? (await tauriApi.listExtensions()).map((e) => ({
+          ...e,
+          // 兼容旧后端：新字段可能在旧二进制里缺失，运行时补默认值避免白屏
+          disabled: (e as any).disabled ?? false,
+          missing_capabilities: (e as any).missing_capabilities ?? [],
+          missing_dependencies: (e as any).missing_dependencies ?? [],
+          depends_on: (e as any).depends_on ?? [],
+          expose: (e as any).expose ?? [],
+          actions: (e as any).actions ?? [],
+        }))
+      : []
+    // 安装/卸载后同步刷新工作台模块库，让新扩展的 module 形态立即出现在自定义布局中
+    await loadExtensionModules()
   } catch (e) {
     showToast(`加载扩展列表失败：${String(e)}`)
   } finally {
@@ -71,7 +113,31 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  void load()
+  // 运行时热更新：轮询扩展目录内容戳，变化（新装/卸载/改 manifest）即刷新列表，无需重启
+  stampTimer = window.setInterval(() => void pollStamp(), 5000)
+})
+
+onBeforeUnmount(() => {
+  if (stampTimer !== null) window.clearInterval(stampTimer)
+})
+
+/** 扩展目录内容戳：首次记录基准，之后变化则刷新列表 */
+let stamp = 0
+let stampTimer: number | null = null
+async function pollStamp() {
+  if (!isTauri()) return
+  try {
+    const s = await tauriApi.extensionsStamp()
+    if (stamp !== 0 && s !== stamp) {
+      await load()
+    }
+    stamp = s
+  } catch {
+    /* 忽略轮询失败 */
+  }
+}
 
 function onInstall() {
   switchTab('market')
@@ -115,7 +181,27 @@ async function installFromMarket(m: MarketExtension) {
   }
 }
 
-async function onLocalInstall() {
+async function onLocalFileInstall() {
+  if (!isTauri()) {
+    showToast('本地安装需在桌面应用中操作')
+    return
+  }
+  try {
+    const file = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: 'x-hub 扩展包', extensions: ['xhpack', 'zip'] }],
+    })
+    if (typeof file !== 'string') return // 取消
+    const id = await tauriApi.installLocalArchive(file)
+    showToast(`已安装「${id}」`)
+    await load()
+  } catch (e) {
+    showToast(`安装失败：${String(e)}`)
+  }
+}
+
+async function onLocalFolderInstall() {
   if (!isTauri()) {
     showToast('本地安装需在桌面应用中操作')
     return
@@ -169,9 +255,13 @@ function onMore(e: ExtensionEntry) {
           <Plus :size="14" :stroke-width="2" aria-hidden="true" />
           安装扩展
         </button>
-        <button class="ghost-btn" type="button" @click="onLocalInstall">
+        <button class="ghost-btn" type="button" @click="onLocalFileInstall">
+          <PackageOpen :size="14" :stroke-width="2" aria-hidden="true" />
+          导入扩展包
+        </button>
+        <button class="ghost-btn" type="button" @click="onLocalFolderInstall">
           <FolderOpen :size="14" :stroke-width="2" aria-hidden="true" />
-          从本地安装
+          从文件夹
         </button>
       </div>
     </header>
@@ -193,9 +283,9 @@ function onMore(e: ExtensionEntry) {
           v-for="e in extensions"
           :key="e.id"
           class="ec-row"
-          :class="{ invalid: e.invalid, clickable: !e.invalid }"
+          :class="{ invalid: e.invalid, disabled: e.disabled, clickable: !e.invalid && !e.disabled }"
           role="button"
-          :tabindex="e.invalid ? undefined : 0"
+          :tabindex="e.invalid || e.disabled ? undefined : 0"
           @click="onRowClick(e)"
           @keydown.enter="onRowClick(e)"
         >
@@ -215,13 +305,28 @@ function onMore(e: ExtensionEntry) {
               <span class="ec-name">{{ e.name }}</span>
               <span v-if="e.invalid" class="ec-tag ec-tag-invalid">不可用</span>
               <template v-else>
+                <span v-if="e.disabled" class="ec-tag ec-tag-disabled">已禁用</span>
+                <span v-if="e.missing_capabilities.length" class="ec-tag ec-tag-warn">缺能力</span>
+                <span v-if="e.missing_dependencies.length" class="ec-tag ec-tag-warn">缺依赖</span>
                 <span v-if="e.runtime === 'service'" class="ec-tag ec-tag-service">service</span>
                 <span class="ec-tag ec-tag-kind">{{ kindLabel(e.kind) }}</span>
               </template>
             </div>
-            <p class="ec-desc" :title="e.invalid ? (e.error ?? '') : (e.description || e.id)">
-              {{ e.invalid ? (e.error ?? '此扩展无法加载') : (e.description || e.id) }}
+            <p class="ec-desc" :title="descText(e)">
+              {{ descText(e) }}
             </p>
+            <div v-if="e.actions.length" class="ec-actions-row">
+              <button
+                v-for="a in e.actions"
+                :key="a.id"
+                class="ec-action-btn"
+                type="button"
+                :title="`${a.title}（打开 ${kindLabel(a.surface)}）`"
+                @click.stop="onAction(e, a.surface)"
+              >
+                {{ a.title }}
+              </button>
+            </div>
           </div>
 
           <div class="ec-right">
@@ -391,6 +496,9 @@ function onMore(e: ExtensionEntry) {
 .ec-row.invalid {
   opacity: 0.72;
 }
+.ec-row.disabled {
+  opacity: 0.6;
+}
 .ec-icon {
   width: 40px;
   height: 40px;
@@ -446,6 +554,14 @@ function onMore(e: ExtensionEntry) {
   background: var(--c-red-soft);
   color: var(--c-red-ink);
 }
+.ec-tag-disabled {
+  background: var(--bg-card-soft);
+  color: var(--text-3);
+}
+.ec-tag-warn {
+  background: var(--c-orange-soft);
+  color: var(--c-orange-ink);
+}
 .ec-desc {
   margin: 2px 0 0;
   font-size: 0.75rem;
@@ -453,6 +569,29 @@ function onMore(e: ExtensionEntry) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.ec-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 5px;
+}
+.ec-action-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 150ms ease-out, color 150ms ease-out, border-color 150ms ease-out;
+}
+.ec-action-btn:hover {
+  background: var(--brand-50);
+  border-color: var(--brand-500);
+  color: var(--brand-500);
 }
 .ec-right {
   display: flex;

@@ -8,14 +8,12 @@ import NoteList from '../components/NoteList.vue'
 import NoteEditor from '../components/NoteEditor.vue'
 import GlobalSearch from '../components/GlobalSearch.vue'
 import SettingsView from '../components/SettingsView.vue'
-import TokenStatsCard from '../components/TokenStatsCard.vue'
 import NotesOverviewCard from '../components/NotesOverviewCard.vue'
 import TodoOverviewCard from '../components/TodoOverviewCard.vue'
 import ResourcesOverviewCard from '../components/ResourcesOverviewCard.vue'
 import SysMonitorCard from '../components/SysMonitorCard.vue'
 import PromptBoxCard from '../components/PromptBoxCard.vue'
 import PromptManageDialog from '../components/PromptManageDialog.vue'
-import UsageView from '../components/UsageView.vue'
 import RecentBar from '../components/RecentBar.vue'
 import ClockCard from '../components/ClockCard.vue'
 import StickyCard from '../components/StickyCard.vue'
@@ -28,7 +26,7 @@ import { useStore } from '../stores/workbench'
 import { isTauri, tauriApi } from '../api/tauri'
 import type { Countdown, ExtensionEntry, Note, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
-import { FileText, FolderOpen, Gauge, LayoutDashboard, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { FileText, FolderOpen, LayoutDashboard, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import { useTheme } from '../composables/useTheme'
 import DashboardLayoutEditor from '../components/DashboardLayoutEditor.vue'
@@ -44,7 +42,6 @@ const navigation = [
   { id: 'dashboard', label: '工作台', icon: LayoutDashboard },
   { id: 'notes', label: '速记', icon: FileText },
   { id: 'suda', label: '速达', icon: FolderOpen },
-  { id: 'usage', label: '用量', icon: Gauge },
   { id: 'chat', label: '对话', icon: MessageSquare },
 ] as const
 
@@ -67,9 +64,30 @@ function onNavClick(id: ViewId) {
 // ---- 扩展打开：扩展中心点开某个扩展 → 主区渲染扩展入口（view 形态） ----
 const openedExtension = ref<{ id: string; surface: string | null; name: string } | null>(null)
 const drawerExtension = ref<{ id: string; surface: string | null; name: string } | null>(null)
+const installedExtensions = ref<ExtensionEntry[]>([])
 
 function onOpenExtension(ext: ExtensionEntry) {
   openedExtension.value = { id: ext.id, surface: null, name: ext.name }
+  activeView.value = 'extension'
+}
+
+// 扩展 module 内通过 runtime.open(surface) 请求打开自身某个形态（通用能力）
+const VALID_EXT_SURFACES = new Set(['view', 'window', 'drawer'])
+
+function openExtensionSurface(extId: string, surface: string) {
+  const s = VALID_EXT_SURFACES.has(surface) ? surface : 'view'
+  const ext = installedExtensions.value.find((e) => e.id === extId)
+  if (s === 'window') {
+    tauriApi.openExtensionWindow(extId).catch((e) => {
+      showToast(`打开窗口失败：${String(e)}`)
+    })
+    return
+  }
+  if (s === 'drawer') {
+    drawerExtension.value = { id: extId, surface: 'drawer', name: ext?.name ?? extId }
+    return
+  }
+  openedExtension.value = { id: extId, surface: s, name: ext?.name ?? extId }
   activeView.value = 'extension'
 }
 
@@ -101,10 +119,6 @@ function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value
 }
 
-function openUsageDetail() {
-  activeView.value = 'usage'
-}
-
 function openPromptManage() {
   promptManageVisible.value = true
 }
@@ -129,7 +143,6 @@ const dashCardComponents: Record<string, Component> = {
   sysmon: SysMonitorCard,
   sticky1: StickyCard,
   sticky2: StickyCard,
-  token: TokenStatsCard,
   notes: NotesOverviewCard,
   todo_overview: TodoOverviewCard,
   resources: ResourcesOverviewCard,
@@ -148,15 +161,18 @@ function dashCardComponent(id: string): Component {
 function dashCardProps(p: DashPlacement): Record<string, unknown> {
   const id = p.id
   if (id.startsWith('ext:')) {
-    return { extId: id.slice('ext:'.length), surface: 'module' }
+    const extId = id.slice('ext:'.length)
+    return {
+      extId,
+      surface: 'module',
+      onOpenSurface: (surface: string) => openExtensionSurface(extId, surface),
+    }
   }
   switch (id) {
     case 'sticky1':
       return { slot: 1 }
     case 'sticky2':
       return { slot: 2 }
-    case 'token':
-      return { onOpenDetail: openUsageDetail }
     case 'notes':
       return { onOpenDetail: openNotes }
     case 'todo_overview':
@@ -212,6 +228,11 @@ onMounted(async () => {
   setTimeout(hideBootSplash, BOOT_MAX_MS)
   // 浮窗便签还原/删除后，主窗口实时同步便签与脱离状态
   if (isTauri()) {
+    try {
+      installedExtensions.value = await tauriApi.listExtensions()
+    } catch {
+      // 扩展列表加载失败时忽略（runtime.open 打开 view 时 name 用 id 兜底）
+    }
     unlistenStickies = await listen('stickies-changed', () => {
       store.refreshStickies()
     })
@@ -538,14 +559,12 @@ provide('showToast', showToast)
           <Suda />
         </section>
 
-        <!-- 用量：独立视图 -->
-        <section v-else-if="activeView === 'usage'" class="view view-usage" tabindex="-1" aria-label="用量">
-          <UsageView />
-        </section>
-
         <!-- 扩展中心：独立视图 -->
         <section v-else-if="activeView === 'extensions'" class="view view-extensions" tabindex="-1" aria-label="扩展中心">
-          <ExtensionCenter @open="onOpenExtension" />
+          <ExtensionCenter
+            @open="onOpenExtension"
+            @open-surface="(ext, surface) => openExtensionSurface(ext.id, surface)"
+          />
         </section>
 
         <!-- 扩展运行视图：主区渲染扩展入口（iframe + window.xhub 桥 API） -->

@@ -136,6 +136,37 @@ pub async fn install_from_market(
     Ok(id)
 }
 
+/// 从本地压缩包文件（.xhpack / .zip，二者同为 zip 格式）安装扩展：
+/// 读文件 → 解包 → 定位 manifest.json → 复制到 extensions/<id>。
+/// 与 install_from_market 共用同一条解包/校验链路，只是数据源换成本地文件。
+#[tauri::command]
+pub fn install_local_archive(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let src = PathBuf::from(&path);
+    if !src.is_file() {
+        return Err(format!("INVALID_ARGUMENT: 安装包文件不存在：{path}"));
+    }
+    let bytes = std::fs::read(&src).map_err(|e| format!("读取安装包失败: {e}"))?;
+
+    let tmp = temp_extract_dir();
+    extract_zip(&bytes, &tmp)?;
+    let manifest_dir = find_manifest_dir(&tmp)?;
+    let manifest = read_manifest(&manifest_dir)?;
+    let id = manifest.id.clone();
+
+    let root = extensions_root(&app)?;
+    let dest = root.join(&id);
+    if dest.exists() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(format!("扩展 {id} 已安装，请先卸载再重装"));
+    }
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    copy_dir_recursive(&manifest_dir, &dest).map_err(|e| format!("复制扩展失败: {e}"))?;
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    log::info!("扩展已从本地包安装: {id} <- {}", src.display());
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

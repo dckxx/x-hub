@@ -51,10 +51,6 @@ pub struct AppConfig {
     pub sidebar_toggle: bool,
     pub window: WindowState,
     pub global_shortcut: String,
-    /// AI 用量同步游标（opencode time_updated 毫秒时间戳）
-    pub usage_sync_cursor: i64,
-    /// 手动指定的 opencode.db 路径
-    pub usage_db_path: Option<String>,
     /// 主页面「中上区块」显示内容：
     /// countdown(默认倒计时) / token(Token 统计) / notes(速记统计) / todo(待办概览) / resources(速达数量)
     pub dashboard_mid_content: String,
@@ -125,9 +121,6 @@ pub struct AppConfig {
     /// 待办模块字体缩放系数（默认 1.0）
     #[serde(default = "one")]
     pub font_todo: f64,
-    /// 用量模块字体缩放系数（默认 1.0）
-    #[serde(default = "one")]
-    pub font_usage: f64,
     /// service 扩展运行时策略：auto（自动检测，默认）/ builtin（始终内置）/ system（始终系统）
     #[serde(default = "default_runtime_strategy")]
     pub runtime_strategy: String,
@@ -166,8 +159,6 @@ impl Default for AppConfig {
             sidebar_toggle: false,
             window: WindowState::default(),
             global_shortcut: crate::shortcut::DEFAULT_TOGGLE_SHORTCUT.to_string(),
-            usage_sync_cursor: 0,
-            usage_db_path: None,
             dashboard_mid_content: "countdown".to_string(),
             dashboard_layout: String::new(),
             countdown_sound: false,
@@ -195,7 +186,6 @@ impl Default for AppConfig {
             font_notes: 1.0,
             font_prompt: 1.0,
             font_todo: 1.0,
-            font_usage: 1.0,
             runtime_strategy: "auto".to_string(),
         }
     }
@@ -350,8 +340,6 @@ mod tests {
                 "always_on_top": false
             },
             "global_shortcut": "Ctrl+Shift+Space",
-            "usage_sync_cursor": 0,
-            "usage_db_path": null,
             "dashboard_mid_content": "countdown",
             "countdown_sound": false
         })

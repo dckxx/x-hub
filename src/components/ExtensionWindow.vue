@@ -2,6 +2,11 @@
 import { computed } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useExtensionFrame } from '../composables/useExtensionFrame'
+import { useTheme } from '../composables/useTheme'
+
+// 独立扩展窗口也要应用宿主主题：否则根元素无 data-theme/--accent，
+// 扩展 iframe 拉到的主题令牌是 :root 默认值，无法跟随用户换色/换主题
+useTheme()
 
 // 窗口 label 形如 ext-<扩展id>；独立窗口自带系统标题栏，这里只渲染扩展内容
 const label = getCurrentWindow().label
@@ -39,13 +44,13 @@ void frameRef
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--bg-page);
+  background: transparent;
 }
 .ew-frame {
   flex: 1;
   width: 100%;
   border: 0;
-  background: var(--bg-page);
+  background: transparent;
 }
 .ew-state {
   flex: 1;

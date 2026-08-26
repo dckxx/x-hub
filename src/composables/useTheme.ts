@@ -1,5 +1,6 @@
 import { ref, watch } from 'vue'
 import { useStore } from '../stores/workbench'
+import { broadcastThemeToFrames } from './themeTokens'
 
 // 系统偏好监听：三个窗口（主窗/便签浮窗/倒计时浮窗）共用同一模块级单例
 const systemDark = ref(false)
@@ -25,6 +26,8 @@ export function applyTheme(opts: { mode: string; preset: string; accent: string 
   } else {
     el.style.removeProperty('--accent')
   }
+  // 主题变化后广播给所有活动扩展 iframe（扩展页面实时跟随宿主换色/换主题）
+  requestAnimationFrame(() => broadcastThemeToFrames())
 }
 
 interface FontScale {
@@ -33,7 +36,6 @@ interface FontScale {
   notes: number
   prompt: number
   todo: number
-  usage: number
 }
 
 /** 注入字体缩放 CSS 变量：--fs-global 作用于根字号（rem 基准），--fs-* 作用于各内容模块 */
@@ -44,7 +46,6 @@ export function applyFontScale(s: FontScale) {
   el.style.setProperty('--fs-notes', String(s.notes))
   el.style.setProperty('--fs-prompt', String(s.prompt))
   el.style.setProperty('--fs-todo', String(s.todo))
-  el.style.setProperty('--fs-usage', String(s.usage))
 }
 
 /** 组件挂载时调用一次即完成主题应用与实时跟随 */
@@ -69,10 +70,9 @@ export function useTheme() {
         store.state.config.font_notes,
         store.state.config.font_prompt,
         store.state.config.font_todo,
-        store.state.config.font_usage,
       ] as const,
-    ([global, sticky, notes, prompt, todo, usage]) =>
-      applyFontScale({ global, sticky, notes, prompt, todo, usage }),
+    ([global, sticky, notes, prompt, todo]) =>
+      applyFontScale({ global, sticky, notes, prompt, todo }),
     { immediate: true },
   )
 }

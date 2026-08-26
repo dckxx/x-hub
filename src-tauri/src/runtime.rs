@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 /// 内置 Node 版本（Node 官方 LTS）
-const NODE_VERSION: &str = "v22.11.0";
+const NODE_VERSION: &str = "v24.9.0";
 
 /// 解析 Node 版本号的主版本（"v22.11.0" → 22）
 fn node_major(version: &str) -> u32 {
@@ -110,7 +110,7 @@ pub fn resolve_node(
             check_system_node(min_version).map_err(|e| {
                 format!(
                     "{e}（运行时策略为「始终系统」，请安装 Node ≥ {}）",
-                    min_version.unwrap_or("18")
+                    min_version.unwrap_or("22")
                 )
             })?;
             Ok(PathBuf::from("node"))
@@ -138,7 +138,7 @@ pub fn resolve_node(
                 Ok(exe) => Ok(exe),
                 Err(e) => Err(format!(
                     "系统 Node 不可用（{system_err}），内置运行时下载失败（{e}）。请安装 Node ≥ {}",
-                    min_version.unwrap_or("18")
+                    min_version.unwrap_or("22")
                 )),
             }
         }

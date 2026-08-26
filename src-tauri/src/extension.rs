@@ -58,6 +58,42 @@ pub struct MinSize {
     pub h: f64,
 }
 
+/// 条件禁用（manifest.disabled）：满足任一条件则扩展被禁用（扫描时求值）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisableCondition {
+    /// 当前平台匹配则禁用："windows" | "macos" | "linux"
+    #[serde(default)]
+    pub platform: Option<String>,
+}
+
+/// 扩展动作（manifest.actions）：预定义的快捷动作，点击打开对应形态（能力注入）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtensionAction {
+    pub id: String,
+    pub title: String,
+    /// 点击打开哪个形态：module / view / window / drawer
+    pub surface: String,
+}
+
+/// 宿主当前已实现的能力全集（`namespace.method`），供 manifest.requires 校验。
+/// 来源 = 桥 API 能力表（xhub_api::capabilities）。
+pub fn host_capabilities() -> std::collections::HashSet<String> {
+    crate::xhub_api::capabilities()
+        .iter()
+        .map(|c| format!("{}.{}", c.namespace, c.method))
+        .collect()
+}
+
+/// 求值条件禁用：任一条件命中返回 true。
+fn condition_matches(cond: &DisableCondition) -> bool {
+    if let Some(platform) = cond.platform.as_deref() {
+        if platform.eq_ignore_ascii_case(std::env::consts::OS) {
+            return true;
+        }
+    }
+    false
+}
+
 /// 扩展 manifest（manifest.json），对齐 spec §4。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionManifest {
@@ -83,6 +119,21 @@ pub struct ExtensionManifest {
     /// 能力申请，按需授权
     #[serde(default)]
     pub permissions: Vec<String>,
+    /// 依赖的宿主能力（`namespace.method`，如 "data.notes.list"）；宿主缺失则标 missing_capabilities
+    #[serde(default)]
+    pub requires: Vec<String>,
+    /// 依赖的其它扩展 id（manifest 字段为 dependsOn）；未安装则标 missing_dependencies
+    #[serde(default, rename = "dependsOn")]
+    pub depends_on: Vec<String>,
+    /// 条件禁用（manifest 字段为 disabled）
+    #[serde(default)]
+    pub disabled: Option<DisableCondition>,
+    /// 暴露给其它扩展调用的方法名（跨扩展调用白名单，manifest 字段为 expose）
+    #[serde(default)]
+    pub expose: Vec<String>,
+    /// 快捷动作（manifest 字段为 actions，能力注入）
+    #[serde(default)]
+    pub actions: Vec<ExtensionAction>,
     /// 图标（相对扩展目录的路径）
     pub icon: Option<String>,
     /// window / drawer 建议尺寸（manifest 字段为 minSize）
@@ -93,6 +144,9 @@ pub struct ExtensionManifest {
     /// 一句话描述（列表展示用；spec §4 未列，作为可选补充字段）
     #[serde(default)]
     pub description: String,
+    /// 扩展默认配置（对象）；用户覆盖存 `.config.json`，读取时用户覆盖优先（配置分层）
+    #[serde(default)]
+    pub config: Map<String, Value>,
 }
 
 fn default_kind() -> String {
@@ -121,6 +175,18 @@ pub struct ExtensionEntry {
     pub invalid: bool,
     /// invalid 时的原因（供扩展中心友好展示）
     pub error: Option<String>,
+    /// 条件禁用求值结果：true = 被禁用（前端灰显 / 不展示入口）
+    pub disabled: bool,
+    /// 缺失的宿主能力（manifest.requires 中宿主未实现的）
+    pub missing_capabilities: Vec<String>,
+    /// 缺失的依赖扩展 id（manifest.dependsOn 中未安装的）
+    pub missing_dependencies: Vec<String>,
+    /// 扩展声明的依赖扩展 id（manifest.dependsOn 原样，供前端展示依赖关系）
+    pub depends_on: Vec<String>,
+    /// 暴露给其它扩展调用的方法名（manifest.expose）
+    pub expose: Vec<String>,
+    /// 快捷动作（manifest.actions）
+    pub actions: Vec<ExtensionAction>,
 }
 
 fn runtime_str(r: &ExtensionRuntime) -> &'static str {
@@ -154,6 +220,25 @@ pub fn scan_extensions(app: &tauri::AppHandle) -> Result<Vec<ExtensionEntry>, St
             entries.push(load_extension(&path));
         }
     }
+
+    // dependsOn 后处理：收集已安装的 valid 扩展 id，回填 missing_dependencies
+    let installed_ids: std::collections::HashSet<String> = entries
+        .iter()
+        .filter(|e| !e.invalid)
+        .map(|e| e.id.clone())
+        .collect();
+    for entry in &mut entries {
+        if entry.invalid {
+            continue;
+        }
+        entry.missing_dependencies = entry
+            .depends_on
+            .iter()
+            .filter(|d| !installed_ids.contains(*d))
+            .cloned()
+            .collect();
+    }
+
     // 按名称排序（中文按 Unicode 码点），保证列表稳定
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)
@@ -188,6 +273,12 @@ fn load_extension(dir: &Path) -> ExtensionEntry {
         dir: dir_str.clone(),
         invalid: true,
         error: Some(error),
+        disabled: false,
+        missing_capabilities: Vec::new(),
+        missing_dependencies: Vec::new(),
+        depends_on: Vec::new(),
+        expose: Vec::new(),
+        actions: Vec::new(),
     };
 
     let manifest = match read_manifest(dir) {
@@ -199,6 +290,22 @@ fn load_extension(dir: &Path) -> ExtensionEntry {
         let p = dir.join(rel);
         p.is_file().then(|| p.to_string_lossy().into_owned())
     });
+
+    // 条件禁用求值（manifest.disabled）
+    let disabled = manifest
+        .disabled
+        .as_ref()
+        .map(condition_matches)
+        .unwrap_or(false);
+
+    // requires 能力校验：宿主未实现的能力进 missing_capabilities
+    let host_caps = host_capabilities();
+    let missing_capabilities: Vec<String> = manifest
+        .requires
+        .iter()
+        .filter(|r| !host_caps.contains(*r))
+        .cloned()
+        .collect();
 
     ExtensionEntry {
         id: manifest.id,
@@ -214,6 +321,12 @@ fn load_extension(dir: &Path) -> ExtensionEntry {
         dir: dir_str,
         invalid: false,
         error: None,
+        disabled,
+        missing_capabilities,
+        missing_dependencies: Vec::new(), // 后处理填（见 scan_extensions）
+        depends_on: manifest.depends_on,
+        expose: manifest.expose,
+        actions: manifest.actions,
     }
 }
 
@@ -225,37 +338,139 @@ pub fn list_extensions(app: tauri::AppHandle) -> Result<Vec<ExtensionEntry>, Str
     Ok(entries)
 }
 
+/// 扩展目录内容戳：对所有 manifest.json 的「路径 + 修改时间」做 FNV-1a 哈希。
+/// 前端扩展中心轮询此戳，变化即刷新列表（运行时热更新：新装/卸载/改 manifest 无需重启）。
+#[tauri::command]
+pub fn extensions_stamp(app: tauri::AppHandle) -> Result<u64, String> {
+    let root = extensions_root(&app)?;
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut hash: u64 = 1469598103934665603; // FNV-1a offset basis
+    let mut dirs: Vec<_> = std::fs::read_dir(&root)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .collect();
+    dirs.sort_by_key(|e| e.path());
+    for entry in dirs {
+        let manifest = entry.path().join("manifest.json");
+        if let Ok(meta) = std::fs::metadata(&manifest) {
+            if let Ok(mtime) = meta.modified() {
+                let secs = mtime
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                for b in manifest.to_string_lossy().bytes().chain(secs.to_le_bytes()) {
+                    hash ^= b as u64;
+                    hash = hash.wrapping_mul(1099511628211);
+                }
+            }
+        }
+    }
+    Ok(hash)
+}
+
 /// 注入到扩展入口 HTML 的桥脚本：在扩展 iframe 内挂载 `window.xhub`，
 /// 所有方法经 `window.parent.postMessage` 发 RPC 请求给主窗口，主窗口再 invoke `xhub_call`。
 /// 用普通 `<script>`（非 module）且在 `<head>` 靠前位置注入，保证早于扩展自身脚本执行。
 const XHUB_BRIDGE_SCRIPT: &str = r#"
 (function(){
   var pending={};var seq=0;
+  var listeners={};
   function call(ns,method,args){
     return new Promise(function(resolve,reject){
       var id=++seq;pending[id]={resolve:resolve,reject:reject};
       window.parent.postMessage({__xhub:true,type:'call',id:id,namespace:ns,method:method,args:args},'*');
     });
   }
+  function emit(event,payload){
+    var arr=listeners[event];if(!arr)return;
+    for(var i=0;i<arr.length;i++){try{arr[i](payload);}catch(e){}}
+  }
+  // 把宿主主题令牌写到 documentElement 的 --xhub-* CSS 变量，扩展 CSS 直接引用即可跟随主题
+  function applyTheme(theme){
+    var root=document.documentElement;if(!root)return;
+    var dark=!!(theme&&theme.mode==='dark');
+    root.setAttribute('data-xhub-theme',dark?'dark':'light');
+    if(theme&&theme.preset){root.setAttribute('data-xhub-preset',theme.preset);}
+    var t=(theme&&theme.tokens)||{};
+    var map={
+      '--xhub-accent':t.accent,
+      '--xhub-brand':t.brand,
+      '--xhub-brand-soft':t.brandSoft,
+      '--xhub-bg-page':t.bgPage,
+      '--xhub-bg-card':t.bgCard,
+      '--xhub-surface':t.surface,
+      '--xhub-text-1':t.text1,
+      '--xhub-text-2':t.text2,
+      '--xhub-text-3':t.text3,
+      '--xhub-border':t.border,
+      '--xhub-red':t.red,
+      '--xhub-green':t.green,
+      '--xhub-yellow':t.yellow,
+      '--xhub-blue':t.blue,
+      '--xhub-orange':t.orange,
+      '--xhub-radius-lg':t.radiusLg
+    };
+    for(var k in map){if(map[k]!=null&&map[k]!==''){root.style.setProperty(k,map[k]);}}
+  }
   window.addEventListener('message',function(e){
-    var m=e.data;if(!m||m.__xhub!==true||m.type!=='result')return;
-    var p=pending[m.id];if(!p)return;delete pending[m.id];
-    if(m.ok){p.resolve(m.data);}
-    else{var err=new Error(m.error&&m.error.message||'xhub error');err.code=m.error&&m.error.code;p.reject(err);}
+    var m=e.data;if(!m||m.__xhub!==true)return;
+    if(m.type==='result'){
+      var p=pending[m.id];if(!p)return;delete pending[m.id];
+      if(m.ok){p.resolve(m.data);}
+      else{var err=new Error(m.error&&m.error.message||'xhub error');err.code=m.error&&m.error.code;p.reject(err);}
+    }else if(m.type==='theme'){
+      applyTheme(m.theme);emit('theme-changed',m.theme);
+    }else if(m.type==='event'){
+      emit(m.event,m.payload);
+    }else if(m.type==='xhub-call-result'){
+      var p=pending[m.id];if(!p)return;delete pending[m.id];
+      if(m.ok){p.resolve(m.data);}
+      else{var err=new Error(m.error&&m.error.message||'call error');err.code=m.error&&m.error.code;p.reject(err);}
+    }else if(m.type==='xhub-call-req'){
+      var h=exposed[m.method];
+      if(!h){window.parent.postMessage({__xhub:true,type:'xhub-call-result',id:m.id,ok:false,error:{message:'method not exposed: '+m.method}},'*');return;}
+      var done=function(data){window.parent.postMessage({__xhub:true,type:'xhub-call-result',id:m.id,ok:true,data:data},'*');};
+      var fail=function(err){window.parent.postMessage({__xhub:true,type:'xhub-call-result',id:m.id,ok:false,error:{message:String(err&&err.message||err)}},'*');};
+      try{Promise.resolve(h(m.payload)).then(done).catch(fail);}catch(err){fail(err);}
+    }
   });
+  // 本扩展暴露给其它扩展调用的方法（跨扩展调用）
+  var exposed={};
   window.xhub={
-    runtime:{info:function(){return call('runtime','info',{});}},
+    runtime:{
+      info:function(){return call('runtime','info',{});},
+      open:function(surface){window.parent.postMessage({__xhub:true,type:'open',surface:surface||'view'},'*');return Promise.resolve();},
+      callExtension:function(targetId,method,payload){
+        return new Promise(function(resolve,reject){
+          var id=++seq;pending[id]={resolve:resolve,reject:reject};
+          window.parent.postMessage({__xhub:true,type:'xhub-call',id:id,targetId:targetId,method:method,payload:payload},'*');
+        });
+      }
+    },
     storage:{
       get:function(k){return call('storage','get',{key:k});},
       set:function(k,v){return call('storage','set',{key:k,value:v});},
       remove:function(k){return call('storage','remove',{key:k});},
       clear:function(){return call('storage','clear',{});}
     },
+    config:{
+      get:function(k){return call('config','get',{key:k});},
+      set:function(k,v){return call('config','set',{key:k,value:v});},
+      remove:function(k){return call('config','remove',{key:k});},
+      all:function(){return call('config','all',{});}
+    },
+    sharedStorage:{
+      get:function(k){return call('sharedStorage','get',{key:k});},
+      set:function(k,v){return call('sharedStorage','set',{key:k,value:v});},
+      remove:function(k){return call('sharedStorage','remove',{key:k});}
+    },
     data:{
       notes:{list:function(){return call('data','notes.list',{});},get:function(id){return call('data','notes.get',{id:id});}},
       todos:{list:function(){return call('data','todos.list',{});}},
-      resources:{list:function(){return call('data','resources.list',{});}},
-      usage:{summary:function(){return call('data','usage.summary',{});}}
+      resources:{list:function(){return call('data','resources.list',{});}}
     },
     service:{
       request:function(path,init){
@@ -270,8 +485,30 @@ const XHUB_BRIDGE_SCRIPT: &str = r#"
             };
           });
       }
+    },
+    theme:{
+      get:function(){return call('theme','get',{});}
+    },
+    events:{
+      on:function(event,handler){
+        (listeners[event]=listeners[event]||[]).push(handler);
+        return function(){window.xhub.events.off(event,handler);};
+      },
+      off:function(event,handler){
+        var arr=listeners[event];if(!arr)return;
+        var i=arr.indexOf(handler);if(i>=0){arr.splice(i,1);}
+      },
+      emit:function(event,payload){
+        window.parent.postMessage({__xhub:true,type:'xhub-emit',event:event,payload:payload},'*');
+        return Promise.resolve();
+      }
+    },
+    expose:function(method,handler){
+      exposed[method]=handler;
     }
   };
+  // 加载即拉取一次主题，确保首帧就与宿主一致
+  call('theme','get',{}).then(applyTheme).catch(function(){});
 })();
 "#;
 
@@ -299,7 +536,7 @@ fn inject_bridge(html: &str, bridge: &str) -> String {
     format!("{script}{html}")
 }
 
-/// 读取某扩展某形态的入口 HTML，注入桥脚本后写到 `<扩展目录>/.xhub/<surface>.html`，
+/// 读取某扩展某形态的入口 HTML，注入桥脚本后写到 `<扩展目录>/.xhpack/<surface>.html`，
 /// 返回该临时文件的绝对路径（前端 `convertFileSrc` 后作为 iframe src）。
 ///
 /// 写临时文件到扩展目录内是为了让入口引用的相对资源（Vite 产物的 module script / css）
@@ -335,7 +572,7 @@ pub fn read_extension_entry(
         std::fs::read_to_string(&html_path).map_err(|e| format!("IO_ERROR: 读取入口失败：{e}"))?;
     let injected = inject_bridge(&html, XHUB_BRIDGE_SCRIPT);
 
-    let out_dir = dir.join(".xhub");
+    let out_dir = dir.join(".xhpack");
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let out_path = out_dir.join(format!("{surface}.html"));
     std::fs::write(&out_path, injected).map_err(|e| e.to_string())?;
@@ -653,5 +890,43 @@ mod tests {
         let html = "<body>hi</body>";
         let out = inject_bridge(html, "BRIDGE");
         assert!(out.starts_with("<script>BRIDGE</script>"));
+    }
+
+    #[test]
+    fn condition_matches_platform() {
+        let cond = DisableCondition {
+            platform: Some("windows".to_string()),
+        };
+        assert_eq!(condition_matches(&cond), cfg!(target_os = "windows"));
+        let empty = DisableCondition { platform: None };
+        assert!(!condition_matches(&empty));
+    }
+
+    #[test]
+    fn load_extension_computes_requires_and_disabled() {
+        let dir = tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            "com.x-hub.caps",
+            serde_json::json!({
+                "id": "com.x-hub.caps",
+                "name": "能力探测",
+                "version": "1.0.0",
+                "requires": ["data.notes.list", "data.notes.create"],
+                "dependsOn": ["com.x-hub.other"],
+                "disabled": { "platform": "not-a-real-os" }
+            }),
+        );
+
+        let entry = load_extension(&dir.path().join("com.x-hub.caps"));
+        assert!(!entry.invalid);
+        // data.notes.list 已实现 → 不缺失
+        assert!(!entry.missing_capabilities.contains(&"data.notes.list".to_string()));
+        // data.notes.create 未实现 → 缺失
+        assert!(entry.missing_capabilities.contains(&"data.notes.create".to_string()));
+        // platform 不匹配 → 不禁用
+        assert!(!entry.disabled);
+        // dependsOn 原样记录（缺失依赖在 scan_extensions 后处理）
+        assert_eq!(entry.depends_on, vec!["com.x-hub.other".to_string()]);
     }
 }

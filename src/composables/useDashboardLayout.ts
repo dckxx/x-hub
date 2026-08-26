@@ -42,7 +42,6 @@ export const DASH_MODULES: DashModuleDef[] = [
   { id: 'sysmon', title: '系统资源', w: 4, h: 3 },
   { id: 'sticky1', title: '便签 1', w: 4, h: 3 },
   { id: 'sticky2', title: '便签 2', w: 4, h: 3 },
-  { id: 'token', title: 'Token 统计', w: 4, h: 3 },
   { id: 'notes', title: '速记概览', w: 4, h: 3 },
   { id: 'todo_overview', title: '待办概览', w: 4, h: 3 },
   { id: 'resources', title: '速达数量', w: 4, h: 3 },
@@ -175,7 +174,7 @@ function cancelEdit() {
 const placements = ref<DashPlacement[]>(loadFromLocalStorage() ?? defaultPlacements())
 
 /** 加载声明 module 形态的扩展，注册进工作台模块库（id 用 `ext:<扩展id>` 前缀与内置模块区分） */
-async function loadExtensionModules() {
+export async function loadExtensionModules() {
   if (!isTauri()) return
   try {
     const exts = await tauriApi.listExtensions()

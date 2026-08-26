@@ -137,7 +137,6 @@ const FONT_MODULES = [
   { key: 'notes', label: '速记', configKey: 'font_notes' },
   { key: 'prompt', label: '提示词', configKey: 'font_prompt' },
   { key: 'todo', label: '待办', configKey: 'font_todo' },
-  { key: 'usage', label: '用量', configKey: 'font_usage' },
 ] as const
 
 type FontModuleKey = (typeof FONT_MODULES)[number]['key']

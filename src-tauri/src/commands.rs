@@ -2,12 +2,10 @@ use crate::config;
 use crate::config::AppConfig;
 use crate::models::{
     ChatMessage, ChatModelConfig, ChatSession, ClipboardItem, Countdown, DetachedSticky, Note,
-    Resource, ResourceKind, SearchResult, Snippet, Sticky, SyncResult, Tag, Todo, UsageDetail,
-    UsageSummary,
+    Resource, ResourceKind, SearchResult, Snippet, Sticky, Tag, Todo,
 };
 use crate::process;
 use crate::repo::{chat, clipboard, countdown, detached_sticky, note, resource, snippet, sticky, tag, todo};
-use crate::usage;
 use rusqlite::Connection;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
@@ -27,7 +25,6 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
     let todos = todo::list(&conn).map_err(err_str)?;
     let stickies = sticky::list(&conn).map_err(err_str)?;
     let detached = detached_sticky::list(&conn).map_err(err_str)?;
-    let usage_summary = usage::query_summary(&conn).map_err(err_str)?;
     let countdowns = countdown::list(&conn).map_err(err_str)?;
     let config = crate::config::load();
     log::info!(
@@ -48,7 +45,6 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
         stickies,
         detached,
         countdowns,
-        usage_summary,
         config,
     })
 }
@@ -62,7 +58,6 @@ pub struct InitialData {
     pub stickies: Vec<Sticky>,
     pub detached: Vec<DetachedSticky>,
     pub countdowns: Vec<Countdown>,
-    pub usage_summary: UsageSummary,
     pub config: AppConfig,
 }
 
@@ -755,80 +750,6 @@ pub async fn toggle_float_pin(
     win.set_always_on_top(always_on_top).map_err(|e| e.to_string())?;
     log::info!("浮窗置顶切换: label={} 置顶={}", label, always_on_top);
     Ok(())
-}
-
-// ---------- AI 用量统计 ----------
-
-/// 同步 opencode 用量。`path` 可选，缺省自动探测。
-/// 游标存于 AppConfig（usage_sync_cursor），避免频繁写库。
-#[tauri::command]
-pub fn sync_ai_usage(
-    state: State<'_, DbState>,
-    path: Option<String>,
-) -> Result<SyncResult, String> {
-    let config = crate::config::load();
-    let resolved = path.or(config.usage_db_path.clone()).or_else(usage::probe_opencode_path);
-
-    let Some(db_path) = resolved else {
-        return Ok(SyncResult {
-            inserted: 0,
-            cursor: config.usage_sync_cursor,
-            listening: false,
-            path: None,
-        });
-    };
-
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let result = usage::sync_from_opencode(&conn, &db_path, config.usage_sync_cursor).map_err(err_str)?;
-    // 推进游标并记录路径（持配置写锁重新读盘，避免旧快照覆盖其它字段）
-    if result.inserted > 0 || config.usage_db_path.as_deref() != Some(db_path.as_str()) {
-        let _guard = crate::config::lock();
-        let mut cfg = crate::config::load();
-        cfg.usage_sync_cursor = result.cursor;
-        cfg.usage_db_path = Some(db_path.clone());
-        let _ = crate::config::save(&cfg);
-    }
-    log::info!(
-        "同步 AI 用量: 新增 {} 条, 游标 {} (db: {})",
-        result.inserted,
-        result.cursor,
-        db_path
-    );
-    Ok(result)
-}
-
-/// 用量汇总（含同步后返回）
-#[tauri::command]
-pub fn get_usage_summary(state: State<'_, DbState>) -> Result<UsageSummary, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let summary = usage::query_summary(&conn).map_err(err_str)?;
-    log::debug!(
-        "查询用量汇总: 今日 input={} cache={} output={}",
-        summary.today_input,
-        summary.today_cache_input,
-        summary.today_output
-    );
-    Ok(summary)
-}
-
-/// 用量详情（趋势 + 排行 + 明细）
-#[tauri::command]
-pub fn get_usage_detail(
-    state: State<'_, DbState>,
-    days: Option<i64>,
-    limit: Option<i64>,
-    offset: Option<i64>,
-) -> Result<UsageDetail, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let detail = usage::query_detail(
-        &conn,
-        days.unwrap_or(7).clamp(1, 90),
-        limit.unwrap_or(50).clamp(1, 500),
-        offset.unwrap_or(0).max(0),
-    )
-    .map_err(err_str)?;
-    log::debug!("查询用量详情: {} 条记录", detail.total);
-    Ok(detail)
 }
 
 // ---------- 全局搜索 ----------

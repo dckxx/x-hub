@@ -105,22 +105,6 @@ fn migrate(conn: &Connection) -> Result<()> {
           updated_at TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS ai_usage (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          message_id TEXT NOT NULL UNIQUE,
-          session_id TEXT,
-          provider TEXT,
-          model TEXT,
-          tokens_input INTEGER NOT NULL DEFAULT 0,
-          tokens_output INTEGER NOT NULL DEFAULT 0,
-          tokens_reasoning INTEGER NOT NULL DEFAULT 0,
-          tokens_cache_read INTEGER NOT NULL DEFAULT 0,
-          tokens_cache_write INTEGER NOT NULL DEFAULT 0,
-          cost REAL NOT NULL DEFAULT 0,
-          time_created INTEGER NOT NULL DEFAULT 0,
-          source TEXT NOT NULL DEFAULT 'remote'
-        );
-
         CREATE TABLE IF NOT EXISTS countdowns (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL,
@@ -185,7 +169,6 @@ fn migrate(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
         CREATE INDEX IF NOT EXISTS idx_todos_created ON todos(created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_ai_usage_time ON ai_usage(time_created);
         CREATE INDEX IF NOT EXISTS idx_countdowns_end ON countdowns(end_at);
         CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
         CREATE INDEX IF NOT EXISTS idx_clipboard_updated ON clipboard_history(updated_at DESC);
@@ -244,6 +227,12 @@ fn migrate(conn: &Connection) -> Result<()> {
     conn.execute("DROP INDEX IF EXISTS idx_resources_group", [])?;
     conn.execute("DROP INDEX IF EXISTS idx_files_category", [])?;
 
+    // 旧 ai_usage 表：AI 用量统计已拆分为扩展（com.x-hub.token-stats），宿主不再使用，删表清残留
+    if table_exists(conn, "ai_usage") {
+        conn.execute("DROP TABLE ai_usage", [])?;
+    }
+    conn.execute("DROP INDEX IF EXISTS idx_ai_usage_time", [])?;
+
     // 兜底：resources 表缺 last_launched_at 列时补充
     let cols: Vec<String> = conn
         .prepare("PRAGMA table_info(resources)")?
@@ -258,42 +247,6 @@ fn migrate(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_resources_category ON resources(category)",
         [],
     )?;
-
-    // 旧 ai_usage 表按 session_id 粒度存储，time_created 取的是会话创建时间，
-    // 长会话跨天时会把后续几天的用量全部归到创建当天。改为按 message 粒度（真实产生时间）。
-    let ai_cols: Vec<String> = conn
-        .prepare("PRAGMA table_info(ai_usage)")?
-        .query_map([], |row| row.get(1))?
-        .collect::<rusqlite::Result<Vec<String>>>()?;
-    if ai_cols.iter().any(|c| c == "session_id") && !ai_cols.iter().any(|c| c == "message_id") {
-        conn.execute("DROP TABLE ai_usage", [])?;
-        conn.execute_batch(
-            "
-            CREATE TABLE ai_usage (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              message_id TEXT NOT NULL UNIQUE,
-              session_id TEXT,
-              provider TEXT,
-              model TEXT,
-              tokens_input INTEGER NOT NULL DEFAULT 0,
-              tokens_output INTEGER NOT NULL DEFAULT 0,
-              tokens_reasoning INTEGER NOT NULL DEFAULT 0,
-              tokens_cache_read INTEGER NOT NULL DEFAULT 0,
-              tokens_cache_write INTEGER NOT NULL DEFAULT 0,
-              cost REAL NOT NULL DEFAULT 0,
-              time_created INTEGER NOT NULL DEFAULT 0,
-              source TEXT NOT NULL DEFAULT 'remote'
-            );
-            CREATE INDEX IF NOT EXISTS idx_ai_usage_time ON ai_usage(time_created);
-            ",
-        )?;
-        log::info!("ai_usage 表升级为 message 粒度，等待重新同步");
-        // 旧游标是 session.time_updated，新游标语义是 message.time_created，需归零全量重同步
-        let _guard = crate::config::lock();
-        let mut cfg = crate::config::load();
-        cfg.usage_sync_cursor = 0;
-        let _ = crate::config::save(&cfg);
-    }
 
     // 旧 chat_sessions 表缺 token 累计列：逐列补齐（ALTER TABLE ADD COLUMN 幂等）
     let chat_cols: Vec<String> = conn
@@ -434,5 +387,48 @@ mod tests {
             )
             .unwrap();
         assert_eq!(apps, 2);
+    }
+
+    #[test]
+    fn ai_usage_table_is_dropped_on_migrate() {
+        // 构造旧版库：含 ai_usage 表（旧版 token 统计专用）及其索引，模拟老用户升级
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE ai_usage (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              session_id TEXT NOT NULL DEFAULT '',
+              provider TEXT,
+              model TEXT,
+              tokens_input INTEGER NOT NULL DEFAULT 0,
+              tokens_cache_read INTEGER NOT NULL DEFAULT 0,
+              tokens_cache_write INTEGER NOT NULL DEFAULT 0,
+              tokens_output INTEGER NOT NULL DEFAULT 0,
+              tokens_reasoning INTEGER NOT NULL DEFAULT 0,
+              cost REAL NOT NULL DEFAULT 0,
+              time_created INTEGER NOT NULL,
+              source TEXT NOT NULL DEFAULT 'remote'
+            );
+            CREATE INDEX idx_ai_usage_time ON ai_usage(time_created);
+            INSERT INTO ai_usage (session_id, tokens_input, tokens_output, time_created)
+              VALUES ('s1', 100, 200, 1);
+            ",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        // ai_usage 表与索引被清除，核心表正常建立（其它数据不受影响）
+        assert!(!table_exists(&conn, "ai_usage"));
+        assert!(table_exists(&conn, "resources"));
+        assert!(table_exists(&conn, "notes"));
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_ai_usage_time'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 0);
     }
 }

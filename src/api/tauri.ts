@@ -146,8 +146,6 @@ export interface AppConfig {
   font_prompt: number
   /** 待办模块字体缩放系数 */
   font_todo: number
-  /** 用量模块字体缩放系数 */
-  font_usage: number
   /** service 扩展运行时策略：auto / builtin / system */
   runtime_strategy: string
 }
@@ -178,6 +176,18 @@ export interface ExtensionEntry {
   /** manifest 缺失 / 解析失败时为 true */
   invalid: boolean
   error: string | null
+  /** 条件禁用求值结果（manifest.disabled 命中） */
+  disabled: boolean
+  /** 缺失的宿主能力（manifest.requires 中宿主未实现的） */
+  missing_capabilities: string[]
+  /** 缺失的依赖扩展 id（manifest.dependsOn 中未安装的） */
+  missing_dependencies: string[]
+  /** 扩展声明的依赖扩展 id（manifest.dependsOn） */
+  depends_on: string[]
+  /** 暴露给其它扩展调用的方法名（manifest.expose） */
+  expose: string[]
+  /** 快捷动作（manifest.actions，能力注入） */
+  actions: { id: string; title: string; surface: string }[]
 }
 
 /** 市场清单里的一条扩展 */
@@ -238,7 +248,6 @@ export interface InitialData {
   detached: DetachedSticky[]
   countdowns: Countdown[]
   tags: Tag[]
-  usage_summary: UsageSummary
   config: AppConfig
 }
 
@@ -251,74 +260,6 @@ export interface SearchResult {
 export interface NoteTagRow {
   note_id: number
   tag_id: number
-}
-
-export interface UsageRecord {
-  session_id: string
-  provider: string | null
-  model: string | null
-  tokens_input: number
-  tokens_cache_read: number
-  tokens_output: number
-  tokens_reasoning: number
-  tokens_cache_write: number
-  cost: number
-  time_created: number
-  source: string
-}
-
-export interface UsageSummary {
-  today_input: number
-  today_cache_input: number
-  today_output: number
-  today_cost: number
-  /** 今日调用（消息）条数 */
-  today_count: number
-  seven_day_input: number
-  seven_day_cache_input: number
-  seven_day_output: number
-  seven_day_cost: number
-  month_input: number
-  month_cache_input: number
-  month_output: number
-  month_cost: number
-  total_input: number
-  total_cache_input: number
-  total_output: number
-  total_cost: number
-  record_count: number
-  last_sync_at: number | null
-}
-
-export interface UsageDaily {
-  date: string
-  input: number
-  cache_input: number
-  output: number
-  cost: number
-}
-
-export interface UsageProvider {
-  provider: string
-  count: number
-  input: number
-  cache_input: number
-  output: number
-  cost: number
-}
-
-export interface UsageDetail {
-  daily: UsageDaily[]
-  providers: UsageProvider[]
-  records: UsageRecord[]
-  total: number
-}
-
-export interface SyncResult {
-  inserted: number
-  cursor: number
-  listening: boolean
-  path: string | null
 }
 
 export interface Countdown {
@@ -496,10 +437,6 @@ export const tauriApi = {
   minimizeWindow: () => invoke<void>('minimize_window'),
   toggleMaximize: () => invoke<void>('toggle_maximize'),
   hideToTray: () => invoke<void>('hide_to_tray'),
-  syncAiUsage: (path?: string) => invoke<SyncResult>('sync_ai_usage', { path: path ?? null }),
-  getUsageSummary: () => invoke<UsageSummary>('get_usage_summary'),
-  getUsageDetail: (days: number, limit: number, offset: number) =>
-    invoke<UsageDetail>('get_usage_detail', { days, limit, offset }),
   getSystemInfo: () => invoke<SystemInfo>('get_system_info'),
   listSnippets: () => invoke<Snippet[]>('list_snippets'),
   createSnippet: (title: string, content: string) =>
@@ -609,6 +546,7 @@ export const tauriApi = {
   locateWeatherByIp: () => invoke<GeoLocation>('locate_weather_by_ip'),
   // ---- 扩展系统 ----
   listExtensions: () => invoke<ExtensionEntry[]>('list_extensions'),
+  extensionsStamp: () => invoke<number>('extensions_stamp'),
   /** 读取扩展某形态入口（注入桥脚本后返回临时 HTML 绝对路径） */
   readExtensionEntry: (id: string, surface?: string | null) =>
     invoke<string>('read_extension_entry', { id, surface: surface ?? null }),
@@ -618,6 +556,8 @@ export const tauriApi = {
   uninstallExtension: (id: string) => invoke<void>('uninstall_extension', { id }),
   /** 从本地目录安装扩展，返回扩展 id */
   installExtension: (source: string) => invoke<string>('install_extension', { source }),
+  /** 从本地压缩包（.xhpack / .zip）安装扩展，返回扩展 id */
+  installLocalArchive: (path: string) => invoke<string>('install_local_archive', { path }),
   /** 查询扩展权限状态（manifest 声明 → 是否授予） */
   getExtensionPermissions: (id: string) =>
     invoke<Record<string, boolean>>('get_extension_permissions', { id }),

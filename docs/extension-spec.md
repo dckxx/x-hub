@@ -145,7 +145,7 @@ service 扩展的后端默认跑在 Node 运行时上，运行时由宿主统一
 
 | 命名空间 | 能力 |
 |---|---|
-| `window.xhub.data.notes / todos / resources / usage` | 读宿主数据 |
+| `window.xhub.data.notes / todos / resources` | 读宿主数据 |
 | `window.xhub.fs` | 受控文件读写（需 `fs` 权限） |
 | `window.xhub.clipboard` | 读写剪贴板（需 `clipboard`） |
 | `window.xhub.net` | 发起网络请求（需 `network`） |
@@ -161,7 +161,7 @@ service 扩展的后端默认跑在 Node 运行时上，运行时由宿主统一
 | 运行时 | 信任级别 | 风险 | 措施 |
 |---|---|---|---|
 | `web` | 低 | 仅 WebView 沙箱 + 受限桥 API | manifest `permissions` 逐项授权；安装轻提示 |
-| `service` | 高 | 独立进程 = 任意代码执行 | 安装时明确提示「会运行本地后台进程」；`permissions` 含 `process`；卸载彻底清理进程与数据 |
+| `service` | 高 | 独立进程 = 任意代码执行 | 安装时明确提示「会运行本地后台进程」；卸载彻底清理进程与数据 |
 
 - `service` 后端仅监听 `127.0.0.1`，不暴露到局域网；
 - 自包含运行时的重型应用（如 DSH）安装时额外提示其自带运行环境与体积；

@@ -12,12 +12,9 @@ import {
   type Resource,
   type Snippet,
   type Sticky,
-  type SyncResult,
   type SystemInfo,
   type Tag,
   type Todo,
-  type UsageDetail,
-  type UsageSummary,
   type WeatherCurrent,
 } from '../api/tauri'
 
@@ -39,9 +36,6 @@ interface StoreState {
   snippets: Snippet[]
   tags: Tag[]
   config: AppConfig
-  usageSummary: UsageSummary | null
-  usageDetail: UsageDetail | null
-  usageListening: boolean
   systemInfo: SystemInfo | null
   online: boolean
   weather: WeatherCurrent | null
@@ -98,12 +92,8 @@ const state = reactive<StoreState>({
     font_notes: 1,
     font_prompt: 1,
     font_todo: 1,
-    font_usage: 1,
     runtime_strategy: 'auto',
   },
-  usageSummary: null,
-  usageDetail: null,
-  usageListening: false,
   systemInfo: null,
   online: false,
   weather: null,
@@ -125,7 +115,6 @@ export function useStore() {
     state.stickies = data.stickies
     state.detached = data.detached
     state.tags = data.tags
-    state.usageSummary = data.usage_summary
     state.config = data.config
     state.snippets = snippets
     state.countdowns = data.countdowns
@@ -656,12 +645,12 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
-  /** 单模块字体缩放：sticky / notes / prompt / todo / usage */
+  /** 单模块字体缩放：sticky / notes / prompt / todo */
   async function setModuleFontScale(
-    module: 'sticky' | 'notes' | 'prompt' | 'todo' | 'usage',
+    module: 'sticky' | 'notes' | 'prompt' | 'todo',
     value: number,
   ) {
-    const key = `font_${module}` as 'font_sticky' | 'font_notes' | 'font_prompt' | 'font_todo' | 'font_usage'
+    const key = `font_${module}` as 'font_sticky' | 'font_notes' | 'font_prompt' | 'font_todo'
     state.config[key] = clampFontScale(value)
     if (!isTauri()) return
     await tauriApi.saveConfig(state.config)
@@ -672,30 +661,6 @@ export function useStore() {
     state.config.runtime_strategy = value
     if (!isTauri()) return
     await tauriApi.saveConfig(state.config)
-  }
-
-  // ---- AI 用量 ----
-  async function refreshUsage(path?: string): Promise<SyncResult> {
-    if (!isTauri()) {
-      return { inserted: 0, cursor: 0, listening: false, path: null }
-    }
-    const result = await tauriApi.syncAiUsage(path)
-    state.usageListening = result.listening
-    if (result.listening) {
-      state.usageSummary = await tauriApi.getUsageSummary()
-    }
-    return result
-  }
-
-  async function loadUsageSummary() {
-    if (!isTauri()) return
-    state.usageSummary = await tauriApi.getUsageSummary()
-  }
-
-  async function loadUsageDetail(days = 7, limit = 50, offset = 0) {
-    if (!isTauri()) return null
-    state.usageDetail = await tauriApi.getUsageDetail(days, limit, offset)
-    return state.usageDetail
   }
 
   // ---- 系统资源 ----
@@ -927,9 +892,6 @@ export function useStore() {
     setClipboardPaused,
     setClipboardRetention,
     setClipboardMediaEnabled,
-    refreshUsage,
-    loadUsageSummary,
-    loadUsageDetail,
     refreshSystemInfo,
     checkOnline,
     refreshWeather,

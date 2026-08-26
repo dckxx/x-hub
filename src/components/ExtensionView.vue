@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { inject } from 'vue'
+import { computed, inject } from 'vue'
 import { useExtensionFrame } from '../composables/useExtensionFrame'
 
 const props = defineProps<{
   extId: string
   surface?: string | null
+  onOpenSurface?: (surface: string) => void
 }>()
+
+// module 形态 = 工作台卡片，套用宿主 .card 玻璃外观；view 形态 = 整页，容器透明透出宿主页面渐变
+const isModule = computed(() => props.surface === 'module')
 
 const emit = defineEmits<{
   close: []
@@ -20,13 +24,14 @@ const { frameRef, loading, error } = useExtensionFrame(
   () => props.extId,
   () => props.surface ?? null,
   (msg) => showToast(`打开扩展失败：${msg}`),
+  props.onOpenSurface,
 )
 // frameRef 仅用于模板 ref 绑定（vue-tsc 不把模板 ref 计为读取，此处显式保留引用通过 noUnusedLocals）
 void frameRef
 </script>
 
 <template>
-  <div class="extension-view">
+  <div class="extension-view" :class="{ card: isModule }">
     <div v-if="loading" class="ev-state">
       <p>正在加载扩展…</p>
     </div>
@@ -51,11 +56,18 @@ void frameRef
   flex-direction: column;
   overflow: hidden;
 }
+/* module 卡片：复用宿主 .card 玻璃表面 + 边框 + 圆角 + 阴影，与工作台其他卡片严格统一 */
+.extension-view.card {
+  background: var(--frost-surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--frost-edge), var(--shadow-card);
+}
 .ev-frame {
   flex: 1;
   width: 100%;
   border: 0;
-  background: var(--bg-page);
+  background: transparent;
 }
 .ev-state {
   flex: 1;

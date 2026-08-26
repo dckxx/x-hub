@@ -22,7 +22,6 @@ mod shortcut;
 mod sticky_window;
 mod sysmon;
 mod tray;
-mod usage;
 mod xhub_api;
 
 /// WebView2 附加浏览器参数（主窗/倒计时浮窗/便签浮窗必须完全一致，
@@ -410,9 +409,6 @@ pub fn run() {
             commands::get_data_path,
             commands::change_data_dir,
             commands::restart_app,
-            commands::sync_ai_usage,
-            commands::get_usage_summary,
-            commands::get_usage_detail,
             commands::list_chat_sessions,
             commands::create_chat_session,
             commands::delete_chat_session,
@@ -445,6 +441,7 @@ commands::set_chat_panel,
             commands::set_clipboard_retention,
             sysmon::get_system_info,
             extension::list_extensions,
+            extension::extensions_stamp,
             extension::read_extension_entry,
             extension::open_extension_window,
             extension::uninstall_extension,
@@ -453,6 +450,7 @@ commands::set_chat_panel,
             extension::set_extension_permission,
             market::get_market_registry,
             market::install_from_market,
+            market::install_local_archive,
             xhub_api::xhub_call,
             commands::check_connectivity,
             commands::get_weather,

@@ -68,8 +68,8 @@ foreach ($p in "registry.json", "registry.json.sig") {
   if ($r.StatusCode -ne 200) { Write-Error "$url 未返回 200" }
 }
 
-# 强校验：下载 zip 算 sha256 与本地一致
-$local = Get-ChildItem "$DistDir\packages" -Recurse -Filter *.zip | Select-Object -First 1
+# 强校验：下载 xhpack 算 sha256 与本地一致
+$local = Get-ChildItem "$DistDir\packages" -Recurse -Filter *.xhpack | Select-Object -First 1
 if ($local) {
   $hash = (Get-FileHash $local.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
   $dl = Join-Path $env:TEMP "market-check-$($local.Name)"
@@ -77,6 +77,6 @@ if ($local) {
   $dlHash = (Get-FileHash $dl -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($hash -ne $dlHash) { Write-Error "sha256 不一致！本地 $hash vs 远端 $dlHash" }
   Remove-Item $dl -Force
-  "zip sha256 校验一致: $hash" 
+  "xhpack sha256 校验一致: $hash" 
 }
 Write-Host "全部完成 ✔ 市场现已可访问: $urlBase/registry.json" -ForegroundColor Green

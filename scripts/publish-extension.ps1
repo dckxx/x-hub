@@ -3,7 +3,7 @@
 .SYNOPSIS
   打包扩展并生成本地发布产物（R2 市场清单 v2）。
   生成到 <OutDir>（默认 <仓库>/dist/market）：
-    packages/<id>/<version>/<id>-<version>.zip   — 扩展包（不可变路径）
+    packages/<id>/<version>/<id>-<version>.xhpack — 扩展包（zip 格式，后缀统一 .xhpack，不可变路径）
     icons/<id>.<ext>                              — 图标（manifest.icon 存在时）
     registry.json                                 — 合并后的完整清单（upsert 该扩展）
     registry.json.sig                             — Ed25519 分离签名（base64 文本）
@@ -41,11 +41,11 @@ $version = $manifest.version
 if (-not $id -or -not $version) { throw 'manifest.json 缺少 id 或 version' }
 if (-not ($version -match '^\d+\.\d+\.\d+$')) { throw "version 需为语义化版本（x.y.z），实际: $version" }
 
-# ---------- 1. 打包 zip（manifest.json 必须位于 zip 根） ----------
+# ---------- 1. 打包 xhpack（zip 格式，后缀统一 .xhpack；manifest.json 必须位于包根） ----------
 $pkgDir = Join-Path $OutDir "packages\$id\$version"
 New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
-$zip = Join-Path $pkgDir "$id-$version.zip"
-$tmpZip = Join-Path $env:TEMP "$($id.Replace('.', '-'))-$version-$([guid]::NewGuid().ToString('N')).zip"
+$zip = Join-Path $pkgDir "$id-$version.xhpack"
+$tmpZip = Join-Path $env:TEMP "$($id.Replace('.', '-'))-$version-$([guid]::NewGuid().ToString('N')).xhpack"
 if (Test-Path $tmpZip) { Remove-Item $tmpZip -Force }
 Compress-Archive -Path (Join-Path $ExtDir '*') -DestinationPath $tmpZip -CompressionLevel Optimal
 Move-Item -LiteralPath $tmpZip -Destination $zip -Force
@@ -76,7 +76,7 @@ $entry = [ordered]@{
   description  = NonNull $manifest.description
   runtime      = NonNull $manifest.runtime
   author       = NonNull $manifest.author
-  downloadUrl  = "$Endpoint/packages/$id/$version/$id-$version.zip"
+  downloadUrl  = "$Endpoint/packages/$id/$version/$id-$version.xhpack"
   sha256       = $sha256
   size         = $size
   icon         = $iconUrl
@@ -121,7 +121,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Ed25519 签名失败' }
 # ---------- 6. 输出 ----------
 Write-Host ''
 Write-Host '==== 发布产物（上传到 R2 桶根，与 dist-market 内容对应） ====' -ForegroundColor Cyan
-Write-Host "zip      : $zip"
+Write-Host "xhpack  : $zip"
 Write-Host "sha256   : $sha256"
 Write-Host "size     : $size bytes"
 if ($iconUrl) { Write-Host "icon     : $iconUrl" }

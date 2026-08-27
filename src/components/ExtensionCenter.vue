@@ -369,7 +369,7 @@ async function onLocalFileInstall() {
     const file = await open({
       multiple: false,
       directory: false,
-      filters: [{ name: 'x-hub 扩展包', extensions: ['xhpack', 'zip'] }],
+      filters: [{ name: 'x-hub 扩展包', extensions: ['xhpack'] }],
     })
     if (typeof file !== 'string') return // 取消
     const id = await tauriApi.installLocalArchive(file)

@@ -592,7 +592,7 @@ export const tauriApi = {
   uninstallExtension: (id: string) => invoke<void>('uninstall_extension', { id }),
   /** 从本地目录安装扩展，返回扩展 id */
   installExtension: (source: string) => invoke<string>('install_extension', { source }),
-  /** 从本地压缩包（.xhpack / .zip）安装扩展，返回扩展 id */
+  /** 从本地压缩包（.xhpack，zip 格式）安装扩展，返回扩展 id */
   installLocalArchive: (path: string) => invoke<string>('install_local_archive', { path }),
   /** 查询扩展权限状态（manifest 声明 → 是否授予） */
   getExtensionPermissions: (id: string) =>

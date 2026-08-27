@@ -44,6 +44,11 @@ src-tauri/target/
 x-hub-*.zip
 dist-market/
 
+# Signing secrets (NEVER commit)
+.x-hub-signing/
+market.key
+*.private.key
+
 # Promotional materials (local drafts)
 promo/
 

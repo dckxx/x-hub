@@ -26,7 +26,7 @@
 ### 1.3 设计原则
 
 - **复用现有链路**：市场安装继续走 `install_from_market` 的解包/校验路径；本地清单缓存保留，离线可读。
-- **R2 只放不可变对象**：所有包路径含版本号（`.../1.2.0/...zip`），天然支持长缓存、回滚、增量。
+- **R2 只放不可变对象**：所有包路径含版本号（`.../1.2.0/...xhpack`），天然支持长缓存、回滚、增量。
 - **清单签名为安全根**：清单本身 Ed25519 签名；所有下载物（zip 包、exe）的 sha256 由签名清单背书，客户端不信任任何未签名字节。
 - **升级不丢用户数据**：扩展升级必须保留 `.permissions.json` / `.config.json` / `.storage.json` / `.deploy-config.json` 等点文件；应用升级只替换 exe，数据目录不动。
 
@@ -39,7 +39,7 @@
     ├─ 生成 releases/update.json + Ed25519 签名 → .sig
     └─ rclone 上传 R2 桶 x-hub-dist
   release-extension.yml（dispatch 触发）
-    ├─ 打包扩展目录 → <id>-<ver>.zip + sha256
+    ├─ 打包扩展目录 → <id>-<ver>.xhpack + sha256
     ├─ 更新 extensions/registry.json + 签名
     └─ rclone 上传 R2 桶
 
@@ -80,7 +80,7 @@ x-hub-dist/
 │   │   └── com.x-hub.ctool.svg
 │   └── packages/
 │       └── com.x-hub.ctool/
-│           └── 1.2.0/com.x-hub.ctool-1.2.0.zip   # 不可变：路径含版本
+│           └── 1.2.0/com.x-hub.ctool-1.2.0.xhpack   # 不可变：路径含版本（zip 格式）
 └── releases/
     ├── update.json            # 应用更新清单
     ├── update.json.sig
@@ -112,7 +112,7 @@ x-hub-dist/
       "runtime": "web",
       "author": "x-hub team",
       "icon": "https://dist.x-hub.dev/extensions/icons/com.x-hub.ctool.svg",
-      "downloadUrl": "https://dist.x-hub.dev/extensions/packages/com.x-hub.ctool/1.2.0/com.x-hub.ctool-1.2.0.zip",
+      "downloadUrl": "https://dist.x-hub.dev/extensions/packages/com.x-hub.ctool/1.2.0/com.x-hub.ctool-1.2.0.xhpack",
       "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
       "size": 1048576,
       "minAppVersion": "0.3.0",
@@ -190,11 +190,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - checkout
-      - 打包：cd $ext_dir → zip -r <id>-<version>.zip .（manifest.json 在包根）
+      - 打包：cd $ext_dir → Compress-Archive → <id>-<version>.xhpack（manifest.json 在包根；zip 格式，后缀统一 .xhpack）
       - 计算 sha256、读取 manifest 的 id/version/name/description/runtime/author
       - 下载现有 registry.json → upsert 该扩展条目 → 写回（保留其它条目）
       - 用 secrets.UPDATE_SIGNING_KEY 对 registry.json 派生 Ed25519 签名 → .sig
-      - rclone 上传 packages/<id>/<v>/<id>-<v>.zip、icons/（如新）、registry.json、registry.json.sig
+      - rclone 上传 packages/<id>/<v>/<id>-<v>.xhpack、icons/（如新）、registry.json、registry.json.sig
 ```
 
 **方式 B：本地脚本** `scripts/publish-extension.ps1`（无 CI 场景）：

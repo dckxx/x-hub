@@ -366,7 +366,7 @@ pub async fn install_from_market(
     Ok(id)
 }
 
-/// 从本地压缩包文件（.xhpack / .zip，二者同为 zip 格式）安装扩展：
+/// 从本地压缩包文件（.xhpack，zip 格式；兼容旧 .zip）安装扩展：
 /// 读文件 → 解包 → 定位 manifest.json → 复制到 extensions/<id>。
 /// 与 install_from_market 共用同一条解包/校验链路，只是数据源换成本地文件。
 #[tauri::command]
@@ -591,7 +591,7 @@ mod tests {
                 "id": "com.x-hub.ctool",
                 "name": "C 工具集",
                 "version": "1.2.0",
-                "downloadUrl": "https://dist/packages/com.x-hub.ctool/1.2.0.zip",
+                "downloadUrl": "https://dist/packages/com.x-hub.ctool/1.2.0/com.x-hub.ctool-1.2.0.xhpack",
                 "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
                 "size": 1024,
                 "minAppVersion": "0.3.0"

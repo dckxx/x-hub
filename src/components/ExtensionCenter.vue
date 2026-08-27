@@ -1,11 +1,20 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
-import { FolderOpen, MoreHorizontal, PackageOpen, Plus } from 'lucide-vue-next'
-import { isTauri, tauriApi, type ExtensionEntry, type MarketExtension } from '../api/tauri'
+import { listen } from '@tauri-apps/api/event'
+import { FolderOpen, MoreHorizontal, PackageOpen, Plus, RefreshCw } from 'lucide-vue-next'
+import {
+  isTauri,
+  tauriApi,
+  type MarketDownloadProgress,
+  type MarketExtension,
+  type MarketStatus,
+  type ExtensionEntry,
+} from '../api/tauri'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
 import { loadExtensionModules } from '../composables/useDashboardLayout'
 import ExtensionSettingsDialog from './ExtensionSettingsDialog.vue'
+import MarketDetailDialog from './MarketDetailDialog.vue'
 
 const showToast = inject<(msg: string, action?: { label: string; onClick: () => void }) => void>(
   'showToast',
@@ -115,6 +124,8 @@ async function load() {
 
 onMounted(() => {
   void load()
+  // 已安装 tab 也需要市场数据来判断「可更新」，故启动即拉取一次市场清单
+  void loadMarket()
   // 运行时热更新：轮询扩展目录内容戳，变化（新装/卸载/改 manifest）即刷新列表，无需重启
   stampTimer = window.setInterval(() => void pollStamp(), 5000)
 })
@@ -144,24 +155,100 @@ function onInstall() {
 }
 
 const tab = ref<'installed' | 'market'>('installed')
-const market = ref<MarketExtension[]>([])
+const marketStatus = ref<MarketStatus | null>(null)
 const marketLoading = ref(false)
 const installingId = ref<string | null>(null)
+const installingProgress = ref<MarketDownloadProgress | null>(null)
+let unlistenProgress: (() => void) | null = null
+const marketFailedIcons = ref(new Set<string>())
+
+/** 市场列表（来自市场状态，远端清单；失败时 Rust 端回退缓存仍能列出） */
+const market = computed<MarketExtension[]>(() => marketStatus.value?.extensions ?? [])
+
+/** 已安装列表 → id 索引 / 市场列表 → id 索引（用于版本对比判断更新） */
+const installedById = computed(() => new Map(extensions.value.map((e) => [e.id, e])))
+const marketById = computed(() => new Map(market.value.map((m) => [m.id, m])))
+
+/** 更新进行中的状态（复用 market-download-progress 事件） */
+const updatingId = ref<string | null>(null)
+const updatingProgress = ref<MarketDownloadProgress | null>(null)
+let unlistenUpdate: (() => void) | null = null
+
+/** 当前查看详情的市场扩展（详情弹窗） */
+const detailExt = ref<MarketExtension | null>(null)
+
+function openDetail(m: MarketExtension) {
+  detailExt.value = m
+}
+
+/** 宿主版本（minAppVersion 门槛判断用） */
+const appVersion = ref('')
+
+/** 是否已发起过一次市场加载（成功或失败都置位；避免每次切换 tab 重复拉远端清单） */
+let marketRequested = false
 
 function switchTab(t: 'installed' | 'market') {
   tab.value = t
-  if (t === 'market') void loadMarket()
+  // 仅首次切到市场才拉取；之后切换不重载（数据缓存于 marketStatus，手动点刷新按钮才重新拉）
+  if (t === 'market' && !marketRequested) void loadMarket()
 }
 
 async function loadMarket() {
+  if (marketLoading.value) return // 防重入（并行触发 / 加载中）
+  marketRequested = true
   marketLoading.value = true
   try {
-    market.value = isTauri() ? await tauriApi.getMarketRegistry() : []
+    if (!isTauri()) {
+      marketStatus.value = null
+      return
+    }
+    // 并行：刷新市场清单（远端拉取 + 验签 + 落缓存，失败自动回退本地缓存）+ 取宿主版本
+    const [status, info] = await Promise.all([tauriApi.refreshMarketRegistry(), tauriApi.getAppInfo()])
+    marketStatus.value = status
+    appVersion.value = info.version
   } catch (e) {
     showToast(`加载市场失败：${String(e)}`)
   } finally {
     marketLoading.value = false
   }
+}
+
+/** 简单语义化版本比较：a < b（分节数字比较，x.y.z 足够） */
+function versionLessThan(a: string, b: string): boolean {
+  const pa = (a || '').split('.').map(Number)
+  const pb = (b || '').split('.').map(Number)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0
+    const y = pb[i] ?? 0
+    if (x !== y) return x < y
+  }
+  return false
+}
+
+/** 宿主版本低于扩展要求的 minAppVersion → 不可安装 */
+function hostTooOld(m: MarketExtension): boolean {
+  return !!m.minAppVersion && appVersion.value !== '' && versionLessThan(appVersion.value, m.minAppVersion)
+}
+
+function marketInitial(m: MarketExtension): string {
+  return (m.name || m.id || '?').charAt(0).toUpperCase()
+}
+
+/** 「上次更新」展示文案（ISO → 本地可读；无则占位） */
+function marketUpdatedText(): string {
+  const s = marketStatus.value?.last_updated
+  if (!s) return '—'
+  const d = new Date(s)
+  return isNaN(d.getTime()) ? s : d.toLocaleString()
+}
+
+function onMarketImgError(m: MarketExtension) {
+  marketFailedIcons.value.add(m.id)
+}
+
+function progressPercent(p: MarketDownloadProgress | null): number {
+  if (!p || !p.total || p.total <= 0) return 0
+  return Math.min(100, Math.round((p.received / p.total) * 100))
 }
 
 async function installFromMarket(m: MarketExtension) {
@@ -170,15 +257,107 @@ async function installFromMarket(m: MarketExtension) {
     return
   }
   installingId.value = m.id
+  installingProgress.value = null
   try {
-    const id = await tauriApi.installFromMarket(m.download_url)
+    unlistenProgress = await listen<MarketDownloadProgress>('market-download-progress', (e) => {
+      if (e.payload.id === m.id) installingProgress.value = e.payload
+    })
+    const id = await tauriApi.installFromMarket(m)
     showToast(`已安装「${id}」`)
     await load()
   } catch (e) {
     showToast(`安装失败：${String(e)}`)
   } finally {
+    unlistenProgress?.()
+    unlistenProgress = null
     installingId.value = null
+    installingProgress.value = null
   }
+}
+
+/** 该已装扩展在市场是否有更高版本可更新；无则返回 null */
+function updateFor(e: ExtensionEntry): MarketExtension | null {
+  const m = marketById.value.get(e.id)
+  if (m && versionLessThan(e.version, m.version)) return m
+  return null
+}
+
+/** 从市场更新扩展（校验 + 版本比较 + 备份 + 保留用户数据 + 原子替换，失败自动回滚） */
+async function updateFromMarket(m: MarketExtension) {
+  if (!isTauri()) {
+    showToast('市场更新需在桌面应用中操作')
+    return
+  }
+  updatingId.value = m.id
+  updatingProgress.value = null
+  try {
+    unlistenUpdate = await listen<MarketDownloadProgress>('market-download-progress', (e) => {
+      if (e.payload.id === m.id) updatingProgress.value = e.payload
+    })
+    const id = await tauriApi.updateFromMarket(m)
+    showToast(`已更新「${id}」至 v${m.version}`)
+    await load()
+  } catch (e) {
+    showToast(`更新失败：${String(e)}`)
+  } finally {
+    unlistenUpdate?.()
+    unlistenUpdate = null
+    updatingId.value = null
+    updatingProgress.value = null
+  }
+}
+
+/** 市场卡片主按钮动作：已装同版 → 提示已最新；已装旧版 → 更新；未装 → 安装 */
+function onMarketAction(m: MarketExtension) {
+  const inst = installedById.value.get(m.id)
+  if (inst) {
+    if (versionLessThan(inst.version, m.version)) {
+      void updateFromMarket(m)
+      return
+    }
+    showToast(`「${m.name}」已是最新版本`)
+    return
+  }
+  void installFromMarket(m)
+}
+
+/** 市场卡片主按钮文案 */
+function marketActionLabel(m: MarketExtension): string {
+  const inst = installedById.value.get(m.id)
+  if (inst) {
+    if (versionLessThan(inst.version, m.version)) {
+      if (updatingId.value === m.id) {
+        const p = updatingProgress.value
+        return p && progressPercent(p) > 0 ? `更新中 ${progressPercent(p)}%` : '更新中…'
+      }
+      return '更新'
+    }
+    return '已安装'
+  }
+  if (installingId.value === m.id) {
+    const p = installingProgress.value
+    return p && progressPercent(p) > 0 ? `下载中 ${progressPercent(p)}%` : '安装中…'
+  }
+  return '安装'
+}
+
+/** 已装行「更新」按钮文案 */
+function updateBtnText(e: ExtensionEntry): string {
+  if (updatingId.value !== e.id) return `更新 v${updateFor(e)!.version}`
+  const p = updatingProgress.value
+  return p && progressPercent(p) > 0 ? `更新中 ${progressPercent(p)}%` : '更新中…'
+}
+
+/** 已装扩展是否可更新（供行内按钮 / 市场卡片复用） */
+function installedOutdated(m: MarketExtension): boolean {
+  const inst = installedById.value.get(m.id)
+  return !!inst && versionLessThan(inst.version, m.version)
+}
+
+/** 已装且已是最新版本（按钮置灰不可点） */
+function installedUpToDate(m: MarketExtension): boolean {
+  const inst = installedById.value.get(m.id)
+  return !!inst && !versionLessThan(inst.version, m.version)
 }
 
 async function onLocalFileInstall() {
@@ -330,6 +509,15 @@ function onMore(e: ExtensionEntry) {
           </div>
 
           <div class="ec-right">
+            <button
+              v-if="updateFor(e)"
+              class="ec-update-btn"
+              type="button"
+              :disabled="updatingId === e.id"
+              @click.stop="updatingId === e.id ? undefined : updateFromMarket(updateFor(e)!)"
+            >
+              {{ updateBtnText(e) }}
+            </button>
             <span class="ec-version">v{{ e.version || '—' }}</span>
             <button
               class="ec-more"
@@ -346,40 +534,133 @@ function onMore(e: ExtensionEntry) {
     </template>
 
     <div v-else class="ec-market">
+      <div class="ec-market-toolbar">
+        <span class="ec-market-updated" :title="marketStatus?.last_updated || '尚未刷新'">
+          上次更新：{{ marketUpdatedText() }}
+        </span>
+        <button class="ghost-btn" type="button" :disabled="marketLoading" @click="loadMarket">
+          <RefreshCw
+            :size="12"
+            :stroke-width="2"
+            aria-hidden="true"
+            :class="{ spin: marketLoading }"
+          />
+          {{ marketLoading ? '刷新中…' : '刷新' }}
+        </button>
+      </div>
+      <div v-if="marketStatus?.error" class="ec-market-warn">
+        <span>市场源异常：{{ marketStatus.error }}</span>
+        <button class="ghost-btn" type="button" :disabled="marketLoading" @click="loadMarket">
+          <RefreshCw :size="12" :stroke-width="2" aria-hidden="true" />
+          重试
+        </button>
+      </div>
       <div v-if="marketLoading" class="ec-empty">
-        <p>正在加载市场…</p>
+        <p>正在刷新市场…</p>
       </div>
-      <div v-else-if="market.length === 0" class="ec-empty">
-        <PackageOpen :size="40" :stroke-width="1.5" aria-hidden="true" />
-        <h3>市场暂无内容</h3>
-        <p>在 <code>%APPDATA%\x-hub\market\registry.json</code> 配置市场清单后刷新</p>
-      </div>
-      <div v-else class="ec-market-list">
-        <div v-for="m in market" :key="m.id" class="ec-mcard">
-          <div class="ec-mcard-head">
-            <span class="ec-mcard-name">{{ m.name }}</span>
-            <span class="ec-version">v{{ m.version }}</span>
-          </div>
-          <p class="ec-mcard-desc" :title="m.description || m.id">{{ m.description || m.id }}</p>
-          <div class="ec-mcard-foot">
-            <span class="ec-mcard-author">{{ m.author }}</span>
-            <button
-              class="ghost-btn"
-              type="button"
-              :disabled="installingId === m.id"
-              @click="installFromMarket(m)"
+      <template v-else>
+        <div v-if="market.length === 0" class="ec-empty">
+          <PackageOpen :size="40" :stroke-width="1.5" aria-hidden="true" />
+          <h3>市场暂无内容</h3>
+          <p>
+            扩展市场由远端清单驱动，请确认已发布扩展（或用发布脚本上传 registry.json）
+            <span v-if="marketStatus?.last_updated">（上次更新：{{ marketStatus.last_updated }}）</span>
+          </p>
+          <button class="pill-btn" type="button" @click="loadMarket">刷新市场</button>
+        </div>
+        <div v-else class="ec-market-list">
+          <div v-for="m in market" :key="m.id" class="ec-mcard">
+            <div class="ec-mcard-head">
+              <div class="ec-mcard-title">
+                <span class="ec-mcard-icon" :style="{ background: accentOf(m.name).soft }">
+                  <img
+                    v-if="m.icon && !marketFailedIcons.has(m.id)"
+                    :src="m.icon"
+                    :alt="m.name"
+                    draggable="false"
+                    @error="onMarketImgError(m)"
+                  />
+                  <span v-else :style="{ color: accentOf(m.name).text }">{{ marketInitial(m) }}</span>
+                </span>
+                <span class="ec-mcard-name" :title="m.name">{{ m.name }}</span>
+              </div>
+              <span class="ec-version">v{{ m.version }}</span>
+            </div>
+            <p class="ec-mcard-desc" :title="m.description || m.id">{{ m.description || m.id }}</p>
+            <p v-if="m.changelog" class="ec-mcard-changelog" :title="m.changelog">更新：{{ m.changelog }}</p>
+            <div class="ec-mcard-foot">
+              <span class="ec-mcard-author">{{ m.author || '—' }}</span>
+              <div class="ec-mcard-btns">
+                <button class="ghost-btn" type="button" @click="openDetail(m)">详情</button>
+                <button
+                  class="ghost-btn"
+                  :class="{ 'ec-btn-update': installedOutdated(m) }"
+                  type="button"
+                  :disabled="installingId === m.id || updatingId === m.id || hostTooOld(m) || installedUpToDate(m)"
+                  :title="
+                    hostTooOld(m)
+                      ? `该扩展要求宿主 v${m.minAppVersion}+，当前为 v${appVersion}`
+                      : installedOutdated(m)
+                        ? `升级到 v${m.version}`
+                        : ''
+                  "
+                  @click="onMarketAction(m)"
+                >
+                  {{ hostTooOld(m) ? `需 v${m.minAppVersion}+` : marketActionLabel(m) }}
+                </button>
+              </div>
+            </div>
+            <div
+              v-if="
+                (installingId === m.id && installingProgress) ||
+                (updatingId === m.id && updatingProgress)
+              "
+              class="ec-mcard-progress"
             >
-              {{ installingId === m.id ? '安装中…' : '安装' }}
-            </button>
+              <div
+                class="ec-mcard-progress-inner"
+                :style="{
+                  transform: `scaleX(${
+                    (installingId === m.id
+                      ? progressPercent(installingProgress)
+                      : progressPercent(updatingProgress)) / 100
+                  })`,
+                }"
+              ></div>
+            </div>
           </div>
         </div>
-      </div>
+      </template>
     </div>
 
     <ExtensionSettingsDialog
       :extension="settingsExt"
       @close="settingsExt = null"
       @uninstalled="load"
+    />
+
+    <MarketDetailDialog
+      :extension="detailExt"
+      :action-label="detailExt ? marketActionLabel(detailExt) : ''"
+      :action-disabled="
+        detailExt
+          ? installingId === detailExt.id ||
+            updatingId === detailExt.id ||
+            hostTooOld(detailExt) ||
+            installedUpToDate(detailExt)
+          : false
+      "
+      :action-title="
+        detailExt
+          ? hostTooOld(detailExt)
+            ? `该扩展要求宿主 v${detailExt.minAppVersion}+，当前为 v${appVersion}`
+            : installedOutdated(detailExt)
+              ? `升级到 v${detailExt.version}`
+              : ''
+          : ''
+      "
+      @action="detailExt && onMarketAction(detailExt)"
+      @close="detailExt = null"
     />
   </div>
 </template>
@@ -599,6 +880,33 @@ function onMore(e: ExtensionEntry) {
   gap: 8px;
   flex-shrink: 0;
 }
+.ec-update-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--brand-500);
+  border-radius: var(--radius-pill);
+  background: var(--brand-50);
+  color: var(--brand-500);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 150ms ease-out, color 150ms ease-out, transform 150ms ease-out;
+}
+.ec-update-btn:hover {
+  background: var(--brand-500);
+  color: #fff;
+  transform: translateY(-1px);
+}
+.ec-update-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+  transform: none;
+}
+.ec-btn-update {
+  border-color: var(--brand-500);
+  color: var(--brand-500);
+}
 .ec-version {
   font-size: 0.75rem;
   color: var(--text-3);
@@ -630,6 +938,34 @@ function onMore(e: ExtensionEntry) {
   flex-direction: column;
   gap: 10px;
   padding: 2px;
+}
+.ec-market-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.ec-market-updated {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ec-market-toolbar .ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.spin {
+  animation: ec-spin 0.8s linear infinite;
+}
+@keyframes ec-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .ec-market-list {
   display: grid;
@@ -693,5 +1029,83 @@ function onMore(e: ExtensionEntry) {
   background: var(--bg-card-soft);
   padding: 1px 5px;
   border-radius: 4px;
+}
+.ec-market-warn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--c-yellow-soft, rgba(240, 180, 40, 0.14));
+  color: var(--c-yellow-ink, #b5850a);
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
+.ec-market-warn .ghost-btn {
+  flex-shrink: 0;
+}
+.ec-mcard-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ec-mcard-icon {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  overflow: hidden;
+}
+.ec-mcard-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.ec-mcard-changelog {
+  margin: 0;
+  font-size: 0.6875rem;
+  color: var(--text-4, var(--text-3));
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ec-mcard-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ec-mcard-foot .ec-mcard-author {
+  flex: 1;
+}
+.ec-mcard-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.ec-mcard-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-card-soft);
+  overflow: hidden;
+}
+.ec-mcard-progress-inner {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--brand-500);
+  transform-origin: left center;
+  transform: scaleX(0);
+  transition: transform 150ms ease-out;
+}
+.ec-mcard-foot .ghost-btn {
+  min-width: 64px;
 }
 </style>

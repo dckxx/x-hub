@@ -204,6 +204,14 @@ pub fn extensions_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Str
     Ok(crate::paths::data_root().join("extensions"))
 }
 
+/// 是否为隐藏目录（`.` 开头）。扩展 id 不以 `.` 开头；`.backup/`、`.tmp-update/`
+/// 等内部暂存目录在扫描 / stamp 时一律跳过，避免被当成扩展或干扰热更新戳。
+fn is_hidden_dir(p: &std::path::Path) -> bool {
+    p.file_name()
+        .map(|n| n.to_string_lossy().starts_with('.'))
+        .unwrap_or(false)
+}
+
 /// 扫描扩展根目录，解析每个子目录的 manifest.json。
 /// 单个目录解析失败不影响整体扫描，只标记该目录为 invalid。
 pub fn scan_extensions(app: &tauri::AppHandle) -> Result<Vec<ExtensionEntry>, String> {
@@ -215,7 +223,7 @@ pub fn scan_extensions(app: &tauri::AppHandle) -> Result<Vec<ExtensionEntry>, St
     let dirs = std::fs::read_dir(&root).map_err(|e| e.to_string())?;
     for entry in dirs.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if path.is_dir() && !is_hidden_dir(&path) {
             entries.push(load_extension(&path));
         }
     }
@@ -349,7 +357,7 @@ pub fn extensions_stamp(app: tauri::AppHandle) -> Result<u64, String> {
     let mut dirs: Vec<_> = std::fs::read_dir(&root)
         .map_err(|e| e.to_string())?
         .flatten()
-        .filter(|e| e.path().is_dir())
+        .filter(|e| e.path().is_dir() && !is_hidden_dir(&e.path()))
         .collect();
     dirs.sort_by_key(|e| e.path());
     for entry in dirs {

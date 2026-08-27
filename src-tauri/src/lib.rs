@@ -8,7 +8,7 @@ mod countdown_window;
 mod db;
 mod extension;
 mod float_window;
-mod market;
+pub mod market;
 mod models;
 mod notify;
 mod online;
@@ -19,6 +19,7 @@ mod repo;
 mod runtime;
 mod service;
 mod shortcut;
+pub mod signing;
 mod sticky_window;
 mod sysmon;
 mod tray;
@@ -449,8 +450,11 @@ commands::set_chat_panel,
             extension::get_extension_permissions,
             extension::set_extension_permission,
             market::get_market_registry,
+            market::refresh_market_registry,
             market::install_from_market,
             market::install_local_archive,
+            market::update_extension,
+            process::open_external,
             xhub_api::xhub_call,
             commands::check_connectivity,
             commands::get_weather,

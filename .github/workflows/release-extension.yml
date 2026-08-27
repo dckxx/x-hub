@@ -1,0 +1,79 @@
+name: Publish Extension
+
+on:
+  workflow_dispatch:
+    inputs:
+      ext_repo:
+        description: '扩展源码仓库（HTTPS clone URL）'
+        required: true
+        default: 'https://github.com/x-hub-desktop/x-hub-extensions.git'
+      ext_path:
+        description: '扩展源码目录（仓库内相对路径，含 manifest.json）'
+        required: true
+        default: 'extensions/hello-web'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 宿主仓库（取发布脚本）
+        uses: actions/checkout@v4
+
+      - name: Checkout 扩展仓库
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.ext_repo }}
+          path: ext-repo
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装 rclone
+        run: |
+          curl -sLO https://downloads.rclone.org/rclone-current-linux-amd64.zip
+          unzip -oq rclone-current-linux-amd64.zip
+          mkdir -p "$HOME/bin"
+          mv rclone-*-linux-amd64/rclone "$HOME/bin/"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: 配置 R2 remote
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          rclone config create r2 s3 provider Cloudflare \
+            access_key_id "$R2_ACCESS_KEY_ID" \
+            secret_access_key "$R2_SECRET_ACCESS_KEY" \
+            endpoint "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" \
+            --non-interactive
+
+      - name: 写入签名私钥（Secret → 临时文件）
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          $keyPath = Join-Path $env:RUNNER_TEMP 'market.key'
+          [System.IO.File]::WriteAllText($keyPath, $env:UPDATE_SIGNING_KEY)
+          Write-Output "KEY_PATH=$keyPath" >> $env:GITHUB_ENV
+
+      - name: 打包 + 合并清单 + Ed25519 签名
+        shell: pwsh
+        env:
+          CDN_BASE_URL: ${{ secrets.CDN_BASE_URL }}
+        run: |
+          & ./scripts/publish-extension.ps1 `
+            -ExtDir "ext-repo/${{ inputs.ext_path }}" `
+            -SignKey "$env:KEY_PATH" `
+            -Endpoint "$env:CDN_BASE_URL/extensions"
+
+      - name: 上传 R2（清单 no-cache，包/图标 immutable 长缓存）
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          rclone copy dist-market r2:"$R2_BUCKET/extensions" --include 'registry.json*' --header-upload 'Cache-Control: no-cache' -P
+          rclone copy dist-market r2:"$R2_BUCKET/extensions" --include 'packages/**' --include 'icons/**' --header-upload 'Cache-Control: public, max-age=31536000, immutable' -P

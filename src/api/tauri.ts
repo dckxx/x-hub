@@ -194,7 +194,7 @@ export interface ExtensionEntry {
   actions: { id: string; title: string; surface: string }[]
 }
 
-/** 市场清单里的一条扩展 */
+/** 市场清单里的一条扩展（v2：R2 远端清单格式） */
 export interface MarketExtension {
   id: string
   name: string
@@ -202,8 +202,40 @@ export interface MarketExtension {
   description: string
   runtime: string
   author: string
-  /** 下载地址（zip 包） */
-  download_url: string
+  /** 下载地址（zip 包，R2 公开 URL） */
+  downloadUrl: string
+  /** zip 包 sha256（hex 小写），下载后校验 */
+  sha256: string
+  /** zip 包字节大小（0 = 未知） */
+  size: number
+  /** 市场卡片图标 URL（https，直接 <img> 加载） */
+  icon: string
+  /** 宿主最低版本门槛（如 "0.3.0"） */
+  minAppVersion: string
+  /** 本版本更新说明 */
+  changelog: string
+  /** 项目主页 */
+  homepage: string
+  /** 官方内置扩展标记 */
+  required: boolean
+}
+
+/** 市场状态（get_market_registry / refresh_market_registry 返回） */
+export interface MarketStatus {
+  extensions: MarketExtension[]
+  /** 清单更新时间（远端 updatedAt 透传） */
+  last_updated: string
+  /** remote（刷新成功）/ cache（离线或验签失败回退） */
+  source: 'remote' | 'cache'
+  /** 拉取/验签失败原因（source=cache 时非空） */
+  error: string | null
+}
+
+/** 市场下载进度事件负载（market-download-progress） */
+export interface MarketDownloadProgress {
+  id: string
+  received: number
+  total: number | null
 }
 
 export interface DataPathInfo {
@@ -569,9 +601,17 @@ export const tauriApi = {
   setExtensionPermission: (id: string, permission: string, granted: boolean) =>
     invoke<void>('set_extension_permission', { id, permission, granted }),
   // ---- 扩展市场 ----
-  getMarketRegistry: () => invoke<MarketExtension[]>('get_market_registry'),
-  installFromMarket: (downloadUrl: string) =>
-    invoke<string>('install_from_market', { downloadUrl }),
+  getMarketRegistry: () => invoke<MarketStatus>('get_market_registry'),
+  /** 拉取远端市场清单（fetch 原始字节 + Ed25519 验签 + 原子落缓存），失败回退本地缓存 */
+  refreshMarketRegistry: () => invoke<MarketStatus>('refresh_market_registry'),
+  /** 从市场下载并安装扩展（流式下载 + sha256 校验 + 解包），返回扩展 id */
+  installFromMarket: (extension: MarketExtension) =>
+    invoke<string>('install_from_market', { extension }),
+  /** 从市场更新扩展（校验 + 版本比较 + 备份 + 保留用户点文件 + 原子替换 + 回滚），返回扩展 id */
+  updateFromMarket: (extension: MarketExtension) =>
+    invoke<string>('update_extension', { extension }),
+  /** 打开外部链接（系统默认浏览器；仅放行 http/https） */
+  openExternal: (url: string) => invoke<void>('open_external', { url }),
   /** 桥 API 统一分发：扩展 iframe 经主窗口转发调用 */
   xhubCall: (extId: string, namespace: string, method: string, args: unknown) =>
     invoke<unknown>('xhub_call', { extId, namespace, method, args }),

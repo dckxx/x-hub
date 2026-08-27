@@ -130,6 +130,9 @@ pub struct AppConfig {
     /// 扩展「默认打开方式」映射：extId → view / window / drawer（未设置时默认 view）
     #[serde(default)]
     pub extension_open_modes: std::collections::HashMap<String, String>,
+    /// 市场清单远端地址（空 = 用默认值）
+    #[serde(default = "default_market_endpoint")]
+    pub market_endpoint: String,
 }
 
 fn one() -> f64 {
@@ -154,6 +157,13 @@ fn default_quote_source() -> String {
 
 fn default_runtime_strategy() -> String {
     "auto".to_string()
+}
+
+/// 默认市场清单远端地址（Cloudflare R2 公开桶 + 自定义域名）
+pub const DEFAULT_MARKET_ENDPOINT: &str = "https://r2.dckxx.com/extensions/registry.json";
+
+fn default_market_endpoint() -> String {
+    DEFAULT_MARKET_ENDPOINT.to_string()
 }
 
 impl Default for AppConfig {
@@ -195,6 +205,7 @@ impl Default for AppConfig {
             runtime_strategy: "auto".to_string(),
             sidebar_extensions: Vec::new(),
             extension_open_modes: std::collections::HashMap::new(),
+            market_endpoint: default_market_endpoint(),
         }
     }
 }

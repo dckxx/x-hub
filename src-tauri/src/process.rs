@@ -95,6 +95,15 @@ pub fn open_url(url: &str) -> Result<(), String> {
     opener::open(url).map_err(|e| format!("打开链接失败: {}", e))
 }
 
+/// 打开外部链接（仅供前端调用的安全命令：只放行 http/https，防止任意 scheme 注入）。
+#[tauri::command]
+pub fn open_external(url: String) -> Result<(), String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("只能打开 http/https 链接".to_string());
+    }
+    open_url(&url)
+}
+
 /// 打开本地路径：文件用系统默认程序打开，文件夹由资源管理器/文件管理器打开
 pub fn open_path(path: &str) -> Result<(), String> {
     let target = std::path::Path::new(path);

@@ -934,6 +934,46 @@ pub fn set_global_shortcut(app: tauri::AppHandle, value: String) -> Result<Strin
     Ok(config.global_shortcut)
 }
 
+// ---------- 开机自启动 ----------
+
+/// 自启动当前状态（enabled 总开关；admin 是否以管理员身份运行）
+#[derive(serde::Serialize)]
+pub struct RunAtStartupStatus {
+    pub enabled: bool,
+    pub admin: bool,
+}
+
+/// 读取自启动状态（配置为准；若系统注册与配置不一致，下次启用/关闭会同步）
+#[tauri::command]
+pub fn get_run_at_startup() -> Result<RunAtStartupStatus, String> {
+    let config = crate::config::load();
+    Ok(RunAtStartupStatus {
+        enabled: config.run_at_startup,
+        admin: config.run_at_startup_admin,
+    })
+}
+
+/// 设置自启动：`enabled` 总开关；`admin` 是否以管理员身份启动（仅 enabled 时生效）。
+/// 写入系统注册（Run 键 / 计划任务）成功后持久化配置。
+#[tauri::command]
+pub fn set_run_at_startup(enabled: bool, admin: bool) -> Result<(), String> {
+    let _guard = crate::config::lock();
+    crate::autostart::apply(enabled, admin)?;
+    let mut config = crate::config::load();
+    config.run_at_startup = enabled;
+    config.run_at_startup_admin = admin && enabled;
+    crate::config::save(&config)?;
+    log::info!("开机自启动: enabled={} admin={}", enabled, admin);
+    Ok(())
+}
+
+/// 本次启动是否来自「自启动静默模式」（命令行带 --autostart-hidden）。
+/// 前端据此不主动显示主窗口，直接驻留托盘。
+#[tauri::command]
+pub fn get_startup_hidden() -> Result<bool, String> {
+    Ok(crate::autostart::is_hidden_launch())
+}
+
 #[tauri::command]
 pub fn log_client_error(message: String, detail: Option<String>) -> Result<(), String> {
     match detail {

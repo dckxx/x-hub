@@ -20,9 +20,9 @@ const store = useStore()
 
 // ---- 分类导航（左侧分类 = 右侧区块锚点，点击平滑滚动定位，不做内容切换） ----
 const SECTIONS = [
+  { id: 'ai', label: 'AI 助手' },
   { id: 'appearance', label: '外观' },
   { id: 'workbench', label: '工作台' },
-  { id: 'ai', label: 'AI 助手' },
   { id: 'shortcut', label: '快捷键' },
   { id: 'clipboard', label: '剪贴板' },
   { id: 'online', label: '联网' },
@@ -124,6 +124,39 @@ function onToggleCountdownSound() {
 
 function onToggleSidebar() {
   void store.setSidebarToggle(!store.state.config.sidebar_toggle)
+}
+
+// ---- 开机自启动 ----
+const autostartBusy = ref(false)
+
+async function onToggleAutostart() {
+  if (autostartBusy.value) return
+  autostartBusy.value = true
+  const next = !store.state.config.run_at_startup
+  try {
+    await store.setRunAtStartup(next, store.state.config.run_at_startup_admin)
+    showToast(next ? '已开启开机自启动' : '已关闭开机自启动')
+  } catch (e) {
+    showToast(`设置失败：${String(e)}`)
+  } finally {
+    autostartBusy.value = false
+  }
+}
+
+async function onToggleAutostartAdmin() {
+  if (autostartBusy.value) return
+  autostartBusy.value = true
+  const next = !store.state.config.run_at_startup_admin
+  try {
+    // 启用「以管理员身份启动」时自动打开自启动总开关
+    const enabled = next ? true : store.state.config.run_at_startup
+    await store.setRunAtStartup(enabled, next)
+    showToast(next ? '开机将以管理员身份启动' : '已改为普通方式启动')
+  } catch (e) {
+    showToast(`设置失败：${String(e)}`)
+  } finally {
+    autostartBusy.value = false
+  }
 }
 
 function onChatPanelOpacityInput(e: Event) {
@@ -482,6 +515,42 @@ function onAccentInput(e: Event) {
         <!-- 外观 -->
         <section id="sv-sec-appearance" class="sv-sec" aria-label="外观">
           <h3 class="sv-sec-title">外观</h3>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">开机自动启动</span>
+              <span class="setting-desc">登录 Windows 后自动在后台运行并驻留托盘（不弹出主窗口，点托盘图标可随时唤出）</span>
+            </div>
+            <button
+              class="toggle"
+              role="switch"
+              type="button"
+              :aria-checked="store.state.config.run_at_startup"
+              :class="{ on: store.state.config.run_at_startup }"
+              :disabled="autostartBusy"
+              @click="onToggleAutostart"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">以管理员身份启动</span>
+              <span class="setting-desc">自启动时静默以管理员权限运行，避免部分功能（UAC 提权程序等）权限不足的异常问题；需以管理员身份授权注册一次</span>
+            </div>
+            <button
+              class="toggle"
+              role="switch"
+              type="button"
+              :aria-checked="store.state.config.run_at_startup_admin"
+              :class="{ on: store.state.config.run_at_startup_admin }"
+              :disabled="autostartBusy"
+              @click="onToggleAutostartAdmin"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">侧边栏展开功能</span>

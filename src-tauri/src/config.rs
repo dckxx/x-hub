@@ -133,6 +133,12 @@ pub struct AppConfig {
     /// 市场清单远端地址（空 = 用默认值）
     #[serde(default = "default_market_endpoint")]
     pub market_endpoint: String,
+    /// 开机自启动（登录 Windows 时自动驻留托盘）
+    #[serde(default)]
+    pub run_at_startup: bool,
+    /// 开机自启动是否以管理员身份运行（仅 run_at_startup 启用时生效）
+    #[serde(default)]
+    pub run_at_startup_admin: bool,
 }
 
 fn one() -> f64 {
@@ -206,6 +212,8 @@ impl Default for AppConfig {
             sidebar_extensions: Vec::new(),
             extension_open_modes: std::collections::HashMap::new(),
             market_endpoint: default_market_endpoint(),
+            run_at_startup: false,
+            run_at_startup_admin: false,
         }
     }
 }

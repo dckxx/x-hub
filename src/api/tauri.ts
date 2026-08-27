@@ -152,6 +152,10 @@ export interface AppConfig {
   sidebar_extensions: string[]
   /** 扩展「默认打开方式」映射：extId → view / window / drawer（未设置时侧栏点击默认 view） */
   extension_open_modes: Record<string, string>
+  /** 开机自启动（登录 Windows 时自动驻留托盘） */
+  run_at_startup: boolean
+  /** 开机自启动是否以管理员身份运行（仅 run_at_startup 启用时生效） */
+  run_at_startup_admin: boolean
 }
 
 export interface AppInfo {
@@ -468,6 +472,11 @@ export const tauriApi = {
     invoke<void>('set_always_on_top_config', { value }),
   getGlobalShortcut: () => invoke<string>('get_global_shortcut'),
   setGlobalShortcut: (value: string) => invoke<string>('set_global_shortcut', { value }),
+  getRunAtStartup: () =>
+    invoke<{ enabled: boolean; admin: boolean }>('get_run_at_startup'),
+  setRunAtStartup: (enabled: boolean, admin: boolean) =>
+    invoke<void>('set_run_at_startup', { enabled, admin }),
+  getStartupHidden: () => invoke<boolean>('get_startup_hidden'),
   logClientError: (payload: ClientErrorPayload) =>
     invoke<void>('log_client_error', { message: payload.message, detail: payload.detail }),
   minimizeWindow: () => invoke<void>('minimize_window'),

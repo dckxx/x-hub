@@ -1,4 +1,5 @@
 mod about;
+mod autostart;
 mod chat;
 mod clipboard;
 mod commands;
@@ -390,6 +391,9 @@ pub fn run() {
             commands::set_always_on_top_config,
             commands::get_global_shortcut,
             commands::set_global_shortcut,
+            commands::get_run_at_startup,
+            commands::set_run_at_startup,
+            commands::get_startup_hidden,
             commands::log_client_error,
             commands::minimize_window,
             commands::toggle_maximize,

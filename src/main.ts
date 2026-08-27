@@ -2,7 +2,7 @@ import { createApp } from 'vue'
 import App from './App.vue'
 import './style.css'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { isTauri } from './api/tauri'
+import { isTauri, tauriApi } from './api/tauri'
 import { reportClientError } from './utils/error-report'
 
 // 禁用页面缩放：WebView2 里 Ctrl+滚轮 / 触控板捏合 / Ctrl+± 会放大整个页面，
@@ -41,10 +41,18 @@ disableContextMenu()
 // 主窗口：内容可绘制后再显示，避免 WebView2 冷启动期间的空白等待窗口（白/底色）。
 // tauri.conf.json 里主窗口 visible:false，等 HTML 解析、欢迎页已就位后这里再 show。
 // 浮窗便签（sticky-* 标签）由 Rust 自行控制显示，不受影响。
+// 开机自启动（--autostart-hidden）时不显示主窗口，直接驻留托盘。
 if (isTauri() && getCurrentWindow().label === 'main') {
-  const win = getCurrentWindow()
-  void win.show()
-  void win.setFocus()
+  void (async () => {
+    const win = getCurrentWindow()
+    const hiddenLaunched = await tauriApi.getStartupHidden().catch(() => false)
+    if (hiddenLaunched) {
+      void win.hide()
+    } else {
+      void win.show()
+      void win.setFocus()
+    }
+  })()
 }
 
 const app = createApp(App)

@@ -95,6 +95,8 @@ const state = reactive<StoreState>({
     runtime_strategy: 'auto',
     sidebar_extensions: [],
     extension_open_modes: {},
+    run_at_startup: false,
+    run_at_startup_admin: false,
   },
   systemInfo: null,
   online: false,
@@ -685,6 +687,24 @@ export function useStore() {
     void tauriApi.saveConfig(state.config)
   }
 
+  // ---- 开机自启动 ----
+  /** 应用开机自启动（enabled 总开关；admin 是否以管理员身份运行），失败回滚内存状态 */
+  async function setRunAtStartup(enabled: boolean, admin: boolean) {
+    const prevEnabled = state.config.run_at_startup
+    const prevAdmin = state.config.run_at_startup_admin
+    state.config.run_at_startup = enabled
+    state.config.run_at_startup_admin = admin && enabled
+    if (!isTauri()) return
+    try {
+      await tauriApi.setRunAtStartup(enabled, admin)
+      await tauriApi.saveConfig(state.config)
+    } catch (e) {
+      state.config.run_at_startup = prevEnabled
+      state.config.run_at_startup_admin = prevAdmin
+      throw e
+    }
+  }
+
   // ---- 系统资源 ----
   async function refreshSystemInfo() {
     if (!isTauri()) return null
@@ -912,6 +932,7 @@ export function useStore() {
     setRuntimeStrategy,
     setSidebarExtension,
     setExtensionOpenMode,
+    setRunAtStartup,
     setClipboardShortcut,
     setClipboardPaused,
     setClipboardRetention,

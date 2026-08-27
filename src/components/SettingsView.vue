@@ -164,6 +164,19 @@ function onChatPanelOpacityInput(e: Event) {
   void store.setChatPanelOpacity(v)
 }
 
+const CHAT_PANEL_SIDE_OPTIONS = [
+  { value: 'right', label: '右侧' },
+  { value: 'left', label: '左侧' },
+  { value: 'top', label: '顶部' },
+  { value: 'bottom', label: '底部' },
+] as const
+
+async function onChatPanelSideChange(value: string) {
+  const side = value as 'left' | 'right' | 'top' | 'bottom'
+  await store.setChatPanelSide(side)
+  showToast(`AI 对话面板已改为从${['右侧', '左侧', '顶部', '底部'][['right', 'left', 'top', 'bottom'].indexOf(side)]}滑出`)
+}
+
 // ---- 字体大小（全局 + 单模块） ----
 const FONT_MODULES = [
   { key: 'sticky', label: '便签', configKey: 'font_sticky' },
@@ -507,6 +520,19 @@ function onAccentInput(e: Event) {
               />
               <span class="opacity-value">{{ Math.round((store.state.config.chat_panel_opacity ?? 1) * 100) }}%</span>
             </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">AI 对话面板位置</span>
+              <span class="setting-desc">对话抽屉从上下左右哪个方位滑出（左右方位可拖拽调宽，上下方位可拖拽调高）</span>
+            </div>
+            <AppSelect
+              :model-value="store.state.config.chat_panel_side ?? 'right'"
+              :options="CHAT_PANEL_SIDE_OPTIONS"
+              aria-label="AI 对话面板位置"
+              @update:model-value="onChatPanelSideChange"
+            />
           </div>
 
           <AiProviders />

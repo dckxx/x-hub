@@ -5,9 +5,12 @@ import { ChevronDown, MessageSquare, PanelRightClose, Plus, Send, Settings2, X }
 import { isTauri, tauriApi, type ChatMessage, type ChatModelConfig, type ChatSession, type ChatStreamEvent } from '../api/tauri'
 import AppSelect from './AppSelect.vue'
 
+const props = defineProps<{ side?: 'left' | 'right' | 'top' | 'bottom' }>()
+
 const emit = defineEmits<{
   (e: 'toggle'): void
   (e: 'open-model-settings'): void
+  (e: 'resized', width: number, height: number): void
 }>()
 
 const showToast = inject<(msg: string, action?: { label: string; onClick: () => void }) => void>(
@@ -429,40 +432,66 @@ async function onBodyClick(e: MouseEvent) {
   }
 }
 
-// ---- 面板宽度拖拽 ----
+// ---- 面板尺寸拖拽 ----
+// 左右方位调整宽度，上下方位调整高度；拖拽后同步父级（index.vue 用 chatDockStyle 定位）并持久化
 let dragging = false
 let startX = 0
-let startWidth = 420
+let startY = 0
+let startSize = 420
+
+const isVertical = computed(() => props.side === 'top' || props.side === 'bottom')
+
+const panelWidth = ref(420)
+const panelHeight = ref(380)
+
+function clampSize(v: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, v))
+}
 
 function onResizeDown(e: MouseEvent) {
   dragging = true
   startX = e.clientX
-  startWidth = panelWidth.value
+  startY = e.clientY
+  startSize = isVertical.value ? panelHeight.value : panelWidth.value
   document.addEventListener('mousemove', onResizeMove)
   document.addEventListener('mouseup', onResizeUp)
   e.preventDefault()
 }
 function onResizeMove(e: MouseEvent) {
   if (!dragging) return
-  const w = Math.max(320, Math.min(640, startWidth - (e.clientX - startX)))
-  panelWidth.value = w
+  if (isVertical.value) {
+    let h: number
+    const dy = e.clientY - startY
+    // 顶部：向下拖变高；底部：向上拖变高
+    h = props.side === 'top' ? startSize + dy : startSize - dy
+    panelHeight.value = clampSize(h, 200, 640)
+  } else {
+    let w: number
+    const dx = e.clientX - startX
+    // 右侧：向左拖变宽；左侧：向右拖变宽
+    w = props.side === 'right' ? startSize - dx : startSize + dx
+    panelWidth.value = clampSize(w, 320, 640)
+  }
+  // 实时通知父级刷新停靠区尺寸，保证拖拽过程即时反馈
+  emit('resized', panelWidth.value, panelHeight.value)
 }
 function onResizeUp() {
   dragging = false
   document.removeEventListener('mousemove', onResizeMove)
   document.removeEventListener('mouseup', onResizeUp)
-  if (isTauri()) void tauriApi.setChatPanel(panelWidth.value, true)
+  emit('resized', panelWidth.value, panelHeight.value)
+  if (isTauri()) void tauriApi.setChatPanel(panelWidth.value, panelHeight.value, true)
 }
-
-const panelWidth = ref(420)
 
 onMounted(async () => {
   window.addEventListener('click', onWindowClick)
   window.addEventListener('keydown', onWindowKeydown)
   window.addEventListener('resize', onWindowResize)
   if (!isTauri()) return
-  const [w] = await tauriApi.getChatPanel()
+  const [w, h] = await tauriApi.getChatPanel()
   panelWidth.value = w
+  panelHeight.value = h
+  emit('resized', w, h)
   await Promise.all([loadSessions(), loadModels()])
 })
 
@@ -485,7 +514,7 @@ function autosize() {
 </script>
 
 <template>
-  <div class="chat-panel" :style="{ width: panelWidth + 'px' }">
+  <div class="chat-panel" :class="'side-' + (props.side || 'right')">
     <div class="resize-h" @mousedown="onResizeDown"></div>
 
     <div class="cp-header">
@@ -655,6 +684,7 @@ function autosize() {
   flex: 0 0 auto;
   min-width: 0;
   height: 100%;
+  width: 100%;
   display: flex;
   flex-direction: column;
   background: var(--bg-chat-panel);
@@ -664,25 +694,102 @@ function autosize() {
   box-shadow: -6px 0 24px rgba(38, 35, 29, 0.06);
   overflow: hidden;
 }
+/* 左侧停靠：镜像圆角与阴影 */
+.chat-panel.side-left {
+  border-left: none;
+  border-right: 1px solid var(--border-soft);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-top-right-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-lg);
+  box-shadow: 6px 0 24px rgba(38, 35, 29, 0.06);
+}
+/* 顶部停靠：只保留下圆角与下方阴影 */
+.chat-panel.side-top {
+  border-left: none;
+  border-top: none;
+  border-bottom: 1px solid var(--border-soft);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-bottom-left-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-lg);
+  box-shadow: 0 6px 24px rgba(38, 35, 29, 0.06);
+}
+/* 底部停靠：只保留上圆角与上方阴影 */
+.chat-panel.side-bottom {
+  border-left: none;
+  border-bottom: none;
+  border-top: 1px solid var(--border-soft);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-top-left-radius: var(--radius-lg);
+  border-top-right-radius: var(--radius-lg);
+  box-shadow: 0 -6px 24px rgba(38, 35, 29, 0.06);
+}
+
+/* 拖拽手柄：水平方位（左右）在侧边，垂直方位（上下）在底边/顶边 */
 .resize-h {
   position: absolute;
+  z-index: 10;
+}
+.chat-panel.side-right .resize-h {
   left: -3px;
   top: 0;
   bottom: 0;
   width: 6px;
   cursor: col-resize;
-  z-index: 10;
+}
+.chat-panel.side-left .resize-h {
+  right: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+}
+.chat-panel.side-top .resize-h {
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 6px;
+  cursor: row-resize;
+}
+.chat-panel.side-bottom .resize-h {
+  left: 0;
+  right: 0;
+  top: -3px;
+  height: 6px;
+  cursor: row-resize;
 }
 .resize-h:hover::after {
   content: "";
   position: absolute;
+  background: var(--brand-500);
+  border-radius: 2px;
+  opacity: 0.6;
+}
+.chat-panel.side-right .resize-h:hover::after {
   left: 2px;
   top: 0;
   bottom: 0;
   width: 2px;
-  background: var(--brand-500);
-  border-radius: 2px;
-  opacity: 0.6;
+}
+.chat-panel.side-left .resize-h:hover::after {
+  right: 2px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+}
+.chat-panel.side-top .resize-h:hover::after {
+  top: 2px;
+  left: 0;
+  right: 0;
+  height: 2px;
+}
+.chat-panel.side-bottom .resize-h:hover::after {
+  bottom: 2px;
+  left: 0;
+  right: 0;
+  height: 2px;
 }
 
 .cp-header {

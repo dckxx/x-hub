@@ -77,6 +77,8 @@ const state = reactive<StoreState>({
     chat_models: [],
     chat_panel_width: 420,
     chat_panel_open: false,
+    chat_panel_side: 'right',
+    chat_panel_height: 380,
     chat_panel_opacity: 1,
     whats_new_enabled: true,
     last_seen_version: '',
@@ -630,6 +632,14 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** AI 对话面板方位：left / right / top / bottom */
+  async function setChatPanelSide(value: 'left' | 'right' | 'top' | 'bottom') {
+    state.config.chat_panel_side = value
+    if (!isTauri()) return
+    await tauriApi.setChatPanelSide(value)
+    await tauriApi.saveConfig(state.config)
+  }
+
   /** 升级后弹窗显示更新说明（默认关闭） */
   async function setWhatsNewEnabled(value: boolean) {
     state.config.whats_new_enabled = value
@@ -926,6 +936,7 @@ export function useStore() {
   setClockQuote,
   setChatModels,
   setChatPanelOpacity,
+  setChatPanelSide,
     setWhatsNewEnabled,
     setFontScale,
     setModuleFontScale,

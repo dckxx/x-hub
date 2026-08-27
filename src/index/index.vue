@@ -387,14 +387,28 @@ function onSearchKeydown(e: KeyboardEvent) {
   }
 }
 
-// ---- AI 对话右侧面板 ----
+// ---- AI 对话抽屉（支持上下左右四个方位）----
 const chatOpen = ref(false)
 const chatWidth = ref(420)
+const chatHeight = ref(380)
+// 方位取自配置（设置页可切换），default 回退右侧
+const chatSide = computed(() => (store.state.config.chat_panel_side || 'right') as 'left' | 'right' | 'top' | 'bottom')
+// 左右方位用宽度、上下方位用高度（传给 dock 布局）
+const chatDockStyle = computed(() =>
+  chatSide.value === 'top' || chatSide.value === 'bottom'
+    ? { height: chatHeight.value + 'px', width: '100%' }
+    : { width: chatWidth.value + 'px', height: '100%' },
+)
 
 function toggleChat() {
   chatOpen.value = !chatOpen.value
-  // 窗口开关状态不持久化：重启后始终默认收起，仅保存宽度
-  if (isTauri()) void tauriApi.setChatPanel(chatWidth.value, false)
+  // 窗口开关状态不持久化：重启后始终默认收起，仅保存尺寸
+  persistChatPanelSize()
+}
+
+function persistChatPanelSize() {
+  if (!isTauri()) return
+  void tauriApi.setChatPanel(chatWidth.value, chatHeight.value, chatOpen.value)
 }
 
 function onChatToggle() {
@@ -411,13 +425,20 @@ function onOpenChatSettings() {
 async function restoreChatPanel() {
   if (!isTauri()) return
   try {
-    const [w] = await tauriApi.getChatPanel()
+    const [w, h] = await tauriApi.getChatPanel()
     chatWidth.value = w
+    chatHeight.value = h
     // 启动时始终默认收起（开关状态不持久化）
     chatOpen.value = false
   } catch {
     // 忽略：命令未就绪时保持默认收起
   }
+}
+
+// 拖拽改尺寸后由 ChatPanel 回调同步本地状态（宽度/高度根据当前方位取对应值）
+function onChatPanelResized(w: number, h: number) {
+  chatWidth.value = w
+  chatHeight.value = h
 }
 
 function onChatKeydown(e: KeyboardEvent) {
@@ -646,7 +667,7 @@ provide('showToast', showToast)
         <section v-else-if="activeView === 'chat'" class="view view-chat" tabindex="-1" aria-label="对话">
           <div class="view-chat-hint">
             <MessageSquare :size="20" :stroke-width="1.8" />
-            <p>右侧面板已是最佳对话形态，可点击标题栏对话按钮或按 Ctrl+Shift+K 唤起。</p>
+            <p>抽屉面板已是最佳对话形态，可点击标题栏对话按钮或按 Ctrl+Shift+K 唤起（方位可在设置 → AI 助手调整）。</p>
           </div>
         </section>
 
@@ -661,16 +682,22 @@ provide('showToast', showToast)
         </section>
         </main>
 
-        <!-- AI 对话抽屉（覆盖式，悬浮在内容上方，可拖拽调宽） -->
-        <Transition name="chat-drawer">
+        <!-- AI 对话抽屉（覆盖式，悬浮在内容上方，可从上下左右滑入，尺寸可拖拽） -->
+        <Transition :name="`chat-drawer-${chatSide}`">
           <div
             v-if="chatOpen"
             class="chat-dock"
-            :style="{ opacity: store.state.config.chat_panel_opacity ?? 1 }"
+            :class="`dock-${chatSide}`"
+            :style="{
+              opacity: store.state.config.chat_panel_opacity ?? 1,
+              ...chatDockStyle,
+            }"
           >
             <ChatPanel
+              :side="chatSide"
               @toggle="onChatToggle"
               @open-model-settings="onOpenChatSettings"
+              @resized="onChatPanelResized"
             />
           </div>
         </Transition>
@@ -951,27 +978,64 @@ provide('showToast', showToast)
   min-width: 0;
 }
 
-/* 覆盖式抽屉：absolute 悬浮于工作区之上，右侧滑入 */
+/* 覆盖式抽屉：absolute 悬浮于工作区之上，支持上下左右四个方位滑入 */
 .main-area .chat-dock {
   position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
   z-index: 40;
   pointer-events: none;
 }
 .main-area .chat-dock :deep(.chat-panel) {
   height: 100%;
+  width: 100%;
   pointer-events: auto;
 }
-
-.chat-drawer-enter-active,
-.chat-drawer-leave-active {
-  transition: transform 0.24s ease-out;
+.main-area .chat-dock.dock-right {
+  top: 0;
+  right: 0;
+  bottom: 0;
 }
-.chat-drawer-enter-from,
-.chat-drawer-leave-to {
+.main-area .chat-dock.dock-left {
+  top: 0;
+  left: 0;
+  bottom: 0;
+}
+.main-area .chat-dock.dock-top {
+  top: 0;
+  left: 0;
+  right: 0;
+}
+.main-area .chat-dock.dock-bottom {
+  bottom: 0;
+  left: 0;
+  right: 0;
+}
+
+/* 四个方位的滑入/滑出过渡（配合 ChatPanel 内部尺寸拖拽，动画只做 transform） */
+.chat-drawer-right-enter-active,
+.chat-drawer-right-leave-active,
+.chat-drawer-left-enter-active,
+.chat-drawer-left-leave-active,
+.chat-drawer-top-enter-active,
+.chat-drawer-top-leave-active,
+.chat-drawer-bottom-enter-active,
+.chat-drawer-bottom-leave-active {
+  transition: transform 0.24s ease-out, opacity 0.18s ease-out;
+}
+.chat-drawer-right-enter-from,
+.chat-drawer-right-leave-to {
   transform: translateX(100%);
+}
+.chat-drawer-left-enter-from,
+.chat-drawer-left-leave-to {
+  transform: translateX(-100%);
+}
+.chat-drawer-top-enter-from,
+.chat-drawer-top-leave-to {
+  transform: translateY(-100%);
+}
+.chat-drawer-bottom-enter-from,
+.chat-drawer-bottom-leave-to {
+  transform: translateY(100%);
 }
 
 /* 工作台布局：12 列 fr 比例网格 + 行高 1fr 均分填满（缩放/分辨率只改每格像素值，布局结构不变） */

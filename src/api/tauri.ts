@@ -118,6 +118,10 @@ export interface AppConfig {
   chat_panel_open: boolean
   /** AI 对话面板透明度（0.5–1.0，设置中可调） */
   chat_panel_opacity: number
+  /** AI 对话面板方位：left / right / top / bottom */
+  chat_panel_side: string
+  /** AI 对话面板在顶部/底部方位时的高度（px） */
+  chat_panel_height: number
   /** 升级后弹窗显示更新说明（默认开启） */
   whats_new_enabled: boolean
   /** 上次已记录「更新说明」的版本号（空串表示首次运行） */
@@ -524,9 +528,10 @@ export const tauriApi = {
   fetchChatProviderModels: (baseUrl: string, apiKey: string, keyId?: string) =>
     invoke<string[]>('fetch_chat_provider_models', { baseUrl, apiKey, keyId }),
   getChatApiKey: (modelId: string) => invoke<string>('get_chat_api_key', { modelId }),
-  setChatPanel: (width: number, open: boolean) =>
-    invoke<void>('set_chat_panel', { width, open }),
-  getChatPanel: () => invoke<[number, boolean]>('get_chat_panel'),
+  setChatPanel: (width: number, height: number, open: boolean) =>
+    invoke<void>('set_chat_panel', { width, height, open }),
+  getChatPanel: () => invoke<[number, number, boolean]>('get_chat_panel'),
+  setChatPanelSide: (side: string) => invoke<void>('set_chat_panel_side', { side }),
   getAppInfo: () => invoke<AppInfo>('get_app_info'),
   checkWhatsNew: () => invoke<string | null>('check_whats_new'),  createCountdown: (payload: {
     name: string

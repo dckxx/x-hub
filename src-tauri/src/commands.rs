@@ -2012,21 +2012,34 @@ pub fn get_chat_api_key(model_id: String) -> Result<String, String> {
     crate::chat::get_api_key(&model_id).ok_or_else(|| "未找到已保存的 API Key".to_string())
 }
 
-/// 设置右侧面板宽度与展开状态（持久化）
+/// 保存 AI 对话面板宽度/高度（按方位使用）与展开状态（持久化）
 #[tauri::command]
-pub fn set_chat_panel(width: f64, open: bool) -> Result<(), String> {
+pub fn set_chat_panel(width: f64, height: f64, open: bool) -> Result<(), String> {
     let _guard = crate::config::lock();
     let mut config = config::load();
     config.chat_panel_width = width.clamp(320.0, 640.0);
+    config.chat_panel_height = height.clamp(280.0, 640.0);
     config.chat_panel_open = open;
     config::save(&config)
 }
 
-/// 获取右侧面板宽度与展开状态
+/// 获取 AI 对话面板宽度、高度与展开状态
 #[tauri::command]
-pub fn get_chat_panel() -> Result<(f64, bool), String> {
+pub fn get_chat_panel() -> Result<(f64, f64, bool), String> {
     let config = config::load();
-    Ok((config.chat_panel_width, config.chat_panel_open))
+    Ok((config.chat_panel_width, config.chat_panel_height, config.chat_panel_open))
+}
+
+/// 设置 AI 对话面板方位（left / right / top / bottom），持久化到配置
+#[tauri::command]
+pub fn set_chat_panel_side(side: String) -> Result<(), String> {
+    if !matches!(side.as_str(), "left" | "right" | "top" | "bottom") {
+        return Err(format!("无效的面板方位: {side}"));
+    }
+    let _guard = crate::config::lock();
+    let mut config = config::load();
+    config.chat_panel_side = side;
+    config::save(&config)
 }
 
 /// 用首条用户消息自动生成会话标题：压缩空白、截断到 24 字、超长加省略号

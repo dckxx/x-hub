@@ -81,6 +81,12 @@ pub struct AppConfig {
     pub chat_panel_width: f64,
     /// AI 对话右侧面板是否展开
     pub chat_panel_open: bool,
+    /// AI 对话面板方位：left / right / top / bottom（默认右侧）
+    #[serde(default = "default_chat_panel_side")]
+    pub chat_panel_side: String,
+    /// AI 对话面板在「顶部/底部」方位时的高度（320–640px 之外的拖拽会钳制）
+    #[serde(default = "default_chat_panel_height")]
+    pub chat_panel_height: f64,
     /// AI 对话右侧面板透明度（0.5–1.0，可在设置中调整）
     #[serde(default = "default_chat_panel_opacity")]
     pub chat_panel_opacity: f64,
@@ -153,6 +159,14 @@ fn default_chat_panel_opacity() -> f64 {
     1.0
 }
 
+fn default_chat_panel_side() -> String {
+    "right".to_string()
+}
+
+fn default_chat_panel_height() -> f64 {
+    380.0
+}
+
 fn default_true() -> bool {
     true
 }
@@ -193,6 +207,8 @@ impl Default for AppConfig {
             chat_models: default_chat_models(),
             chat_panel_width: 420.0,
             chat_panel_open: false,
+            chat_panel_side: "right".to_string(),
+            chat_panel_height: 380.0,
             chat_panel_opacity: 1.0,
             whats_new_enabled: true,
             last_seen_version: String::new(),

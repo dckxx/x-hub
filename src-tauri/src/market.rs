@@ -139,12 +139,21 @@ async fn fetch_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Str
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("请求失败: {e}"))?;
+        .map_err(|e| format!("通信失败：{e}"))?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
     let bytes = resp.bytes().await.map_err(|e| format!("读取响应失败: {e}"))?;
     Ok(bytes.to_vec())
+}
+
+/// 脱敏市场源错误信息：不向用户暴露具体 URL（reqwest 错误串会带 endpoint）
+fn sanitize_market_error(mut msg: String, endpoint: &str, sig_url: &str) -> String {
+    // 直接整串替换最容易命中；reqwest 错误常形如 "…for url (https://…)"
+    for url in [endpoint, sig_url] {
+        msg = msg.replace(url, "(市场源地址)");
+    }
+    msg
 }
 
 /// 拉取远端市场清单：fetch 原始字节 + `.sig` → Ed25519 验签 → 校验 schema
@@ -167,12 +176,18 @@ pub async fn refresh_market_registry() -> Result<MarketStatus, String> {
 
     let content = match fetch_bytes(&client, &endpoint).await {
         Ok(c) => c,
-        Err(e) => return Ok(fallback_cache(format!("拉取市场清单失败：{e}"))),
+        Err(e) => {
+            let msg = sanitize_market_error(format!("拉取市场清单失败：{e}"), &endpoint, &sig_url);
+            return Ok(fallback_cache(msg));
+        }
     };
     // 签名拉取失败也禁止放行：未验签的清单一律不信任（宁可回退缓存）
     let sig = match fetch_bytes(&client, &sig_url).await {
         Ok(s) => s,
-        Err(e) => return Ok(fallback_cache(format!("拉取清单签名失败：{e}"))),
+        Err(e) => {
+            let msg = sanitize_market_error(format!("拉取清单签名失败：{e}"), &endpoint, &sig_url);
+            return Ok(fallback_cache(msg));
+        }
     };
     let sig = String::from_utf8_lossy(&sig).into_owned();
     if let Err(e) = crate::signing::verify_detached(&content, &sig) {

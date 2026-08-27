@@ -689,6 +689,12 @@ export function useStore() {
     void tauriApi.saveConfig(state.config)
   }
 
+  /** 批量覆盖侧栏固定扩展列表（卸载后清理残留 id 用） */
+  function setSidebarExtensionBulk(ids: string[]) {
+    state.config.sidebar_extensions = [...ids]
+    if (isTauri()) void tauriApi.saveConfig(state.config)
+  }
+
   /** 扩展默认打开方式：view / window / drawer（侧栏点击等入口按此打开） */
   function setExtensionOpenMode(id: string, mode: string) {
     const modes = state.config.extension_open_modes ?? {}
@@ -942,6 +948,7 @@ export function useStore() {
     setModuleFontScale,
     setRuntimeStrategy,
     setSidebarExtension,
+    setSidebarExtensionBulk,
     setExtensionOpenMode,
     setRunAtStartup,
     setClipboardShortcut,

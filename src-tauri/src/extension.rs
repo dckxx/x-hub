@@ -687,26 +687,6 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 从本地目录安装扩展：校验 manifest，复制到 `extensions/<id>/`。返回扩展 id。
-#[tauri::command]
-pub fn install_extension(app: tauri::AppHandle, source: String) -> Result<String, String> {
-    let src = std::path::PathBuf::from(&source);
-    if !src.is_dir() {
-        return Err("INVALID_ARGUMENT: 源目录不存在".to_string());
-    }
-    let manifest = read_manifest(&src)?;
-    let id = manifest.id.clone();
-    let root = extensions_root(&app)?;
-    let dest = root.join(&id);
-    if dest.exists() {
-        return Err(format!("扩展 {id} 已安装，请先卸载再重装"));
-    }
-    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    copy_dir_recursive(&src, &dest).map_err(|e| format!("复制扩展目录失败: {e}"))?;
-    log::info!("扩展已安装: {id} <- {}", src.display());
-    Ok(id)
-}
-
 // ---------- 权限授权（运行时逐项开关） ----------
 
 /// 权限覆盖文件路径：`<扩展目录>/.permissions.json`（只存用户显式关闭的权限，默认授权）

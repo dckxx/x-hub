@@ -85,7 +85,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             <div class="md-meta">
               <div class="md-meta-item">
                 <span class="md-meta-label">类型</span>
-                <span class="md-meta-value">{{ m!.runtime === 'service' ? 'service' : 'web' }}</span>
+                <span class="md-meta-value">{{ m!.runtime === 'service' ? '服务' : 'Web' }}</span>
               </div>
               <div class="md-meta-item">
                 <span class="md-meta-label">大小</span>
@@ -101,11 +101,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               </div>
             </div>
 
-            <div v-if="m!.changelog" class="md-section">
-              <div class="md-section-title"><Package :size="13" :stroke-width="2" aria-hidden="true" />更新日志</div>
-              <p class="md-section-text">{{ m!.changelog }}</p>
-            </div>
-
             <button
               v-if="m!.homepage"
               class="md-homepage"
@@ -113,12 +108,25 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               :disabled="!isTauri()"
               @click="openHomepage"
             >
+              <span class="md-homepage-text">查看主页与文档</span>
+              <span class="md-homepage-url" :title="m!.homepage">{{ m!.homepage }}</span>
               <ExternalLink :size="13" :stroke-width="2" aria-hidden="true" />
-              {{ m!.homepage }}
             </button>
 
-            <div v-if="m!.sha256" class="md-section md-hash">
-              <div class="md-section-title"><Shield :size="13" :stroke-width="2" aria-hidden="true" />完整性校验（sha256）</div>
+            <template v-if="m!.changelog">
+              <div class="md-sep" />
+              <div class="md-section">
+                <div class="md-section-title">
+                  <Package :size="13" :stroke-width="2" aria-hidden="true" />更新日志
+                </div>
+                <p class="md-section-text">{{ m!.changelog }}</p>
+              </div>
+            </template>
+
+            <div v-if="m!.sha256" class="md-hash">
+              <span class="md-hash-head">
+                <Shield :size="13" :stroke-width="2" aria-hidden="true" />完整性校验 sha256
+              </span>
               <code class="md-hash-code" :title="m!.sha256">{{ m!.sha256.slice(0, 32) }}…</code>
             </div>
           </div>
@@ -205,26 +213,27 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 13px;
   padding: 14px 18px 16px;
 }
 .md-desc {
   margin: 0;
   font-size: 0.8125rem;
   color: var(--text-2);
-  line-height: 1.6;
+  line-height: 1.7;
   white-space: pre-wrap;
 }
 .md-meta {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 8px;
 }
 .md-meta-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   padding: 8px 10px;
+  border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
   background: var(--bg-card-soft);
 }
@@ -234,13 +243,52 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .md-meta-value {
   font-size: 0.8125rem;
-  font-weight: 600;
+  font-weight: 650;
   color: var(--text-1);
+  word-break: break-all;
+}
+.md-homepage {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--brand-500);
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background 150ms ease-out, border-color 150ms ease-out;
+}
+.md-homepage-text {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.md-homepage-url {
+  color: var(--text-3);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.md-homepage:hover {
+  background: var(--brand-50);
+  border-color: var(--brand-500);
+}
+.md-homepage:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.md-sep {
+  height: 1px;
+  background: var(--border-soft);
+  margin: 2px 0;
 }
 .md-section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 .md-section-title {
   display: flex;
@@ -252,37 +300,28 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .md-section-text {
   margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card-soft);
   font-size: 0.75rem;
   color: var(--text-3);
-  line-height: 1.6;
+  line-height: 1.7;
   white-space: pre-wrap;
 }
-.md-homepage {
-  display: inline-flex;
+.md-hash {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card-soft);
+}
+.md-hash-head {
+  display: flex;
   align-items: center;
   gap: 5px;
-  align-self: flex-start;
-  padding: 4px 10px;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--brand-500);
-  font-size: 0.75rem;
-  font-weight: 600;
-  max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: pointer;
-  transition: background 150ms ease-out, border-color 150ms ease-out;
-}
-.md-homepage:hover {
-  background: var(--brand-50);
-  border-color: var(--brand-500);
-}
-.md-homepage:disabled {
-  opacity: 0.6;
-  cursor: default;
+  font-size: 0.6875rem;
+  color: var(--text-4, var(--text-3));
 }
 .md-hash-code {
   font-size: 0.6875rem;

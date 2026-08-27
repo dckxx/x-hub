@@ -1,5 +1,5 @@
 import { convertFileSrc } from '@tauri-apps/api/core'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { isTauri, tauriApi } from '../api/tauri'
 import {
   broadcastExtensionEvent,
@@ -245,6 +245,14 @@ export function useExtensionFrame(
     if (frameRef.value) frameRef.value.removeEventListener('error', onFrameError)
     unregisterExtensionFrame(frameRef.value)
     window.removeEventListener('message', onMessage)
+  })
+
+  // 扩展 id / 形态变化（主区在扩展之间来回切换时 ExtensionView 复用的同一个 iframe）：
+  // 重新注册帧映射 + 重新加载入口，否则 iframe 停留在上一个扩展，表现为“切换没反应”
+  watch([getExtId, getSurface], () => {
+    unregisterExtensionFrame(frameRef.value)
+    registerExtensionFrame(frameRef.value, getExtId())
+    void load()
   })
 
   return { frameRef, loading, error }

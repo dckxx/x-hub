@@ -20,6 +20,7 @@ const store = useStore()
 
 // ---- 分类导航（左侧分类 = 右侧区块锚点，点击平滑滚动定位，不做内容切换） ----
 const SECTIONS = [
+  { id: 'general', label: '常规' },
   { id: 'ai', label: 'AI 助手' },
   { id: 'appearance', label: '外观' },
   { id: 'workbench', label: '工作台' },
@@ -32,7 +33,7 @@ const SECTIONS = [
 ] as const
 
 type SectionId = (typeof SECTIONS)[number]['id']
-const activeSection = ref<SectionId>('appearance')
+const activeSection = ref<SectionId>('general')
 const contentRef = ref<HTMLElement | null>(null)
 
 function goToSection(id: SectionId) {
@@ -498,49 +499,9 @@ function onAccentInput(e: Event) {
 
       <!-- 右侧内容：全量渲染，分类仅作滚动锚点 -->
       <div ref="contentRef" class="sv-content">
-        <!-- AI 助手 -->
-        <section id="sv-sec-ai" class="sv-sec" aria-label="AI 助手">
-          <h3 class="sv-sec-title">AI 助手</h3>
-
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-name">AI 对话面板透明度</span>
-              <span class="setting-desc">对话抽屉的整体不透明度（50% – 100%）</span>
-            </div>
-            <div class="opacity-edit">
-              <input
-                class="opacity-slider"
-                type="range"
-                min="0.5"
-                max="1"
-                step="0.05"
-                :value="store.state.config.chat_panel_opacity ?? 1"
-                :aria-label="'AI 对话面板透明度'"
-                @input="onChatPanelOpacityInput"
-              />
-              <span class="opacity-value">{{ Math.round((store.state.config.chat_panel_opacity ?? 1) * 100) }}%</span>
-            </div>
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-name">AI 对话面板位置</span>
-              <span class="setting-desc">对话抽屉从上下左右哪个方位滑出（左右方位可拖拽调宽，上下方位可拖拽调高）</span>
-            </div>
-            <AppSelect
-              :model-value="store.state.config.chat_panel_side ?? 'right'"
-              :options="CHAT_PANEL_SIDE_OPTIONS"
-              aria-label="AI 对话面板位置"
-              @update:model-value="onChatPanelSideChange"
-            />
-          </div>
-
-          <AiProviders />
-        </section>
-
-        <!-- 外观 -->
-        <section id="sv-sec-appearance" class="sv-sec" aria-label="外观">
-          <h3 class="sv-sec-title">外观</h3>
+        <!-- 常规 -->
+        <section id="sv-sec-general" class="sv-sec" aria-label="常规">
+          <h3 class="sv-sec-title">常规</h3>
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">开机自动启动</span>
@@ -576,7 +537,52 @@ function onAccentInput(e: Event) {
               <span class="toggle-knob"></span>
             </button>
           </div>
+        </section>
 
+        <!-- AI 助手 -->
+        <section id="sv-sec-ai" class="sv-sec" aria-label="AI 助手">
+          <h3 class="sv-sec-title">AI 助手</h3>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">AI 对话面板透明度</span>
+              <span class="setting-desc">对话抽屉的整体不透明度（50% – 100%）</span>
+            </div>
+            <div class="opacity-edit">
+              <input
+                class="opacity-slider"
+                type="range"
+                min="0.5"
+                max="1"
+                step="0.05"
+                :value="store.state.config.chat_panel_opacity ?? 1"
+                :aria-label="'AI 对话面板透明度'"
+                @input="onChatPanelOpacityInput"
+              />
+              <span class="opacity-value">{{ Math.round((store.state.config.chat_panel_opacity ?? 1) * 100) }}%</span>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">AI 对话面板位置</span>
+              <span class="setting-desc">对话抽屉从上下左右哪个方位滑出（左右方位可拖拽调宽，上下方位可拖拽调高）</span>
+            </div>
+            <AppSelect
+              :model-value="store.state.config.chat_panel_side ?? 'right'"
+              :options="CHAT_PANEL_SIDE_OPTIONS"
+              aria-label="AI 对话面板位置"
+              class="chat-panel-side"
+              @update:model-value="onChatPanelSideChange"
+            />
+          </div>
+
+          <AiProviders />
+        </section>
+
+        <!-- 外观 -->
+        <section id="sv-sec-appearance" class="sv-sec" aria-label="外观">
+          <h3 class="sv-sec-title">外观</h3>
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">侧边栏展开功能</span>
@@ -802,6 +808,7 @@ function onAccentInput(e: Event) {
               :model-value="quoteSource"
               :options="QUOTE_SOURCE_OPTIONS"
               aria-label="名言来源"
+              class="quote-source"
               @update:model-value="onQuoteSourceChange"
             />
           </div>
@@ -1390,9 +1397,16 @@ function onAccentInput(e: Event) {
   min-width: 280px;
   flex-shrink: 0;
 }
+.chat-panel-side {
+  min-width: 200px;
+}
 .quote-edit {
   min-width: 240px;
   flex-shrink: 0;
+}
+/* 名言来源下拉：与上方语录输入框等宽（AppSelect 触发器通过 $attrs 接收 class，需 :deep 穿透） */
+:deep(.quote-source) {
+  min-width: 240px;
 }
 .weather-edit {
   display: flex;

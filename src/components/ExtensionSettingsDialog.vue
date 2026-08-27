@@ -147,7 +147,7 @@ async function confirmUninstall() {
               </div>
               <div class="es-head-meta">
                 <h2 class="dialog-title">{{ ext.name }}</h2>
-                <p class="es-sub">v{{ ext.version }} · {{ ext.id }}</p>
+                <p class="es-sub">v{{ ext.version }} · {{ kindLabel(ext.kind) }} · {{ ext.id }}</p>
               </div>
             </div>
             <button class="icon-btn" title="关闭" aria-label="关闭" @click="emit('close')">
@@ -156,8 +156,8 @@ async function confirmUninstall() {
           </header>
 
           <div class="es-body">
-            <section class="es-section">
-              <h3 class="es-section-title">信息</h3>
+            <section class="es-block">
+              <h3 class="es-block-title">信息</h3>
               <dl class="es-kv">
                 <div class="es-kv-row"><dt>运行时</dt><dd>{{ runtimeLabel(ext.runtime) }}</dd></div>
                 <div class="es-kv-row"><dt>主形态</dt><dd>{{ kindLabel(ext.kind) }}</dd></div>
@@ -168,8 +168,8 @@ async function confirmUninstall() {
               <p v-if="ext.description" class="es-desc">{{ ext.description }}</p>
             </section>
 
-            <section class="es-section">
-              <h3 class="es-section-title">权限</h3>
+            <section class="es-block">
+              <h3 class="es-block-title">权限</h3>
               <div v-if="ext.permissions.length" class="es-perm-list">
                 <div v-for="p in ext.permissions" :key="p" class="es-perm-row">
                   <span class="es-perm-name">{{ p }}</span>
@@ -189,8 +189,8 @@ async function confirmUninstall() {
               <p v-else class="es-empty">无权限申请</p>
             </section>
 
-            <section v-if="!ext.invalid" class="es-section">
-              <h3 class="es-section-title">侧边栏</h3>
+            <section v-if="!ext.invalid" class="es-block">
+              <h3 class="es-block-title">侧边栏</h3>
               <div class="es-kv-row es-openmode-row">
                 <dt>打开方式</dt>
                 <dd>
@@ -221,7 +221,7 @@ async function confirmUninstall() {
                   <span class="toggle-knob"></span>
                 </button>
               </div>
-              <p class="es-empty">固定后，点击左栏菜单即按上方「打开方式」打开该扩展。</p>
+              <p class="es-empty es-openmode-hint">固定后，点击左栏菜单即按上方「打开方式」打开该扩展。</p>
             </section>
           </div>
 
@@ -316,12 +316,21 @@ async function confirmUninstall() {
 .es-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   max-height: 40vh;
   overflow-y: auto;
 }
-.es-section-title {
-  margin: 0 0 8px;
+.es-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card-soft);
+}
+.es-block-title {
+  margin: 0;
   font-size: 0.75rem;
   font-weight: 700;
   color: var(--text-3);
@@ -330,12 +339,17 @@ async function confirmUninstall() {
 }
 .es-kv {
   margin: 0;
+  display: flex;
+  flex-direction: column;
 }
 .es-kv-row {
   display: flex;
   gap: 12px;
-  padding: 4px 0;
+  padding: 6px 0;
   font-size: 0.8125rem;
+}
+.es-kv-row + .es-kv-row {
+  border-top: 1px solid var(--border-soft);
 }
 .es-kv-row dt {
   flex-shrink: 0;
@@ -347,10 +361,12 @@ async function confirmUninstall() {
   color: var(--text-1);
 }
 .es-desc {
-  margin: 8px 0 0;
+  margin: 2px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
   font-size: 0.8125rem;
   color: var(--text-2);
-  line-height: 1.5;
+  line-height: 1.55;
 }
 .es-perm-list {
   display: flex;
@@ -362,7 +378,10 @@ async function confirmUninstall() {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 6px 0;
+  padding: 7px 0;
+}
+.es-perm-row + .es-perm-row {
+  border-top: 1px solid var(--border-soft);
 }
 .es-perm-name {
   font-size: 0.8125rem;
@@ -406,6 +425,10 @@ async function confirmUninstall() {
   margin: 0;
   font-size: 0.8125rem;
   color: var(--text-3);
+}
+.es-openmode-hint {
+  font-size: 0.75rem;
+  color: var(--text-4, var(--text-3));
 }
 /* 侧边栏区块：普通字体（避免复用权限行的等宽字），打开方式分段选择 */
 .es-setting-name {

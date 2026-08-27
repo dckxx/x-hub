@@ -2,7 +2,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
-import { FolderOpen, MoreHorizontal, PackageOpen, Plus, RefreshCw } from 'lucide-vue-next'
+import { MoreHorizontal, PackageOpen, Plus, RefreshCw } from 'lucide-vue-next'
 import {
   isTauri,
   tauriApi,
@@ -24,6 +24,7 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
 const emit = defineEmits<{
   open: [ext: ExtensionEntry]
   openSurface: [ext: ExtensionEntry, surface: string]
+  changed: []
 }>()
 
 function onAction(e: ExtensionEntry, surface: string) {
@@ -115,6 +116,8 @@ async function load() {
       : []
     // 安装/卸载后同步刷新工作台模块库，让新扩展的 module 形态立即出现在自定义布局中
     await loadExtensionModules()
+    // 扩展列表变化（装/卸/更新）时通知宿主刷新侧栏固定扩展，让已卸载的图标立即消失
+    emit('changed')
   } catch (e) {
     showToast(`加载扩展列表失败：${String(e)}`)
   } finally {
@@ -240,6 +243,13 @@ function marketUpdatedText(): string {
   if (!s) return '—'
   const d = new Date(s)
   return isNaN(d.getTime()) ? s : d.toLocaleString()
+}
+
+/** 市场错误提示：隐藏具体 URL（reqwest 错误串可能带 endpoint），对用户只显示原因类别 */
+function marketErrorText(): string {
+  const err = marketStatus.value?.error ?? ''
+  // 去掉 http(s)://... 形式的地址，避免把市场源 URL 暴露给用户
+  return err.replace(/https?:\/\/[^\s，。、\)）]+/g, '(网络地址)')
 }
 
 function onMarketImgError(m: MarketExtension) {
@@ -380,22 +390,6 @@ async function onLocalFileInstall() {
   }
 }
 
-async function onLocalFolderInstall() {
-  if (!isTauri()) {
-    showToast('本地安装需在桌面应用中操作')
-    return
-  }
-  try {
-    const dir = await open({ multiple: false, directory: true })
-    if (typeof dir !== 'string') return // 取消
-    const id = await tauriApi.installExtension(dir)
-    showToast(`已安装「${id}」`)
-    await load()
-  } catch (e) {
-    showToast(`安装失败：${String(e)}`)
-  }
-}
-
 const settingsExt = ref<ExtensionEntry | null>(null)
 
 function onMore(e: ExtensionEntry) {
@@ -437,10 +431,6 @@ function onMore(e: ExtensionEntry) {
         <button class="ghost-btn" type="button" @click="onLocalFileInstall">
           <PackageOpen :size="14" :stroke-width="2" aria-hidden="true" />
           导入扩展包
-        </button>
-        <button class="ghost-btn" type="button" @click="onLocalFolderInstall">
-          <FolderOpen :size="14" :stroke-width="2" aria-hidden="true" />
-          从文件夹
         </button>
       </div>
     </header>
@@ -549,7 +539,7 @@ function onMore(e: ExtensionEntry) {
         </button>
       </div>
       <div v-if="marketStatus?.error" class="ec-market-warn">
-        <span>市场源异常：{{ marketStatus.error }}</span>
+        <span>市场源异常：{{ marketErrorText() }}</span>
         <button class="ghost-btn" type="button" :disabled="marketLoading" @click="loadMarket">
           <RefreshCw :size="12" :stroke-width="2" aria-hidden="true" />
           重试
@@ -562,10 +552,6 @@ function onMore(e: ExtensionEntry) {
         <div v-if="market.length === 0" class="ec-empty">
           <PackageOpen :size="40" :stroke-width="1.5" aria-hidden="true" />
           <h3>市场暂无内容</h3>
-          <p>
-            扩展市场由远端清单驱动，请确认已发布扩展（或用发布脚本上传 registry.json）
-            <span v-if="marketStatus?.last_updated">（上次更新：{{ marketStatus.last_updated }}）</span>
-          </p>
           <button class="pill-btn" type="button" @click="loadMarket">刷新市场</button>
         </div>
         <div v-else class="ec-market-list">

@@ -26,7 +26,7 @@ import { useStore } from '../stores/workbench'
 import { isTauri, tauriApi } from '../api/tauri'
 import type { Countdown, ExtensionEntry, Note, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
-import { FileText, FolderOpen, LayoutDashboard, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { FileText, FolderOpen, LayoutDashboard, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight, AppWindow, PanelRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import { useTheme } from '../composables/useTheme'
 import { iconSrc } from '../composables/useResourceIcon'
@@ -76,9 +76,24 @@ async function refreshInstalledExtensions() {
   if (!isTauri()) return
   try {
     installedExtensions.value = await tauriApi.listExtensions()
+    pruneStalePinnedExtensions()
   } catch {
     // 忽略：扩展列表加载失败时侧栏仅保留已缓存的条目
   }
+}
+
+// 卸载后同步清理配置里残留的固定 id（否则下次重启侧栏会出现失效条目，点击报“不存在”）
+function pruneStalePinnedExtensions() {
+  const pinned = store.state.config.sidebar_extensions ?? []
+  const validIds = new Set(installedExtensions.value.map((e) => e.id))
+  const stale = pinned.filter((id) => !validIds.has(id))
+  if (stale.length > 0) {
+    store.setSidebarExtensionBulk(pinned.filter((id) => validIds.has(id)))
+  }
+}
+
+function onExtensionsChanged() {
+  void refreshInstalledExtensions()
 }
 
 // 固定到左侧栏的扩展：点击侧栏菜单即在主区打开（view 形态）
@@ -644,6 +659,7 @@ provide('showToast', showToast)
           <ExtensionCenter
             @open="onOpenExtension"
             @open-surface="(ext, surface) => openExtensionSurface(ext.id, surface)"
+            @changed="onExtensionsChanged"
           />
         </section>
 
@@ -652,8 +668,12 @@ provide('showToast', showToast)
           <div class="ext-toolbar">
             <span class="ext-toolbar-name">{{ openedExtension?.name ?? '扩展' }}</span>
             <div class="ext-toolbar-spacer" />
-            <button class="ghost-btn" type="button" @click="openExtensionWindow">在窗口打开</button>
-            <button class="ghost-btn" type="button" @click="openExtensionDrawer">在抽屉打开</button>
+            <button class="icon-btn" type="button" title="在窗口打开" aria-label="在窗口打开" @click="openExtensionWindow">
+              <AppWindow :size="15" :stroke-width="2" />
+            </button>
+            <button class="icon-btn" type="button" title="在抽屉打开" aria-label="在抽屉打开" @click="openExtensionDrawer">
+              <PanelRight :size="15" :stroke-width="2" />
+            </button>
           </div>
           <ExtensionView
             v-if="openedExtension"
@@ -1120,6 +1140,11 @@ provide('showToast', showToast)
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.ext-toolbar .icon-btn {
+  width: 30px;
+  height: 30px;
+  color: var(--text-3);
 }
 
 /* 扩展抽屉：absolute 悬浮于工作区之上，右侧滑入 */

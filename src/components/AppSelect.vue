@@ -48,10 +48,19 @@ function positionMenu() {
   const menu = menuRef.value
   if (!trigger || !menu) return
   const tr = trigger.getBoundingClientRect()
-  const menuHeight = menu.offsetHeight
   const gap = 6
-  // 下拉至少与触发器同宽，且不小于配置的最小宽度；若选项文字较长（含打钩），按内容自适应加宽
-  const menuWidth = Math.max(tr.width, menu.scrollWidth, props.menuMinWidth ?? 0)
+  // 先松开固定宽度让菜单按内容自然撑开，量出真实内容宽度（选项 nowrap 不会换行）。
+  // 之前直接量 menu.scrollWidth：菜单宽度被钉在触发器窄宽度上，长选项会被裁成省略号看不见字。
+  const prevWidth = menu.style.width
+  menu.style.width = 'auto'
+  const contentWidth = menu.offsetWidth
+  const wanted = Math.max(tr.width, contentWidth, props.menuMinWidth ?? 0, 200)
+  // 视口钳制：极端窄窗口下仍保证右侧留边，溢出文本以省略号兜底
+  const menuWidth = Math.min(wanted, window.innerWidth - 16)
+  // 按最终宽度重测高度（钳制导致换行时取实际高度，offsetWidth 不含 transform，不受滑入动画缩放影响）
+  menu.style.width = menuWidth + 'px'
+  const menuHeight = menu.offsetHeight
+  menu.style.width = prevWidth
   const x = Math.max(8, Math.min(tr.left, window.innerWidth - menuWidth - 8))
   const spaceBelow = window.innerHeight - tr.bottom - 8
   const spaceAbove = tr.top - 8

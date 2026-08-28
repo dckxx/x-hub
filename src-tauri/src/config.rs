@@ -90,11 +90,6 @@ pub struct AppConfig {
     /// AI 对话右侧面板透明度（0.5–1.0，可在设置中调整）
     #[serde(default = "default_chat_panel_opacity")]
     pub chat_panel_opacity: f64,
-    /// 升级后弹窗显示更新说明（默认开启）
-    #[serde(default = "default_true")]
-    pub whats_new_enabled: bool,
-    /// 上次已记录「更新说明」的版本号（用于升级检测；空串表示首次运行）
-    pub last_seen_version: String,
     /// 剪贴板历史全局呼出快捷键（默认 Ctrl+Alt+V，可配置）
     pub clipboard_shortcut: String,
     /// 剪贴板历史最大条数（含置顶；置顶豁免自动清理但计入上限）
@@ -145,6 +140,18 @@ pub struct AppConfig {
     /// 开机自启动是否以管理员身份运行（仅 run_at_startup 启用时生效）
     #[serde(default)]
     pub run_at_startup_admin: bool,
+    /// 应用自动升级清单远端地址（空 = 用默认值）
+    #[serde(default = "default_update_endpoint")]
+    pub update_endpoint: String,
+    /// 自动升级总开关（默认开启）：关闭后不再发起版本检查
+    #[serde(default = "default_true")]
+    pub auto_update_enabled: bool,
+    /// 静默检查更新频率（小时，默认 4）
+    #[serde(default = "default_update_interval_hours")]
+    pub update_interval_hours: u64,
+    /// 用户「跳过此版本」记录的版本号（空 = 未跳过）；check 命中时若与清单版本一致则不再提示
+    #[serde(default)]
+    pub skipped_update_version: String,
 }
 
 fn one() -> f64 {
@@ -182,6 +189,17 @@ fn default_runtime_strategy() -> String {
 /// 默认市场清单远端地址（Cloudflare R2 公开桶 + 自定义域名）
 pub const DEFAULT_MARKET_ENDPOINT: &str = "https://r2.dckxx.com/extensions/registry.json";
 
+/// 默认应用升级清单远端地址（与实际部署的 R2 桶对应）
+pub const DEFAULT_UPDATE_ENDPOINT: &str = "https://r2.dckxx.com/releases/update.json";
+
+fn default_update_endpoint() -> String {
+    DEFAULT_UPDATE_ENDPOINT.to_string()
+}
+
+fn default_update_interval_hours() -> u64 {
+    4
+}
+
 fn default_market_endpoint() -> String {
     DEFAULT_MARKET_ENDPOINT.to_string()
 }
@@ -210,8 +228,6 @@ impl Default for AppConfig {
             chat_panel_side: "right".to_string(),
             chat_panel_height: 380.0,
             chat_panel_opacity: 1.0,
-            whats_new_enabled: true,
-            last_seen_version: String::new(),
             clipboard_shortcut: crate::shortcut::DEFAULT_CLIPBOARD_SHORTCUT.to_string(),
             clipboard_max_items: 500,
             clipboard_ttl_days: 7,
@@ -230,6 +246,10 @@ impl Default for AppConfig {
             market_endpoint: default_market_endpoint(),
             run_at_startup: false,
             run_at_startup_admin: false,
+            update_endpoint: default_update_endpoint(),
+            auto_update_enabled: true,
+            update_interval_hours: default_update_interval_hours(),
+            skipped_update_version: String::new(),
         }
     }
 }

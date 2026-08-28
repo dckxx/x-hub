@@ -10,6 +10,7 @@ import ClipboardOverlay from './components/ClipboardOverlay.vue'
 import ExtensionWindow from './components/ExtensionWindow.vue'
 import PromptFloat from './components/PromptFloat.vue'
 import TodoFloat from './components/TodoFloat.vue'
+import UpdateCheckDialog from './components/UpdateCheckDialog.vue'
 import { isTauri } from './api/tauri'
 
 const label = isTauri() ? getCurrentWindow().label : ''
@@ -131,4 +132,5 @@ onBeforeUnmount(() => {
   <PromptFloat v-else-if="isPromptFloat" />
   <TodoFloat v-else-if="isTodoFloat" />
   <Index v-else />
+  <UpdateCheckDialog v-if="isMainWindow" />
 </template>

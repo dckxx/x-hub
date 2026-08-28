@@ -43,6 +43,7 @@ src-tauri/target/
 # Build artifacts
 x-hub-*.zip
 dist-market/
+dist-release/
 
 # Signing secrets (NEVER commit)
 .x-hub-signing/

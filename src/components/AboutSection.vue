@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { inject, onMounted, ref } from 'vue'
 import { marked } from 'marked'
-import { ChevronDown } from 'lucide-vue-next'
+import { ChevronDown, RefreshCw } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 
 const store = useStore()
+const showToast = inject<(msg: string) => void>('showToast', () => {})
 
 const version = ref('')
 const loading = ref(true)
@@ -13,12 +14,33 @@ const changelogHtml = ref('')
 // 版本历史折叠：默认收起，避免列表过长占满设置页
 const changelogExpanded = ref(false)
 
-onMounted(async () => {
+// ---- 应用更新：仅保留「检查更新」按钮；发现新版本由全局弹窗（UpdateCheckDialog）接管 ----
+const checking = ref(false)
+
+async function onCheckUpdate() {
   if (!isTauri()) {
-    version.value = '预览模式'
-    loading.value = false
+    showToast('更新功能仅在桌面应用中可用')
     return
   }
+  if (checking.value) return
+  checking.value = true
+  try {
+    // manual=true：手动检查忽略「跳过此版本」记录，用户主动查看能再次取到该版本
+    const info = await tauriApi.checkForUpdate(true)
+    if (info.available) {
+      // 后端已广播 update-available → 全局弹窗自动弹出并展示版本/说明
+      if (info.ready) showToast(`新版 v${info.version} 已就绪，请在弹窗中点击「立即重启」`)
+    } else {
+      showToast(`已是最新版本（v${info.current}）`)
+    }
+  } catch (e) {
+    showToast(`检查更新失败：${String(e)}`)
+  } finally {
+    checking.value = false
+  }
+}
+
+onMounted(async () => {
   try {
     const info = await tauriApi.getAppInfo()
     version.value = info.version
@@ -30,8 +52,8 @@ onMounted(async () => {
   }
 })
 
-function onToggleWhatsNew() {
-  void store.setWhatsNewEnabled(!store.state.config.whats_new_enabled)
+function onToggleAutoUpdate() {
+  void store.setAutoUpdateEnabled(!store.state.config.auto_update_enabled)
 }
 </script>
 
@@ -42,21 +64,32 @@ function onToggleWhatsNew() {
         <span class="setting-name">当前版本</span>
         <span class="setting-desc">版本号以 README 为准，随安装包构建同步</span>
       </div>
-      <span class="about-version">{{ loading ? '…' : `v${version}` }}</span>
+      <div class="about-version-wrap">
+        <span class="about-version">{{ loading ? '…' : `v${version}` }}</span>
+        <button class="ghost-btn upd-check-btn" type="button" :disabled="checking" @click="onCheckUpdate">
+          <RefreshCw
+            :size="13"
+            :stroke-width="2"
+            class="upd-check-icon"
+            :class="{ spinning: checking }"
+          />
+          {{ checking ? '检查中…' : '检查更新' }}
+        </button>
+      </div>
     </div>
 
     <div class="setting-row">
       <div class="setting-info">
-        <span class="setting-name">升级后显示更新说明</span>
-        <span class="setting-desc">检测到新版本时弹一次 What's New（默认关闭）</span>
+        <span class="setting-name">自动检查更新</span>
+        <span class="setting-desc">启动后静默检查新版本，发现更新时弹窗提示；关闭后不再发起自动检查</span>
       </div>
       <button
         class="toggle"
         role="switch"
         type="button"
-        :aria-checked="store.state.config.whats_new_enabled"
-        :class="{ on: store.state.config.whats_new_enabled }"
-        @click="onToggleWhatsNew"
+        :aria-checked="store.state.config.auto_update_enabled"
+        :class="{ on: store.state.config.auto_update_enabled }"
+        @click="onToggleAutoUpdate"
       >
         <span class="toggle-knob"></span>
       </button>
@@ -165,6 +198,37 @@ function onToggleWhatsNew() {
   font-variant-numeric: tabular-nums;
   color: var(--brand-500);
 }
+
+/* 应用更新区块 */
+.about-version-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ghost-btn.upd-check-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  padding: 4px 10px;
+}
+.upd-check-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.upd-check-icon {
+  color: var(--text-3);
+}
+.upd-check-icon.spinning {
+  animation: upd-spin 1s linear infinite;
+  color: var(--brand-500);
+}
+@keyframes upd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .about-license {
   text-decoration: none;
 }

@@ -80,8 +80,6 @@ const state = reactive<StoreState>({
     chat_panel_side: 'right',
     chat_panel_height: 380,
     chat_panel_opacity: 1,
-    whats_new_enabled: true,
-    last_seen_version: '',
     clipboard_shortcut: IS_MAC_PREVIEW ? 'CommandOrControl+Alt+V' : 'Ctrl+`',
     clipboard_max_items: 500,
     clipboard_ttl_days: 7,
@@ -99,6 +97,10 @@ const state = reactive<StoreState>({
     extension_open_modes: {},
     run_at_startup: false,
     run_at_startup_admin: false,
+    update_endpoint: '',
+    auto_update_enabled: true,
+    update_interval_hours: 4,
+    skipped_update_version: '',
   },
   systemInfo: null,
   online: false,
@@ -640,13 +642,6 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
-  /** 升级后弹窗显示更新说明（默认关闭） */
-  async function setWhatsNewEnabled(value: boolean) {
-    state.config.whats_new_enabled = value
-    if (!isTauri()) return
-    await tauriApi.saveConfig(state.config)
-  }
-
   /** 字号缩放钳制到 0.85–1.30，保留 2 位小数 */
   function clampFontScale(value: number) {
     return Math.round(Math.min(1.3, Math.max(0.85, value)) * 100) / 100
@@ -827,6 +822,13 @@ export function useStore() {
     }
   }
 
+  /** 应用自动升级总开关 */
+  async function setAutoUpdateEnabled(value: boolean) {
+    state.config.auto_update_enabled = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   /** 名言来源：online（在线 hitokoto）/ local（仅本地语料） */
   async function setQuoteSource(value: 'online' | 'local') {
     state.config.quote_source = value
@@ -943,7 +945,6 @@ export function useStore() {
   setChatModels,
   setChatPanelOpacity,
   setChatPanelSide,
-    setWhatsNewEnabled,
     setFontScale,
     setModuleFontScale,
     setRuntimeStrategy,
@@ -960,6 +961,7 @@ export function useStore() {
     refreshWeather,
     refreshQuote,
     setOnlineEnabled,
+    setAutoUpdateEnabled,
     setQuoteSource,
     setWeatherCity,
     locateWeatherByIp,

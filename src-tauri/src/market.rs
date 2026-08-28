@@ -243,6 +243,19 @@ fn fallback_cache(reason: String) -> MarketStatus {
 /// 解包 zip 到目标目录（enclosed_name 防 zip-slip 路径逃逸）
 pub fn extract_zip(bytes: &[u8], dest: &Path) -> Result<(), String> {
     let reader = std::io::Cursor::new(bytes);
+    extract_zip_from_reader(reader, dest)
+}
+
+/// 从磁盘文件解包 zip 到目标目录（大包无需整体读入内存，专用作更新包解压）。
+pub fn extract_zip_read(zip_file: &Path, dest: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(zip_file).map_err(|e| format!("打开安装包失败: {e}"))?;
+    extract_zip_from_reader(file, dest)
+}
+
+fn extract_zip_from_reader<R: std::io::Read + std::io::Seek>(
+    reader: R,
+    dest: &Path,
+) -> Result<(), String> {
     let mut archive = zip::ZipArchive::new(reader).map_err(|e| format!("解包失败: {e}"))?;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;

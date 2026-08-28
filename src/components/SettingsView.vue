@@ -1717,7 +1717,7 @@ function onAccentInput(e: Event) {
   border-top: 1px solid var(--border-soft);
 }
 
-/* 弹窗遮罩过渡（与 WhatsNewDialog 的 mask 过渡一致） */
+/* 弹窗遮罩过渡 */
 .mask-enter-active,
 .mask-leave-active {
   transition: opacity 0.18s ease-out;

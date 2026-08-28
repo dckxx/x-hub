@@ -466,3 +466,34 @@ docs/r2-distribution-and-updater.md   （本文档）
 1. 把演示扩展发一版更高的版本（如 `hello-web` v0.1.0 → v0.2.0）并上传 R2（发布脚本 + rclone，注意 `extensions/` 前缀）。
 2. 客户端扩展中心「已安装」列表的 `hello-web` 出现「更新 v0.2.0」按钮；市场卡片按钮由「已安装」变为「更新」。
 3. 点击更新 → 进度条 → 完成后版本变为 v0.2.0，且 `.config.json` / `.storage.json` 等用户数据保留。
+
+## 附录 C：P3 应用自动升级实施记录（2026-08-27，方案 A：自研 updater.rs）
+
+**已落地（代码侧全部完成，验证方式见下）**
+
+| 项 | 实际落地 |
+|---|---|
+| 更新清单 | 新文件 `src-tauri/src/updater.rs`：`UpdateManifest`（schemaVersion=1 / version / minimumUpgradable / notes / platforms.windows-x86_64{ url, portableUrl, sha256, portableSha256, size, portableSize }） |
+| 检查更新 | `check_for_update`：拉取 `update_endpoint`（默认 `https://r2.dckxx.com/releases/update.json`，可配置）+ `.sig` → Ed25519 验签（复用 `signing::verify_detached`，失败一律不信任且**静默**不打扰用户）→ semver 比较（复用 `market::version_cmp`）+ `minimumUpgradable` 跳级保护 → 平台匹配（便携版 `paths::is_portable()` 优先 portableUrl）→ 命中广播 `update-available` |
+| 下载更新 | `download_update(version)`：重新拉取清单并验签（防竞态下载旧条目）→ 流式下载到 `updates/<version>/x-hub.zip.tmp`，边下边算 sha256（与清单比对，不符删文件中止）→ rename 原子就位 → 写 `updates/.pending.json` 标记 → 广播 `update-ready`；进度经 `update-download-progress` 节流（≥256KB 一次） |
+| 自替换 | `apply_pending_update`：每次启动在 setup 早期（db 初始化前）调用，幂等无副作用；无标记即返回；有标记则 `extract_zip_read` 解包 → `locate_new_exe`（根/一层子目录取体积最大的 .exe）→ `exe → exe.old`、`新 exe → exe` 两步 rename（Windows 允许 rename 运行中的 exe）→ 删 .old + 新包 + 标记；任一步失败回滚（.old 还原）并保留标记下次启动重试 |
+| 状态查询 | `get_update_status`：无网络请求，读本地标记返回是否 ready（供前端启动展示「重启更新」） |
+| 定时检查 | setup 内 spawned task：启动 5s 后 + 每 `update_interval_hours`（默认 4h）循环，受 `auto_update_enabled` 控制，失败静默 |
+| 配置 | `config.rs` 新增 `update_endpoint` / `auto_update_enabled`（默认 true）/ `update_interval_hours`（默认 4） |
+| 命令注册 | `lib.rs` invoke_handler 追加 `updater::{check_for_update, download_update, get_update_status, skip_update_version}` |
+| 发布脚本 | `scripts/publish-release.ps1`：打标准版 + 便携版两个 zip（便携版含 `portable` 标志）→ 算 sha256/size → 生成 `update.json`（含 version 副本 `packages/update-<ver>.json`）→ Ed25519 签名（`pub-sign.mjs`）→ 打印 rclone 命令 |
+| 上传脚本 | `scripts/upload-release.ps1`：rclone 上传 `releases/`（update.json` no-cache，包体 immutable）+ 保留最近 2 版（按文件名内嵌版本号排序清理 win-x64）+ HTTPS 可访问性校验 |
+| 前端 | `tauri.ts`：`UpdateInfo` 类型 + `checkForUpdate/downloadUpdate/getUpdateStatus/skipUpdateVersion` + `AppConfig` 三新字段 + `skipped_update_version`；`UpdateCheckDialog.vue`（全局弹窗，仅主窗口）：监听 `update-available` / `update-download-progress` / `update-ready`，`available` 态含版本/说明/大小/便携标志 + 「跳过此版本 / 取消 / 立即更新」，`downloading` 态进度条，`ready` 态「稍后 / 立即重启」，启动时若已有待应用标记直接弹「立即重启」；`AboutSection.vue` 当前版本旁「检查更新」按钮（手动触发 + 忽略跳过记录；命中由弹窗接管）与「自动检查更新」开关；`SettingsView.vue` 常规区「自动检查更新」开关（`store.setAutoUpdateEnabled`） |
+
+**已验证**
+- `cargo check` 零警告；`npm run build`（vue-tsc + vite）通过；新增单测（清单解析/未来 schema 拒绝/缺 version 拒绝/`is_newer` 跳级保护，含 4 例）编译通过（本机 `cargo test` harness 0xc0000139 旧环境问题，见附录 A）
+- 发布位端到端可闭环：`publish-release.ps1` 产出双 zip + update.json + sig，`pub-sign.mjs` 与 `signing.rs` 同一密钥对（`E:\workspace\.x-hub-signing\market.key`）
+
+**验收方式（端到端）**
+1. 把 x-hub 发一版更高的版本（如 0.3.0 → 0.4.0 或 0.3.1）：`npm run build` + `npm run tauri:build` → `publish-release.ps1 -ExePath src-tauri\target\release\x-hub.exe -Version <新版本> -SignKey E:\workspace\.x-hub-signing\market.key -Notes "…"` → `upload-release.ps1`（需 R2 凭据）。
+2. 旧版本启动 → 设置 → 关于 → 「检查更新」应命中全局更新弹窗（版本/说明/大小 + 「跳过此版本 / 取消 / 立即更新」）；或自动静默命中 → 「立即更新」→ 弹窗内进度条 → 就绪后「立即重启」→ 重启后 `get_app_info` 显示新版本号。
+3. 便携版验证：exe 同目录放 `portable` 标志 → 更新走 portableUrl 且自替换后数据仍在 exe\data。
+
+**风险提示**
+- 自替换仅在**便携/绿色版**（免安装）确定无害；若未来迁移 NSIS 安装版，exe 所在目录可能受 UAC 保护（Program Files），需迁移 `tauri-plugin-updater`（文档 §12 已留路径）。
+- 验签失败/通信失败默认静默：用户侧零打扰，但「检查更新」按钮误触时也会只显示错误提示（正常）。

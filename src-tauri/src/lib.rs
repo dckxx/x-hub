@@ -24,6 +24,7 @@ pub mod signing;
 mod sticky_window;
 mod sysmon;
 mod tray;
+pub mod updater;
 mod xhub_api;
 
 /// WebView2 附加浏览器参数（主窗/倒计时浮窗/便签浮窗必须完全一致，
@@ -240,6 +241,10 @@ pub fn run() {
             // 旧版本（com.workbench.desktop 标识）数据迁移到 x-hub 目录
             migrate_legacy_data();
 
+            // 升级自替换非常早期执行：必须在数据库/其他句柄持有 exe 相关资源前，
+            // 且仅在真正待应用时才做 rename（幂等）。失败只记日志不阻断启动。
+            updater::apply_pending_update();
+
             let conn = init_database()?;
             fix_icon_paths(&conn);
             app.manage(DbState(std::sync::Mutex::new(conn)));
@@ -340,6 +345,25 @@ pub fn run() {
                 crate::clipboard::toggle_overlay(&app_handle);
             });
 
+            // 静默检查更新：启动 5s 后一次，此后按配置间隔（默认 4h）循环。
+            // 受 auto_update_enabled 开关控制；检查失败静默（updater 内部记日志）。
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    loop {
+                        {
+                            let cfg = crate::config::load();
+                            if cfg.auto_update_enabled {
+                                let _ = updater::check_for_update(handle.clone(), None).await;
+                            }
+                        }
+                        let hours = crate::config::load().update_interval_hours.max(1);
+                        tokio::time::sleep(std::time::Duration::from_secs(hours * 3600)).await;
+                    }
+                });
+            }
+
             log::info!("x-hub 启动完成");
             Ok(())
         })
@@ -429,7 +453,6 @@ commands::set_chat_panel,
             commands::get_chat_panel,
             commands::set_chat_panel_side,
             commands::get_app_info,
-            commands::check_whats_new,
             commands::clipboard_list,
             commands::clipboard_copy,
             commands::clipboard_paste,
@@ -458,6 +481,10 @@ commands::set_chat_panel,
             market::install_from_market,
             market::install_local_archive,
             market::update_extension,
+            updater::check_for_update,
+            updater::download_update,
+            updater::get_update_status,
+            updater::skip_update_version,
             process::open_external,
             xhub_api::xhub_call,
             commands::check_connectivity,

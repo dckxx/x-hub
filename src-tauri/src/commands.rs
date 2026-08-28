@@ -814,35 +814,6 @@ pub fn get_app_info(app: tauri::AppHandle) -> Result<AppInfo, String> {
     })
 }
 
-/// 启动时调用：检测版本是否变化。返回 `Some(最新版本说明)` 仅当：
-/// 1. 发生了版本升级（与上次记录不同，且非首次运行）；
-/// 2. 用户开启了「升级后显示更新说明」开关。
-/// 无论是否展示，都会推进 `last_seen_version`，避免开关事后开启时补弹历史弹窗。
-#[tauri::command]
-pub fn check_whats_new(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let _guard = crate::config::lock();
-    let current = app.package_info().version.to_string();
-    let mut config = crate::config::load();
-    // 首次运行（无历史版本记录）：仅记录，不弹窗
-    if config.last_seen_version.is_empty() {
-        config.last_seen_version = current;
-        crate::config::save(&config)?;
-        return Ok(None);
-    }
-    // 无升级
-    if config.last_seen_version == current {
-        return Ok(None);
-    }
-    // 升级：推进记录；仅开关开启时返回最新说明
-    config.last_seen_version = current;
-    crate::config::save(&config)?;
-    if config.whats_new_enabled {
-        Ok(Some(crate::about::latest_section()))
-    } else {
-        Ok(None)
-    }
-}
-
 // ---------- 配置 ----------
 
 #[tauri::command]

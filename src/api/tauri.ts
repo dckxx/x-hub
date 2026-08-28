@@ -122,10 +122,6 @@ export interface AppConfig {
   chat_panel_side: string
   /** AI 对话面板在顶部/底部方位时的高度（px） */
   chat_panel_height: number
-  /** 升级后弹窗显示更新说明（默认开启） */
-  whats_new_enabled: boolean
-  /** 上次已记录「更新说明」的版本号（空串表示首次运行） */
-  last_seen_version: string
   /** 剪贴板历史全局呼出快捷键 */
   clipboard_shortcut: string
   /** 剪贴板历史最大条数（含置顶） */
@@ -160,6 +156,14 @@ export interface AppConfig {
   run_at_startup: boolean
   /** 开机自启动是否以管理员身份运行（仅 run_at_startup 启用时生效） */
   run_at_startup_admin: boolean
+  /** 应用升级清单远端地址（空 = 用默认值 https://r2.dckxx.com/releases/update.json） */
+  update_endpoint: string
+  /** 自动升级总开关（默认开启） */
+  auto_update_enabled: boolean
+  /** 静默检查更新频率（小时，默认 4） */
+  update_interval_hours: number
+  /** 用户「跳过此版本」记录的版本号（空 = 未跳过） */
+  skipped_update_version: string
 }
 
 export interface AppInfo {
@@ -244,6 +248,24 @@ export interface MarketDownloadProgress {
   id: string
   received: number
   total: number | null
+}
+
+/** 应用更新信息（check_for_update / download_update / get_update_status / update-available 负载） */
+export interface UpdateInfo {
+  /** 是否有可用更新（已命中版本且未下载） */
+  available: boolean
+  /** 目标版本号（空 = 无目标版本） */
+  version: string
+  /** 更新说明摘要 */
+  notes: string
+  /** 本次更新 zip 大小（0 = 未知） */
+  size: number
+  /** 该更新是否为便携版专属 */
+  portable: boolean
+  /** 是否已就绪待重启应用（下载完成并写好标记） */
+  ready: boolean
+  /** 当前应用的版本号 */
+  current: string
 }
 
 export interface DataPathInfo {
@@ -533,7 +555,7 @@ export const tauriApi = {
   getChatPanel: () => invoke<[number, number, boolean]>('get_chat_panel'),
   setChatPanelSide: (side: string) => invoke<void>('set_chat_panel_side', { side }),
   getAppInfo: () => invoke<AppInfo>('get_app_info'),
-  checkWhatsNew: () => invoke<string | null>('check_whats_new'),  createCountdown: (payload: {
+  createCountdown: (payload: {
     name: string
     repeatMode: string
     endAt: number
@@ -622,6 +644,16 @@ export const tauriApi = {
   /** 从市场更新扩展（校验 + 版本比较 + 备份 + 保留用户点文件 + 原子替换 + 回滚），返回扩展 id */
   updateFromMarket: (extension: MarketExtension) =>
     invoke<string>('update_extension', { extension }),
+  // ---- 应用更新 ----
+  /** 检查应用更新（拉取 update.json + Ed25519 验签 + 版本比较），失败静默返回无更新。
+   * `manual`：About 页手动触发时传 true——忽略「跳过此版本」记录，让用户能再次主动获取该版本。 */
+  checkForUpdate: (manual = false) => invoke<UpdateInfo>('check_for_update', { manual }),
+  /** 下载可用更新（重新验签清单 + 流式下载 + sha256 校验 + 写待应用标记后广播 update-ready） */
+  downloadUpdate: (version: string) => invoke<UpdateInfo>('download_update', { version }),
+  /** 读取当前更新状态（本地标记，不发网络请求） */
+  getUpdateStatus: () => invoke<UpdateInfo>('get_update_status'),
+  /** 记录「跳过此版本」：该版本后续不再提示更新 */
+  skipUpdateVersion: (version: string) => invoke<void>('skip_update_version', { version }),
   /** 打开外部链接（系统默认浏览器；仅放行 http/https） */
   openExternal: (url: string) => invoke<void>('open_external', { url }),
   /** 桥 API 统一分发：扩展 iframe 经主窗口转发调用 */

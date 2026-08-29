@@ -92,7 +92,7 @@ x-hub/
 ├── docs/
 │   ├── design-spec.md          # 原始 v1.0 设计基线（历史文档，已随实现同步加注；当前基线以 DESIGN.md 为准）
 │   ├── reka-ui.md              # Reka UI 使用规范（铁律/踩坑记录/调试指南，新增组件前必读）
-│   ├── extension-spec.md / extension-api.md  # 扩展系统设计规范与桥 API 契约（已实施，实现以代码为准）
+│   ├── （已迁移）扩展系统文档   # extension-spec/api/evolution 等现位于 x-hub-extensions 仓库 docs/
 │   ├── r2-distribution-and-updater.md        # 扩展市场 R2 分发与应用自动更新方案（P0–P3 已实施）
 │   ├── file-search-plan.md                   # 本地文件搜索方案（已定稿待实现）
 │   └── adr/                    # 架构决策记录（0001 首次使用引导：已决策未实施）

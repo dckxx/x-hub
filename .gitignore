@@ -53,3 +53,6 @@ market.key
 # Promotional materials (local drafts)
 promo/
 
+
+# Article assets (local drafts)
+article-assets/

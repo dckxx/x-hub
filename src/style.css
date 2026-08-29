@@ -22,8 +22,9 @@
   --frost-tint-a: rgba(91, 91, 245, 0.10);
   --frost-tint-b: rgba(236, 72, 153, 0.07);
   --frost-tint-c: rgba(59, 130, 246, 0.09);
-  --frost-base-a: rgba(255, 255, 255, 0.76);
-  --frost-base-b: rgba(255, 255, 255, 0.66);
+  /* 卡片玻璃透明度：--glass-dim（0.4–1.0）乘进基底 alpha，调小即透出壁纸/渐变背景 */
+  --frost-base-a: rgba(255, 255, 255, calc(0.76 * var(--glass-dim, 1)));
+  --frost-base-b: rgba(255, 255, 255, calc(0.66 * var(--glass-dim, 1)));
   --frost-surface:
     radial-gradient(180% 130% at 0% -12%, var(--frost-tint-a), transparent 55%),
     radial-gradient(150% 120% at 105% 6%, var(--frost-tint-b), transparent 55%),
@@ -130,8 +131,8 @@
   --frost-tint-a: rgba(139, 139, 255, 0.16);
   --frost-tint-b: rgba(236, 72, 153, 0.10);
   --frost-tint-c: rgba(59, 130, 246, 0.13);
-  --frost-base-a: rgba(255, 255, 255, 0.14);
-  --frost-base-b: rgba(255, 255, 255, 0.08);
+  --frost-base-a: rgba(255, 255, 255, calc(0.14 * var(--glass-dim, 1)));
+  --frost-base-b: rgba(255, 255, 255, calc(0.08 * var(--glass-dim, 1)));
   --frost-surface:
     radial-gradient(180% 130% at 0% -12%, var(--frost-tint-a), transparent 55%),
     radial-gradient(150% 120% at 105% 6%, var(--frost-tint-b), transparent 55%),
@@ -827,6 +828,91 @@ html, body, * {
   scrollbar-color: transparent transparent;
 }
 .card { background: var(--frost-surface); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); box-shadow: var(--frost-edge), var(--shadow-card); }
+/* 沉浸模式（ADR 0003 受控例外）：卡片基底大幅降 alpha 并启用 backdrop-filter 局部取景模糊，
+   壁纸在卡片间隙完整清晰展示。仅作用于静态 .card 表面，动画/滚动密集元素仍然禁用 backdrop-filter */
+html[data-immersive='1'] .card {
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  backdrop-filter: blur(16px) saturate(160%);
+}
+html[data-immersive='1'] {
+  --frost-base-a: rgba(255, 255, 255, calc(0.18 * var(--glass-dim, 1)));
+  --frost-base-b: rgba(255, 255, 255, calc(0.12 * var(--glass-dim, 1)));
+}
+html[data-theme='dark'][data-immersive='1'] {
+  --frost-base-a: rgba(255, 255, 255, calc(0.10 * var(--glass-dim, 1)));
+  --frost-base-b: rgba(255, 255, 255, calc(0.06 * var(--glass-dim, 1)));
+}
+/* ===== 壁纸态可读性增强（html data-wallpaper 开关，ADR 0003） =====
+   墨色阶梯向 ink 端压两档：半透明中灰压在任意照片上必然发虚，靠近实色墨才能保底对比；
+   无壁纸时不生效，图标 currentColor 自动跟随 */
+html[data-wallpaper='1'] .sidebar,
+html[data-wallpaper='1'] .title-bar,
+html[data-wallpaper='1'] main {
+  --text-2: #2e2a24;
+  --text-3: #3f3a31;
+  --text-4: #4a453c;
+}
+html[data-theme='dark'][data-wallpaper='1'] .sidebar,
+html[data-theme='dark'][data-wallpaper='1'] .title-bar,
+html[data-theme='dark'][data-wallpaper='1'] main {
+  --text-2: #eeeae1;
+  --text-3: #e8e4db;
+  --text-4: #cfcabf;
+}
+/* 铬件光晕：描边级（四向 1px + 柔光），任意照片上文字有连续对比边（亮色白晕托深墨/暗色黑晕托浅墨） */
+html[data-wallpaper='1'] .sidebar,
+html[data-wallpaper='1'] .title-bar {
+  text-shadow:
+    1px 0 0 rgba(255, 255, 255, 0.75),
+    -1px 0 0 rgba(255, 255, 255, 0.75),
+    0 1px 0 rgba(255, 255, 255, 0.75),
+    0 -1px 0 rgba(255, 255, 255, 0.75),
+    0 1px 3px rgba(255, 255, 255, 0.4);
+}
+html[data-theme='dark'][data-wallpaper='1'] .sidebar,
+html[data-theme='dark'][data-wallpaper='1'] .title-bar {
+  text-shadow:
+    1px 0 0 rgba(0, 0, 0, 0.75),
+    -1px 0 0 rgba(0, 0, 0, 0.75),
+    0 1px 0 rgba(0, 0, 0, 0.75),
+    0 -1px 0 rgba(0, 0, 0, 0.75),
+    0 1px 3px rgba(0, 0, 0, 0.4);
+}
+/* 铬件图标：双层 drop-shadow（紧贴描边 + 落影），静态一次栅格化 */
+html[data-wallpaper='1'] .sidebar svg,
+html[data-wallpaper='1'] .title-bar svg {
+  filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.9)) drop-shadow(0 1px 2px rgba(255, 255, 255, 0.5));
+}
+html[data-theme='dark'][data-wallpaper='1'] .sidebar svg,
+html[data-theme='dark'][data-wallpaper='1'] .title-bar svg {
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+}
+/* 卡片文字光晕：仅在卡片真实透底时启用（data-wallpaper-clear = 低玻璃透明度或沉浸模式），
+   柔光一档弱于铬件描边，玻璃面不透底时保持锐利 */
+html[data-wallpaper-clear='1'] .card,
+html[data-wallpaper-clear='1'] .sv-content,
+html[data-wallpaper-clear='1'] .extension-center,
+html[data-wallpaper-clear='1'] .le-root {
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.5), 0 0 4px rgba(255, 255, 255, 0.3);
+}
+html[data-theme='dark'][data-wallpaper-clear='1'] .card,
+html[data-theme='dark'][data-wallpaper-clear='1'] .sv-content,
+html[data-theme='dark'][data-wallpaper-clear='1'] .extension-center,
+html[data-theme='dark'][data-wallpaper-clear='1'] .le-root {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 0 4px rgba(0, 0, 0, 0.3);
+}
+html[data-wallpaper-clear='1'] .card svg,
+html[data-wallpaper-clear='1'] .sv-content svg,
+html[data-wallpaper-clear='1'] .extension-center svg,
+html[data-wallpaper-clear='1'] .le-root svg {
+  filter: drop-shadow(0 1px 1px rgba(255, 255, 255, 0.45));
+}
+html[data-theme='dark'][data-wallpaper-clear='1'] .card svg,
+html[data-theme='dark'][data-wallpaper-clear='1'] .sv-content svg,
+html[data-theme='dark'][data-wallpaper-clear='1'] .extension-center svg,
+html[data-theme='dark'][data-wallpaper-clear='1'] .le-root svg {
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45));
+}
 /* 玻璃拟态：常驻表面用烘焙渐变（--frost-surface）实现伪毛玻璃；仅弹层/下拉/菜单等瞬态表面保留真 blur */
 .modal-card,
 .ctx-menu {

@@ -1,5 +1,6 @@
 mod about;
 mod autostart;
+mod browsers;
 mod chat;
 mod clipboard;
 mod commands;
@@ -264,6 +265,14 @@ pub fn run() {
 
             restore_window_state(app);
 
+            // 自启动静默模式（--autostart-hidden）：主窗不显示、直接驻留托盘。
+            // 必须经 tray::hide_window 更新自维护的显隐状态位，否则 MAIN_WINDOW_VISIBLE
+            // 保持默认 true，全局快捷键 toggle_window 会误判「窗口可见」，只 set_focus
+            // 隐藏窗口上无效调用，导致快捷键无法呼出主窗口。
+            if crate::autostart::is_hidden_launch() {
+                crate::tray::hide_window(app.handle());
+            }
+
             // 主窗口启动时隐藏（tauri.conf.json visible:false），等前端内容可绘制后再 show，
             // 避免 WebView2 冷启动期间出现空白/白屏等待窗口；这里先铺上主题底色，
             // 若 show 早于首帧绘制，也只会闪主题色而非纯白
@@ -374,6 +383,8 @@ pub fn run() {
             commands::delete_resource,
             commands::reorder_resources,
             commands::launch_resource,
+            commands::list_installed_browsers,
+            commands::open_url_with_browser,
             commands::create_note,
             commands::update_note,
             commands::delete_note,
@@ -424,6 +435,8 @@ pub fn run() {
             commands::hide_to_tray,
             commands::parse_dropped_path,
             commands::import_icon_file,
+            commands::import_wallpaper,
+            commands::remove_wallpaper,
             commands::inspect_path,
             commands::scan_installed_apps,
             commands::get_running_processes,

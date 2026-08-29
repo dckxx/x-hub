@@ -73,7 +73,7 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 字号不再散落硬编码 px，而是映射到相对单位，配合两层可调系数（设置「外观」区「字体大小」，范围 0.85–1.30）：
 
 - **全局字体大小**：根字号 `html { font-size: calc(16px * var(--fs-global, 1)) }`；全局 UI 字号统一用 `rem`（1rem = 16px × `--fs-global`）。
-- **单模块字体大小**：便签（`--fs-sticky`）、速记（`--fs-notes`）、提示词（`--fs-prompt`）、待办（`--fs-todo`）、用量（`--fs-usage`）5 个内容模块，模块根 `font-size: calc(1rem * var(--fs-xxx, 1))`，模块内部字号用 `em` 相对模块根；嵌套在已缩放字号内的元素（如 Markdown 标题、标签删除按钮）用 `calc(Nrem * var(--fs-xxx, 1))` 精确表达。
+- **单模块字体大小**：便签（`--fs-sticky`）、速记（`--fs-notes`）、提示词（`--fs-prompt`）、待办（`--fs-todo`）4 个内容模块，模块根 `font-size: calc(1rem * var(--fs-xxx, 1))`，模块内部字号用 `em` 相对模块根；嵌套在已缩放字号内的元素（如 Markdown 标题、标签删除按钮）用 `calc(Nrem * var(--fs-xxx, 1))` 精确表达。
 - `--fs-*` 由 `useTheme` 依据 config（`font_scale` / `font_sticky` 等）注入 inline；rem 相对根、em 相对模块根，两层缩放相乘。
 
 ### Font Stack
@@ -104,32 +104,29 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 - 标题栏 48px，背景透明（无底部分隔线）。
 - **侧栏默认收起**（56px 图标态，hover 出名称气泡）；展开/收起按钮仅在设置开启 `sidebar_toggle` 后出现（默认关闭）；720px 以下强制恢复文字导航。
 
-### Dashboard（工作台）— 三列 Bento 网格
+### Dashboard（工作台）— 自由编排 Bento 网格
 
 ```
 ┌───────────────┬───────────────────┬──────────────┐
-│ 时钟          │ 中上区块           │  待办清单     │
-│ 系统资源监视器 │ (默认倒计时，可切换 │  (grid-row    │
-│ 便签 ×2       │  Token/概览卡)     │   1/3)       │
-│               │ 提示词百宝箱       │              │
+│ 时钟          │ 倒计时            │  待办清单     │
+│ 系统资源监视器 │ 提示词百宝箱      │              │
+│ 便签 ×2       │                   │              │
 └───────────────┴───────────────────┴──────────────┘
 │              最近使用通栏（跨三列）                 │
 └──────────────────────────────────────────────────┘
 ```
 
-- `grid-template-columns: minmax(0,1.2fr) minmax(0,1.8fr) minmax(0,1fr)`，行 `auto minmax(0,1fr) auto`，gap 16px。
-- 左列 flex 栈：时钟 → 系统监视 → 便签（两张 1fr 并排）。
-- 中列上半为**可切换区块** `dashboard_mid_content`（设置「工作台」区切换）：`countdown` 倒计时（默认）/ `token` Token 统计 / `notes` 速记概览 / `todo` 待办概览 / `resources` 速达数量；中列下半为提示词百宝箱。
-- 待办占右列整列（grid-row 1/3），最近使用通栏占底部整行。
+- 工作台为**自由网格布局**：部件目录在 `useDashboardLayout.ts`（clock / sticky1 / sticky2 / notes / todo_overview / resources / countdown / prompts / todo 共 9 种），每个部件可增删、拖拽、调宽高，坐标与尺寸持久化在配置 `dashboard_layout`（上图为其默认布局）。
+- 编辑入口为设置 →「布局编辑器」（独立视图 `DashboardLayoutEditor.vue`，完成后回工作台）。
 - 首页铺满视口无滚动，卡片内容区内滚动；960px 以下折两列，720px 以下单列堆叠。
 
 ### 独立视图
 
-导航项（工作台 / 速记 / 速达 / 用量）各对应一个独立视图，非弹窗：
+导航项（工作台 / 速记 / 速达，以及扩展中心 / 扩展 / 布局编辑器）各对应一个独立视图，非弹窗：
 
 - **速记**：笔记列表 + 标签筛选。
 - **速达**：资源管理（全部/常用/应用/网页/文件 + 文件二级分类 tabs）。
-- **用量**：双栏（左趋势/提供商排行 + 右明细分页）。
+- **扩展中心**：已装扩展清单 + 市场/安装 + 权限管理；单个扩展以 view 形态内嵌打开。
 
 ## 5. Components
 
@@ -165,20 +162,20 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 
 | 组件 | 说明 |
 |---|---|
-| ClockCard | 时间 HH:mm + 日期星期 + 最近进行中倒计时的环形进度（SVG stroke-dashoffset），30s 轮询 |
+| ClockCard | 时间 HH:mm + 日期星期 + 实时天气（Open-Meteo）+ 一言语录（点击换一句，离线回退本地语料） |
 | SysMonitorCard | CPU/内存进度条（品牌渐变，≥85% 红色警示渐变）+ 2s 轮询（sysinfo 后端）；进度条用 `transform: scaleX` 动画（走合成器，不触发布局重排） |
 | StickyCard | 便签 x2（slot 1/2，统一玻璃卡），600ms 防抖自动保存 |
-| CountdownCard | 倒计时卡（v0.1.13）：时长/定时/每天/间隔四种新建 + 列表（每秒刷新剩余时间 + 圆形水位）+ 暂停/恢复/浮窗/删除；`once` 到点灰态「已结束」待删；工作台中上区块默认内容 |
+| CountdownCard | 倒计时卡（v0.1.13）：时长/定时/每天/间隔四种新建 + 列表（每秒刷新剩余时间 + 圆形水位）+ 暂停/恢复/浮窗/删除；`once` 到点灰态「已结束」待删；自由网格布局常用部件 |
 | CountdownFloat | 倒计时圆形浮窗（v0.1.13）：透明置顶圆窗，水位随剩余比例下降 + 双层正弦波滚动（`cf-wave-a/b` 平移动画），悬停出暂停/关闭按钮；`once` 到点自动收窗 |
 | DetachedStickyWindow | 便签脱离浮窗小窗（sticky-* label 专属渲染，App.vue 路由分发） |
-| TokenStatsCard | 今日用量总量 + 非缓存/缓存/输出三指标 + 三段分割条 + 监听绿点，5min 自动刷新 + 手动刷新 + 「查看详情」跳转用量视图；仅在 `dashboard_mid_content = 'token'` 时显示 |
-| NotesOverviewCard / TodoOverviewCard / ResourcesOverviewCard | 中上区块可选概览卡：速记统计 / 待办概览 / 速达数量，点击跳转对应视图 |
+| NotesOverviewCard / TodoOverviewCard / ResourcesOverviewCard | 布局可选概览部件：速记统计 / 待办概览 / 速达数量，点击跳转对应视图 |
 | PromptBoxCard | 提示词列表卡，点击复制 + 置顶标 + 管理入口 |
 | RecentBar | 最近使用通栏（按 last_launched_at 排序，前 10） |
 | Suda | 速达资源管理视图（筛选 tabs + 卡片网格 + 拖拽导入 + 扫描安装应用 + 右键菜单） |
 | SudaFormDialog / SudaScanDialog | 新增/编辑资源弹窗（app/web/file + 文件选择）/ 扫描已安装应用批量导入弹窗 |
 | AppSelect | 通用下拉选择器（无头封装，样式自绘） |
-| UsageView | 用量详情视图（双栏：左趋势/提供商排行 + 右明细分页） |
+
+> 用量展示已移交 service 扩展 `com.x-hub.token-stats`（宿主侧 TokenStatsCard / UsageView 已移除，见 AGENTS.md 约定 17）。
 
 ### 弹窗 / 浮层
 

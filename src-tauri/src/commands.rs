@@ -1,3 +1,4 @@
+use crate::browsers::{self, InstalledBrowser};
 use crate::config;
 use crate::config::AppConfig;
 use crate::models::{
@@ -135,6 +136,38 @@ pub fn reorder_resources(state: State<'_, DbState>, ids: Vec<i64>) -> Result<(),
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     resource::reorder(&conn, &ids).map_err(err_str)?;
     log::info!("资源排序更新: {:?}", ids);
+    Ok(())
+}
+
+/// 枚举本机已安装浏览器（注册表 StartMenuInternet，按 exe 去重）
+#[tauri::command]
+pub fn list_installed_browsers() -> Vec<InstalledBrowser> {
+    browsers::list_installed()
+}
+
+/// 用指定浏览器打开速达网页资源（URL 从数据库读取：仅放行 Web 类型 + http/https）
+#[tauri::command]
+pub fn open_url_with_browser(
+    state: State<'_, DbState>,
+    id: i64,
+    browser_exe: String,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let res = resource::get(&conn, id).map_err(err_str)?;
+    if !matches!(res.kind, ResourceKind::Web) {
+        return Err("仅网页资源支持指定浏览器打开".to_string());
+    }
+    if !(res.target.starts_with("http://") || res.target.starts_with("https://")) {
+        return Err("只能打开 http/https 链接".to_string());
+    }
+    process::open_with_browser(&browser_exe, &res.target)?;
+    resource::touch(&conn, id).map_err(err_str)?;
+    log::info!(
+        "用浏览器打开网页: {} ({}) -> {}",
+        res.name,
+        res.target,
+        browser_exe
+    );
     Ok(())
 }
 
@@ -907,11 +940,10 @@ pub fn set_global_shortcut(app: tauri::AppHandle, value: String) -> Result<Strin
 
 // ---------- 开机自启动 ----------
 
-/// 自启动当前状态（enabled 总开关；admin 是否以管理员身份运行）
+/// 自启动当前状态
 #[derive(serde::Serialize)]
 pub struct RunAtStartupStatus {
     pub enabled: bool,
-    pub admin: bool,
 }
 
 /// 读取自启动状态（配置为准；若系统注册与配置不一致，下次启用/关闭会同步）
@@ -920,21 +952,19 @@ pub fn get_run_at_startup() -> Result<RunAtStartupStatus, String> {
     let config = crate::config::load();
     Ok(RunAtStartupStatus {
         enabled: config.run_at_startup,
-        admin: config.run_at_startup_admin,
     })
 }
 
-/// 设置自启动：`enabled` 总开关；`admin` 是否以管理员身份启动（仅 enabled 时生效）。
-/// 写入系统注册（Run 键 / 计划任务）成功后持久化配置。
+/// 设置自启动开关：写入系统注册（Run 键）成功后持久化配置，
+/// 并顺带清理旧版「管理员启动」模式残留的计划任务。
 #[tauri::command]
-pub fn set_run_at_startup(enabled: bool, admin: bool) -> Result<(), String> {
+pub fn set_run_at_startup(enabled: bool) -> Result<(), String> {
     let _guard = crate::config::lock();
-    crate::autostart::apply(enabled, admin)?;
+    crate::autostart::apply(enabled)?;
     let mut config = crate::config::load();
     config.run_at_startup = enabled;
-    config.run_at_startup_admin = admin && enabled;
     crate::config::save(&config)?;
-    log::info!("开机自启动: enabled={} admin={}", enabled, admin);
+    log::info!("开机自启动: enabled={}", enabled);
     Ok(())
 }
 
@@ -1508,6 +1538,69 @@ pub fn import_icon_file(source: String) -> Result<Option<String>, String> {
             }
         }
     }
+}
+
+/// 壁纸支持的静态图片格式（gif 等动图会持续重绘，与 GPU 性能约束冲突，不收）
+const WALLPAPER_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp"];
+/// 壁纸大小上限：壁纸是常驻 GPU 纹理，过大直接拒绝
+const WALLPAPER_MAX_BYTES: u64 = 30 * 1024 * 1024;
+
+/// 导入用户选择的壁纸图片：复制进数据根 wallpapers 目录（内容哈希命名），
+/// 并清掉目录内其它文件（该目录为本应用专属，避免 %APPDATA% 堆积废弃图片）。
+/// 返回落盘后的绝对路径，前端写入配置 wallpaper_path
+#[tauri::command]
+pub fn import_wallpaper(source: String) -> Result<String, String> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::io::Read;
+
+    let ext = std::path::Path::new(&source)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    if !WALLPAPER_EXTENSIONS.contains(&ext.as_str()) {
+        return Err("仅支持 png/jpg/webp/bmp 静态图片".into());
+    }
+
+    let dir = crate::paths::data_root().join("wallpapers");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let mut bytes = Vec::new();
+    std::fs::File::open(&source)
+        .and_then(|mut f| f.read_to_end(&mut bytes))
+        .map_err(|e| format!("读取图片失败: {}", e))?;
+    if bytes.len() as u64 > WALLPAPER_MAX_BYTES {
+        return Err("图片超过 30MB，请压缩后再试".into());
+    }
+
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    let output_path = dir.join(format!("{:016x}.{}", hasher.finish(), ext));
+    std::fs::write(&output_path, &bytes).map_err(|e| format!("保存壁纸失败: {}", e))?;
+
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p != output_path {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+
+    log::info!("壁纸导入成功: {} -> {}", source, output_path.display());
+    Ok(output_path.to_string_lossy().into_owned())
+}
+
+/// 清除壁纸：清空 wallpapers 目录（配置中的 wallpaper_path 由前端一并置空）
+#[tauri::command]
+pub fn remove_wallpaper() -> Result<(), String> {
+    let dir = crate::paths::data_root().join("wallpapers");
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    log::info!("壁纸已清除");
+    Ok(())
 }
 
 // ---------- 扫描已安装应用 ----------

@@ -11,7 +11,7 @@ import {
   Trash2,
   Wrench,
 } from 'lucide-vue-next'
-import { isTauri, tauriApi, type InstalledAppInfo, type Resource } from '../api/tauri'
+import { isTauri, tauriApi, type InstalledAppInfo, type InstalledBrowser, type Resource } from '../api/tauri'
 import { CATEGORIES, categorize } from '../utils/categories'
 import { useStore } from '../stores/workbench'
 import { reportClientError } from '../utils/error-report'
@@ -46,6 +46,7 @@ const prefill = ref<{
 let unlistenDrop: (() => void) | null = null
 
 onMounted(async () => {
+  void installedBrowsers() // 预热浏览器列表，右键菜单即开即用
   if (!isTauri()) return
   const webview = getCurrentWebview()
   unlistenDrop = await webview.onDragDropEvent((event) => {
@@ -82,12 +83,33 @@ onBeforeUnmount(() => {
   }
 })
 
+// ---- 拖拽去重：目标路径与现有资源一致即视为重复（统一分隔符/大小写后比较） ----
+function normalizeTarget(p: string): string {
+  return p.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase()
+}
+function findDuplicateTarget(target: string): Resource | undefined {
+  const key = normalizeTarget(target)
+  return store.state.resources.find((r) => r.target && normalizeTarget(r.target) === key)
+}
+
 async function handleDrop(file: string) {
+  // 命中已有资源的路径直接提示跳过：exe/lnk 还可省去 PowerShell 解析
+  const direct = findDuplicateTarget(file)
+  if (direct) {
+    showToast(`「${direct.name}」已在速达中，已跳过重复添加`)
+    return
+  }
   const ext = file.split('.').pop()?.toLowerCase()
   if (ext === 'exe' || ext === 'lnk') {
     parsing.value ||= file.split(/[\\/]/).pop() ?? file
     try {
       const info = await tauriApi.parseDroppedPath(file)
+      // .lnk 解析出的目标 exe 可能已用别的方式添加过（如另一个指向同一程序的快捷方式）
+      const dup = findDuplicateTarget(info.target)
+      if (dup) {
+        showToast(`「${dup.name}」已在速达中，已跳过重复添加`)
+        return
+      }
       prefill.value = { name: info.name, target: info.target, icon: info.icon, kind: 'app' }
       editing.value = null
       formVisible.value = true
@@ -179,7 +201,12 @@ const emptyTitle = computed(() => {
 const menu = ref({ visible: false, x: 0, y: 0, items: [] as ContextMenuItem[] })
 
 function openMenu(e: MouseEvent, items: ContextMenuItem[]) {
-  menu.value = { visible: true, x: e.clientX, y: e.clientY, items }
+  // 必须延迟到当前事件派发结束后再置位：ContextMenu 在 window 上监听 contextmenu/click
+  // 用于点击别处关闭菜单，若在同一事件派发内同步置位，紧跟的全局关闭监听会在
+  // props 更新后立即把菜单关掉（表现为右键无反应）；已开时右键另一资源也无法重定位
+  setTimeout(() => {
+    menu.value = { visible: true, x: e.clientX, y: e.clientY, items }
+  }, 0)
 }
 
 async function onDeleteResource(r: Resource) {
@@ -200,26 +227,57 @@ async function onDeleteResource(r: Resource) {
   })
 }
 
-function onResourceContext(e: MouseEvent, r: Resource) {
+// ---- 指定浏览器打开（网页资源）：列表来自本机已安装浏览器（Rust 注册表枚举） ----
+let browserCache: InstalledBrowser[] | null = null
+
+async function installedBrowsers(): Promise<InstalledBrowser[]> {
+  if (browserCache === null) {
+    try {
+      browserCache = isTauri() ? await tauriApi.listInstalledBrowsers() : []
+    } catch {
+      browserCache = []
+    }
+  }
+  return browserCache
+}
+
+async function onOpenWithBrowser(r: Resource, b: InstalledBrowser) {
+  try {
+    await store.openResourceInBrowser(r.id, b.exe)
+  } catch (e) {
+    showToast(`无法用「${b.name}」打开：${String(e)}`)
+  }
+}
+
+async function onResourceContext(e: MouseEvent, r: Resource) {
   e.preventDefault()
-  openMenu(e, [
-    {
-      label: '打开',
-      onClick: () => onOpen(r),
+  const items: ContextMenuItem[] = [{ label: '打开', onClick: () => onOpen(r) }]
+  let hasBrowsers = false
+  if (r.kind === 'web') {
+    const browsers = await installedBrowsers()
+    hasBrowsers = browsers.length > 0
+    for (const [i, b] of browsers.entries()) {
+      items.push({
+        label: `用 ${b.name} 打开`,
+        dividerBefore: i === 0,
+        onClick: () => void onOpenWithBrowser(r, b),
+      })
+    }
+  }
+  items.push({
+    label: '编辑',
+    dividerBefore: hasBrowsers,
+    onClick: () => {
+      editing.value = r
+      formVisible.value = true
     },
-    {
-      label: '编辑',
-      onClick: () => {
-        editing.value = r
-        formVisible.value = true
-      },
-    },
-    {
-      label: '删除',
-      danger: true,
-      onClick: () => void onDeleteResource(r),
-    },
-  ])
+  })
+  items.push({
+    label: '删除',
+    danger: true,
+    onClick: () => void onDeleteResource(r),
+  })
+  openMenu(e, items)
 }
 
 // ---- 弹窗 ----

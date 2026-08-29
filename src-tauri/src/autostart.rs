@@ -1,11 +1,8 @@
-//! 开机自启动管理：支持「普通」与「以管理员身份」两种启动方式。
+//! 开机自启动管理：注册表 Run 键方式（登录时静默拉起，主窗不弹出、驻留托盘）。
 //!
-//! - 普通模式：写注册表 Run 键 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
-//! - 管理员模式：注册计划任务（ONLOGON + 最高权限），登录后静默提权启动，
-//!   避免普通 Run 键在需要管理员权限时被 UAC 拦下。因最高权限任务需以管理员身份
-//!   注册，首次启用会触发一次 UAC 授权（随后登录静默，不再弹窗）。
-//!
-//! 两种方式互斥：切换时会先清掉另一套，防止重复启动；关闭时两套都清理。
+//! 历史版本曾提供「计划任务 + 最高权限」的管理员启动模式；因 Windows UIPI 隔离，
+//! 管理员权限进程无法从资源管理器接收文件拖放（速达拖拽导入失效），该模式已移除。
+//! `apply` 时会顺带清理旧版残留的计划任务。
 
 use std::process::Command;
 
@@ -23,10 +20,11 @@ pub fn is_hidden_launch() -> bool {
 const RUN_KEY_PATH: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(target_os = "windows")]
 const RUN_VALUE_NAME: &str = "x-hub";
+/// 旧版管理员自启动注册的计划任务名（仅用于清理，不再创建）
 #[cfg(target_os = "windows")]
-const TASK_NAME: &str = "x-hub-autostart";
+const LEGACY_TASK_NAME: &str = "x-hub-autostart";
 
-/// 当前 exe 的完整路径（Run 键 / 计划任务都需要绝对路径）
+/// 当前 exe 的完整路径（Run 键需要绝对路径）
 #[cfg(target_os = "windows")]
 fn exe_path() -> String {
     std::env::current_exe()
@@ -81,20 +79,9 @@ fn remove_run_key() {
     let _ = cmd.status();
 }
 
-// ---------- 管理员模式：计划任务（可提权注册） ----------
+// ---------- 旧版管理员模式残留清理 ----------
 
-/// 构建 schtasks /Create 完整命令行（写进临时 bat 交给提权进程执行，
-/// 避免经 PowerShell ArgumentList 时引号/空格被二次解析）
-#[cfg(target_os = "windows")]
-fn schtasks_create_line() -> String {
-    format!(
-        "schtasks /Create /TN \"{}\" /TR \"{}\" /SC ONLOGON /RL HIGHEST /F",
-        TASK_NAME,
-        launch_command_line()
-    )
-}
-
-/// 直接运行已构造好的命令行（cmd /C，隐藏控制台）
+/// 隐藏控制台地运行一行 cmd 命令，返回是否成功
 #[cfg(target_os = "windows")]
 fn run_cmd_line(line: &str) -> bool {
     let mut cmd = Command::new("cmd");
@@ -122,83 +109,50 @@ fn run_bat_elevated(bat_path: &std::path::Path, log_tag: &str) -> bool {
     ok
 }
 
-/// 任务是否已存在（schtasks /Query 退出码 0 表示存在）
+/// 旧版最高权限计划任务是否仍存在（schtasks /Query 退出码 0 表示存在）
 #[cfg(target_os = "windows")]
-fn task_exists() -> bool {
+fn legacy_task_exists() -> bool {
     let mut cmd = Command::new("schtasks");
-    cmd.args(["/Query", "/TN", TASK_NAME]);
+    cmd.args(["/Query", "/TN", LEGACY_TASK_NAME]);
     no_console_window(&mut cmd);
     cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
-/// 注册最高权限计划任务：先直接尝试（适用于宿主已提权），
-/// 失败则写入临时 bat 并请求 UAC 提权执行；最后校验任务是否真正建立。
+/// 清理旧版管理员自启动残留的计划任务（最高权限任务普通权限删不动时走一次 UAC 授权）
 #[cfg(target_os = "windows")]
-fn write_scheduled_task() -> Result<(), String> {
-    let line = schtasks_create_line();
-    if run_cmd_line(&line) && task_exists() {
-        log::info!("已注册开机自启动计划任务（最高权限）");
-        return Ok(());
+fn remove_legacy_task() {
+    if !legacy_task_exists() {
+        return;
     }
-
-    // 直接失败（通常因权限不足 /RL HIGHEST）：走 UAC 提权
-    let bat = std::env::temp_dir().join("x-hub-autostart-task.bat");
-    if std::fs::write(&bat, line).is_err() {
-        return Err("无法写入临时提权脚本".into());
+    let line = format!("schtasks /Delete /TN \"{}\" /F", LEGACY_TASK_NAME);
+    if run_cmd_line(&line) {
+        log::info!("[自启动] 已清理旧版管理员自启动计划任务");
+        return;
     }
-    let elevated_ok = run_bat_elevated(&bat, "创建计划任务");
+    let bat = std::env::temp_dir().join("x-hub-autostart-task-del.bat");
+    if std::fs::write(&bat, &line).is_ok() && run_bat_elevated(&bat, "清理旧版自启动任务") {
+        log::info!("[自启动] 已通过 UAC 授权清理旧版管理员自启动计划任务");
+    }
     let _ = std::fs::remove_file(&bat);
-    if elevated_ok && task_exists() {
-        log::info!("已通过 UAC 授权注册最高权限自启动任务");
-        Ok(())
-    } else {
-        Err((if elevated_ok {
-            "提权完成但任务校验失败"
-        } else {
-            "创建管理员自启动需要授权：请在弹窗中点击「是」"
-        })
-        .into())
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn remove_scheduled_task() {
-    // 普通创建的任务直接删；以管理员身份创建的最高权限任务，删除同样需要提权
-    if task_exists() {
-        let line = format!("schtasks /Delete /TN \"{}\" /F", TASK_NAME);
-        if !run_cmd_line(&line) {
-            let bat = std::env::temp_dir().join("x-hub-autostart-task-del.bat");
-            let _ = std::fs::write(&bat, line);
-            let _ = run_bat_elevated(&bat, "删除计划任务");
-            let _ = std::fs::remove_file(&bat);
-        }
-    }
 }
 
 // ---------- 对外接口 ----------
 
-/// 应用自启动状态：`enabled` 总开关；`admin` 是否以管理员身份启动（仅启用时生效）。
-///
-/// 先清掉当前存在的两套注册（普通 + 管理员），再按需写入目标方式，
-/// 保证任何时候至多存在一种启动方式。
-pub fn apply(enabled: bool, admin: bool) -> Result<(), String> {
+/// 应用自启动开关：先清掉已有注册（Run 键 + 旧版任务残留），启用时写入 Run 键。
+pub fn apply(enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         remove_run_key();
-        remove_scheduled_task();
+        remove_legacy_task();
         if enabled {
-            if admin {
-                write_scheduled_task()?
-            } else {
-                write_run_key()?
-            }
+            write_run_key()?;
         }
         Ok(())
     }
     // 非 Windows 平台：自启动仅支持当前平台时返回错误提示
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (enabled, admin);
+        let _ = enabled;
         Err("当前平台不支持开机自启动".into())
     }
 }
@@ -219,9 +173,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn apply_disabled_is_ok() {
-        // 关闭自启动不应报错（静默清理）
-        let _ = apply(false, false);
-    }
+    // 注意：不要在测试里调用 apply()——它会真实操作系统注册表与计划任务，
+    // cargo test 会把本机已注册的自启动 Run 键删掉。
 }

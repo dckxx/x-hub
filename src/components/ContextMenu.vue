@@ -4,6 +4,8 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 export interface ContextMenuItem {
   label: string
   danger?: boolean
+  /** 在该项上方渲染一条分隔线（用于分组，如「用 XX 浏览器打开」组） */
+  dividerBefore?: boolean
   onClick: () => void
 }
 
@@ -99,18 +101,19 @@ onBeforeUnmount(() => {
         @click.stop
         @contextmenu.stop
       >
-        <button
-          v-for="(item, i) in items"
-          :key="i"
-          class="ctx-item"
-          :class="{ danger: item.danger }"
-          role="menuitem"
-          :tabindex="i === activeIndex ? 0 : -1"
-          @click="onItemClick(item)"
-          @mouseenter="activeIndex = i"
-        >
-          {{ item.label }}
-        </button>
+        <template v-for="(item, i) in items" :key="i">
+          <div v-if="item.dividerBefore" class="ctx-divider" role="separator" />
+          <button
+            class="ctx-item"
+            :class="{ danger: item.danger }"
+            role="menuitem"
+            :tabindex="i === activeIndex ? 0 : -1"
+            @click="onItemClick(item)"
+            @mouseenter="activeIndex = i"
+          >
+            {{ item.label }}
+          </button>
+        </template>
       </div>
     </Transition>
   </Teleport>
@@ -151,6 +154,11 @@ onBeforeUnmount(() => {
 .ctx-item.danger:hover {
   background: color-mix(in srgb, var(--c-red) 10%, transparent);
   color: var(--c-red);
+}
+.ctx-divider {
+  height: 1px;
+  margin: 5px 8px;
+  background: var(--border-soft);
 }
 
 .menu-enter-active,

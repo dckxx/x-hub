@@ -1,6 +1,6 @@
 # x-hub 扩展系统设计规范
 
-> 状态：草案 v3（讨论定稿后实施）
+> 状态：已实施（v0.2.x–v0.3.0 落地；实现以 `src-tauri/src/{extension,market,xhub_api,service,runtime,proxy}.rs` 与 `src/components/Extension*.vue` 为准，本文保留为设计规范）
 > 关联原型：`extension-ui-prototype.html`（8 场景可交互预览）
 > 更新：2026-08-22
 >

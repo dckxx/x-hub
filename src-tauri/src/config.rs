@@ -47,6 +47,21 @@ pub struct AppConfig {
     pub theme_preset: String,
     /// 强调色（hex，如 #5B5BF5）；null 表示跟随预设推荐强调色
     pub accent_color: Option<String>,
+    /// 应用壁纸：主窗口背景图片的绝对路径（空 = 未设置，回退主题渐变背景）
+    #[serde(default)]
+    pub wallpaper_path: String,
+    /// 壁纸整屏静态模糊（ADR 0002：模糊作用于壁纸层整体，非卡片局部 backdrop）
+    #[serde(default = "default_true")]
+    pub wallpaper_blur: bool,
+    /// 壁纸蒙版：主题底色罩层不透明度（0–0.85，默认 0.3），在壁纸鲜亮度与文字对比度间取平衡
+    #[serde(default = "default_wallpaper_veil")]
+    pub wallpaper_veil: f64,
+    /// 沉浸模式：卡片改用真毛玻璃 backdrop-filter 局部取景模糊（ADR 0003 受控例外，默认关）
+    #[serde(default)]
+    pub wallpaper_immersive: bool,
+    /// 卡片玻璃透明度（0.4–1.0，1.0 = 默认不透明观感）
+    #[serde(default = "one")]
+    pub glass_opacity: f64,
     /// 侧边栏展开/收缩功能开关（默认关闭）
     pub sidebar_toggle: bool,
     pub window: WindowState,
@@ -137,9 +152,6 @@ pub struct AppConfig {
     /// 开机自启动（登录 Windows 时自动驻留托盘）
     #[serde(default)]
     pub run_at_startup: bool,
-    /// 开机自启动是否以管理员身份运行（仅 run_at_startup 启用时生效）
-    #[serde(default)]
-    pub run_at_startup_admin: bool,
     /// 应用自动升级清单远端地址（空 = 用默认值）
     #[serde(default = "default_update_endpoint")]
     pub update_endpoint: String,
@@ -178,6 +190,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_wallpaper_veil() -> f64 {
+    0.3
+}
+
 fn default_quote_source() -> String {
     "online".to_string()
 }
@@ -210,6 +226,11 @@ impl Default for AppConfig {
             theme_mode: "light".to_string(),
             theme_preset: "indigo".to_string(),
             accent_color: None,
+            wallpaper_path: String::new(),
+            wallpaper_blur: true,
+            wallpaper_veil: default_wallpaper_veil(),
+            wallpaper_immersive: false,
+            glass_opacity: 1.0,
             sidebar_toggle: false,
             window: WindowState::default(),
             global_shortcut: crate::shortcut::DEFAULT_TOGGLE_SHORTCUT.to_string(),
@@ -245,7 +266,6 @@ impl Default for AppConfig {
             extension_open_modes: std::collections::HashMap::new(),
             market_endpoint: default_market_endpoint(),
             run_at_startup: false,
-            run_at_startup_admin: false,
             update_endpoint: default_update_endpoint(),
             auto_update_enabled: true,
             update_interval_hours: default_update_interval_hours(),

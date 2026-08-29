@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject } from 'vue'
+import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
 import { ArrowRight, Flame, Globe } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Resource } from '../api/tauri'
@@ -13,7 +13,30 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
   () => {},
 )
 
-const RECENT_LIMIT = 10
+// ---- 宽度自适应：卡片固定 72px、间距 10px，按容器实际宽度算能放下几张就显示几张 ----
+const CHIP_W = 72
+const GAP = 10
+const bodyRef = ref<HTMLElement | null>(null)
+const visibleCount = ref(10)
+let resizeObserver: ResizeObserver | null = null
+
+function recomputeVisible() {
+  const w = bodyRef.value?.clientWidth ?? 0
+  if (w > 0) visibleCount.value = Math.max(1, Math.floor((w + GAP) / (CHIP_W + GAP)))
+}
+
+watch(bodyRef, (el) => {
+  resizeObserver?.disconnect()
+  if (el) {
+    resizeObserver = new ResizeObserver(recomputeVisible)
+    resizeObserver.observe(el)
+  }
+  recomputeVisible()
+})
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+})
 
 const recent = computed<Resource[]>(() =>
   [...store.state.resources]
@@ -22,7 +45,7 @@ const recent = computed<Resource[]>(() =>
       (a, b) =>
         new Date(b.last_launched_at!).getTime() - new Date(a.last_launched_at!).getTime(),
     )
-    .slice(0, RECENT_LIMIT),
+    .slice(0, visibleCount.value),
 )
 
 // ---- 图标渲染（与 Suda 共用 useResourceIcon，保证一致） ----
@@ -56,7 +79,7 @@ async function onOpen(r: Resource) {
       </button>
     </header>
 
-    <div v-if="recent.length" class="rb-body">
+    <div v-if="recent.length" ref="bodyRef" class="rb-body">
       <div
         v-for="r in recent"
         :key="r.id"

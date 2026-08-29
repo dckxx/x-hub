@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import { ChevronDown, Download, FolderCog, Keyboard, LocateFixed, Lock, MapPin, Trash2, Upload } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import type { DataPathInfo } from '../api/tauri'
@@ -17,6 +18,54 @@ const emit = defineEmits<{ (e: 'open-layout-editor'): void }>()
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
+
+// ---- 应用壁纸与卡片玻璃透明度（见 docs/adr/0002：模糊作用于壁纸层整体） ----
+const wallpaperSrc = computed(() => {
+  const p = store.state.config.wallpaper_path
+  return p && isTauri() ? convertFileSrc(p) : ''
+})
+
+async function pickWallpaper() {
+  try {
+    const file = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }],
+    })
+    if (typeof file !== 'string') return
+    const stored = await tauriApi.importWallpaper(file)
+    await store.setWallpaper(stored)
+    showToast('壁纸已更新')
+  } catch (e) {
+    showToast(`壁纸导入失败：${String(e)}`)
+  }
+}
+
+async function clearWallpaper() {
+  try {
+    await tauriApi.removeWallpaper()
+  } catch {
+    // 目录已不存在等场景不阻塞：配置置空即达成清除
+  }
+  await store.setWallpaper('')
+  showToast('已清除壁纸')
+}
+
+function onToggleWallpaperBlur() {
+  void store.setWallpaperBlur(!store.state.config.wallpaper_blur)
+}
+
+function onToggleWallpaperImmersive() {
+  void store.setWallpaperImmersive(!store.state.config.wallpaper_immersive)
+}
+
+function onWallpaperVeilInput(e: Event) {
+  void store.setWallpaperVeil(Number((e.target as HTMLInputElement).value))
+}
+
+function onGlassOpacityInput(e: Event) {
+  void store.setGlassOpacity(Number((e.target as HTMLInputElement).value))
+}
 
 // ---- 分类导航（左侧分类 = 右侧区块锚点，点击平滑滚动定位，不做内容切换） ----
 const SECTIONS = [
@@ -135,24 +184,8 @@ async function onToggleAutostart() {
   autostartBusy.value = true
   const next = !store.state.config.run_at_startup
   try {
-    await store.setRunAtStartup(next, store.state.config.run_at_startup_admin)
+    await store.setRunAtStartup(next)
     showToast(next ? '已开启开机自启动' : '已关闭开机自启动')
-  } catch (e) {
-    showToast(`设置失败：${String(e)}`)
-  } finally {
-    autostartBusy.value = false
-  }
-}
-
-async function onToggleAutostartAdmin() {
-  if (autostartBusy.value) return
-  autostartBusy.value = true
-  const next = !store.state.config.run_at_startup_admin
-  try {
-    // 启用「以管理员身份启动」时自动打开自启动总开关
-    const enabled = next ? true : store.state.config.run_at_startup
-    await store.setRunAtStartup(enabled, next)
-    showToast(next ? '开机将以管理员身份启动' : '已改为普通方式启动')
   } catch (e) {
     showToast(`设置失败：${String(e)}`)
   } finally {
@@ -519,24 +552,6 @@ function onAccentInput(e: Event) {
               <span class="toggle-knob"></span>
             </button>
           </div>
-
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-name">以管理员身份启动</span>
-              <span class="setting-desc">自启动时静默以管理员权限运行，避免部分功能（UAC 提权程序等）权限不足的异常问题；需以管理员身份授权注册一次</span>
-            </div>
-            <button
-              class="toggle"
-              role="switch"
-              type="button"
-              :aria-checked="store.state.config.run_at_startup_admin"
-              :class="{ on: store.state.config.run_at_startup_admin }"
-              :disabled="autostartBusy"
-              @click="onToggleAutostartAdmin"
-            >
-              <span class="toggle-knob"></span>
-            </button>
-          </div>
         </section>
 
         <!-- AI 助手 -->
@@ -695,6 +710,94 @@ function onAccentInput(e: Event) {
                     重置
                   </button>
                 </div>
+              </div>
+            </div>
+
+            <!-- ④ 应用壁纸：主窗口所有视图共用，浮窗不跟随；模糊为整屏静态层（ADR 0002） -->
+            <div class="theme-row theme-row-stack">
+              <span class="theme-label">应用壁纸</span>
+              <div class="wallpaper-box">
+                <div class="wallpaper-preview" :class="{ empty: !wallpaperSrc }">
+                  <img v-if="wallpaperSrc" :src="wallpaperSrc" alt="壁纸预览" />
+                  <span v-else class="wallpaper-empty">未设置壁纸（当前使用主题渐变背景）</span>
+                </div>
+                <div class="wallpaper-actions">
+                  <button class="ghost-btn" @click="pickWallpaper">
+                    {{ wallpaperSrc ? '更换图片' : '选择图片' }}
+                  </button>
+                  <button v-if="wallpaperSrc" class="ghost-btn" @click="clearWallpaper">
+                    清除壁纸
+                  </button>
+                </div>
+                <div v-if="wallpaperSrc" class="setting-row wallpaper-blur-row">
+                  <div class="setting-info">
+                    <span class="setting-name">沉浸模式</span>
+                    <span class="setting-desc">卡片改用真毛玻璃：壁纸在卡片间隙完整清晰展示，卡内文字自动可读（低端核显滚动可能掉帧）</span>
+                  </div>
+                  <button
+                    class="toggle"
+                    role="switch"
+                    type="button"
+                    :aria-checked="store.state.config.wallpaper_immersive"
+                    :class="{ on: store.state.config.wallpaper_immersive }"
+                    @click="onToggleWallpaperImmersive"
+                  >
+                    <span class="toggle-knob"></span>
+                  </button>
+                </div>
+                <div v-if="wallpaperSrc" class="setting-row wallpaper-blur-row">
+                  <div class="setting-info">
+                    <span class="setting-name">壁纸蒙版</span>
+                    <span class="setting-desc">叠一层主题底色，改善文字与图标对比度；0% 壁纸最鲜亮，越高越接近原背景</span>
+                  </div>
+                  <div class="font-edit">
+                    <input
+                      class="opacity-slider"
+                      type="range"
+                      min="0"
+                      max="0.85"
+                      step="0.01"
+                      :value="store.state.config.wallpaper_veil"
+                      aria-label="壁纸蒙版"
+                      @input="onWallpaperVeilInput"
+                    />
+                    <span class="opacity-value">{{ Math.round(store.state.config.wallpaper_veil * 100) }}%</span>
+                  </div>
+                </div>
+                <div v-if="wallpaperSrc && !store.state.config.wallpaper_immersive" class="setting-row wallpaper-blur-row">
+                  <div class="setting-info">
+                    <span class="setting-name">背景模糊</span>
+                    <span class="setting-desc">柔化整张壁纸（含卡片间空隙透出的部分），文字更易读；沉浸模式下不生效</span>
+                  </div>
+                  <button
+                    class="toggle"
+                    role="switch"
+                    type="button"
+                    :aria-checked="store.state.config.wallpaper_blur"
+                    :class="{ on: store.state.config.wallpaper_blur }"
+                    @click="onToggleWallpaperBlur"
+                  >
+                    <span class="toggle-knob"></span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- ⑤ 卡片玻璃透明度：全局卡片透底程度，无壁纸时对渐变背景同样生效 -->
+            <div class="theme-row">
+              <span class="theme-label">卡片玻璃透明度</span>
+              <div class="font-edit">
+                <input
+                  class="opacity-slider"
+                  type="range"
+                  min="0.4"
+                  max="1"
+                  step="0.01"
+                  :value="store.state.config.glass_opacity"
+                  aria-label="卡片玻璃透明度"
+                  @input="onGlassOpacityInput"
+                />
+                <span class="opacity-value">{{ Math.round(store.state.config.glass_opacity * 100) }}%</span>
               </div>
             </div>
           </div>
@@ -1656,6 +1759,47 @@ function onAccentInput(e: Event) {
 .accent-reset {
   padding: 4px 10px;
   font-size: 0.75rem;
+}
+
+/* ---- 应用壁纸 ---- */
+.wallpaper-box {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.wallpaper-preview {
+  height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--input-bg);
+}
+.wallpaper-preview.empty {
+  border-style: dashed;
+}
+.wallpaper-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.wallpaper-empty {
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+.wallpaper-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+/* 内嵌模糊开关行：去掉 setting-row 的默认外间距，贴进壁纸分组 */
+.wallpaper-blur-row {
+  margin: 0;
+  padding: 0;
 }
 
 /* ---- 数据存储路径 ---- */

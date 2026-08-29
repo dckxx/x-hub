@@ -56,6 +56,11 @@ const state = reactive<StoreState>({
     theme_mode: 'light',
     theme_preset: 'indigo',
     accent_color: null,
+    wallpaper_path: '',
+    wallpaper_blur: true,
+    wallpaper_veil: 0.3,
+    wallpaper_immersive: false,
+    glass_opacity: 1,
     sidebar_toggle: false,
     window: {
       width: 1400,
@@ -96,7 +101,6 @@ const state = reactive<StoreState>({
     sidebar_extensions: [],
     extension_open_modes: {},
     run_at_startup: false,
-    run_at_startup_admin: false,
     update_endpoint: '',
     auto_update_enabled: true,
     update_interval_hours: 4,
@@ -266,6 +270,13 @@ export function useStore() {
 
   async function launchResource(id: number) {
     await tauriApi.launchResource(id)
+    const r = state.resources.find((x) => x.id === id)
+    if (r) r.last_launched_at = new Date().toISOString()
+  }
+
+  /** 用指定浏览器打开网页资源（browserExe 来自 listInstalledBrowsers） */
+  async function openResourceInBrowser(id: number, browserExe: string) {
+    await tauriApi.openUrlWithBrowser(id, browserExe)
     const r = state.resources.find((x) => x.id === id)
     if (r) r.last_launched_at = new Date().toISOString()
   }
@@ -572,6 +583,36 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  async function setWallpaper(path: string) {
+    state.config.wallpaper_path = path
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
+  async function setWallpaperBlur(value: boolean) {
+    state.config.wallpaper_blur = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
+  async function setWallpaperVeil(value: number) {
+    state.config.wallpaper_veil = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
+  async function setWallpaperImmersive(value: boolean) {
+    state.config.wallpaper_immersive = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
+  async function setGlassOpacity(value: number) {
+    state.config.glass_opacity = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   async function setAlwaysOnTop(value: boolean) {
     state.config.window.always_on_top = value
     if (!isTauri()) return
@@ -699,19 +740,16 @@ export function useStore() {
   }
 
   // ---- 开机自启动 ----
-  /** 应用开机自启动（enabled 总开关；admin 是否以管理员身份运行），失败回滚内存状态 */
-  async function setRunAtStartup(enabled: boolean, admin: boolean) {
+  /** 应用开机自启动开关，失败回滚内存状态 */
+  async function setRunAtStartup(enabled: boolean) {
     const prevEnabled = state.config.run_at_startup
-    const prevAdmin = state.config.run_at_startup_admin
     state.config.run_at_startup = enabled
-    state.config.run_at_startup_admin = admin && enabled
     if (!isTauri()) return
     try {
-      await tauriApi.setRunAtStartup(enabled, admin)
+      await tauriApi.setRunAtStartup(enabled)
       await tauriApi.saveConfig(state.config)
     } catch (e) {
       state.config.run_at_startup = prevEnabled
-      state.config.run_at_startup_admin = prevAdmin
       throw e
     }
   }
@@ -904,6 +942,7 @@ export function useStore() {
     editResource,
     removeResource,
     launchResource,
+    openResourceInBrowser,
     addNote,
     saveNote,
     removeNote,
@@ -935,6 +974,11 @@ export function useStore() {
     setThemeMode,
     setThemePreset,
     setAccentColor,
+    setWallpaper,
+    setWallpaperBlur,
+    setWallpaperVeil,
+    setWallpaperImmersive,
+    setGlassOpacity,
     setSidebarToggle,
     setAlwaysOnTop,
     setGlobalShortcut,

@@ -1,6 +1,6 @@
 # x-hub 基于 Cloudflare R2 的扩展中心与自动升级方案
 
-> 状态：**P0+P1+P2 已实施**（2026-08-26）；P3 应用升级待排期。
+> 状态：**P0+P1+P2 已实施**（2026-08-26）；**P3 应用升级已随 v0.3.0 实施**（`src-tauri/src/updater.rs` + `signing.rs`：update.json Ed25519 验签 + minimumUpgradable 跳级保护 + sha256 下载校验 + 重启自替换/回滚）。
 > 实施记录见文末附录。
 
 ## 1. 目标与现状
@@ -270,6 +270,8 @@ jobs:
 ### 6.3 与现有 What's New 的关系
 
 `check_whats_new`（本地 changelog）保留不动；升级完成后首次启动照常弹 What's New，`last_seen_version` 逻辑不变。`update.json.notes` 只是下载前给用户看的摘要，最终详情仍走本地 RELEASE_NOTES。
+
+> ⚠️ v0.3.0 实施调整：What's New 机制（`check_whats_new` / `whats_new_enabled` / `last_seen_version`）已随更新弹窗一并移除，新版本说明直接由全局 `UpdateCheckDialog` 展示（摘要来自 `update.json.notes`，详情仍走 `about.rs` 内置 RELEASE_NOTES），见 `src-tauri/src/updater.rs`。
 
 ## 7. 安全设计
 

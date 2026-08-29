@@ -122,6 +122,7 @@ function close() {
   padding-left: 18px;
   flex-shrink: 0;
 }
+/* 铬件（标题栏）始终全透明：与背景（渐变/壁纸）构成同一个连续平面，表面只属于卡片（ADR 0003） */
 .window-title {
   display: flex;
   align-items: center;

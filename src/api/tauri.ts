@@ -14,6 +14,14 @@ export interface Resource {
   updated_at: string
 }
 
+/** 本机已安装浏览器（list_installed_browsers，注册表 StartMenuInternet 枚举） */
+export interface InstalledBrowser {
+  /** 显示名（如 Google Chrome / Microsoft Edge） */
+  name: string
+  /** 浏览器 exe 绝对路径 */
+  exe: string
+}
+
 export interface Note {
   id: number
   title: string
@@ -100,6 +108,16 @@ export interface AppConfig {
   theme_mode: string // 'light' | 'dark' | 'system'
   theme_preset: string // 'indigo' | 'green' | 'morandi' | 'midnight'
   accent_color: string | null // hex like '#5b5bf5'; null = follow preset recommended
+  /** 应用壁纸绝对路径（空 = 未设置，回退主题渐变背景） */
+  wallpaper_path: string
+  /** 壁纸整屏静态模糊（默认开启，见 ADR 0002） */
+  wallpaper_blur: boolean
+  /** 壁纸蒙版：主题底色罩层不透明度（0–0.85，默认 0.3） */
+  wallpaper_veil: number
+  /** 沉浸模式：卡片真毛玻璃局部取景模糊（ADR 0003 受控例外，默认关） */
+  wallpaper_immersive: boolean
+  /** 卡片玻璃透明度（0.4–1.0，默认 1.0 = 不透明） */
+  glass_opacity: number
   sidebar_toggle: boolean // 侧边栏展开/收缩功能开关（默认关闭）
   window: WindowState
   global_shortcut: string
@@ -154,8 +172,6 @@ export interface AppConfig {
   extension_open_modes: Record<string, string>
   /** 开机自启动（登录 Windows 时自动驻留托盘） */
   run_at_startup: boolean
-  /** 开机自启动是否以管理员身份运行（仅 run_at_startup 启用时生效） */
-  run_at_startup_admin: boolean
   /** 应用升级清单远端地址（空 = 用默认值 https://r2.dckxx.com/releases/update.json） */
   update_endpoint: string
   /** 自动升级总开关（默认开启） */
@@ -445,6 +461,9 @@ export const tauriApi = {
   deleteResource: (id: number) => invoke<void>('delete_resource', { id }),
   reorderResources: (ids: number[]) => invoke<void>('reorder_resources', { ids }),
   launchResource: (id: number) => invoke<void>('launch_resource', { id }),
+  listInstalledBrowsers: () => invoke<InstalledBrowser[]>('list_installed_browsers'),
+  openUrlWithBrowser: (id: number, browserExe: string) =>
+    invoke<void>('open_url_with_browser', { id, browserExe }),
   createNote: (title: string) => invoke<Note>('create_note', { title }),
   updateNote: (id: number, title: string, content: string) =>
     invoke<Note>('update_note', { id, title, content }),
@@ -477,6 +496,9 @@ export const tauriApi = {
   getRunningProcesses: () => invoke<string[]>('get_running_processes'),
   importIconFile: (source: string) =>
     invoke<string | null>('import_icon_file', { source }),
+  importWallpaper: (source: string) =>
+    invoke<string>('import_wallpaper', { source }),
+  removeWallpaper: () => invoke<void>('remove_wallpaper'),
   inspectPath: (path: string) =>
     invoke<{ name: string; is_dir: boolean }>('inspect_path', { path }),
   listTags: () => invoke<Tag[]>('list_tags'),
@@ -498,10 +520,8 @@ export const tauriApi = {
     invoke<void>('set_always_on_top_config', { value }),
   getGlobalShortcut: () => invoke<string>('get_global_shortcut'),
   setGlobalShortcut: (value: string) => invoke<string>('set_global_shortcut', { value }),
-  getRunAtStartup: () =>
-    invoke<{ enabled: boolean; admin: boolean }>('get_run_at_startup'),
-  setRunAtStartup: (enabled: boolean, admin: boolean) =>
-    invoke<void>('set_run_at_startup', { enabled, admin }),
+  getRunAtStartup: () => invoke<{ enabled: boolean }>('get_run_at_startup'),
+  setRunAtStartup: (enabled: boolean) => invoke<void>('set_run_at_startup', { enabled }),
   getStartupHidden: () => invoke<boolean>('get_startup_hidden'),
   logClientError: (payload: ClientErrorPayload) =>
     invoke<void>('log_client_error', { message: payload.message, detail: payload.detail }),

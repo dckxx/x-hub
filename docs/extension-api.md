@@ -1,6 +1,6 @@
 # x-hub 桥 API（window.xhub）
 
-> 状态：草案 v1（实现前可调整，实现后走版本化）
+> 状态：已实施；实现基线为 `src-tauri/src/xhub_api.rs` 的 `CAPABILITIES` 静态注册表，方法签名变更需走版本化（`runtime.info` 返回 `capabilities` 供扩展探测）
 > 定位：扩展（web / service 通用）调用宿主能力的唯一契约。
 > 关联：`docs/extension-spec.md` §6（本文件为完整方法签名）
 

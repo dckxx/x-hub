@@ -95,6 +95,22 @@ pub fn open_url(url: &str) -> Result<(), String> {
     opener::open(url).map_err(|e| format!("打开链接失败: {}", e))
 }
 
+/// 用指定浏览器打开 URL（browser_exe 必须存在；URL 仅放行 http/https，由调用方校验）
+pub fn open_with_browser(browser_exe: &str, url: &str) -> Result<(), String> {
+    let path = std::path::Path::new(browser_exe);
+    if !path.is_file() {
+        return Err(format!("浏览器不存在: {}", browser_exe));
+    }
+    let mut cmd = Command::new(path);
+    cmd.arg(url);
+    #[cfg(target_os = "windows")]
+    no_console_window(&mut cmd);
+    match cmd.spawn() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("启动浏览器失败「{}」: {}", browser_exe, e)),
+    }
+}
+
 /// 打开外部链接（仅供前端调用的安全命令：只放行 http/https，防止任意 scheme 注入）。
 #[tauri::command]
 pub fn open_external(url: String) -> Result<(), String> {

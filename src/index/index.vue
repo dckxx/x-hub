@@ -23,6 +23,7 @@ import ExtensionCenter from '../components/ExtensionCenter.vue'
 import ExtensionView from '../components/ExtensionView.vue'
 import { useStore } from '../stores/workbench'
 import { isTauri, tauriApi } from '../api/tauri'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import type { Countdown, ExtensionEntry, Note, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
 import { FileText, FolderOpen, LayoutDashboard, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight, AppWindow, PanelRight } from 'lucide-vue-next'
@@ -36,6 +37,51 @@ const store = useStore()
 
 // 初始化三轴主题系统（应用 data-theme/data-preset/inline --accent，监听系统变化）
 useTheme()
+
+// ---- 应用壁纸：主窗口所有视图共用一张，浮窗不跟随；文件失效时静默回退渐变背景 ----
+const wallpaperFailed = ref(false)
+watch(
+  () => store.state.config.wallpaper_path,
+  () => {
+    wallpaperFailed.value = false
+  },
+)
+const wallpaperSrc = computed(() => {
+  const p = store.state.config.wallpaper_path
+  if (!p || wallpaperFailed.value || !isTauri()) return ''
+  return convertFileSrc(p)
+})
+
+// 蒙版不透明度钳制 0–0.85：85% 封顶保证壁纸仍可辨识
+const wallpaperVeil = computed(() => Math.min(0.85, Math.max(0, store.state.config.wallpaper_veil)))
+
+// 壁纸在场标记（html data-wallpaper）：壁纸态可读性增强的作用域开关。
+// data-wallpaper-clear：卡片真实透底（低玻璃透明度或沉浸模式）时才为真，控制卡片文字光晕的启停
+watch(
+  [
+    wallpaperSrc,
+    () => store.state.config.glass_opacity,
+    () => store.state.config.wallpaper_immersive,
+  ] as const,
+  ([src, glass, immersive]) => {
+    const el = document.documentElement
+    if (src) {
+      el.dataset.wallpaper = '1'
+    } else {
+      delete el.dataset.wallpaper
+    }
+    if (src && (immersive || glass < 0.9)) {
+      el.dataset.wallpaperClear = '1'
+    } else {
+      delete el.dataset.wallpaperClear
+    }
+  },
+  { immediate: true },
+)
+
+function onWallpaperError() {
+  wallpaperFailed.value = true
+}
 
 // ---- 视图切换（统一导航范式：每个侧栏项 = 一个独立视图） ----
 const navigation = [
@@ -493,6 +539,19 @@ provide('showToast', showToast)
 
 <template>
   <div class="app-shell">
+    <!-- 应用壁纸层：仅主窗口渲染，垫在全部内容之下、body 渐变之上（模糊作用于本层整体，见 ADR 0002） -->
+    <div v-if="wallpaperSrc" class="wallpaper-layer" aria-hidden="true">
+      <img
+        class="wallpaper-img"
+        :class="{ blur: store.state.config.wallpaper_blur && !store.state.config.wallpaper_immersive }"
+        :src="wallpaperSrc"
+        alt=""
+        @error="onWallpaperError"
+      />
+      <!-- 壁纸蒙版：主题底色罩层，在壁纸鲜亮度与文字/图标对比度之间取平衡 -->
+      <div class="wallpaper-veil" :style="{ opacity: wallpaperVeil }"></div>
+      <div class="wallpaper-glow"></div>
+    </div>
     <TitleBar
       @search="searchVisible = true"
       @chat="toggleChat"
@@ -762,6 +821,41 @@ provide('showToast', showToast)
 </template>
 
 <style scoped>
+/* 应用壁纸层：z-index -1 加入根层叠上下文负相位，盖过 body 渐变、垫在全部内容之下 */
+.wallpaper-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.wallpaper-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+.wallpaper-img.blur {
+  filter: blur(8px);
+  /* 收进模糊产生的四周透明羽化 */
+  transform: scale(1.06);
+}
+/* 壁纸蒙版：取主题中性底色（亮色近白/暗色近黑，随模式联动），文字对比度兜底 */
+.wallpaper-veil {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(150deg, var(--bg-base-a) 0%, var(--bg-base-b) 100%);
+}
+/* 主题光晕叠加：壁纸替换渐变背景但保留主题氛围（--glow-* 随模式/预设联动） */
+.wallpaper-glow {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(1200px 800px at 12% -8%, var(--glow-a), transparent 55%),
+    radial-gradient(1000px 700px at 100% 4%, var(--glow-b), transparent 55%),
+    radial-gradient(1200px 900px at 55% 118%, var(--glow-c), transparent 55%);
+}
+
 .app-shell {
   min-height: 100dvh;
   height: 100%;
@@ -796,6 +890,12 @@ provide('showToast', showToast)
 }
 .sidebar.collapsed {
   padding: 0 8px var(--space-3);
+}
+/* 铬件（侧栏）始终全透明：与背景（渐变/壁纸）构成同一个连续平面，表面只属于卡片（ADR 0003） */
+/* 侧栏 hover 气泡是瞬态表面（实底 + 自带 blur），不吃壁纸态的文字光晕 */
+html[data-wallpaper='1'] .sidebar [data-tip]::after,
+html[data-wallpaper='1'] .title-bar [data-tip]::after {
+  text-shadow: none;
 }
 .sidebar-nav {
   display: flex;
@@ -1192,10 +1292,6 @@ provide('showToast', showToast)
   min-height: 0;
 }
 .view-layout-editor {
-  padding: 0 20px 20px 0;
-}
-/* 用量页：覆盖组件内四边 20px padding，仅保留右下外边距（左上贴边与原版一致） */
-.view-usage :deep(.usage-view) {
   padding: 0 20px 20px 0;
 }
 .notes-split {

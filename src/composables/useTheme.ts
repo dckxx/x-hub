@@ -48,6 +48,22 @@ export function applyFontScale(s: FontScale) {
   el.style.setProperty('--fs-todo', String(s.todo))
 }
 
+/** 注入卡片玻璃透明度：--glass-dim 乘进 --frost-base 的 alpha（0.4–1.0，1 = 默认不透明） */
+export function applyGlassOpacity(v: number) {
+  const clamped = Math.min(1, Math.max(0.4, v))
+  document.documentElement.style.setProperty('--glass-dim', String(clamped))
+}
+
+/** 沉浸模式标记：CSS 侧据此对 .card 启用 backdrop-filter 局部取景模糊（ADR 0003 受控例外） */
+export function applyImmersive(on: boolean) {
+  const el = document.documentElement
+  if (on) {
+    el.dataset.immersive = '1'
+  } else {
+    delete el.dataset.immersive
+  }
+}
+
 /** 组件挂载时调用一次即完成主题应用与实时跟随 */
 export function useTheme() {
   initSystemTheme()
@@ -62,6 +78,16 @@ export function useTheme() {
       applyTheme({ mode: 'system', preset: store.state.config.theme_preset, accent: store.state.config.accent_color })
     }
   })
+  watch(
+    () => store.state.config.glass_opacity,
+    (v) => applyGlassOpacity(v),
+    { immediate: true },
+  )
+  watch(
+    () => [store.state.config.wallpaper_immersive, store.state.config.wallpaper_path] as const,
+    ([immersive, path]) => applyImmersive(immersive && !!path),
+    { immediate: true },
+  )
   watch(
     () =>
       [

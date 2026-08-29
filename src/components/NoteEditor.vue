@@ -35,6 +35,8 @@ const noteTags = ref<Tag[]>([])
 const tagInputVisible = ref(false)
 const tagInput = ref('')
 
+// immediate：视图切换回来（或从全局搜索打开）时编辑器带着已选中的笔记重新挂载，
+// id 不再变化，必须在挂载时同步一次，否则列表高亮选中而编辑器空白，且单条笔记无法通过重新点击触发恢复
 watch(
   () => props.note?.id,
   async () => {
@@ -49,6 +51,7 @@ watch(
       noteTags.value = []
     }
   },
+  { immediate: true },
 )
 
 async function persistTags() {
@@ -108,11 +111,6 @@ function flushPendingSave() {
     emit('save', lastNoteId, localTitle.value, localContent.value)
   }
 }
-
-watch(
-  () => props.note?.id,
-  () => syncLocal(),
-)
 
 watch([localTitle, localContent], () => {
   if (syncing.value) {

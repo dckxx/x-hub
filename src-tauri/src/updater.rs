@@ -13,8 +13,10 @@
 //!      比对）→ 落 `data_root()/updates/<version>/x-hub.zip` →
 //!      写 `data_root()/updates/.pending.json` 标记，广播 `update-ready`。
 //!   ③ `apply_pending_update`：每次启动早期调用（幂等）。无标记直接跳过；
-//!      有标记 → 解包 → `exe → exe.old` / `新 exe → exe` 两步 rename
-//!      （Windows 允许 rename 正在运行的 exe）→ 校验新 exe 具名 → 删 .old。
+//!      待应用版本不高于当前版本（如已手动装了更高版）→ 清理过期包防降级；
+//!      有标记 → 解包 → `exe → exe.old` / `新 exe → exe` 两步就位
+//!      （Windows 允许 rename 正在运行的 exe；数据根与 exe 跨盘时 rename
+//!      报 os error 17，move_file 退化为复制）→ 校验新 exe 具名 → 删 .old。
 //!      任一步失败回滚并保留标记，下次启动重试。
 //!
 //! 事件：`update-available`、`update-download-progress`、`update-ready`。
@@ -504,14 +506,25 @@ fn read_pending() -> Option<PendingUpdate> {
 /// Windows 允许 rename 正在运行的 exe：`exe → exe.old`、`新 exe → exe`。
 /// 任一步失败回滚（.old 还原）并保留标记，下次启动重试。
 /// 成功则删除标记 + 旧版本剩余文件。
-pub fn apply_pending_update() {
+pub fn apply_pending_update(current_version: &str) {
     let Some(pending) = read_pending() else {
         return;
     };
+    // 待应用版本不高于当前版本（用户可能已手动装了更高版本）：清掉过期
+    // 更新包与标记，防止启动时旧包把新装的 exe 又覆盖回旧版（降级）
+    if version_cmp(&pending.version, current_version) != std::cmp::Ordering::Greater {
+        log::info!(
+            "待应用更新 v{} 不高于当前版本 v{}，清理过期更新包",
+            pending.version,
+            current_version
+        );
+        discard_pending(&pending);
+        return;
+    }
     let zip_path = PathBuf::from(&pending.zip_path);
     if !zip_path.is_file() {
         log::warn!("待应用更新包不存在（{}），清理标记", zip_path.display());
-        let _ = remove_pending_file();
+        discard_pending(&pending);
         return;
     }
 
@@ -584,8 +597,9 @@ pub fn apply_pending_update() {
         let _ = std::fs::remove_dir_all(&staging);
         return;
     }
-    // 2) 新 exe → exe；失败则回滚
-    if let Err(e) = std::fs::rename(&new_in_staging, &exe_path) {
+    // 2) 新 exe → exe；数据根与 exe 不同盘时 rename 报 os error 17，
+    //    move_file 内部退化为复制；失败则回滚
+    if let Err(e) = move_file(&new_in_staging, &exe_path) {
         log::error!("安装新版本失败（{e}），回滚到旧版本");
         let _ = std::fs::rename(&old_path, &exe_path);
         let _ = std::fs::remove_dir_all(&staging);
@@ -605,6 +619,30 @@ fn remove_pending_file() -> std::io::Result<()> {
         let _ = std::fs::remove_file(&p);
     }
     Ok(())
+}
+
+/// 跨卷安全移动：同卷走原子 rename；跨卷（数据根与 exe 不同盘）rename 报
+/// os error 17「系统无法将文件移到不同的磁盘驱动器」，退化为复制——调用点
+/// 已把旧 exe 挪走、目标路径空出，运行中的 exe 不锁定新建文件，复制可成功。
+fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        Err(rename_err) => std::fs::copy(src, dst).map(|_| ()).map_err(|copy_err| {
+            log::warn!("rename 失败（{rename_err}），复制兜底也失败（{copy_err}）");
+            copy_err
+        }),
+    }
+}
+
+/// 清理一份待应用更新（zip、解包目录与标记）。
+fn discard_pending(pending: &PendingUpdate) {
+    if !pending.zip_path.is_empty() {
+        let _ = std::fs::remove_file(PathBuf::from(&pending.zip_path));
+    }
+    if let Ok(root) = updates_root() {
+        let _ = std::fs::remove_dir_all(root.join(&pending.version));
+    }
+    let _ = remove_pending_file();
 }
 
 fn exe_file_name_with_old(exe: &Path) -> std::ffi::OsString {
@@ -659,6 +697,30 @@ mod tests {
         assert_eq!(p.version, "0.3.1");
         assert_eq!(p.zip_path, "C:/x/updates/0.3.1/x-hub.zip");
         assert!(!p.portable);
+    }
+
+    #[test]
+    fn move_file_works_and_overwrites() {
+        let dir = std::env::temp_dir().join(format!("xhub-move-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 目标已存在：Windows 上 rename 必败 → 退化复制并覆盖（跨卷场景的等效路径）
+        let src = dir.join("src.exe");
+        let dst = dir.join("dst.exe");
+        std::fs::write(&src, b"new").unwrap();
+        std::fs::write(&dst, b"old").unwrap();
+        move_file(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"new");
+
+        // 目标不存在：rename 直达（同卷主路径）
+        let src2 = dir.join("src2.exe");
+        let dst2 = dir.join("dst2.exe");
+        std::fs::write(&src2, b"v2").unwrap();
+        move_file(&src2, &dst2).unwrap();
+        assert_eq!(std::fs::read(&dst2).unwrap(), b"v2");
+        assert!(!src2.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

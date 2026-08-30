@@ -30,6 +30,10 @@ function showAvailable(payload: UpdateInfo) {
   error.value = ''
   if (payload.ready) {
     phase.value = 'ready'
+  } else if (busy.value) {
+    // 已有下载在途（上次弹窗被关掉但下载未取消）：直接回下载进度视图。
+    // 若仍显示「可更新」视图，按钮会带着 busy 禁用态呈灰色且看不到任何进度
+    phase.value = 'downloading'
   } else {
     phase.value = 'available'
   }

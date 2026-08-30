@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::Emitter;
 
@@ -34,6 +35,18 @@ const SCHEMA_VERSION: u32 = 1;
 
 /// 待应用更新标记文件：`data_root()/updates/.pending.json`
 const PENDING_FILE: &str = ".pending.json";
+
+/// 下载互斥标志：同一时刻只允许一个 download_update 在跑。
+/// 并发触发会各自 File::create 截断同一临时文件互踩，必须拒绝而非排队
+static DOWNLOAD_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// download_update 的守卫：任何退出路径（含 ? / panic 展开）都复位互斥标志
+struct DownloadGuard;
+impl Drop for DownloadGuard {
+    fn drop(&mut self) {
+        DOWNLOAD_IN_FLIGHT.store(false, Ordering::Release);
+    }
+}
 
 /// 下载根目录：`data_root()/updates/<version>/`
 fn updates_root() -> Result<PathBuf, String> {
@@ -338,9 +351,20 @@ pub async fn download_update(
     app: tauri::AppHandle,
     version: String,
 ) -> Result<UpdateInfo, String> {
+    // 互斥进入：慢链路下载会持续数分钟，期间重复触发只会截断重下
+    if DOWNLOAD_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err("已有下载任务进行中，请等待其完成（或重启应用中断）".to_string());
+    }
+    let _download_guard = DownloadGuard;
     let current = current_version(&app);
+    // 不设总超时：慢链路（~30KB/s）下载 8.7MB 需数分钟，总超时必然误杀慢而活跃的下载；
+    // 改为连接超时 + 空闲读超时（30s 收不到新数据才断），下面的流式读取同样吃 read_timeout
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
+        .connect_timeout(Duration::from_secs(15))
+        .read_timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| format!("HTTP 客户端初始化失败: {e}"))?;
 
@@ -369,51 +393,145 @@ pub async fn download_update(
     let zip_path = ver_dir.join("x-hub.zip");
     let tmp_zip = ver_dir.join("x-hub.zip.tmp");
 
-    // 流式下载到临时文件，边下边算 sha256，节流广播进度（≥256KB 一次）。
-    // 复用上面带 timeout 的 client（reqwest::get 会新建默认客户端绕过超时）
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("下载失败: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("下载失败: HTTP {}", resp.status()));
-    }
-    let total = {
-        let manifest_size = if portable { entry.portable_size } else { entry.size };
-        if manifest_size > 0 { Some(manifest_size) } else { resp.content_length() }
-    };
-    let mut file = std::fs::File::create(&tmp_zip).map_err(|e| format!("创建文件失败: {e}"))?;
-    let mut hasher = Sha256::new();
-    let mut stream = resp.bytes_stream();
-    let mut received: u64 = 0;
-    let mut last_emit: u64 = 0;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("下载中断: {e}"))?;
-        received += chunk.len() as u64;
-        hasher.update(&chunk);
-        file.write_all(&chunk)
-            .map_err(|e| format!("写入失败: {e}"))?;
-        if received - last_emit >= 262_144 || received == total.unwrap_or(0) {
-            last_emit = received;
-            let _ = app.emit("update-download-progress", crate::market::DownloadProgress {
-                id: "x-hub".to_string(),
-                received,
-                total,
-            });
+    // 断点续传 + 自动重试：慢链路上长连接易被中途掐断（reqwest 统一报
+    // "error decoding response body"），每次尝试都从 tmp 已有字节数 Range 续传（R2 支持 206），
+    // 失败退避后自动再试直到成功或重试额度用完；残片不小于预期总大小时视为脏文件丢弃
+    const MAX_ATTEMPTS: u32 = 8;
+    const RETRY_DELAY: Duration = Duration::from_secs(2);
+    let manifest_size = if portable { entry.portable_size } else { entry.size };
+    let mut attempt: u32 = 0;
+    let downloaded;
+    loop {
+        attempt += 1;
+        // 每次尝试重新读残片长度（上次尝试可能又推进了一些）
+        let mut offset: u64 = 0;
+        if tmp_zip.is_file() {
+            let existing = std::fs::metadata(&tmp_zip).map(|m| m.len()).unwrap_or(0);
+            if existing > 0 && (manifest_size == 0 || existing < manifest_size) {
+                offset = existing;
+            } else if existing > 0 {
+                let _ = std::fs::remove_file(&tmp_zip);
+            }
         }
-    }
-    file.flush().map_err(|e| format!("落盘失败: {e}"))?;
-    drop(file);
-    if let Some(t) = total {
-        if t != 0 && received != t {
+
+        let mut request = client.get(&url);
+        if offset > 0 {
+            request = request.header("Range", format!("bytes={offset}-"));
+        }
+        let resp = match request.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                if attempt < MAX_ATTEMPTS {
+                    log::warn!(
+                        "更新下载第 {attempt} 次尝试失败（{e}），{}s 后从 {} 字节处续传",
+                        RETRY_DELAY.as_secs(),
+                        offset
+                    );
+                    tokio::time::sleep(RETRY_DELAY).await;
+                    continue;
+                }
+                return Err(format!("下载失败: {e}"));
+            }
+        };
+        // 残片与服务端文件不一致（如清单与服务端包不同步）→ Range 越界 416：丢弃残片重下
+        if resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
             let _ = std::fs::remove_file(&tmp_zip);
-            return Err(format!("下载不完整: 收到 {received} 字节，预期 {t} 字节"));
+            if attempt < MAX_ATTEMPTS {
+                log::warn!("更新续传偏移越界（416），已丢弃残片重新下载");
+                continue;
+            }
+            return Err("更新残片与服务端文件不一致，已重置下载，请重试".to_string());
+        }
+        if !resp.status().is_success() {
+            return Err(format!("下载失败: HTTP {}", resp.status()));
+        }
+        // 服务器不支持 Range（回 200 全量而非 206）时清零从头下
+        let resumed = offset > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+        if offset > 0 && !resumed {
+            offset = 0;
+        }
+        let total = if manifest_size > 0 {
+            Some(manifest_size)
+        } else {
+            resp.content_length().map(|l| l + offset)
+        };
+        let mut file = if resumed {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&tmp_zip)
+                .map_err(|e| format!("打开续传文件失败: {e}"))?
+        } else {
+            std::fs::File::create(&tmp_zip).map_err(|e| format!("创建文件失败: {e}"))?
+        };
+        let mut stream = resp.bytes_stream();
+        let mut done: u64 = offset;
+        let mut last_emit: u64 = offset;
+        let mut interrupted: Option<String> = None;
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    file.write_all(&bytes).map_err(|e| format!("写入失败: {e}"))?;
+                    done += bytes.len() as u64;
+                    if done - last_emit >= 262_144 || total == Some(done) {
+                        last_emit = done;
+                        let _ = app.emit(
+                            "update-download-progress",
+                            crate::market::DownloadProgress {
+                                id: "x-hub".to_string(),
+                                received: done,
+                                total,
+                            },
+                        );
+                    }
+                }
+                Err(e) => {
+                    // 连接被掐断：保留已写入部分，退避后续传
+                    interrupted = Some(format!("下载中断: {e}"));
+                    break;
+                }
+            }
+        }
+        file.flush().map_err(|e| format!("落盘失败: {e}"))?;
+        drop(file);
+        match interrupted {
+            Some(msg) => {
+                if attempt < MAX_ATTEMPTS {
+                    log::warn!(
+                        "更新下载第 {attempt} 次尝试中断于 {} 字节，{}s 后续传",
+                        done,
+                        RETRY_DELAY.as_secs()
+                    );
+                    tokio::time::sleep(RETRY_DELAY).await;
+                    continue;
+                }
+                return Err(msg);
+            }
+            None => {
+                if last_emit != done {
+                    let _ = app.emit("update-download-progress", crate::market::DownloadProgress {
+                        id: "x-hub".to_string(),
+                        received: done,
+                        total,
+                    });
+                }
+                downloaded = done;
+                break;
+            }
         }
     }
-    // 校验完整性（清单背书）
+    if manifest_size != 0 && downloaded != manifest_size {
+        // 流正常结束但长度与清单不符：服务端包与清单可能不同步，续传救不了系统性偏差
+        return Err(format!(
+            "下载不完整: 收到 {downloaded} 字节，预期 {manifest_size} 字节（更新源与清单可能不同步）"
+        ));
+    }
+    // 校验完整性（清单背书）。续传时前段字节未经 hasher，全量从盘上文件重算（8MB 级瞬间完成）
     if !sha256.is_empty() {
+        let whole = std::fs::read(&tmp_zip).map_err(|e| format!("读取下载文件失败: {e}"))?;
+        let mut hasher = Sha256::new();
+        hasher.update(&whole);
         let actual = to_hex(&hasher.finalize());
+        drop(whole);
         if !actual.eq_ignore_ascii_case(&sha256) {
             let _ = std::fs::remove_file(&tmp_zip);
             return Err(format!(
@@ -437,7 +555,7 @@ pub async fn download_update(
         "更新已下载就绪: v{} -> v{}（{} 字节，便携版={}）",
         current,
         manifest.version,
-        received,
+        downloaded,
         portable
     );
     let info = UpdateInfo {

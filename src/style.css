@@ -859,7 +859,8 @@ html[data-theme='dark'][data-wallpaper='1'] main {
   --text-3: #e8e4db;
   --text-4: #cfcabf;
 }
-/* 铬件光晕：描边级（四向 1px + 柔光），任意照片上文字有连续对比边（亮色白晕托深墨/暗色黑晕托浅墨） */
+/* 铬件文字光晕：描边级（四向 1px + 柔光），任意照片上文字有连续对比边（亮色白晕托深墨/暗色黑晕托浅墨）；
+   仅作用于文字，图标不带光晕（见下方图标规则） */
 html[data-wallpaper='1'] .sidebar,
 html[data-wallpaper='1'] .title-bar {
   text-shadow:
@@ -878,17 +879,14 @@ html[data-theme='dark'][data-wallpaper='1'] .title-bar {
     0 -1px 0 rgba(0, 0, 0, 0.75),
     0 1px 3px rgba(0, 0, 0, 0.4);
 }
-/* 铬件图标：双层 drop-shadow（紧贴描边 + 落影），静态一次栅格化 */
-html[data-wallpaper='1'] .sidebar svg,
-html[data-wallpaper='1'] .title-bar svg {
-  filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.9)) drop-shadow(0 1px 2px rgba(255, 255, 255, 0.5));
-}
+/* 铬件图标：仅暗色/白墨态保留黑色光晕（浅色图标叠浅色照片需要对比边）；
+   亮色壁纸态不加白色描边——白晕在图标上呈粉笔白框（用户反馈去掉） */
 html[data-theme='dark'][data-wallpaper='1'] .sidebar svg,
 html[data-theme='dark'][data-wallpaper='1'] .title-bar svg {
   filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
 }
 /* 卡片文字光晕：仅在卡片真实透底时启用（data-wallpaper-clear = 低玻璃透明度或沉浸模式），
-   柔光一档弱于铬件描边，玻璃面不透底时保持锐利 */
+   柔光一档弱于铬件文字描边，玻璃面不透底时保持锐利 */
 html[data-wallpaper-clear='1'] .card,
 html[data-wallpaper-clear='1'] .sv-content,
 html[data-wallpaper-clear='1'] .extension-center,
@@ -901,18 +899,7 @@ html[data-theme='dark'][data-wallpaper-clear='1'] .extension-center,
 html[data-theme='dark'][data-wallpaper-clear='1'] .le-root {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 0 4px rgba(0, 0, 0, 0.3);
 }
-html[data-wallpaper-clear='1'] .card svg,
-html[data-wallpaper-clear='1'] .sv-content svg,
-html[data-wallpaper-clear='1'] .extension-center svg,
-html[data-wallpaper-clear='1'] .le-root svg {
-  filter: drop-shadow(0 1px 1px rgba(255, 255, 255, 0.45));
-}
-html[data-theme='dark'][data-wallpaper-clear='1'] .card svg,
-html[data-theme='dark'][data-wallpaper-clear='1'] .sv-content svg,
-html[data-theme='dark'][data-wallpaper-clear='1'] .extension-center svg,
-html[data-theme='dark'][data-wallpaper-clear='1'] .le-root svg {
-  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45));
-}
+/* 卡片图标不加白色柔光（白晕呈粉笔边）；黑晕由下方白墨形态的统一规则承担 */
 /* ===== 实验：壁纸 + 真实透底（data-wallpaper-clear）→ 全量白墨形态 =====
    文字/图标统一转白色系、光晕统一换黑色描边，浅色表面令牌同步翻转为深玻璃
    （白字在输入框/菜单/弹窗等近白表面上必须有着落）；需在上方规则之后声明以赢得同权重级联 */
@@ -959,6 +946,15 @@ html[data-wallpaper-clear='1'] .sv-content svg,
 html[data-wallpaper-clear='1'] .extension-center svg,
 html[data-wallpaper-clear='1'] .le-root svg {
   filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45));
+}
+/* 透底态卡片去白边：55% 白描边 + 顶部白高光叠在壁纸上呈粉笔白框，收敛为透明只留落影；
+   亮色 --shadow-card 仅 5–6% 暖影，去边后在照片上等于零阴影，补一档中性落影保住卡片层次 */
+html[data-wallpaper-clear='1'] .card {
+  border-color: transparent;
+  box-shadow: var(--shadow-card);
+}
+html:not([data-theme='dark'])[data-wallpaper-clear='1'] .card {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08), 0 12px 32px rgba(0, 0, 0, 0.12);
 }
 /* toast 背景取 --text-1 的反转技巧在白墨下会白底白字，固定为深底 */
 html[data-wallpaper-clear='1'] .toast {

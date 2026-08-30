@@ -561,7 +561,9 @@ function formatSavedTime(iso: string): string {
   --crepe-color-surface-low: var(--input-bg);
   --crepe-color-on-surface: var(--text-2);
   --crepe-color-on-surface-variant: var(--text-3);
-  --crepe-color-outline: var(--border-soft);
+  /* outline 同时承担图标色（工具栏/块把手/链接气泡）与发丝线：必须用中性灰墨，
+     不能映射 --border-soft（亮色为 55% 白，白图标叠白底工具栏不可见） */
+  --crepe-color-outline: var(--text-3);
   --crepe-color-primary: var(--text-1);
   --crepe-color-inverse: var(--bg-card);
   --crepe-color-on-inverse: var(--text-2);
@@ -574,6 +576,24 @@ function formatSavedTime(iso: string): string {
   --crepe-color-hover: #232323;
   --crepe-color-selected: #2f2f2f;
   --crepe-color-inline-area: #2b2b2b;
+}
+
+/* 透底态（壁纸+透明，白墨形态）：工具栏/斜杠菜单/链接气泡/图片说明换深玻璃实底。
+   浮层底原为 30% 烟玻璃（--input-bg），叠在亮部照片上时白图标（--text-1/--text-3 均翻白）会糊掉，
+   这里收成近实底深玻璃 + 白系图标，与白墨态 toast/对话面板同一处理手法 */
+html[data-wallpaper-clear='1'] .crepe-root .milkdown {
+  --crepe-color-surface: rgba(28, 29, 41, 0.92);
+  --crepe-color-surface-low: rgba(28, 29, 41, 0.92);
+  --crepe-color-on-surface: rgba(255, 255, 255, 0.92);
+  --crepe-color-on-surface-variant: rgba(255, 255, 255, 0.74);
+  --crepe-color-outline: rgba(255, 255, 255, 0.62);
+  --crepe-color-primary: #ffffff;
+  --crepe-color-secondary: rgba(255, 255, 255, 0.14);
+  --crepe-color-on-secondary: rgba(255, 255, 255, 0.92);
+  --crepe-color-inverse: rgba(28, 29, 41, 0.95);
+  --crepe-color-on-inverse: rgba(255, 255, 255, 0.92);
+  --crepe-color-hover: rgba(255, 255, 255, 0.14);
+  --crepe-color-selected: rgba(255, 255, 255, 0.22);
 }
 
 /* 引用块：Crepe 默认 padding-left 40px，文字离左侧引用条太远，收紧到贴条显示 */

@@ -1,9 +1,21 @@
 use crate::commands::DbState;
 use crate::models::Countdown;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
 
 /// 到点判定阈值（毫秒）：到点超过该值视为「错过」（应用关闭/休眠期间），只顺延不补发
 const MISSED_GRACE_MS: i64 = 5_000;
+
+/// 工作台是否渲染倒计时卡片（前端按「已提交」的 dashboard_layout 上报，编辑草稿不算）。
+/// 卡片不可见时非浮窗倒计时一律冻结（repo 层置 paused，ticker 这里只做兜底过滤）；
+/// 浮窗中的倒计时始终显示，不受卡片影响。默认 false：前端未上报前不抢跑。
+pub struct CardVisible(pub AtomicBool);
+
+pub fn card_visible(app: &AppHandle) -> bool {
+    app.try_state::<CardVisible>()
+        .map(|s| s.0.load(Ordering::Relaxed))
+        .unwrap_or(false)
+}
 
 /// 后台倒计时驱动线程：每秒扫描一次到期项，
 /// 到点发系统通知 + emit `countdown-fired` 事件，然后按模式推进 end_at。
@@ -30,7 +42,9 @@ fn tick_once(app: &AppHandle) -> Result<(), String> {
         crate::repo::countdown::list_due(&conn, now).map_err(|e| e.to_string())?
     };
 
-    for item in due {
+    // 卡片不在工作台时只处理浮窗中的项（其余已被冻结为 paused，这里兜底防止漏网项空转到点）
+    let visible = card_visible(app);
+    for item in due.into_iter().filter(|i| visible || i.floated) {
         let missed = now - item.end_at > MISSED_GRACE_MS;
         let next = {
             let conn = state.0.lock().map_err(|e| e.to_string())?;

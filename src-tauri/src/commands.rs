@@ -617,6 +617,44 @@ pub fn resume_countdown(
     Ok(c)
 }
 
+/// 同步工作台倒计时卡片可见性（前端按「已提交」的 dashboard_layout 上报，仅主窗口调用）：
+/// 卡片不在工作台时冻结全部非浮窗倒计时（不计时、到点不提醒），
+/// 恢复显示时按暂停语义续跑（once 续剩余，daily/interval 顺延到下一次）
+#[tauri::command]
+pub fn set_countdown_card_visible(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    visible: bool,
+) -> Result<(), String> {
+    if let Some(flag) = app.try_state::<crate::countdown_ticker::CardVisible>() {
+        flag.0.store(visible, std::sync::atomic::Ordering::Relaxed);
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let changed = if visible {
+        let ids = countdown::list_auto_paused_ids(&conn).map_err(err_str)?;
+        for id in &ids {
+            countdown::resume(&conn, *id).map_err(err_str)?;
+        }
+        let resumed = !ids.is_empty();
+        if resumed {
+            log::info!("倒计时卡片回到工作台，恢复 {} 个倒计时", ids.len());
+        }
+        resumed
+    } else {
+        let n = countdown::auto_pause_all(&conn).map_err(err_str)?;
+        let frozen = n > 0;
+        if frozen {
+            log::info!("倒计时卡片不在工作台，冻结 {} 个倒计时", n);
+        }
+        frozen
+    };
+    drop(conn);
+    if changed {
+        let _ = app.emit("countdowns-changed", ());
+    }
+    Ok(())
+}
+
 /// 浮窗浮起：持久化状态并创建独立圆窗。
 /// 必须 async：同步命令运行在主线程，会与 WebviewWindow 创建互相阻塞（死锁），
 /// 表现为主窗口卡死且浮窗不出现。
@@ -628,6 +666,10 @@ pub async fn float_countdown(
 ) -> Result<Countdown, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let c = countdown::set_floated(&conn, id, true, None, None).map_err(err_str)?;
+    // 卡片不在工作台时浮窗就是唯一显示面：浮起即恢复该倒计时的计时
+    if !crate::countdown_ticker::card_visible(&app) {
+        countdown::resume_if_auto_paused(&conn, id).map_err(err_str)?;
+    }
     drop(conn);
     crate::countdown_window::create_or_focus(&app, id, c.float_x, c.float_y)
         .map_err(|e| e.to_string())?;
@@ -645,6 +687,10 @@ pub async fn unfloat_countdown(
 ) -> Result<Countdown, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let c = countdown::set_floated(&conn, id, false, None, None).map_err(err_str)?;
+    // 卡片不在工作台时浮窗收起即无处显示：冻结计时，卡片恢复显示时再续跑
+    if !crate::countdown_ticker::card_visible(&app) {
+        countdown::auto_pause_single(&conn, id).map_err(err_str)?;
+    }
     drop(conn);
     crate::countdown_window::destroy(&app, id);
     let _ = app.emit("countdowns-changed", ());

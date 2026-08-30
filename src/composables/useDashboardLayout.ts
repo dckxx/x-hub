@@ -1,4 +1,5 @@
 import { computed, ref, watch } from 'vue'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 
@@ -142,6 +143,7 @@ function persist() {
       // 存储失败静默，不影响交互
     }
   }
+  syncCommitted()
 }
 
 // ---- 草稿机制：编辑器「确认」才提交，未确认切走回滚 ----
@@ -172,6 +174,24 @@ function cancelEdit() {
 // ---- 单例状态：所有调用方共享同一份布局，编辑器变更后主界面立即同步 ----
 // 初始先读 localStorage（浏览器预览 / 老数据），config 加载完成后再对齐到应用配置
 const placements = ref<DashPlacement[]>(loadFromLocalStorage() ?? defaultPlacements())
+
+// ---- 倒计时卡片可见性上报 ----
+// 以「已提交（落盘）」的布局为准：编辑器草稿期间的增删不算，落盘后才同步到后端。
+// 卡片不在工作台时后端冻结全部非浮窗倒计时（不计时、到点不提醒），恢复显示时续跑。
+const committed = ref<DashPlacement[]>([])
+const hasCountdownCard = computed(() => committed.value.some((p) => p.id === 'countdown'))
+
+function reportCountdownCardVisible() {
+  if (!isTauri() || getCurrentWindow().label !== 'main') return
+  void tauriApi.setCountdownCardVisible(hasCountdownCard.value).catch(() => {
+    // 后端未就绪时静默，下次布局同步再上报
+  })
+}
+
+function syncCommitted() {
+  committed.value = placements.value.map((p) => ({ ...p }))
+  reportCountdownCardVisible()
+}
 
 /** 加载声明 module 形态的扩展，注册进工作台模块库（id 用 `ext:<扩展id>` 前缀与内置模块区分） */
 export async function loadExtensionModules() {
@@ -206,13 +226,14 @@ watch(
         } catch {
           // 忽略
         }
+        syncCommitted()
         return
       }
     }
     const ls = loadFromLocalStorage()
     if (ls) {
       placements.value = ls
-      persist()
+      persist() // persist 内部已 syncCommitted + 上报
       try {
         localStorage.removeItem(STORAGE_KEY)
       } catch {
@@ -221,6 +242,7 @@ watch(
       return
     }
     placements.value = defaultPlacements()
+    syncCommitted()
   },
 )
 

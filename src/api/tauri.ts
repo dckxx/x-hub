@@ -613,6 +613,9 @@ export const tauriApi = {
   resumeCountdown: (id: number) => invoke<Countdown>('resume_countdown', { id }),
   floatCountdown: (id: number) => invoke<Countdown>('float_countdown', { id }),
   unfloatCountdown: (id: number) => invoke<Countdown>('unfloat_countdown', { id }),
+  // 同步工作台倒计时卡片可见性：卡片不在已提交布局时后端冻结全部非浮窗倒计时（不计时、不提醒）
+  setCountdownCardVisible: (visible: boolean) =>
+    invoke<void>('set_countdown_card_visible', { visible }),
   // ---- 剪贴板历史 ----
   clipboardList: (keyword?: string, limit?: number) =>
     invoke<ClipboardItem[]>('clipboard_list', { keyword: keyword ?? null, limit: limit ?? 50 }),

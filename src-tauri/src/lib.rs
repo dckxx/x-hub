@@ -368,6 +368,12 @@ pub fn run() {
                 countdown_window::restore_all(app.handle(), &floated);
             }
 
+            // 工作台倒计时卡片可见性门控：默认不可见，待前端按已提交布局上报后放开，
+            // 避免启动早期（前端未就绪/卡片实际不在布局中）倒计时抢跑到点
+            app.manage(countdown_ticker::CardVisible(
+                std::sync::atomic::AtomicBool::new(false),
+            ));
+
             // 启动倒计时后台驱动线程（每秒扫描到期项，托盘/隐藏时不受 WebView 节流影响）
             countdown_ticker::start(app.handle().clone());
 
@@ -459,6 +465,7 @@ pub fn run() {
             commands::resume_countdown,
             commands::float_countdown,
             commands::unfloat_countdown,
+            commands::set_countdown_card_visible,
             commands::list_snippets,
             commands::create_snippet,
             commands::update_snippet,

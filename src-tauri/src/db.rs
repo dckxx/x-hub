@@ -120,6 +120,8 @@ fn migrate(conn: &Connection) -> Result<()> {
           paused INTEGER NOT NULL DEFAULT 0,
           -- once 暂停时冻结的剩余毫秒（恢复时 end_at = now + paused_remaining_ms）
           paused_remaining_ms INTEGER,
+          -- 工作台卡片不可见导致的自动冻结（区别于手动暂停；卡片恢复显示或浮窗浮起时自动恢复）
+          auto_paused INTEGER NOT NULL DEFAULT 0,
           -- once 到点后置 1（卡片灰态，等手动删除）；daily/interval 永不置 1
           finished INTEGER NOT NULL DEFAULT 0,
           -- 浮窗状态与位置（浮起时创建独立透明圆窗，位置随拖动持久化）
@@ -284,6 +286,18 @@ fn migrate(conn: &Connection) -> Result<()> {
                 [],
             )?;
         }
+    }
+
+    // 倒计时表补 auto_paused 列（工作台卡片不可见时的自动冻结标记，ALTER TABLE ADD COLUMN 幂等）
+    let cd_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(countdowns)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !cd_cols.iter().any(|c| c == "auto_paused") {
+        conn.execute(
+            "ALTER TABLE countdowns ADD COLUMN auto_paused INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
     }
 
     Ok(())

@@ -73,7 +73,7 @@ pub fn update(
     conn.execute(
         "UPDATE countdowns SET
            name = ?1, repeat_mode = ?2, end_at = ?3, total_ms = ?4,
-           interval_minutes = ?5, paused = 0, paused_remaining_ms = NULL,
+           interval_minutes = ?5, paused = 0, auto_paused = 0, paused_remaining_ms = NULL,
            updated_at = ?6
          WHERE id = ?7",
         params![name, repeat_mode, end_at, total_ms, interval_minutes, now(), id],
@@ -146,11 +146,60 @@ pub fn resume(conn: &Connection, id: i64) -> Result<Countdown> {
     };
     conn.execute(
         "UPDATE countdowns SET
-           paused = 0, paused_remaining_ms = NULL, end_at = ?1, updated_at = ?2
+           paused = 0, auto_paused = 0, paused_remaining_ms = NULL, end_at = ?1, updated_at = ?2
          WHERE id = ?3",
         params![new_end_at, crate::repo::now(), id],
     )?;
     get(conn, id)
+}
+
+/// 工作台倒计时卡片不可见：冻结全部运行中的非浮窗倒计时（不计时、到点不提醒）。
+/// 复用暂停语义（once 冻结剩余毫秒，daily/interval 仅标记），auto_paused 标记与手动暂停区分。
+pub fn auto_pause_all(conn: &Connection) -> Result<usize> {
+    conn.execute(
+        "UPDATE countdowns SET
+           paused = 1, auto_paused = 1,
+           paused_remaining_ms = CASE WHEN repeat_mode = 'once' THEN MAX(end_at - ?1, 0) ELSE NULL END,
+           updated_at = ?2
+         WHERE paused = 0 AND finished = 0 AND floated = 0",
+        params![now_ms(), now()],
+    )
+}
+
+/// 冻结单个倒计时（卡片不在工作台且浮窗刚收起时使用），已暂停/已结束的不动
+pub fn auto_pause_single(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE countdowns SET
+           paused = 1, auto_paused = 1,
+           paused_remaining_ms = CASE WHEN repeat_mode = 'once' THEN MAX(end_at - ?1, 0) ELSE NULL END,
+           updated_at = ?2
+         WHERE id = ?3 AND paused = 0 AND finished = 0",
+        params![now_ms(), now(), id],
+    )?;
+    Ok(())
+}
+
+/// 恢复单个倒计时（仅当处于「卡片不可见」自动冻结时，如浮窗重新浮起），返回是否发生恢复
+pub fn resume_if_auto_paused(conn: &Connection, id: i64) -> Result<bool> {
+    let auto: i64 = conn.query_row(
+        "SELECT auto_paused FROM countdowns WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    if auto == 0 {
+        return Ok(false);
+    }
+    resume(conn, id)?;
+    Ok(true)
+}
+
+/// 列出被「卡片不在工作台」自动冻结的倒计时 id（卡片恢复显示时逐个 resume）
+pub fn list_auto_paused_ids(conn: &Connection) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM countdowns WHERE auto_paused = 1 AND paused = 1 ORDER BY id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    rows.collect()
 }
 
 /// 查询已到点且需要处理的项（未暂停、未结束、end_at <= now）
@@ -309,6 +358,80 @@ mod tests {
         let due = list_due(&conn, now).unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].name, "已到期");
+    }
+
+    #[test]
+    fn auto_pause_all_freezes_running_and_skips_floated_or_paused() {
+        let conn = setup();
+        let now = now_ms();
+        let once = create(&conn, "定时", "once", now + 120_000, 120_000, None).unwrap();
+        let floated = create(&conn, "浮窗中", "interval", now + 60_000, 60_000, Some(1)).unwrap();
+        set_floated(&conn, floated.id, true, None, None).unwrap();
+        let manual = create(&conn, "手动暂停", "once", now + 120_000, 120_000, None).unwrap();
+        pause(&conn, manual.id).unwrap();
+        let done = create(&conn, "已结束", "once", now + 120_000, 120_000, None).unwrap();
+        mark_finished(&conn, done.id).unwrap();
+
+        // 只冻结「运行中且未浮窗」的那一个
+        let n = auto_pause_all(&conn).unwrap();
+        assert_eq!(n, 1);
+
+        let frozen = get(&conn, once.id).unwrap();
+        assert!(frozen.paused);
+        assert!(frozen.paused_remaining_ms.unwrap() > 0);
+        let auto: i64 = conn
+            .query_row(
+                "SELECT auto_paused FROM countdowns WHERE id = ?1",
+                params![once.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(auto, 1);
+
+        // 浮窗 / 手动暂停 / 已结束均不受影响
+        assert!(!get(&conn, floated.id).unwrap().paused);
+        assert!(get(&conn, manual.id).unwrap().paused);
+        assert!(get(&conn, done.id).unwrap().finished);
+        assert_eq!(list_auto_paused_ids(&conn).unwrap(), vec![once.id]);
+    }
+
+    #[test]
+    fn auto_pause_then_resume_restores_once_remaining() {
+        let conn = setup();
+        let now = now_ms();
+        let c = create(&conn, "定时", "once", now + 120_000, 120_000, None).unwrap();
+        auto_pause_all(&conn).unwrap();
+
+        let r = resume(&conn, c.id).unwrap();
+        assert!(!r.paused);
+        assert!(r.end_at > now_ms());
+        // 恢复时清除自动冻结标记
+        let auto: i64 = conn
+            .query_row(
+                "SELECT auto_paused FROM countdowns WHERE id = ?1",
+                params![c.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(auto, 0);
+        assert!(list_auto_paused_ids(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn auto_pause_single_and_resume_if_auto_paused() {
+        let conn = setup();
+        let now = now_ms();
+        let c = create(&conn, "喝水", "interval", now + 60_000, 60_000, Some(1)).unwrap();
+
+        // 未冻结时 resume_if_auto_paused 不动作
+        assert!(!resume_if_auto_paused(&conn, c.id).unwrap());
+        auto_pause_single(&conn, c.id).unwrap();
+        assert!(get(&conn, c.id).unwrap().paused);
+        assert!(resume_if_auto_paused(&conn, c.id).unwrap());
+        assert!(!get(&conn, c.id).unwrap().paused);
+        // 到点判断不受冻结残留影响：interval 从恢复时刻重新起算
+        let g = get(&conn, c.id).unwrap();
+        assert!(g.end_at > now_ms() && g.end_at - now_ms() <= 60_000);
     }
 
     #[test]

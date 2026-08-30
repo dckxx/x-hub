@@ -115,9 +115,14 @@ function onNavClick(id: ViewId) {
 // ---- 扩展打开：扩展中心点开某个扩展 → 主区渲染扩展入口（view 形态） ----
 const openedExtension = ref<{ id: string; surface: string | null; name: string } | null>(null)
 const drawerExtension = ref<{ id: string; surface: string | null; name: string } | null>(null)
+// 强制重载计数：WebView2 在窗口后台久置后可能丢弃扩展 iframe 内容（恢复前台后空白），
+// 而点击「同一个」已打开的扩展时 extId/surface 均不变、useExtensionFrame 的 watch 不触发，
+// 表现为点了没反应——每次打开都递增，强制 iframe 重新导航
+const extensionReloadTick = ref(0)
 const installedExtensions = ref<ExtensionEntry[]>([])
 
 function onOpenExtension(ext: ExtensionEntry) {
+  extensionReloadTick.value++
   openedExtension.value = { id: ext.id, surface: null, name: ext.name }
   activeView.value = 'extension'
 }
@@ -183,9 +188,11 @@ function openExtensionSurface(extId: string, surface: string) {
     return
   }
   if (s === 'drawer') {
+    extensionReloadTick.value++
     drawerExtension.value = { id: extId, surface: 'drawer', name: ext?.name ?? extId }
     return
   }
+  extensionReloadTick.value++
   openedExtension.value = { id: extId, surface: s, name: ext?.name ?? extId }
   activeView.value = 'extension'
 }
@@ -204,6 +211,7 @@ function openExtensionWindow() {
 
 function openExtensionDrawer() {
   if (!openedExtension.value) return
+  extensionReloadTick.value++
   drawerExtension.value = { ...openedExtension.value }
 }
 
@@ -732,6 +740,7 @@ provide('showToast', showToast)
             v-if="openedExtension"
             :ext-id="openedExtension.id"
             :surface="openedExtension.surface"
+            :reload-key="extensionReloadTick"
             @close="closeExtension"
           />
         </section>
@@ -790,7 +799,11 @@ provide('showToast', showToast)
               </button>
             </div>
             <div class="ext-drawer-body">
-              <ExtensionView :ext-id="drawerExtension.id" :surface="drawerExtension.surface" />
+              <ExtensionView
+                :ext-id="drawerExtension.id"
+                :surface="drawerExtension.surface"
+                :reload-key="extensionReloadTick"
+              />
             </div>
           </div>
         </Transition>

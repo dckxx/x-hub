@@ -5,6 +5,8 @@ import { useExtensionFrame } from '../composables/useExtensionFrame'
 const props = defineProps<{
   extId: string
   surface?: string | null
+  /** 强制重载计数：宿主每次「打开该扩展」都递增，点击同一个已打开的扩展也触发 iframe 重新导航 */
+  reloadKey?: number
   onOpenSurface?: (surface: string) => void
 }>()
 
@@ -25,6 +27,7 @@ const { frameRef, loading, error } = useExtensionFrame(
   () => props.surface ?? null,
   (msg) => showToast(`打开扩展失败：${msg}`),
   props.onOpenSurface,
+  () => props.reloadKey ?? 0,
 )
 // frameRef 仅用于模板 ref 绑定（vue-tsc 不把模板 ref 计为读取，此处显式保留引用通过 noUnusedLocals）
 void frameRef

@@ -22,6 +22,15 @@ const ERROR_CODES = [
 /** 扩展 iframe 白屏看门狗超时（毫秒）：入口返回后超过此时长仍无任何桥消息则判失败 */
 const EXT_LOAD_TIMEOUT_MS = 8000
 
+/**
+ * 恢复可见时距上次隐藏超过该时长才重载 iframe（毫秒）。
+ * 窗口长时间不可见（隐藏到托盘/最小化/完全遮挡）后，WebView2 会挂起或丢弃跨源
+ * iframe（asset.localhost，独立渲染进程）的渲染状态，恢复前台后扩展区表现为空白；
+ * 重新导航是唯一可靠恢复手段。短时切换（alt-tab 几十秒内回来）不重载，
+ * 避免丢扩展内未提交的输入状态。
+ */
+const RESUME_RELOAD_AFTER_MS = 60_000
+
 /** 解析 Tauri invoke 拒绝字符串为 XHubError 的 code/message（后端约定 CODE: message 前缀） */
 export function parseXHubError(err: unknown): { code: string; message: string } {
   const s = String(err)
@@ -65,12 +74,15 @@ function toAssetUrl(filePath: string): string {
  * @param getExtId  扩展 id（延迟求值，供消息处理器与加载共用）
  * @param getSurface 形态（module/view/window/drawer；null = 用 manifest.kind 默认）
  * @param onError    加载失败回调（用于 toast 提示）
+ * @param getReloadKey 强制重载计数（可选）：宿主每次「打开某扩展」递增，点击同一个
+ *                     已打开的扩展时 extId/surface 均不变，靠该计数触发重新导航
  */
 export function useExtensionFrame(
   getExtId: () => string,
   getSurface: () => string | null,
   onError?: (message: string) => void,
   onOpenSurface?: (surface: string) => void,
+  getReloadKey?: () => number,
 ) {
   const frameRef = ref<HTMLIFrameElement | null>(null)
   const loading = ref(true)
@@ -79,6 +91,22 @@ export function useExtensionFrame(
   // 看门狗状态：扩展 iframe 是否已回传任意桥消息（桥脚本运行即算“已就绪”）
   let frameAlive = false
   let watchdogTimer: number | undefined
+
+  // 后台久置恢复：记录隐藏时刻（初始化即隐藏，如 --autostart-hidden 静默驻留托盘的场景
+  // 不会有 hidden 迁移事件，也纳入统计）
+  let hiddenAt: number | undefined = document.visibilityState === 'hidden' ? Date.now() : undefined
+
+  /** 恢复可见且后台超阈值 → 重载 iframe，把被 WebView2 丢弃/挂起的渲染状态拉回来 */
+  function onVisibilityChange() {
+    if (document.visibilityState === 'hidden') {
+      hiddenAt = Date.now()
+      return
+    }
+    if (hiddenAt === undefined) return
+    const elapsed = Date.now() - hiddenAt
+    hiddenAt = undefined
+    if (elapsed >= RESUME_RELOAD_AFTER_MS) void load()
+  }
 
   /** 处理扩展 iframe 发来的 xhub RPC：转发到宿主 xhub_call，回传结果 */
   function onMessage(e: MessageEvent) {
@@ -236,6 +264,7 @@ export function useExtensionFrame(
 
   onMounted(() => {
     window.addEventListener('message', onMessage)
+    document.addEventListener('visibilitychange', onVisibilityChange)
     registerExtensionFrame(frameRef.value, getExtId())
     if (frameRef.value) frameRef.value.addEventListener('error', onFrameError)
     void load()
@@ -243,13 +272,15 @@ export function useExtensionFrame(
   onBeforeUnmount(() => {
     if (watchdogTimer !== undefined) clearTimeout(watchdogTimer)
     if (frameRef.value) frameRef.value.removeEventListener('error', onFrameError)
+    document.removeEventListener('visibilitychange', onVisibilityChange)
     unregisterExtensionFrame(frameRef.value)
     window.removeEventListener('message', onMessage)
   })
 
-  // 扩展 id / 形态变化（主区在扩展之间来回切换时 ExtensionView 复用的同一个 iframe）：
-  // 重新注册帧映射 + 重新加载入口，否则 iframe 停留在上一个扩展，表现为“切换没反应”
-  watch([getExtId, getSurface], () => {
+  // 扩展 id / 形态 / 强制重载计数变化（主区在扩展之间来回切换时 ExtensionView 复用同一个
+  // iframe；点击同一个已打开的扩展时仅 reloadKey 递增）：重新注册帧映射 + 重新加载入口，
+  // 否则 iframe 停留在上一个扩展或已丢失的旧内容，表现为“切换没反应”或空白
+  watch([getExtId, getSurface, getReloadKey ?? (() => 0)], () => {
     unregisterExtensionFrame(frameRef.value)
     registerExtensionFrame(frameRef.value, getExtId())
     void load()

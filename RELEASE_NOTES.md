@@ -1,3 +1,15 @@
+# v0.3.1 发布说明
+
+- feat: 速记编辑器迁移 Milkdown Crepe 所见即所得（Markdown 为真相源、600ms 防抖自动保存、异步分包加载），标签行同步迁入
+- feat: 笔记图片三路入口（粘贴/拖拽/点击上传）：import_note_image 按内容哈希落盘 notes/images，新增 xhub-note 自定义协议渲染（文件名严格校验防路径穿越），浏览器预览回退 data URL
+- feat: 笔记块拖拽（六点把手）改为指针实现（utils/blockDrag.ts）：插入线指示 + 单事务搬移顶层块，绕开 Tauri 原生拖放对 HTML5 DnD 的拦截，速达拖入导入不受影响
+- fix: 修复 Crepe 异步挂载期间快速切换笔记时挂载请求被静默吞掉，导致编辑器停留旧内容、防抖保存跨笔记污染的竞态
+- fix: 笔记列表摘要与全局搜索片段改用 markdownPlainText 去 Markdown 语法；标题为默认值时从正文首行派生
+- style: 壁纸透底（data-wallpaper-clear）白墨可读性形态：文字/图标转白墨、表面令牌翻转为深玻璃、输入框边界与蒙版同步打磨
+- style: 倒计时模式图标与徽章底色改以 --bg-card-solid 实心基混色，防壁纸透底压暗深色文字
+- perf: 扩展桥广播壁纸状态令牌（themeTokens.wallpaper），玻璃透明度/沉浸模式变化时重新广播给扩展 iframe
+- chore: 移除未使用的 useDarkTheme composable；noteImage 前端预检 10MB 上限再走 IPC
+
 # v0.3.0 发布说明
 
 ## ✨ 新功能

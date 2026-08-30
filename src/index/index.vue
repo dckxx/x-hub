@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import TitleBar from '../components/TitleBar.vue'
 import TodoCard from '../components/TodoCard.vue'
 import Suda from '../components/Suda.vue'
 import NoteList from '../components/NoteList.vue'
-import NoteEditor from '../components/NoteEditor.vue'
 import GlobalSearch from '../components/GlobalSearch.vue'
 import SettingsView from '../components/SettingsView.vue'
 import NotesOverviewCard from '../components/NotesOverviewCard.vue'
@@ -29,9 +28,13 @@ import { playChime } from '../utils/chime'
 import { FileText, FolderOpen, LayoutDashboard, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight, AppWindow, PanelRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import { useTheme } from '../composables/useTheme'
+import { broadcastThemeToFrames } from '../composables/themeTokens'
 import { iconSrc } from '../composables/useResourceIcon'
 import DashboardLayoutEditor from '../components/DashboardLayoutEditor.vue'
 import { useDashboardLayout, type DashPlacement } from '../composables/useDashboardLayout'
+
+// 速记编辑器（Milkdown Crepe）体量较大，异步分包按需加载
+const NoteEditor = defineAsyncComponent(() => import('../components/NoteEditor.vue'))
 
 const store = useStore()
 
@@ -75,6 +78,8 @@ watch(
     } else {
       delete el.dataset.wallpaperClear
     }
+    // 壁纸态切换会翻转扩展令牌（压墨/白墨），重新广播给扩展 iframe
+    requestAnimationFrame(() => broadcastThemeToFrames())
   },
   { immediate: true },
 )

@@ -1,6 +1,6 @@
 # x-hub (个人效率工作台)
 
-**生成:** 2026-08-29 | **分支:** master | **版本:** 0.3.0
+**生成:** 2026-08-29 | **分支:** master | **版本:** 0.3.1
 
 ## 概述
 
@@ -15,7 +15,7 @@ x-hub/
 │   ├── App.vue                 # 窗口壳：按 label 路由（main 主窗 / sticky-* 便签浮窗 / countdown-* 倒计时浮窗 / clipboard 剪贴板浮层 / ext-* 扩展浮窗 / prompt-float 提示词浮窗 / todo-float 待办浮窗）
 │   ├── index/index.vue         # 首页：侧栏导航(工作台/速记/速达) + 扩展中心/扩展视图 + 左下角设置入口 + 视图协调 + 三轴主题 + 启动欢迎页
 │   ├── style.css               # 设计令牌（亮/暗色 CSS 变量）+ Tailwind + 通用组件样式
-│   ├── api/tauri.ts            # 所有 Tauri invoke 调用封装（126 个命令）+ 34 个模型/配置类型
+│   ├── api/tauri.ts            # 所有 Tauri invoke 调用封装（127 个命令）+ 34 个模型/配置类型
 │   ├── stores/workbench.ts     # 响应式状态管理（reactive + readonly，无 Pinia；工作台/便签/待办/倒计时/提示词/AI 对话/扩展/更新）
 │   ├── composables/            # useResourceIcon（资源图标）/ useFocusTrap（焦点陷阱）/ useTheme + themeTokens（三轴主题，后者广播给扩展 iframe）/ useDashboardLayout（工作台网格布局）/ useExtensionFrame（扩展 webview 桥接）/ useShortcutRecorder（快捷键录制）
 │   ├── utils/                  # categories（文件分类）/ time / web / error-report / chime（提示音）/ weather（Open-Meteo 天气码映射）/ quotes（本地名言兜底语料）/ todoParse（序号列表拆多条待办）
@@ -39,7 +39,7 @@ x-hub/
 │       ├── SudaScanDialog.vue  # 扫描已安装应用批量导入弹窗
 │       ├── AppSelect.vue       # 通用下拉选择器（无头封装，样式自绘）
 │       ├── NoteList.vue        # 笔记条目列表（标题/相对时间/摘要 + 标签筛选）
-│       ├── NoteEditor.vue      # 笔记编辑弹窗（Markdown 预览 + 600ms 防抖自动保存）
+│       ├── NoteEditor.vue      # 笔记编辑器（Milkdown Crepe 所见即所得 + 图片粘贴/拖拽/点击上传落盘 + 标签行 + 600ms 防抖自动保存，异步分包）
 │       ├── GlobalSearch.vue    # Ctrl+K 全局搜索弹窗（资源/笔记/待办 + 300ms 防抖）
 │       ├── ChatPanel.vue       # AI 对话面板（OpenAI 兼容 SSE 流式 + 多会话 + 四方位停靠/拖拽调尺寸 + Markdown 渲染）
 │       ├── AiProviders.vue     # 设置「AI 助手」区：供应商/模型管理（连通性测试 + 拉取模型批量添加 + API Key 钥匙串/界面脱敏）
@@ -57,7 +57,7 @@ x-hub/
 ├── src-tauri/                  # Tauri 后端 (Rust)
 │   ├── src/
 │   │   ├── main.rs             # Windows 子系统入口 → app_lib::run()
-│   │   ├── lib.rs              # Tauri Builder：数据库/托盘/快捷键/窗口状态/单实例/数据迁移与恢复/126 命令注册/退出停 service
+│   │   ├── lib.rs              # Tauri Builder：数据库/托盘/快捷键/窗口状态/单实例/数据迁移与恢复/127 命令注册/xhub-note 笔记图片协议/退出停 service
 │   │   ├── commands.rs         # Tauri 命令处理函数（资源/笔记/待办/便签/提示词/倒计时/对话/剪贴板/配置/窗口/备份等）
 │   │   ├── models.rs           # Resource/Note/Todo/Sticky/DetachedSticky/Snippet/ClipboardItem/Tag/Countdown/Chat* 结构体
 │   │   ├── db.rs               # rusqlite 数据库初始化与迁移（init_in_memory 仅测试用）
@@ -129,7 +129,7 @@ x-hub/
 - **唯一通道：** `@tauri-apps/api/core` → `invoke<ReturnType>('command_name', args)`
 - **类型安全：** 所有 invoke 调用封装在 `src/api/tauri.ts` 的 `tauriApi` 对象中，含完整 TypeScript 类型
 - **环境守卫：** `isTauri()` 检查 `'__TAURI_INTERNALS__' in window`，确保浏览器预览环境不崩溃
-- **命令注册：** `src-tauri/src/lib.rs` 的 `invoke_handler!` 宏列出全部 126 个命令（前端封装一一对应 `src/api/tauri.ts`）
+- **命令注册：** `src-tauri/src/lib.rs` 的 `invoke_handler!` 宏列出全部 127 个命令（前端封装一一对应 `src/api/tauri.ts`）
 
 ## 数据模型（SQLite）
 
@@ -162,7 +162,7 @@ x-hub/
 11. **全局快捷键：** 两个全局快捷键都在 `shortcut.rs` 统一注册——主窗显隐默认 Ctrl+Shift+Space、剪贴板浮层默认 Ctrl+`（避开 Ctrl+Shift+V 无格式粘贴）；均可在设置中录制，失焦/回车自动保存，录制中失焦取消并还原（`useShortcutRecorder` + SettingsView.vue）
 12. **轻提示：** index.vue `provide('showToast')`，子组件 `inject` 使用
 13. **只读 props：** store.state 为 readonly 深度代理，组件 props 用 `readonly Note[]` 等类型
-14. **拖拽导入：** 拖入 exe/lnk 到窗口 → `onDragDropEvent`（Suda.vue）→ `parse_dropped_path` 命令（.lnk 经 PowerShell COM 解析目标 + System.Drawing 提取图标存 `app_data_dir/icons/`）→ 自动预填资源弹窗；图标经 `convertFileSrc`（assetProtocol 已启用，scope `$APPDATA/**`）渲染，提取失败回退名称 hash 首字母
+14. **拖拽导入：** 拖入 exe/lnk/文件夹到窗口 → `onDragDropEvent`（Suda.vue）→ `parse_dropped_path` 命令（.lnk 经 PowerShell COM 解析目标 + System.Drawing 提取图标存 `app_data_dir/icons/`）→ 自动预填资源弹窗；图标经 `convertFileSrc`（assetProtocol 已启用，scope `$APPDATA/**`）渲染，提取失败回退名称 hash 首字母。注意：该功能依赖 Tauri 原生拖放拦截（`dragDropEnabled` 默认开），它与 WebView2 内 HTML5 拖拽互斥、无运行时开关（tauri 2.11 仅有创建时的 `disable_drag_drop_handler()`）——笔记编辑器块拖拽已改为指针实现绕开（见约定 38），速达原生拖入保持不受影响
 15. **PowerShell 调用约定：** 一律用**环境变量传参**（`Command::env`）而非 `$args`——实测 `-Command` 模式下 `$args` 不可靠；输出前设 `[Console]::OutputEncoding=UTF8` 防中文乱码
 16. **文件选择：** 已集成 tauri-plugin-dialog（`dialog:allow-open` 权限）；SudaFormDialog 路径/图标输入框右侧有选择按钮，选 exe/lnk 自动解析名称与图标，选图标文件经 `import_icon_file` 存入 icons 目录
 17. **AI 用量：** 已拆分为 service 扩展 `com.x-hub.token-stats`（实时读 opencode 数据库聚合，宿主零 token 代码）；详见 `x-hub-extensions/extensions/com.x-hub.token-stats`。宿主侧旧用量代码（`usage.rs`/TokenStatsCard/用量视图）已全部移除，侧栏无「用量」入口
@@ -186,6 +186,8 @@ x-hub/
 35. **应用自动更新（v0.3.0）：** `updater.rs` 自研链路——启动 5s 后 + 每 `update_interval_hours`（默认 4h）静默检查 `update_endpoint` 的 `releases/update.json`（`signing.rs` Ed25519 验签通过才信任 + `minimumUpgradable` 跳级保护，标准版/便携版分别取包）→ UpdateCheckDialog 弹窗（可跳过版本，记 `skipped_update_version`）→ 流式下载 sha256 校验 → 重启时「exe → exe.old / 新 exe → exe」两步 rename 自替换，失败回滚下次重试；更新包暂存 `数据根\updates\` 用完即清
 36. **联网开关（v0.3.0）：** `online.rs` 提供连通性探活 / 天气（Open-Meteo）/ 城市地理编码 / IP 定位 / 名言（hitokoto），受设置「联网」`online_enabled` 总开关控制；语录离线自动回退 `utils/quotes.ts` 本地语料
 37. **应用壁纸 + 卡片玻璃透明度：** 壁纸仅主窗口渲染（index.vue 首子元素 `z-index:-1` 固定层，浮窗不跟随），导入走 `import_wallpaper`（复制进 `数据根\wallpapers\` 内容哈希命名 + 清目录旧文件，仅收 png/jpg/webp/bmp、≤30MB，gif 等动图拒收），assetProtocol `$APPDATA/**` 经 `convertFileSrc` 渲染；模糊作用于壁纸层整体（静态 `filter: blur`，**不是**卡片局部 backdrop——见 `docs/adr/0002`）；壁纸蒙版 `wallpaper_veil`（0–0.85 默认 0.3，主题中性底色 `--bg-base-a/b` 罩层，亮色提亮/暗色压暗）解决照片壁纸上侧栏/标题栏灰字与图标对比度不足的问题；沉浸模式 `wallpaper_immersive`（默认关，ADR 0003 受控例外）：`.card` 启用 backdrop-filter blur(16px) 局部取景 + 基底 alpha 大幅下调（亮 0.18/0.12 暗 0.10/0.06，仍乘 `--glass-dim`），开启时整屏静态模糊自动让位、设置里隐藏其开关；铬件（侧栏/标题栏）任何壁纸形态下都保持全透明与背景同一平面（勿垫材质/蒙纱，观感割裂——ADR 0003 有记录），其灰字/图标可读性由壁纸蒙版 + 壁纸态可读性增强负责：html `data-wallpaper` 标记驱动，灰阶令牌（--text-2/3/4）在铬件与主区（main）子树内向 ink 端压两档（不碰全局令牌），文字光晕双层分级——铬件为描边级（四向 1px text-shadow + 柔光）+ svg 双层 drop-shadow，卡片在真实透底时（`data-wallpaper-clear` = 玻璃透明度 <0.9 或沉浸模式）才加弱一档柔光晕（.card/.sv-content/.extension-center/.le-root），不透底保持锐利，侧栏 hover 气泡等瞬态表面排除在外；卡片玻璃透明度 `glass_opacity`（0.4–1.0）经 `--glass-dim` 乘进 `--frost-base` alpha，亮暗两套基底共用同一乘数，弹窗/菜单等瞬态表面不受影响；壁纸文件被外部删除时前端静默回退渐变背景（不抹配置）
+
+38. **速记编辑器（Milkdown Crepe）+ 笔记图片：** `NoteEditor.vue` 用 Crepe 所见即所得（`@milkdown/crepe` + `@milkdown/kit`，Markdown 为真相源，`markdownUpdated` 序列化结果走既有 600ms 防抖；AI 特性关闭保持纯本地；index.vue 经 `defineAsyncComponent` 异步分包加载，浏览器预览无后端时图片回退 data URL）；主题靠 `.milkdown` 上的 `--crepe-*` 变量映射设计令牌，暗色经 `[data-theme="dark"]` 覆盖（Crepe 无内置动态主题切换，Milkdown #1839），blockquote 默认 `padding-left: 40px` 过宽已覆写为 12px；Crepe 自带 UI 文案默认英文，已在 featureConfigs 统一汉化（斜杠菜单三组/图片块上传按钮与占位/空文档占位符「开始记录…」/链接提示/选中工具栏 aria 标签），升级 Crepe 后新增文案同样在该配置补。图片三路入口（粘贴/拖拽/点击上传）**全部由 Crepe 上传管线处理**：plugin-upload 的 `handlePaste`/`handleDrop` + `ImageBlock` 的 `onUpload/inlineOnUpload/blockOnUpload` → `utils/noteImage.ts` → `import_note_image` 命令（base64 传参，内容哈希命名落盘 `数据根\notes\images\`，png/jpg/jpeg/webp/bmp/gif、≤10MB，同内容天然去重）；**切勿自建 DOM paste 监听**——plugin-upload 已处理粘贴，叠加监听会插入两张重复图片。Markdown 内嵌 `http://xhub-note.localhost/<hash>.<ext>`——lib.rs 注册的 `xhub-note` 自定义协议按数据根实时解析文件（URL 不含数据根绝对路径，迁数据目录后仍有效；Windows 形态为 `http://<scheme>.localhost/`），文件名严格校验 16 位哈希 + 扩展名白名单防路径穿越，孤儿图片暂无 GC。标题自动派生：标题为默认值（空/「无标题笔记」）时从正文首行取纯文本（`utils/markdown.ts` 的 `deriveNoteTitle`，NoteList 摘要与 GlobalSearch 片段同样经 `markdownPlainText` 去语法），用户改过标题即不再接管。三个时序陷阱：① Crepe 容器 rootEl 在 setup 阶段未渲染，watch 须同时观察 rootEl 且 `flush:'post'`，否则首次挂载永远空白；② watch 回调引用的所有状态（saveTimer/noteTags 等）必须声明在 watch 之前——immediate 回调在 setup 阶段同步执行，后置声明触发 TDZ；③ 防抖的「同步回显不保存」判断必须用与当前笔记内容的**一致性比较**，不能用一次性布尔标记（会吞掉整段粘贴等单批次编辑的首次保存）。块拖拽（六点把手）已改为**指针实现**（`utils/blockDrag.ts`，NoteEditor 在 crepe create 后经 `editorViewCtx` 挂载）：pointerdown/move/up 跟踪 + 插入线指示 + 单事务搬移顶层块（一个撤销步骤）。原因：plugin-block 原生走 HTML5 DnD（dragstart 写 dataTransfer → dragover/drop 搬移），与主窗口 `dragDropEnabled` 的原生文件拖放拦截互斥——Tauri 窗口内拖拽启动后收不到 dragover/drop，表现为「拖得动、落不下」；指针实现不再依赖 HTML5 DnD，浏览器与 Tauri 行为一致，速达原生拖入不受影响。util 在捕获阶段拦掉把手容器上的原生 dragstart（window capture，须先于 plugin-block 的监听），并依赖 Crepe 把手 DOM 结构（`.milkdown-block-handle` 内两个 `.operation-item`，第 1 个加号、第 2 个把手）——升级 Crepe 需复核。`posAtCoords` 探针 x 必须取 pm 内容水平中心（左缘附近处于内边距区会粗解析错块）；`coords.inside` 命中文本块时返回的是**块的起始 pos**（resolve 后 depth=0），走 nodeAt 分支爬顶层。外部图片拖入编辑器上传仍受原生拦截限制（粘贴/点击上传可用）。另注意：速达拖入导入只在 Tauri 窗口可用，浏览器预览中拖文件显示禁止图标是正常表现（无后端接收）
 
 ## 命令速查
 

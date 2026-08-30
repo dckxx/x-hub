@@ -1603,6 +1603,56 @@ pub fn remove_wallpaper() -> Result<(), String> {
     Ok(())
 }
 
+// ---------- 笔记图片 ----------
+
+/// 笔记内嵌图片支持的格式（笔记是文档配图，gif 动图放行——仅 <img> 渲染，无壁纸的常驻 GPU 纹理问题）
+const NOTE_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif"];
+/// 单张笔记图片大小上限
+const NOTE_IMAGE_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+/// 保存笔记编辑器导入的图片（粘贴 / 拖拽 / 上传按钮）：base64 解码后按内容哈希命名
+/// 落盘到数据根 notes/images/，返回可内嵌 Markdown 的 xhub-note 协议 URL。
+/// 同内容同文件名天然去重；孤儿文件回收（删笔记/删图后）属后续 GC，暂不清理。
+#[tauri::command]
+pub fn import_note_image(data_b64: String, ext: String) -> Result<String, String> {
+    use base64::Engine as _;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let ext = ext.to_lowercase();
+    if !NOTE_IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+        return Err("仅支持 png/jpg/webp/bmp/gif 图片".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data_b64)
+        .map_err(|e| format!("图片数据解码失败: {}", e))?;
+    if bytes.is_empty() {
+        return Err("图片数据为空".into());
+    }
+    if bytes.len() > NOTE_IMAGE_MAX_BYTES {
+        return Err("图片超过 10MB，请压缩后再试".into());
+    }
+
+    let dir = crate::paths::data_root().join("notes").join("images");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    let name = format!("{:016x}.{}", hasher.finish(), ext);
+    std::fs::write(dir.join(&name), &bytes).map_err(|e| format!("保存图片失败: {}", e))?;
+
+    log::debug!("笔记图片已保存: {}", name);
+    Ok(note_image_url(&name))
+}
+
+/// 笔记图片的内嵌 URL。xhub-note 协议（lib.rs 注册）按数据根 notes/images 解析，
+/// URL 中不含数据根绝对路径——「更改数据存储路径」或整目录迁移后，已写入笔记的 URL 仍有效。
+pub fn note_image_url(name: &str) -> String {
+    // Windows/Android 上 Tauri 自定义协议以 http://<scheme>.localhost/ 形式访问；
+    // macOS/Linux 为 <scheme>://localhost/（本应用仅面向 Windows 桌面，如需跨平台再分支）
+    format!("http://xhub-note.localhost/{}", name)
+}
+
 // ---------- 扫描已安装应用 ----------
 
 #[derive(serde::Serialize)]

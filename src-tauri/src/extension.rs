@@ -421,6 +421,11 @@ const XHUB_BRIDGE_SCRIPT: &str = r#"
       '--xhub-radius-lg':t.radiusLg
     };
     for(var k in map){if(map[k]!=null&&map[k]!==''){root.style.setProperty(k,map[k]);}}
+    // 壁纸状态转写为 data-xhub-* 属性：扩展据此启停文字光晕等透底可读性样式
+    var wp=(theme&&theme.wallpaper)||{};
+    if(wp.on){root.setAttribute('data-xhub-wallpaper','1');}else{root.removeAttribute('data-xhub-wallpaper');}
+    if(wp.clear){root.setAttribute('data-xhub-wallpaper-clear','1');}else{root.removeAttribute('data-xhub-wallpaper-clear');}
+    if(wp.immersive){root.setAttribute('data-xhub-immersive','1');}else{root.removeAttribute('data-xhub-immersive');}
   }
   window.addEventListener('message',function(e){
     var m=e.data;if(!m||m.__xhub!==true)return;

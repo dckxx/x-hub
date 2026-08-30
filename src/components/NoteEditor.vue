@@ -1,12 +1,24 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { marked } from 'marked'
-import { Eye, Pencil, StickyNote, Tag as TagIcon, Trash2 } from 'lucide-vue-next'
+import { onBeforeUnmount, ref, watch } from 'vue'
+import { Crepe } from '@milkdown/crepe'
+import '@milkdown/crepe/theme/common/style.css'
+import '@milkdown/crepe/theme/frame.css'
+import { editorViewCtx } from '@milkdown/kit/core'
+import { Tag as TagIcon, Trash2 } from 'lucide-vue-next'
 import { isTauri, tauriApi, type Note, type Tag } from '../api/tauri'
 import { useStore } from '../stores/workbench'
+import { attachBlockDrag } from '../utils/blockDrag'
+import { deriveNoteTitle } from '../utils/markdown'
+import { saveNoteImageFile } from '../utils/noteImage'
 import { parseTimestamp } from '../utils/time'
 
-const store = useStore()
+/**
+ * 速记编辑器：Milkdown Crepe 所见即所得（Markdown 为真相源，序列化结果经 600ms 防抖落盘）。
+ * 图片（粘贴/拖拽/点击上传）统一由 Crepe 的上传管线处理：plugin-upload 的 handlePaste/
+ * handleDrop + ImageBlock 的 onUpload 配置 → saveNoteImageFile（notes/images + xhub-note 协议）。
+ * 注意勿再自建 DOM paste 监听——plugin-upload 已处理粘贴，叠加监听会导致图片重复插入。
+ * 块拖拽（六点把手）为指针实现（utils/blockDrag.ts），绕开 Tauri 原生拖放对 HTML5 DnD 的拦截。
+ */
 
 const props = defineProps<{
   note: Readonly<Note> | null
@@ -17,46 +29,230 @@ const emit = defineEmits<{
   (e: 'delete', id: number): void
 }>()
 
+const store = useStore()
+
+const rootEl = ref<HTMLDivElement>()
+
+let crepe: Crepe | null = null
+let mounting = false
+/** 挂载期间又切换了笔记：完成后需按最新笔记重挂一次（否则编辑器停留旧内容、防抖保存会跨笔记污染） */
+let remountQueued = false
+let detachBlockDrag: (() => void) | null = null
+
 const localTitle = ref('')
 const localContent = ref('')
 const dirty = ref(false)
-const syncing = ref(false)
 
-// ---- Markdown 编辑/预览 ----
-const mode = ref<'edit' | 'preview'>('edit')
-
-const previewHtml = computed(() => {
-  if (mode.value !== 'preview') return ''
-  return marked.parse(localContent.value, { async: false }) as string
+// ---- 生命周期 ----
+onBeforeUnmount(() => {
+  flushPendingSave()
+  void destroyEditor()
 })
 
-// ---- 标签 ----
+async function destroyEditor() {
+  detachBlockDrag?.()
+  detachBlockDrag = null
+  const c = crepe
+  crepe = null
+  if (c) {
+    try {
+      await c.destroy()
+    } catch (e) {
+      console.warn('Crepe 销毁异常', e)
+    }
+  }
+  if (rootEl.value) rootEl.value.innerHTML = ''
+}
+
+async function mountEditor(content: string) {
+  if (!rootEl.value) return
+  if (mounting) {
+    // Crepe 异步初始化期间再次切换笔记时不能静默吞掉挂载请求——记下重挂，本次完成后按最新笔记重来
+    remountQueued = true
+    return
+  }
+  mounting = true
+  const wantId = props.note?.id ?? null
+  try {
+    await destroyEditor()
+    const c = new Crepe({
+      root: rootEl.value,
+      defaultValue: content,
+      // AI 特性需外部模型服务，保持纯本地
+      features: { [Crepe.Feature.AI]: false },
+      featureConfigs: {
+        [Crepe.Feature.ImageBlock]: {
+          onUpload: saveNoteImageFile,
+          inlineOnUpload: saveNoteImageFile,
+          blockOnUpload: saveNoteImageFile,
+          // Crepe 默认文案为英文，以下统一汉化
+          inlineUploadButton: '上传',
+          inlineUploadPlaceholderText: '或粘贴图片链接',
+          blockUploadButton: '上传图片',
+          blockUploadPlaceholderText: '或粘贴图片链接',
+          blockConfirmButton: '确认',
+          blockCaptionPlaceholderText: '填写图片说明',
+        },
+        [Crepe.Feature.BlockEdit]: {
+          textGroup: {
+            label: '文本',
+            text: { label: '正文' },
+            h1: { label: '一级标题' },
+            h2: { label: '二级标题' },
+            h3: { label: '三级标题' },
+            h4: { label: '四级标题' },
+            h5: { label: '五级标题' },
+            h6: { label: '六级标题' },
+            quote: { label: '引用' },
+            divider: { label: '分割线' },
+          },
+          listGroup: {
+            label: '列表',
+            bulletList: { label: '无序列表' },
+            orderedList: { label: '有序列表' },
+            taskList: { label: '任务列表' },
+          },
+          advancedGroup: {
+            label: '插入',
+            image: { label: '图片' },
+            codeBlock: { label: '代码块' },
+            table: { label: '表格' },
+            math: { label: '公式' },
+          },
+        },
+        [Crepe.Feature.Placeholder]: {
+          text: '开始记录…',
+        },
+        [Crepe.Feature.LinkTooltip]: {
+          inputPlaceholder: '粘贴链接…',
+        },
+        [Crepe.Feature.Toolbar]: {
+          boldLabel: '加粗',
+          italicLabel: '斜体',
+          strikethroughLabel: '删除线',
+          codeLabel: '行内代码',
+          linkLabel: '链接',
+          latexLabel: '公式',
+        },
+      },
+    })
+    await c.create()
+    if (!rootEl.value || (props.note?.id ?? null) !== wantId) {
+      // create 期间笔记已切换/组件已卸载：本次实例作废，队列重挂最新笔记（不挂监听、不接管拖拽）
+      remountQueued = true
+      try {
+        await c.destroy()
+      } catch {
+        /* 丢弃的实例，销毁异常无需处理 */
+      }
+      return
+    }
+    // create 之后再挂监听，避免初始化本身触发一次 markdownUpdated 造成假保存
+    c.on((listener) => {
+      listener.markdownUpdated((_ctx, markdown) => {
+        onEdited(markdown)
+      })
+    })
+    crepe = c
+    // 块拖拽（六点把手）指针实现：create 完成后从 ctx 取 EditorView 接管把手拖拽
+    c.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      detachBlockDrag = attachBlockDrag(() => view)
+    })
+  } catch (e) {
+    console.error('Crepe 初始化失败', e)
+  } finally {
+    mounting = false
+    if (remountQueued && props.note && rootEl.value) {
+      remountQueued = false
+      void mountEditor(props.note.content ?? '')
+    }
+  }
+}
+
+// ---- 笔记切换 / 防抖保存 ----
+// 定时器与标签状态声明必须在 watch 之前：immediate 回调在 setup 阶段同步执行，后置声明会触发 TDZ
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+let lastNoteId: number | null = null
 const noteTags = ref<Tag[]>([])
 const tagInputVisible = ref(false)
 const tagInput = ref('')
 
-// immediate：视图切换回来（或从全局搜索打开）时编辑器带着已选中的笔记重新挂载，
-// id 不再变化，必须在挂载时同步一次，否则列表高亮选中而编辑器空白，且单条笔记无法通过重新点击触发恢复
+// 同时观察 rootEl：immediate 在 setup 阶段触发时模板尚未渲染（rootEl 为空），
+// flush:'post' 保证组件渲染出编辑器容器后再执行挂载
 watch(
-  () => props.note?.id,
-  async () => {
-    // note 失效（关闭/删除/切换离开）前，把防抖中未落盘的编辑立即落盘，避免丢失
-    if (!props.note) flushPendingSave()
+  [() => props.note?.id, rootEl],
+  async ([, el]) => {
+    if (!props.note || !el) {
+      flushPendingSave()
+      void destroyEditor()
+      syncLocal()
+      noteTags.value = []
+      return
+    }
     syncLocal()
-    mode.value = 'edit'
+    void mountEditor(props.note.content ?? '')
     // 加载笔记标签
-    if (props.note && isTauri()) {
+    if (isTauri()) {
       noteTags.value = await tauriApi.getNoteTags(props.note.id)
     } else {
       noteTags.value = []
     }
   },
-  { immediate: true },
+  { immediate: true, flush: 'post' },
 )
 
-async function persistTags() {
+function syncLocal() {
+  localTitle.value = props.note?.title ?? ''
+  localContent.value = props.note?.content ?? ''
+  dirty.value = false
+}
+
+/** 立即落盘防抖中未保存的编辑（若存在），并取消挂起的定时器 */
+function flushPendingSave() {
+  if (!saveTimer) return
+  clearTimeout(saveTimer)
+  saveTimer = null
+  if (dirty.value && lastNoteId !== null) {
+    dirty.value = false
+    emit('save', lastNoteId, localTitle.value, localContent.value)
+  }
+}
+
+function onEdited(markdown: string) {
   if (!props.note) return
-  if (!isTauri()) return
+  localContent.value = markdown
+  // 标题还是默认值时，从正文首行（标题行/前几个字）自动派生；用户一旦改过标题即不再接管
+  if (localTitle.value === '' || localTitle.value === '无标题笔记') {
+    const derived = deriveNoteTitle(markdown)
+    if (derived) localTitle.value = derived
+  }
+  scheduleSave()
+}
+
+function scheduleSave() {
+  if (!props.note) return
+  dirty.value = true
+  if (saveTimer) clearTimeout(saveTimer)
+  lastNoteId = props.note.id
+  saveTimer = setTimeout(() => {
+    saveTimer = null
+    if (props.note) {
+      emit('save', props.note.id, localTitle.value, localContent.value)
+    }
+  }, 600)
+}
+
+watch(
+  () => props.note?.updated_at,
+  () => {
+    dirty.value = false
+  },
+)
+
+// ---- 标签 ----
+async function persistTags() {
+  if (!props.note || !isTauri()) return
   await tauriApi.setNoteTags(props.note.id, noteTags.value.map((t) => t.id))
 }
 
@@ -87,55 +283,6 @@ async function submitTagInput() {
   tagInputVisible.value = false
 }
 
-let saveTimer: ReturnType<typeof setTimeout> | null = null
-let lastNoteId: number | null = null
-
-onBeforeUnmount(() => {
-  flushPendingSave()
-})
-
-function syncLocal() {
-  syncing.value = true
-  localTitle.value = props.note?.title ?? ''
-  localContent.value = props.note?.content ?? ''
-  dirty.value = false
-}
-
-/** 立即落盘防抖中未保存的编辑（若存在），并取消挂起的定时器 */
-function flushPendingSave() {
-  if (!saveTimer) return
-  clearTimeout(saveTimer)
-  saveTimer = null
-  if (dirty.value && lastNoteId !== null) {
-    dirty.value = false
-    emit('save', lastNoteId, localTitle.value, localContent.value)
-  }
-}
-
-watch([localTitle, localContent], () => {
-  if (syncing.value) {
-    syncing.value = false
-    return
-  }
-  if (!props.note) return
-  dirty.value = true
-  if (saveTimer) clearTimeout(saveTimer)
-  lastNoteId = props.note.id
-  saveTimer = setTimeout(() => {
-    saveTimer = null
-    if (props.note) {
-      emit('save', props.note.id, localTitle.value, localContent.value)
-    }
-  }, 600)
-})
-
-watch(
-  () => props.note?.updated_at,
-  () => {
-    dirty.value = false
-  },
-)
-
 function formatSavedTime(iso: string): string {
   const t = new Date(parseTimestamp(iso))
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -147,7 +294,6 @@ function formatSavedTime(iso: string): string {
   <div class="card editor-panel">
     <!-- 空状态 -->
     <div v-if="!note" class="editor-empty">
-      <StickyNote :size="48" :stroke-width="1.5" />
       <p>选择或新建笔记</p>
     </div>
 
@@ -155,7 +301,6 @@ function formatSavedTime(iso: string): string {
     <template v-else>
       <header class="ed-header">
         <input
-          ref="titleInputRef"
           v-model="localTitle"
           class="ed-title-input"
           type="text"
@@ -163,22 +308,6 @@ function formatSavedTime(iso: string): string {
           placeholder="笔记标题"
           @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
         />
-        <button
-          class="icon-btn mode-btn"
-          :class="{ active: mode === 'edit' }"
-          title="编辑模式"
-          @click="mode = 'edit'"
-        >
-          <Pencil :size="13" :stroke-width="1.8" />
-        </button>
-        <button
-          class="icon-btn mode-btn"
-          :class="{ active: mode === 'preview' }"
-          title="预览模式"
-          @click="mode = 'preview'"
-        >
-          <Eye :size="13" :stroke-width="1.8" />
-        </button>
         <button
           class="icon-btn del"
           title="删除笔记"
@@ -189,18 +318,7 @@ function formatSavedTime(iso: string): string {
         </button>
       </header>
 
-      <textarea
-        v-if="mode === 'edit'"
-        v-model="localContent"
-        class="ed-content"
-        placeholder="开始记录…（支持 Markdown）"
-        spellcheck="false"
-      ></textarea>
-      <div
-        v-else
-        class="ed-content md-preview"
-        v-html="previewHtml"
-      ></div>
+      <div ref="rootEl" class="crepe-root"></div>
 
       <!-- 底栏：左标签行 + 右保存状态 -->
       <footer class="ed-footer">
@@ -276,10 +394,6 @@ function formatSavedTime(iso: string): string {
   font-size: 0.875em;
 }
 
-.editor-empty svg {
-  opacity: 0.5;
-}
-
 .ed-header {
   display: flex;
   align-items: center;
@@ -317,128 +431,27 @@ function formatSavedTime(iso: string): string {
   background: color-mix(in srgb, var(--c-red) 10%, transparent);
 }
 
-.mode-btn.active {
-  background: var(--brand-50);
-  color: var(--brand-500);
-}
-
-.ed-content {
+.crepe-root {
   flex: 1;
   min-height: 0;
-  width: 100%;
+  overflow: hidden;
   border: 1px solid var(--border-soft);
   background: var(--input-bg);
   border-radius: var(--radius-md);
-  resize: none;
-  outline: none;
-  font-size: 0.875em;
-  line-height: 1.7;
-  font-family: inherit;
-  color: var(--text-2);
-  padding: 14px;
-  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.crepe-root :deep(.milkdown) {
+  height: 100%;
   overflow-y: auto;
 }
 
-.ed-content:focus {
-  border-color: var(--brand-500);
-  box-shadow: var(--shadow-focus);
-}
-
-.ed-content::placeholder {
-  color: var(--text-4);
-}
-
-/* Markdown 预览 */
-.md-preview :deep(h1),
-.md-preview :deep(h2),
-.md-preview :deep(h3) {
-  color: var(--text-1);
-  margin: 14px 0 8px;
-  line-height: 1.4;
-}
-
-.md-preview :deep(h1) {
-  font-size: calc(1.25rem * var(--fs-notes, 1));
-}
-
-.md-preview :deep(h2) {
-  font-size: calc(1.0625rem * var(--fs-notes, 1));
-}
-
-.md-preview :deep(h3) {
-  font-size: calc(0.9375rem * var(--fs-notes, 1));
-}
-
-.md-preview :deep(p) {
-  margin: 8px 0;
-}
-
-.md-preview :deep(ul),
-.md-preview :deep(ol) {
-  padding-left: 22px;
-  margin: 8px 0;
-}
-
-.md-preview :deep(ol) {
-  list-style: decimal;
-}
-
-.md-preview :deep(ol > li) {
-  display: list-item;
-}
-
-.md-preview :deep(code) {
-  background: var(--bg-card);
-  border: 1px solid var(--border-soft);
-  border-radius: 5px;
-  padding: 1px 6px;
-  font-size: calc(0.75rem * var(--fs-notes, 1));
-  font-family: 'FiraCode', Consolas, monospace;
-}
-
-.md-preview :deep(pre) {
-  background: var(--bg-card);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
-  padding: 12px;
-  overflow-x: auto;
-  margin: 10px 0;
-}
-
-.md-preview :deep(pre code) {
-  background: transparent;
-  border: none;
-  padding: 0;
-}
-
-.md-preview :deep(blockquote) {
-  border-left: 3px solid var(--brand-500);
-  padding-left: 12px;
-  color: var(--text-3);
-  margin: 8px 0;
-}
-
-.md-preview :deep(a) {
-  color: var(--brand-500);
-}
-
-.md-preview :deep(hr) {
-  border: none;
+.ed-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 6px;
   border-top: 1px solid var(--border-soft);
-  margin: 14px 0;
-}
-
-.md-preview :deep(table) {
-  border-collapse: collapse;
-  margin: 10px 0;
-}
-
-.md-preview :deep(th),
-.md-preview :deep(td) {
-  border: 1px solid var(--border-soft);
-  padding: 6px 10px;
-  font-size: calc(0.8125rem * var(--fs-notes, 1));
 }
 
 /* 标签行 */
@@ -526,15 +539,6 @@ function formatSavedTime(iso: string): string {
   border-color: var(--brand-500);
 }
 
-.ed-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-top: 6px;
-  border-top: 1px solid var(--border-soft);
-}
-
 .ed-status {
   flex-shrink: 0;
   font-size: 0.75em;
@@ -543,5 +547,37 @@ function formatSavedTime(iso: string): string {
 
 .ed-status.dirty {
   color: var(--brand-500);
+}
+</style>
+
+<style>
+/* Crepe 主题变量对齐应用设计令牌（全局块：高优先级选择器压过 frame.css 的 .milkdown 定义）。
+   亮色基线 + [data-theme="dark"] 暗色覆盖，替代 Crepe 缺失的动态主题切换（Milkdown #1839） */
+.crepe-root .milkdown {
+  --crepe-base-font-size: calc(15px * var(--fs-notes, 1));
+  --crepe-color-background: transparent;
+  --crepe-color-on-background: var(--text-1);
+  --crepe-color-surface: var(--input-bg);
+  --crepe-color-surface-low: var(--input-bg);
+  --crepe-color-on-surface: var(--text-2);
+  --crepe-color-on-surface-variant: var(--text-3);
+  --crepe-color-outline: var(--border-soft);
+  --crepe-color-primary: var(--text-1);
+  --crepe-color-inverse: var(--bg-card);
+  --crepe-color-on-inverse: var(--text-2);
+  --crepe-color-inline-code: var(--brand-500);
+}
+
+[data-theme='dark'] .crepe-root .milkdown {
+  --crepe-color-secondary: #4d4d4d;
+  --crepe-color-on-secondary: #d6d6d6;
+  --crepe-color-hover: #232323;
+  --crepe-color-selected: #2f2f2f;
+  --crepe-color-inline-area: #2b2b2b;
+}
+
+/* 引用块：Crepe 默认 padding-left 40px，文字离左侧引用条太远，收紧到贴条显示 */
+.crepe-root .milkdown .ProseMirror blockquote {
+  padding-left: 12px;
 }
 </style>

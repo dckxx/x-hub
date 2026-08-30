@@ -499,6 +499,9 @@ export const tauriApi = {
   importWallpaper: (source: string) =>
     invoke<string>('import_wallpaper', { source }),
   removeWallpaper: () => invoke<void>('remove_wallpaper'),
+  /** 保存笔记图片（base64，不含 data: 前缀）：落盘 notes/images，返回 xhub-note 协议 URL */
+  importNoteImage: (dataB64: string, ext: string) =>
+    invoke<string>('import_note_image', { dataB64, ext }),
   inspectPath: (path: string) =>
     invoke<{ name: string; is_dir: boolean }>('inspect_path', { path }),
   listTags: () => invoke<Tag[]>('list_tags'),

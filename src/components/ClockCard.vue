@@ -139,7 +139,7 @@ const weatherSubText = computed(() => {
       </div>
     </div>
 
-    <!-- 金句：占满整行（可延伸到天气卡下方） -->
+    <!-- 金句：占满整行（可延伸到天气区下方） -->
     <button
       class="clock-quote"
       type="button"
@@ -227,6 +227,7 @@ const weatherSubText = computed(() => {
 }
 
 /* 天气 */
+/* 无独立底色：直接融进时钟卡片表面 */
 .clock-weather {
   flex-shrink: 0;
   display: flex;
@@ -234,11 +235,6 @@ const weatherSubText = computed(() => {
   align-items: center;
   justify-content: center;
   gap: 2px;
-  min-width: 84px;
-  padding: 0 12px 8px;
-  border-radius: 10px;
-  background: var(--frost-surface);
-  box-shadow: inset 0 1px 0 var(--frost-edge);
 }
 .cw-icon {
   color: var(--brand-500);

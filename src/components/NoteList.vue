@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { Plus, StickyNote, X } from 'lucide-vue-next'
 import type { Note } from '../api/tauri'
 import { useStore } from '../stores/workbench'
+import { markdownPlainText } from '../utils/markdown'
 import { parseTimestamp } from '../utils/time'
 
 const props = defineProps<{
@@ -63,8 +64,7 @@ function sameYear(a: Date, b: Date) {
 }
 
 function summary(n: Note): string {
-  const text = n.content.replace(/\s+/g, ' ').trim()
-  return text || '空白笔记'
+  return markdownPlainText(n.content, 60) || '空白笔记'
 }
 </script>
 

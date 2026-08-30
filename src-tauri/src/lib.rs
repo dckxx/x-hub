@@ -218,6 +218,54 @@ pub fn run() {
         )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        // 笔记图片协议：笔记 Markdown 内嵌 http://xhub-note.localhost/<hash>.<ext>，
+        // 按「数据根/notes/images/<文件名>」读取（URL 不含数据根绝对路径，迁数据目录后仍有效）；
+        // 文件名严格校验为 16 位十六进制哈希 + 白名单扩展名，杜绝路径穿越
+        .register_uri_scheme_protocol("xhub-note", |_ctx, request| {
+            let name = request.uri().path().trim_start_matches('/');
+            let valid = {
+                let mut parts = name.split('.');
+                match (parts.next(), parts.next(), parts.next()) {
+                    (Some(hash), Some(ext), None) => {
+                        hash.len() == 16
+                            && hash.chars().all(|c| c.is_ascii_hexdigit())
+                            && matches!(
+                                ext.to_lowercase().as_str(),
+                                "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif"
+                            )
+                    }
+                    _ => false,
+                }
+            };
+            if !valid {
+                return tauri::http::Response::builder()
+                    .status(400)
+                    .body(Vec::new())
+                    .unwrap();
+            }
+            let mime = match name.rsplit('.').next().unwrap_or("").to_lowercase().as_str() {
+                "png" => "image/png",
+                "jpg" | "jpeg" => "image/jpeg",
+                "webp" => "image/webp",
+                "bmp" => "image/bmp",
+                "gif" => "image/gif",
+                _ => "application/octet-stream",
+            };
+            match std::fs::read(crate::paths::data_root().join("notes").join("images").join(name))
+            {
+                Ok(bytes) => tauri::http::Response::builder()
+                    .header("Content-Type", mime)
+                    .header("Access-Control-Allow-Origin", "*")
+                    // 内容哈希命名 ⇒ 同名即同内容，可长缓存
+                    .header("Cache-Control", "public, max-age=31536000, immutable")
+                    .body(bytes)
+                    .unwrap(),
+                Err(_) => tauri::http::Response::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap(),
+            }
+        })
         .setup(|app| {
             log::info!("========== x-hub 启动 ==========");
 
@@ -437,6 +485,7 @@ pub fn run() {
             commands::import_icon_file,
             commands::import_wallpaper,
             commands::remove_wallpaper,
+            commands::import_note_image,
             commands::inspect_path,
             commands::scan_installed_apps,
             commands::get_running_processes,

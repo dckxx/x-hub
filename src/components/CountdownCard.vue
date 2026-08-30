@@ -769,13 +769,14 @@ async function onToggleFloat(c: Countdown) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--brand-50);
-  /* 图标用比背景深一档的强调色（brand-600），避免与 12% 同色相背景融成一片 */
+  /* 同 .cc-badge：底色以实心白基混入，防壁纸透底压暗 */
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-card-solid));
+  /* 图标用比背景深一档的强调色（brand-600），避免与同色相背景融成一片 */
   color: var(--brand-600);
   border: 1px solid var(--border-soft);
 }
 .cc-mode-icon.interval {
-  background: color-mix(in srgb, var(--c-green) 12%, transparent);
+  background: color-mix(in srgb, var(--c-green) 14%, var(--bg-card-solid));
   color: var(--c-green-ink);
 }
 .cc-mode-icon.finished {
@@ -805,17 +806,24 @@ async function onToggleFloat(c: Countdown) {
 .cc-badge {
   flex-shrink: 0;
   font-size: 0.625rem;
-  padding: 1px 6px;
+  line-height: 1;
+  padding: 2px 7px;
   border-radius: var(--radius-pill);
   background: var(--bg-card-solid);
   color: var(--text-3);
   border: 1px solid var(--border-soft);
 }
+/* 底色以 --bg-card-solid（亮色近实心白）为基色混入色相，而非 transparent 色洗：
+   壁纸/低玻璃透明度下半透明底会被透出的壁纸压暗，深色文字便看不清 */
 .cc-badge.daily {
-  color: var(--brand-500);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-card-solid));
+  color: var(--brand-600);
+  border-color: transparent;
 }
 .cc-badge.interval {
-  color: var(--c-teal-ink, var(--brand-500));
+  background: color-mix(in srgb, var(--c-green) 14%, var(--bg-card-solid));
+  color: var(--c-green-ink);
+  border-color: transparent;
 }
 .cc-item-meta {
   display: flex;

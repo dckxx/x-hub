@@ -11,6 +11,8 @@ export interface XHubThemeTokens {
   mode: 'light' | 'dark'
   preset: string | null
   accent: string
+  /** 壁纸状态：扩展据此启停文字光晕等透底可读性样式（桥脚本转写为 data-xhub-wallpaper* 属性） */
+  wallpaper: { on: boolean; clear: boolean; immersive: boolean }
   tokens: Record<string, string>
 }
 
@@ -33,10 +35,13 @@ const TOKEN_MAP: Record<string, string> = {
   radiusLg: '--radius-lg',
 }
 
-/** 读取宿主根元素上解析后的主题令牌（颜色值已由 getComputedStyle 计算） */
+/** 读取宿主主题令牌（颜色值已由 getComputedStyle 计算） */
 export function collectThemeTokens(): XHubThemeTokens {
   const root = document.documentElement
-  const cs = getComputedStyle(root)
+  // 壁纸态可读性覆盖（压墨/白墨的 --text-*）作用在 .sidebar/.title-bar/main 作用域而非根元素，
+  // 必须从 main 读取，扩展拿到的文字令牌才会跟随壁纸模式翻转
+  const scope = document.querySelector('main') ?? root
+  const cs = getComputedStyle(scope)
   const tokens: Record<string, string> = {}
   for (const [key, varName] of Object.entries(TOKEN_MAP)) {
     tokens[key] = cs.getPropertyValue(varName).trim()
@@ -48,7 +53,17 @@ export function collectThemeTokens(): XHubThemeTokens {
   const mode = root.dataset.theme === 'dark' ? 'dark' : 'light'
   const preset = root.dataset.preset ?? null
   const accent = cs.getPropertyValue('--accent').trim()
-  return { mode, preset, accent, tokens }
+  return {
+    mode,
+    preset,
+    accent,
+    wallpaper: {
+      on: root.dataset.wallpaper === '1',
+      clear: root.dataset.wallpaperClear === '1',
+      immersive: root.dataset.immersive === '1',
+    },
+    tokens,
+  }
 }
 
 /** 活动扩展 iframe 注册表：frame → 扩展 id（主题广播 + 扩展间事件路由共用） */

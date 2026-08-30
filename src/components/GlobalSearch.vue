@@ -4,6 +4,7 @@ import { Search } from 'lucide-vue-next'
 import type { Note, Resource, Todo } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useFocusTrap } from '../composables/useFocusTrap'
+import { markdownPlainText } from '../utils/markdown'
 
 const props = defineProps<{
   visible: boolean
@@ -184,7 +185,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 <span class="result-badge note-badge">笔记</span>
                 <span class="result-name" :title="n.title">{{ n.title }}</span>
                 <span class="result-sub">
-                  {{ n.content.replace(/\s+/g, ' ').slice(0, 60) }}
+                  {{ markdownPlainText(n.content, 60) }}
                 </span>
               </div>
             </template>

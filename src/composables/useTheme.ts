@@ -80,12 +80,20 @@ export function useTheme() {
   })
   watch(
     () => store.state.config.glass_opacity,
-    (v) => applyGlassOpacity(v),
+    (v) => {
+      applyGlassOpacity(v)
+      // 玻璃透明度乘进 --frost-* 的 alpha（影响 --xhub-surface），需重新广播令牌给扩展
+      requestAnimationFrame(() => broadcastThemeToFrames())
+    },
     { immediate: true },
   )
   watch(
     () => [store.state.config.wallpaper_immersive, store.state.config.wallpaper_path] as const,
-    ([immersive, path]) => applyImmersive(immersive && !!path),
+    ([immersive, path]) => {
+      applyImmersive(immersive && !!path)
+      // 沉浸模式/壁纸在场改变扩展令牌的壁纸状态与表面 alpha，同步广播
+      requestAnimationFrame(() => broadcastThemeToFrames())
+    },
     { immediate: true },
   )
   watch(

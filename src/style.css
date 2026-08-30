@@ -913,6 +913,89 @@ html[data-theme='dark'][data-wallpaper-clear='1'] .extension-center svg,
 html[data-theme='dark'][data-wallpaper-clear='1'] .le-root svg {
   filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45));
 }
+/* ===== 实验：壁纸 + 真实透底（data-wallpaper-clear）→ 全量白墨形态 =====
+   文字/图标统一转白色系、光晕统一换黑色描边，浅色表面令牌同步翻转为深玻璃
+   （白字在输入框/菜单/弹窗等近白表面上必须有着落）；需在上方规则之后声明以赢得同权重级联 */
+html[data-wallpaper-clear='1'] .sidebar,
+html[data-wallpaper-clear='1'] .title-bar,
+html[data-wallpaper-clear='1'] main {
+  --text-1: #ffffff;
+  --text-2: rgba(255, 255, 255, 0.92);
+  --text-3: rgba(255, 255, 255, 0.74);
+  --text-4: rgba(255, 255, 255, 0.58);
+}
+html[data-wallpaper-clear='1'] .sidebar,
+html[data-wallpaper-clear='1'] .title-bar,
+html[data-wallpaper-clear='1'] main {
+  --bg-card: rgba(255, 255, 255, 0.12);
+  --bg-card-solid: rgba(255, 255, 255, 0.2);
+  --bg-card-soft: rgba(255, 255, 255, 0.1);
+  /* 烟玻璃而非黑块：便签/待办输入区大面积使用，过重会与半透卡面割裂 */
+  --input-bg: rgba(20, 22, 32, 0.3);
+  --bg-chat-panel: rgba(28, 29, 41, 0.97);
+  --brand-50: color-mix(in srgb, var(--accent) 16%, #16161f);
+}
+html[data-wallpaper-clear='1'] .sidebar,
+html[data-wallpaper-clear='1'] .title-bar {
+  text-shadow:
+    1px 0 0 rgba(0, 0, 0, 0.75),
+    -1px 0 0 rgba(0, 0, 0, 0.75),
+    0 1px 0 rgba(0, 0, 0, 0.75),
+    0 -1px 0 rgba(0, 0, 0, 0.75),
+    0 1px 3px rgba(0, 0, 0, 0.4);
+}
+html[data-wallpaper-clear='1'] .sidebar svg,
+html[data-wallpaper-clear='1'] .title-bar svg {
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+}
+html[data-wallpaper-clear='1'] .card,
+html[data-wallpaper-clear='1'] .sv-content,
+html[data-wallpaper-clear='1'] .extension-center,
+html[data-wallpaper-clear='1'] .le-root {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 0 4px rgba(0, 0, 0, 0.3);
+}
+html[data-wallpaper-clear='1'] .card svg,
+html[data-wallpaper-clear='1'] .sv-content svg,
+html[data-wallpaper-clear='1'] .extension-center svg,
+html[data-wallpaper-clear='1'] .le-root svg {
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45));
+}
+/* toast 背景取 --text-1 的反转技巧在白墨下会白底白字，固定为深底 */
+html[data-wallpaper-clear='1'] .toast {
+  background: rgba(20, 21, 32, 0.92);
+  color: #ffffff;
+}
+/* 壁纸蒙版同步翻转为深色罩层：白墨 + 暗罩才成立（亮色模式的近白蒙版会抵消白字） */
+html[data-wallpaper-clear='1'] .wallpaper-veil {
+  background: linear-gradient(150deg, #141520 0%, #1a1814 100%);
+}
+/* 透底态输入框打磨：边界收敛为低透明白（原 border-soft 亮色 .55 显粉笔感）、
+   悬停微亮给反馈、placeholder 显式定色防 UA 默认灰发闷 */
+html[data-wallpaper-clear='1'] .field-input,
+html[data-wallpaper-clear='1'] .todo-input,
+html[data-wallpaper-clear='1'] .sticky-input,
+html[data-wallpaper-clear='1'] .ed-content,
+html[data-wallpaper-clear='1'] .ed-title-input,
+html[data-wallpaper-clear='1'] .tag-input {
+  border-color: rgba(255, 255, 255, 0.32);
+  transition: border-color 0.15s;
+}
+html[data-wallpaper-clear='1'] .field-input:hover,
+html[data-wallpaper-clear='1'] .todo-input:hover,
+html[data-wallpaper-clear='1'] .sticky-input:hover,
+html[data-wallpaper-clear='1'] .ed-content:hover,
+html[data-wallpaper-clear='1'] .ed-title-input:hover,
+html[data-wallpaper-clear='1'] .tag-input:hover {
+  border-color: rgba(255, 255, 255, 0.5);
+}
+html[data-wallpaper-clear='1'] .field-input::placeholder,
+html[data-wallpaper-clear='1'] .todo-input::placeholder,
+html[data-wallpaper-clear='1'] .sticky-input::placeholder,
+html[data-wallpaper-clear='1'] .ed-content::placeholder,
+html[data-wallpaper-clear='1'] .ed-title-input::placeholder,
+html[data-wallpaper-clear='1'] .tag-input::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+}
 /* 玻璃拟态：常驻表面用烘焙渐变（--frost-surface）实现伪毛玻璃；仅弹层/下拉/菜单等瞬态表面保留真 blur */
 .modal-card,
 .ctx-menu {

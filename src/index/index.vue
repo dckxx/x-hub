@@ -362,6 +362,11 @@ onMounted(async () => {
     unlistenTodosChanged = await listen('todos-changed', () => {
       void store.refreshTodos()
     })
+    // 待办提醒到点：toast 提示（系统通知由后端 todo_reminder 直接发）
+    unlistenTodoRemind = await listen<Todo>('todo-remind', (e) => {
+      const title = e.payload?.title ?? ''
+      showToast(title ? `待办提醒：「${title}」` : '待办提醒时间到')
+    })
   }
   window.addEventListener('keydown', onSearchKeydown)
   window.addEventListener('keydown', onChatKeydown)
@@ -374,6 +379,7 @@ let unlistenCountdownsChanged: (() => void) | null = null
 let unlistenNotesChanged: (() => void) | null = null
 let unlistenSnippetsChanged: (() => void) | null = null
 let unlistenTodosChanged: (() => void) | null = null
+let unlistenTodoRemind: (() => void) | null = null
 
 onUnmounted(() => {
   store.stopOnlineMonitor()
@@ -383,6 +389,7 @@ onUnmounted(() => {
   unlistenNotesChanged?.()
   unlistenSnippetsChanged?.()
   unlistenTodosChanged?.()
+  unlistenTodoRemind?.()
   window.removeEventListener('keydown', onSearchKeydown)
   window.removeEventListener('keydown', onChatKeydown)
 })

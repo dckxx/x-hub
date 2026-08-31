@@ -316,10 +316,28 @@ export function useStore() {
   }
 
   // ---- 待办 ----
-  async function createTodo(title: string) {
+  // 浏览器预览兜底 id：Date.now() 会因同毫秒创建父子待办而撞 id，追加序列保证唯一
+  let previewTodoSeq = 0
+  async function createTodo(
+    title: string,
+    parentId: number | null = null,
+    createdAt?: string,
+  ) {
     const t = isTauri()
-      ? await tauriApi.createTodo(title)
-      : { id: Date.now(), title, done: false, priority: 0, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), completed_at: null }
+      ? await tauriApi.createTodo(title, parentId, createdAt)
+      : {
+          id: Date.now() + ++previewTodoSeq,
+          title,
+          done: false,
+          priority: 0,
+          created_at: createdAt ?? new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          completed_at: null,
+          due_at: null,
+          remind_at: null,
+          remind_fired: false,
+          parent_id: parentId,
+        }
     state.todos.push(t)
     return t
   }
@@ -359,7 +377,22 @@ export function useStore() {
 
   async function deleteTodo(id: number) {
     if (isTauri()) await tauriApi.deleteTodo(id)
-    state.todos = state.todos.filter((t) => t.id !== id)
+    // 后端级联删除子待办，这里同步移出本地状态
+    state.todos = state.todos.filter((t) => t.id !== id && t.parent_id !== id)
+  }
+
+  /** 设置截止/提醒时刻（毫秒时间戳；null 即清除） */
+  async function scheduleTodo(id: number, dueAt: number | null, remindAt: number | null) {
+    const i = state.todos.findIndex((t) => t.id === id)
+    if (i < 0) return null
+    if (isTauri()) {
+      const updated = await tauriApi.scheduleTodo(id, dueAt, remindAt)
+      state.todos[i] = updated
+      return updated
+    }
+    const updated = { ...state.todos[i], due_at: dueAt, remind_at: remindAt, remind_fired: false, updated_at: new Date().toISOString() }
+    state.todos[i] = updated
+    return updated
   }
 
   /** 待办浮窗等外部修改后刷新列表 */
@@ -952,6 +985,7 @@ export function useStore() {
     toggleTodo,
     updateTodo,
     deleteTodo,
+    scheduleTodo,
     refreshTodos,
     saveSticky,
     detachSticky,

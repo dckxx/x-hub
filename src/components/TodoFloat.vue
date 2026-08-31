@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, type ComponentPublicInstance } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen } from '@tauri-apps/api/event'
 import { Check, ListTodo, Pin, PinOff, Trash2, X } from 'lucide-vue-next'
@@ -45,19 +45,7 @@ onBeforeUnmount(() => {
 
 const input = ref('')
 
-// 新增输入框：单行 textarea，随内容自动增高（封顶见 CSS max-height），粘贴多行序号列表时临时撑高
-const addInputRef = ref<HTMLTextAreaElement | null>(null)
-function setAddInput(el: Element | ComponentPublicInstance | null) {
-  addInputRef.value = el instanceof HTMLTextAreaElement ? el : null
-}
-function autoResizeAdd() {
-  const el = addInputRef.value
-  if (!el) return
-  el.style.height = 'auto'
-  el.style.height = `${el.scrollHeight}px`
-}
-
-const pendingTodos = computed(() => store.state.todos.filter((t) => !t.done))
+const pendingTodos = computed(() => store.state.todos.filter((t) => !t.done && t.parent_id == null))
 
 async function onAdd() {
   const v = input.value.trim()
@@ -65,12 +53,12 @@ async function onAdd() {
   // 支持「1. a 2. b 3. c」这类序号列表一次拆成多条；非序号文本原样一条
   await Promise.all(parseTodoItems(v).map((title) => store.createTodo(title)))
   input.value = ''
-  if (addInputRef.value) addInputRef.value.style.height = 'auto'
 }
 
-// 回车提交；IME 组合（中文输入法选词）期间不提交，避免误触
+// 回车提交（Shift/组合键不拦截）；IME 组合期间不提交，避免误触
 function onAddKeydown(e: KeyboardEvent) {
   if (e.isComposing) return
+  if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return
   e.preventDefault()
   void onAdd()
 }
@@ -144,14 +132,12 @@ function onDragEnd() {
 
     <div class="tf-add">
       <textarea
-        :ref="setAddInput"
         v-model="input"
         class="tf-input"
-        rows="2"
-        placeholder="添加待办，回车确认（粘贴 1. 2. 3. 序号列表可一次拆多条）"
+        rows="1"
+        placeholder="添加待办，回车确认"
         aria-label="添加待办"
-        @input="autoResizeAdd"
-        @keydown.enter.exact="onAddKeydown"
+        @keydown.enter="onAddKeydown"
       ></textarea>
     </div>
 
@@ -259,8 +245,6 @@ function onDragEnd() {
   display: block;
   resize: none;
   line-height: 1.45;
-  max-height: 110px;
-  max-height: calc(5lh + 16px);
   overflow-y: auto;
 }
 .tf-input:focus {

@@ -262,16 +262,22 @@ pub fn list_todos(state: State<'_, DbState>) -> Result<Vec<Todo>, String> {
 }
 
 #[tauri::command]
-pub fn create_todo(app: tauri::AppHandle, state: State<'_, DbState>, title: String) -> Result<Todo, String> {
+pub fn create_todo(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    title: String,
+    parent_id: Option<i64>,
+    created_at: Option<String>,
+) -> Result<Todo, String> {
     let t = title.trim();
     if t.is_empty() {
         return Err("标题不能为空".into());
     }
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let todo = todo::create(&conn, t).map_err(err_str)?;
+    let todo = todo::create(&conn, t, parent_id, created_at.as_deref()).map_err(err_str)?;
     drop(conn);
     let _ = app.emit("todos-changed", ());
-    log::info!("添加待办: id={} {}", todo.id, todo.title);
+    log::info!("添加待办: id={} {} (parent={:?})", todo.id, todo.title, parent_id);
     Ok(todo)
 }
 
@@ -311,11 +317,38 @@ pub fn update_todo(
 #[tauri::command]
 pub fn delete_todo(app: tauri::AppHandle, state: State<'_, DbState>, id: i64) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    todo::delete(&conn, id).map_err(err_str)?;
+    // 子待办经外键级联删除，返回被级联的子 id 仅供日志
+    let kids = todo::delete(&conn, id).map_err(err_str)?;
     drop(conn);
     let _ = app.emit("todos-changed", ());
-    log::info!("删除待办: id={}", id);
+    if kids.is_empty() {
+        log::info!("删除待办: id={}", id);
+    } else {
+        log::info!("删除待办: id={} (级联删除子待办 {} 条)", id, kids.len());
+    }
     Ok(())
+}
+
+/// 设置待办截止/提醒时刻（毫秒时间戳，None 即清除）；同时重置提醒触发标记
+#[tauri::command]
+pub fn schedule_todo(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    id: i64,
+    due_at: Option<i64>,
+    remind_at: Option<i64>,
+) -> Result<Todo, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let todo = todo::schedule(&conn, id, due_at, remind_at).map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("todos-changed", ());
+    log::info!(
+        "待办排期: id={} due_at={:?} remind_at={:?}",
+        todo.id,
+        todo.due_at,
+        todo.remind_at
+    );
+    Ok(todo)
 }
 
 // ---------- 便签 ----------

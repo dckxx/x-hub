@@ -48,6 +48,18 @@ pub struct Todo {
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
+    /// 截止时刻（毫秒时间戳）；无截止为 NULL
+    #[serde(default)]
+    pub due_at: Option<i64>,
+    /// 提醒时刻（毫秒时间戳）；可独立于截止时间设置
+    #[serde(default)]
+    pub remind_at: Option<i64>,
+    /// 提醒是否已触发（到点发过通知即置 1，防后台线程每秒重复提醒）
+    #[serde(default)]
+    pub remind_fired: bool,
+    /// 父待办 id（子待办缩进挂在父条目下；顶级为 NULL）
+    #[serde(default)]
+    pub parent_id: Option<i64>,
 }
 
 /// 便签（工作台左上，slot 1/2 两张卡，每卡一条多行文本）

@@ -38,6 +38,14 @@ export interface Todo {
   created_at: string
   updated_at: string
   completed_at: string | null
+  /** 截止时刻（毫秒时间戳），无截止为 null */
+  due_at: number | null
+  /** 提醒时刻（毫秒时间戳），可独立于截止时间设置 */
+  remind_at: number | null
+  /** 提醒是否已触发（后台到点发过通知即置真） */
+  remind_fired: boolean
+  /** 父待办 id（子待办），顶级为 null */
+  parent_id: number | null
 }
 
 export interface Sticky {
@@ -471,11 +479,19 @@ export const tauriApi = {
   listNotes: () => invoke<Note[]>('list_notes'),
   searchAll: (keyword: string) => invoke<SearchResult>('search_all', { keyword }),
   listTodos: () => invoke<Todo[]>('list_todos'),
-  createTodo: (title: string) => invoke<Todo>('create_todo', { title }),
+  createTodo: (title: string, parentId?: number | null, createdAt?: string) =>
+    invoke<Todo>('create_todo', {
+      title,
+      parentId: parentId ?? null,
+      // 撤销恢复时保留原创建时间，避免恢复项排到最新位置
+      createdAt: createdAt ?? null,
+    }),
   toggleTodo: (id: number) => invoke<Todo>('toggle_todo', { id }),
   updateTodo: (id: number, title: string, priority: number) =>
     invoke<Todo>('update_todo', { id, title, priority }),
   deleteTodo: (id: number) => invoke<void>('delete_todo', { id }),
+  scheduleTodo: (id: number, dueAt: number | null, remindAt: number | null) =>
+    invoke<Todo>('schedule_todo', { id, dueAt, remindAt }),
   listStickies: () => invoke<Sticky[]>('list_stickies'),
   getDetachedStickies: () => invoke<DetachedSticky[]>('get_detached_stickies'),
   saveSticky: (slot: number, content: string) =>

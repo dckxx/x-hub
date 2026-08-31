@@ -1,9 +1,25 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, ref, type ComponentPublicInstance, watch } from 'vue'
-import { Check, ListTodo, PanelTopClose, Trash2 } from 'lucide-vue-next'
+import { computed, inject, nextTick, onBeforeUnmount, provide, ref, watch } from 'vue'
+import { ListTodo, PanelTopClose } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Todo } from '../api/tauri'
 import { parseTodoItems } from '../utils/todoParse'
+import TodoRow from './TodoRow.vue'
+import {
+  addDays,
+  calendarGrid,
+  defaultRemindTime,
+  fmtDay,
+  fmtHM,
+  GROUP_COUNT,
+  GROUP_META,
+  groupOf,
+  HOUR_OPTIONS,
+  isoKey,
+  minuteOptions,
+  nextMonday,
+  startOfDay,
+} from '../utils/todoSchedule'
 
 const props = defineProps<{ highlightId?: number | null }>()
 
@@ -16,146 +32,249 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
 const view = ref<'pending' | 'done'>('pending')
 const input = ref('')
 
-// 新增输入框：单行 textarea，随内容自动增高（封顶见 CSS max-height），粘贴多行序号列表时临时撑高
-const addInputRef = ref<HTMLTextAreaElement | null>(null)
-function setAddInput(el: Element | ComponentPublicInstance | null) {
-  addInputRef.value = el instanceof HTMLTextAreaElement ? el : null
-}
-function autoResizeAdd() {
-  const el = addInputRef.value
-  if (!el) return
-  el.style.height = 'auto'
-  el.style.height = `${el.scrollHeight}px`
-}
-
-// 编辑状态
-const editingId = ref<number | null>(null)
-const editText = ref('')
-const editInputRef = ref<HTMLTextAreaElement | null>(null)
-function setEditInput(el: Element | ComponentPublicInstance | null) {
-  editInputRef.value = el instanceof HTMLTextAreaElement ? el : null
-}
-
-/** 文本域随内容自动增高，保证多行待办内容能看全 */
-function autoResizeEdit(e: Event) {
-  const el = e.target as HTMLTextAreaElement
-  el.style.height = 'auto'
-  el.style.height = `${el.scrollHeight}px`
-}
-
 // 全局搜索跳转高亮
 const highlight = ref<number | null>(null)
 let highlightTimer: ReturnType<typeof setTimeout> | null = null
 
-const PRIORITY_LABELS = ['普通', '重要', '紧急'] as const
-const PRIORITY_BADGE = [
-  { bg: 'var(--todo-pri-default)' },
-  { bg: 'var(--c-yellow-soft)' },
-  { bg: 'var(--c-red-soft)' },
-] as const
-
-// ---- 长待办悬浮全文（超过 5 行截断时展示） ----
-const tip = ref<{ visible: boolean; title: string; x: number; y: number }>({
-  visible: false,
-  title: '',
-  x: 0,
-  y: 0,
-})
-
-function showTip(e: MouseEvent, title: string) {
-  const el = e.currentTarget as HTMLElement
-  if (!el) return
-  // 仅当内容被截断（scrollHeight > clientHeight）时才需要悬浮全文
-  if (el.scrollHeight <= el.clientHeight + 2) return
-  const rect = el.getBoundingClientRect()
-  tip.value = {
-    visible: true,
-    title,
-    x: rect.left,
-    y: rect.bottom + 6,
-  }
+// ---- 列表派生：待办按 逾期 → 今天 → 有日期 → 无日期 分组，组内按创建时间倒序 ----
+interface TodoGroup {
+  label: string
+  items: Todo[]
 }
 
-function hideTip() {
-  tip.value.visible = false
-}
-
-const pendingTodos = computed(() =>
-  store.state.todos
-    .filter((t) => !t.done)
-    .sort((a, b) => b.created_at.localeCompare(a.created_at)),
+const topPending = computed(() =>
+  store.state.todos.filter((t) => !t.done && t.parent_id == null),
 )
-const doneTodos = computed(() =>
+const topDone = computed(() =>
   store.state.todos
-    .filter((t) => t.done)
+    .filter((t) => t.done && t.parent_id == null)
     .sort((a, b) => (b.completed_at ?? '').localeCompare(a.completed_at ?? '')),
 )
-const list = computed(() => (view.value === 'pending' ? pendingTodos.value : doneTodos.value))
 
+const pendingGroups = computed<TodoGroup[]>(() => {
+  const now = new Date()
+  const groups: TodoGroup[] = []
+  for (let g = 0; g < GROUP_COUNT; g++) {
+    const items = topPending.value
+      .filter((t) => groupOf(t, now) === g)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    if (items.length) groups.push({ label: GROUP_META[g].label, items })
+  }
+  return groups
+})
+
+/** 父待办 → 子待办列表（创建时间倒序）。
+ *  一次建 Map 供所有 TodoRow 查找，避免每行各自过滤全部待办 */
+const childrenMap = computed(() => {
+  const map = new Map<number, Todo[]>()
+  for (const t of store.state.todos) {
+    if (t.parent_id == null) continue
+    const list = map.get(t.parent_id)
+    if (list) list.push(t)
+    else map.set(t.parent_id, [t])
+  }
+  for (const list of map.values()) {
+    list.sort((a, b) => b.created_at.localeCompare(a.created_at))
+  }
+  return map
+})
+
+// ---- 新增：回车建待办，粘贴「1. a 2. b」序号列表一次拆成多条 ----
 async function onAdd() {
   const v = input.value.trim()
   if (!v) return
-  // 支持「1. a 2. b 3. c」这类序号列表一次拆成多条；非序号文本原样一条
-  await Promise.all(parseTodoItems(v).map((title) => store.createTodo(title)))
+  const items = parseTodoItems(v)
+  const created = await Promise.all(items.map((title) => store.createTodo(title)))
   input.value = ''
-  if (addInputRef.value) addInputRef.value.style.height = 'auto'
+  if (created.length > 1) showToast(`已拆成 ${created.length} 条待办`)
+  const lastId = created[created.length - 1]?.id
+  if (lastId != null) flashHighlight(lastId)
 }
 
-// 回车提交；IME 组合（中文输入法选词）期间不提交，避免误触
+// 回车提交（Shift/组合键不拦截，保留换行等默认行为）；IME 组合期间不提交，避免误触
 function onAddKeydown(e: KeyboardEvent) {
   if (e.isComposing) return
+  if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return
   e.preventDefault()
   void onAdd()
 }
 
-async function toggle(t: Todo) {
-  await store.toggleTodo(t.id)
-}
-
-async function cyclePriority(t: Todo) {
-  await store.updateTodo(t.id, t.title, (t.priority + 1) % 3)
-}
-
-async function remove(t: Todo) {
+// ---- 删除（父条目级联删子）+ 撤销恢复，由 TodoRow 经 provide 调用 ----
+async function removeTodo(t: Todo) {
+  const kids = store.state.todos.filter((x) => x.parent_id === t.id)
   await store.deleteTodo(t.id)
-  showToast('待办已删除', {
-    label: '撤销',
-    onClick: async () => {
-      const n = await store.createTodo(t.title)
-      if (t.priority !== 0) await store.updateTodo(n.id, t.title, t.priority)
-      if (t.done) await store.toggleTodo(n.id)
-      showToast('已恢复待办')
-    },
-  })
+  showToast(
+    kids.length ? `已删除「${t.title}」及 ${kids.length} 条子待办` : `已删除「${t.title}」`,
+    { label: '撤销', onClick: () => void restoreTodo(t, kids) },
+  )
 }
 
-function startEdit(t: Todo) {
-  editingId.value = t.id
-  editText.value = t.title
+/** 重建父条目后再挂回子待办，恢复创建时间/优先级/排期/完成状态 */
+async function restoreTodo(parent: Todo, kids: readonly Todo[]) {
+  const p = await store.createTodo(parent.title, null, parent.created_at)
+  if (parent.priority !== 0) await store.updateTodo(p.id, parent.title, parent.priority)
+  if (parent.due_at != null || parent.remind_at != null) {
+    await store.scheduleTodo(p.id, parent.due_at, parent.remind_at)
+  }
+  if (parent.done) await store.toggleTodo(p.id)
+  for (const k of kids) {
+    const c = await store.createTodo(k.title, p.id, k.created_at)
+    if (k.priority !== 0) await store.updateTodo(c.id, k.title, k.priority)
+    if (k.due_at != null || k.remind_at != null) {
+      await store.scheduleTodo(c.id, k.due_at, k.remind_at)
+    }
+    if (k.done) await store.toggleTodo(c.id)
+  }
+  showToast('已恢复待办')
+}
+
+provide('todoOpenSchedule', openSchedule)
+provide('todoRemoveTodo', removeTodo)
+provide('todoChildren', childrenMap)
+
+function flashHighlight(id: number) {
+  highlight.value = id
+  if (highlightTimer) clearTimeout(highlightTimer)
+  highlightTimer = setTimeout(() => {
+    highlight.value = null
+  }, 2200)
+}
+
+// ---- 截止/提醒排期弹层（日历 + 时间 + 提醒开关） ----
+const POP_WIDTH = 288
+
+const popTodoId = ref<number | null>(null)
+const popRef = ref<HTMLElement | null>(null)
+const popPos = ref({ x: 0, y: 0 })
+
+const calCursor = ref<Date>(startOfDay(new Date()))
+const selDay = ref<Date | null>(null)
+const selHour = ref(23)
+const selMin = ref(59)
+const remindOn = ref(false)
+const remindHour = ref(9)
+const remindMin = ref(0)
+
+const WEEK_LABELS = ['一', '二', '三', '四', '五', '六', '日'] as const
+const calCells = computed(() => calendarGrid(calCursor.value, new Date()))
+const selHourOptions = HOUR_OPTIONS
+const selMinOptions = computed(() => minuteOptions(selMin.value))
+const remindMinOptions = computed(() => minuteOptions(remindMin.value))
+
+function openSchedule(t: Todo, anchor: HTMLElement) {
+  const today = new Date()
+  const base = t.due_at != null ? new Date(t.due_at) : today
+  calCursor.value = startOfDay(base)
+  selDay.value = startOfDay(base)
+  const due = t.due_at != null ? new Date(t.due_at) : null
+  selHour.value = due ? due.getHours() : 23
+  selMin.value = due ? due.getMinutes() : 59
+  remindOn.value = t.remind_at != null
+  if (t.remind_at != null) {
+    const r = new Date(t.remind_at)
+    remindHour.value = r.getHours()
+    remindMin.value = r.getMinutes()
+  } else if (due) {
+    const d = defaultRemindTime(due)
+    remindHour.value = d.hour
+    remindMin.value = d.minute
+  } else {
+    remindHour.value = 9
+    remindMin.value = 0
+  }
+  popTodoId.value = t.id
+  positionPopup(anchor)
+}
+
+/** 锚点下方展开，空间不足翻到上方；水平方向钳制在视口内 */
+function positionPopup(anchor: HTMLElement) {
+  const rect = anchor.getBoundingClientRect()
+  const x = Math.max(8, Math.min(rect.left, window.innerWidth - POP_WIDTH - 8))
+  let y = rect.bottom + 8
+  popPos.value = { x, y }
   nextTick(() => {
-    const el = editInputRef.value
+    const el = popRef.value
     if (!el) return
-    // 先按内容撑开高度再聚焦，避免先显示单行再跳动
-    el.style.height = 'auto'
-    el.style.height = `${el.scrollHeight}px`
-    el.focus()
+    const h = el.offsetHeight
+    if (y + h > window.innerHeight - 8) {
+      y = Math.max(8, rect.top - h - 8)
+      popPos.value = { x, y }
+    }
   })
 }
 
-function cancelEdit() {
-  editingId.value = null
+function closeSchedule() {
+  popTodoId.value = null
 }
 
-async function commitEdit(id: number) {
-  if (editingId.value !== id) return
-  editingId.value = null
-  const title = editText.value.trim()
-  if (!title) return
-  const t = store.state.todos.find((x) => x.id === id)
-  if (!t || t.title === title) return
-  await store.updateTodo(id, title, t.priority)
+function quickDay(kind: 'today' | 'tmr' | 'week') {
+  const today = new Date()
+  selDay.value =
+    kind === 'today'
+      ? startOfDay(today)
+      : kind === 'tmr'
+        ? addDays(startOfDay(today), 1)
+        : nextMonday(today)
+  calCursor.value = startOfDay(selDay.value)
 }
 
+function pickDay(key: string) {
+  const [y, m, d] = key.split('-').map(Number)
+  selDay.value = new Date(y, m - 1, d)
+  calCursor.value = startOfDay(selDay.value)
+}
+
+function navMonth(delta: number) {
+  calCursor.value = new Date(calCursor.value.getFullYear(), calCursor.value.getMonth() + delta, 1)
+}
+
+async function applySchedule() {
+  const id = popTodoId.value
+  if (id == null || !selDay.value) {
+    closeSchedule()
+    return
+  }
+  const due = new Date(selDay.value)
+  due.setHours(selHour.value, selMin.value, 0, 0)
+  let remind: number | null = null
+  if (remindOn.value) {
+    const r = new Date(selDay.value)
+    r.setHours(remindHour.value, remindMin.value, 0, 0)
+    remind = r.getTime()
+  }
+  await store.scheduleTodo(id, due.getTime(), remind)
+  closeSchedule()
+  showToast(
+    remind != null
+      ? `已设截止 ${fmtDay(due)} ${fmtHM(due.getTime())}，提醒 ${fmtHM(remind)}`
+      : `已设截止 ${fmtDay(due)} ${fmtHM(due.getTime())}`,
+  )
+}
+
+async function clearSchedule() {
+  const id = popTodoId.value
+  if (id == null) return
+  await store.scheduleTodo(id, null, null)
+  closeSchedule()
+  showToast('已清除截止与提醒')
+}
+
+// 弹层打开期间 Esc 关闭
+function onPopKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') closeSchedule()
+}
+watch(popTodoId, (v) => {
+  if (v != null) window.addEventListener('keydown', onPopKeydown)
+  else window.removeEventListener('keydown', onPopKeydown)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onPopKeydown)
+})
+
+// 切换视图时收起弹层与瞬态状态
+watch(view, () => closeSchedule())
+
+// 全局搜索跳转高亮
 watch(
   () => props.highlightId,
   (id) => {
@@ -198,120 +317,177 @@ watch(
           <PanelTopClose :size="14" :stroke-width="2" aria-hidden="true" />
         </button>
         <div class="filter-tabs todo-seg" role="tablist" aria-label="视图切换">
-        <button
-          class="filter-tab filter-tab--primary"
-          :class="{ active: view === 'pending' }"
-          role="tab"
-          :aria-selected="view === 'pending'"
-          @click="view = 'pending'"
-        >
-          待办 {{ pendingTodos.length }}
-        </button>
-        <button
-          class="filter-tab filter-tab--primary"
-          :class="{ active: view === 'done' }"
-          role="tab"
-          :aria-selected="view === 'done'"
-          @click="view = 'done'"
-        >
-          已完成 {{ doneTodos.length }}
-        </button>
+          <button
+            class="filter-tab filter-tab--primary"
+            :class="{ active: view === 'pending' }"
+            role="tab"
+            :aria-selected="view === 'pending'"
+            @click="view = 'pending'"
+          >
+            待办 {{ topPending.length }}
+          </button>
+          <button
+            class="filter-tab filter-tab--primary"
+            :class="{ active: view === 'done' }"
+            role="tab"
+            :aria-selected="view === 'done'"
+            @click="view = 'done'"
+          >
+            已完成 {{ topDone.length }}
+          </button>
         </div>
       </div>
     </header>
 
     <div v-if="view === 'pending'" class="todo-add">
       <textarea
-        :ref="setAddInput"
         v-model="input"
         class="todo-input"
-        rows="2"
-        placeholder="添加待办，回车确认（粘贴 1. 2. 3. 序号列表可一次拆多条）"
+        rows="1"
+        placeholder="添加待办，回车确认"
         aria-label="添加待办"
-        @input="autoResizeAdd"
-        @keydown.enter.exact="onAddKeydown"
+        @keydown.enter="onAddKeydown"
       ></textarea>
+      <p class="todo-input-hint">回车：新建待办　·　粘贴序号列表（1. 2. 3.）可拆成多条</p>
     </div>
 
     <div class="todo-body">
-      <div v-if="list.length === 0" class="empty-state todo-empty">
-        <p>{{ view === 'pending' ? '今天要做什么？' : '暂无已完成' }}</p>
-        <p v-if="view === 'pending'">按回车快速添加</p>
-      </div>
+      <template v-if="view === 'pending'">
+        <div v-if="pendingGroups.length === 0" class="empty-state todo-empty">
+          <p>今天要做什么？</p>
+          <p>按回车快速添加</p>
+        </div>
+        <div v-for="g in pendingGroups" :key="g.label" class="todo-group">
+          <div class="todo-group-head">
+            <span class="glabel">{{ g.label }}</span>
+            <span class="gline"></span>
+            <span class="gcount">{{ g.items.length }}</span>
+          </div>
+          <TodoRow
+            v-for="t in g.items"
+            :key="t.id"
+            :todo="t"
+            :highlight-id="highlight"
+          />
+        </div>
+      </template>
 
       <template v-else>
-        <div
-        v-for="t in list"
-        :key="t.id"
-        class="todo-row"
-        :class="{ done: t.done, highlight: t.id === highlight }"
-        :data-todo-id="t.id"
-      >
-        <button
-          class="todo-check"
-          :class="{ checked: t.done }"
-          :title="t.done ? '取消完成' : '标记完成'"
-          aria-label="切换完成状态"
-          @click="toggle(t)"
-        >
-          <Check v-if="t.done" :size="11" :stroke-width="3" />
-        </button>
-
-        <button
-          class="todo-priority"
-          :style="{ background: PRIORITY_BADGE[t.priority].bg }"
-          :title="'优先级：' + PRIORITY_LABELS[t.priority] + '，点击切换'"
-          :aria-label="'优先级：' + PRIORITY_LABELS[t.priority] + '，点击切换'"
-          @click="cyclePriority(t)"
-        ></button>
-
-        <template v-if="editingId === t.id">
-          <textarea
-            :ref="setEditInput"
-            v-model="editText"
-            class="todo-edit"
-            rows="1"
-            :aria-label="'编辑待办：' + t.title"
-            @input="autoResizeEdit"
-            @keydown.esc="cancelEdit()"
-            @blur="commitEdit(t.id)"
-          ></textarea>
-        </template>
-        <span
-          v-else
-          class="todo-label"
-          :class="{ done: t.done }"
-          :data-tip="t.title"
-          @dblclick="startEdit(t)"
-          @mouseenter="showTip($event, t.title)"
-          @mouseleave="hideTip"
-        >
-          {{ t.title }}
-        </span>
-
-        <button
-          class="todo-del"
-          title="删除"
-          aria-label="删除"
-          @click="remove(t)"
-        >
-          <Trash2 :size="12" :stroke-width="2" />
-        </button>
+        <div v-if="topDone.length === 0" class="empty-state todo-empty">
+          <p>暂无已完成</p>
+        </div>
+        <div v-else class="todo-group">
+          <TodoRow
+            v-for="t in topDone"
+            :key="t.id"
+            :todo="t"
+            :highlight-id="highlight"
+          />
         </div>
       </template>
     </div>
 
     <Teleport to="body">
-      <Transition name="tip">
+      <template v-if="popTodoId != null">
+        <div class="pop-mask" @click="closeSchedule"></div>
         <div
-          v-if="tip.visible"
-          class="todo-tip"
-          :style="{ left: tip.x + 'px', top: tip.y + 'px' }"
-          role="tooltip"
+          ref="popRef"
+          class="schedule-pop"
+          role="dialog"
+          aria-label="截止日期与提醒"
+          :style="{ left: popPos.x + 'px', top: popPos.y + 'px', width: POP_WIDTH + 'px' }"
         >
-          {{ tip.title }}
+          <div class="sp-title">截止日期与提醒</div>
+          <div class="sp-quick">
+            <button class="sp-chip" type="button" @click="quickDay('today')">今天</button>
+            <button class="sp-chip" type="button" @click="quickDay('tmr')">明天</button>
+            <button class="sp-chip" type="button" @click="quickDay('week')">下周一</button>
+          </div>
+          <div class="sp-cal">
+            <div class="sp-cal-head">
+              <span class="sp-cal-title">
+                {{ calCursor.getFullYear() }}年{{ calCursor.getMonth() + 1 }}月
+              </span>
+              <div class="sp-cal-nav">
+                <button class="sp-nav-btn" type="button" aria-label="上个月" @click="navMonth(-1)">
+                  ‹
+                </button>
+                <button class="sp-nav-btn" type="button" aria-label="下个月" @click="navMonth(1)">
+                  ›
+                </button>
+              </div>
+            </div>
+            <div class="sp-week">
+              <span v-for="w in WEEK_LABELS" :key="w">{{ w }}</span>
+            </div>
+            <div class="sp-days">
+              <button
+                v-for="c in calCells"
+                :key="c.key"
+                class="sp-day"
+                :class="{
+                  out: c.out,
+                  today: c.today,
+                  sel: selDay != null && isoKey(selDay) === c.key,
+                  dim: c.key < isoKey(new Date()),
+                }"
+                type="button"
+                @click="pickDay(c.key)"
+              >
+                {{ c.day }}
+              </button>
+            </div>
+          </div>
+          <div class="sp-time-row">
+            <label>截止时间</label>
+            <div class="sp-time-wrap">
+              <select v-model.number="selHour" class="sp-select" aria-label="截止小时">
+                <option v-for="h in selHourOptions" :key="h.value" :value="h.value">
+                  {{ h.label }}
+                </option>
+              </select>
+              <span class="sp-colon">:</span>
+              <select v-model.number="selMin" class="sp-select" aria-label="截止分钟">
+                <option v-for="m in selMinOptions" :key="m.value" :value="m.value">
+                  {{ m.label }}
+                </option>
+              </select>
+            </div>
+          </div>
+          <div class="sp-remind">
+            <div class="r-label"><b>提醒我</b>到点弹系统通知</div>
+            <button
+              class="sp-toggle"
+              :class="{ on: remindOn }"
+              type="button"
+              role="switch"
+              :aria-checked="remindOn"
+              aria-label="提醒开关"
+              @click="remindOn = !remindOn"
+            ><i></i></button>
+          </div>
+          <div v-if="remindOn" class="sp-remind">
+            <div class="r-label">提醒时间</div>
+            <div class="sp-time-wrap">
+              <select v-model.number="remindHour" class="sp-select" aria-label="提醒小时">
+                <option v-for="h in selHourOptions" :key="h.value" :value="h.value">
+                  {{ h.label }}
+                </option>
+              </select>
+              <span class="sp-colon">:</span>
+              <select v-model.number="remindMin" class="sp-select" aria-label="提醒分钟">
+                <option v-for="m in remindMinOptions" :key="m.value" :value="m.value">
+                  {{ m.label }}
+                </option>
+              </select>
+            </div>
+          </div>
+          <div class="sp-actions">
+            <button class="sp-btn clear" type="button" @click="clearSchedule">清除</button>
+            <button class="sp-btn ok" type="button" @click="applySchedule">确定</button>
+          </div>
         </div>
-      </Transition>
+      </template>
     </Teleport>
   </section>
 </template>
@@ -400,8 +576,6 @@ watch(
   display: block;
   resize: none;
   line-height: 1.45;
-  max-height: 110px;
-  max-height: calc(5lh + 16px);
   overflow-y: auto;
 }
 .todo-input:focus {
@@ -412,6 +586,12 @@ watch(
 .todo-input::placeholder {
   color: var(--text-4);
 }
+.todo-input-hint {
+  margin: 4px 0 0;
+  font-size: 0.625em;
+  color: var(--text-4);
+  line-height: 1.5;
+}
 
 .todo-body {
   flex: 1;
@@ -421,130 +601,37 @@ watch(
   padding: 0 4px;
 }
 
-.todo-row {
+/* ---- 分组 ---- */
+.todo-group {
+  margin-top: 12px;
+}
+.todo-group:first-child {
+  margin-top: 0;
+}
+.todo-group-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
-  padding: 6px;
-  border-radius: var(--radius-sm);
-  transition: background 0.3s;
+  padding: 0 6px 4px;
 }
-.todo-row:hover {
+.todo-group-head .glabel {
+  font-size: 0.65625em;
+  font-weight: 600;
+  color: var(--text-3);
+  letter-spacing: 0.02em;
+}
+.todo-group-head .gline {
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+}
+.todo-group-head .gcount {
+  font-size: 0.625em;
+  color: var(--text-4);
   background: var(--bg-card-soft);
-}
-.todo-row.highlight {
-  background: var(--brand-50);
-  transition: background 0.5s;
-}
-
-.todo-check {
-  flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  border: 1.5px solid var(--border-strong);
   border-radius: var(--radius-pill);
-  background: transparent;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-on-accent);
-  padding: 0;
-  cursor: pointer;
-  transition: background 0.18s, border-color 0.18s, transform 0.18s;
-}
-.todo-check:hover {
-  border-color: var(--brand-500);
-  background: var(--brand-50);
-}
-.todo-check:active {
-  transform: scale(0.9);
-}
-.todo-check.checked {
-  background: var(--brand-500);
-  border-color: var(--brand-500);
-}
-
-.todo-priority {
-  flex-shrink: 0;
-  width: 10px;
-  height: 10px;
-  margin-top: 4px;
-  border: none;
-  border-radius: 50%;
-  padding: 0;
-  cursor: pointer;
-  transition: transform 0.18s, filter 0.18s;
-}
-.todo-priority:hover {
-  transform: scale(1.35);
-  filter: brightness(0.97);
-}
-.todo-priority:active {
-  transform: scale(0.92);
-}
-
-.todo-label {
-  flex: 1;
-  min-width: 0;
-  font-size: 0.8125em;
-  line-height: 1.45;
-  color: var(--text-1);
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  cursor: text;
-}
-.todo-label.done {
-  text-decoration: line-through;
-  opacity: 0.6;
-  color: var(--text-3);
-}
-
-.todo-edit {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid var(--brand-500);
-  border-radius: 6px;
-  background: var(--bg-card-solid);
-  color: var(--text-1);
-  font-size: 0.8125em;
-  line-height: 1.45;
-  font-family: inherit;
-  padding: 2px 6px;
-  outline: none;
-  box-shadow: var(--shadow-focus);
-  resize: none;
-  overflow-y: auto;
-  min-height: 22px;
-  max-height: 40vh;
-}
-
-.todo-del {
-  flex-shrink: 0;
-  align-self: center;
-  width: 22px;
-  height: 22px;
-  border: none;
-  background: transparent;
-  border-radius: var(--radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-3);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.18s, background 0.18s, color 0.18s;
-}
-.todo-row:hover .todo-del,
-.todo-row:focus-within .todo-del {
-  opacity: 1;
-}
-.todo-del:hover {
-  background: var(--c-red-soft);
-  color: var(--c-red-ink);
+  padding: 0 7px;
+  line-height: 15px;
 }
 
 .todo-empty {
@@ -561,30 +648,278 @@ watch(
   color: var(--text-3);
 }
 
-.todo-tip {
+/* ---- 排期弹层（Teleport 到 body，瞬态表面可用 backdrop-filter） ---- */
+.pop-mask {
   position: fixed;
-  z-index: 900;
-  max-width: 340px;
-  padding: 8px 12px;
-  border-radius: var(--radius-md);
+  inset: 0;
+  z-index: 40;
+  background: transparent;
+}
+.schedule-pop {
+  position: fixed;
+  z-index: 50;
+  font-size: calc(1rem * var(--fs-todo, 1));
   background: var(--bg-card-solid);
   border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-dock);
-  font-size: 0.75rem;
-  line-height: 1.5;
+  padding: 14px;
+  animation: sp-pop-in 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+}
+@keyframes sp-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.sp-title {
+  font-size: 0.75em;
+  font-weight: 700;
   color: var(--text-1);
-  white-space: pre-wrap;
-  word-break: break-word;
-  pointer-events: none;
-  transform: translateY(0);
+  margin-bottom: 8px;
 }
-.tip-enter-active,
-.tip-leave-active {
-  transition: opacity 0.15s ease-out, transform 0.15s ease-out;
+.sp-quick {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
 }
-.tip-enter-from,
-.tip-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
+.sp-chip {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card-soft);
+  color: var(--text-2);
+  border-radius: var(--radius-pill);
+  padding: 3px 10px;
+  font-size: 0.6875em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.18s, color 0.18s, border-color 0.18s;
+}
+.sp-chip:hover {
+  background: var(--brand-50);
+  color: var(--brand-500);
+  border-color: color-mix(in srgb, var(--brand-500) 45%, transparent);
+}
+
+.sp-cal {
+  margin-bottom: 10px;
+}
+.sp-cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.sp-cal-title {
+  font-size: 0.75em;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.sp-cal-nav {
+  display: flex;
+  gap: 4px;
+}
+.sp-nav-btn {
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.875em;
+  line-height: 1;
+}
+.sp-nav-btn:hover {
+  background: var(--bg-card-soft);
+  color: var(--text-1);
+}
+.sp-week,
+.sp-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.sp-week span {
+  text-align: center;
+  font-size: 0.625em;
+  color: var(--text-4);
+  font-weight: 600;
+  padding: 3px 0;
+}
+.sp-day {
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  height: 27px;
+  font-size: 0.6875em;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  position: relative;
+}
+.sp-day:hover {
+  background: var(--bg-card-soft);
+}
+.sp-day.out {
+  color: var(--text-4);
+  opacity: 0.45;
+}
+.sp-day.today {
+  color: var(--brand-500);
+  font-weight: 700;
+}
+.sp-day.sel {
+  background: var(--brand-500);
+  color: var(--text-on-accent);
+  font-weight: 600;
+}
+.sp-day.sel:hover {
+  background: var(--brand-600);
+}
+.sp-day.dim::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  transform: translateX(-50%);
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--c-red-soft);
+}
+
+.sp-time-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.sp-time-row label {
+  font-size: 0.6875em;
+  color: var(--text-3);
+  width: 48px;
+  flex-shrink: 0;
+}
+.sp-time-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.sp-select {
+  border: 1px solid var(--border-soft);
+  background: var(--input-bg);
+  color: var(--text-1);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 0.75em;
+  outline: none;
+  width: 4em;
+  text-align: center;
+  font-family: inherit;
+}
+.sp-select:focus {
+  border-color: var(--brand-500);
+  box-shadow: var(--shadow-focus);
+}
+.sp-colon {
+  color: var(--text-3);
+  font-size: 0.75em;
+}
+
+.sp-remind {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg-card-soft);
+  border-radius: var(--radius-md);
+  margin-bottom: 12px;
+}
+.sp-remind .r-label {
+  font-size: 0.6875em;
+  color: var(--text-2);
+  flex: 1;
+}
+.sp-remind .r-label b {
+  display: block;
+  color: var(--text-1);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.sp-toggle {
+  position: relative;
+  width: 30px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  cursor: pointer;
+  transition: background 0.18s;
+  border: none;
+  padding: 0;
+}
+.sp-toggle.on {
+  background: var(--brand-500);
+}
+.sp-toggle i {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.18s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.sp-toggle.on i {
+  transform: translateX(12px);
+}
+
+.sp-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.sp-btn {
+  border: none;
+  border-radius: var(--radius-pill);
+  padding: 5px 14px;
+  font-size: 0.6875em;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s, color 0.18s, transform 0.18s;
+}
+.sp-btn:hover {
+  transform: translateY(-1px);
+}
+.sp-btn:active {
+  transform: scale(0.96);
+}
+.sp-btn.clear {
+  background: transparent;
+  color: var(--text-4);
+}
+.sp-btn.clear:hover {
+  background: var(--c-red-soft);
+  color: var(--c-red-ink);
+}
+.sp-btn.ok {
+  background: var(--brand-500);
+  color: var(--text-on-accent);
+}
+.sp-btn.ok:hover {
+  background: var(--brand-600);
+  box-shadow: 0 4px 12px var(--brand-glow);
 }
 </style>

@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>待办优化 · 截止日期 + 提醒 + 子待办（原型）</title>
+<style>
+  /* ===== 与 x-hub style.css 对齐的令牌（摘取核心，纯演示用） ===== */
+  :root {
+    --accent: #5b5bf5;
+    --brand-500: var(--accent);
+    --brand-600: color-mix(in srgb, var(--accent) 78%, #000);
+    --brand-50: color-mix(in srgb, var(--accent) 12%, transparent);
+    --brand-glow: color-mix(in srgb, var(--accent) 18%, transparent);
+    --bg-card-solid: rgba(255, 255, 255, 0.88);
+    --bg-card-soft: rgba(255, 255, 255, 0.55);
+    --input-bg: rgba(255, 255, 255, 0.86);
+    --frost-tint-a: rgba(91, 91, 245, 0.10);
+    --frost-tint-b: rgba(236, 72, 153, 0.07);
+    --frost-tint-c: rgba(59, 130, 246, 0.09);
+    --frost-base-a: rgba(255, 255, 255, 0.76);
+    --frost-base-b: rgba(255, 255, 255, 0.66);
+    --frost-surface:
+      radial-gradient(180% 130% at 0% -12%, var(--frost-tint-a), transparent 55%),
+      radial-gradient(150% 120% at 105% 6%, var(--frost-tint-b), transparent 55%),
+      radial-gradient(170% 130% at 50% 116%, var(--frost-tint-c), transparent 55%),
+      linear-gradient(150deg, var(--frost-base-a) 0%, var(--frost-base-b) 100%);
+    --frost-edge: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+    --glow-a: rgba(91, 91, 245, 0.18);
+    --glow-b: rgba(236, 72, 153, 0.12);
+    --glow-c: rgba(59, 130, 246, 0.16);
+    --bg-base-a: #edf0fa;
+    --bg-base-b: #f6f2ea;
+    --bg-page-surface:
+      radial-gradient(1200px 800px at 12% -8%, var(--glow-a), transparent 55%),
+      radial-gradient(1000px 700px at 100% 4%, var(--glow-b), transparent 55%),
+      radial-gradient(1200px 900px at 55% 118%, var(--glow-c), transparent 55%),
+      linear-gradient(150deg, var(--bg-base-a) 0%, var(--bg-base-b) 100%);
+    --border-soft: rgba(255, 255, 255, 0.55);
+    --border-strong: rgba(40, 35, 60, 0.22);
+    --text-1: #26231d;
+    --text-2: #57524a;
+    --text-3: #8d877d;
+    --text-4: #6f6a63;
+    --text-on-accent: #ffffff;
+    --c-yellow-soft: #fde68a;
+    --c-yellow-ink: #806600;
+    --c-red-soft: #fecaca;
+    --c-red-ink: #b91c1c;
+    --c-orange-soft: #fde68a;
+    --c-orange-ink: #b45309;
+    --c-green-soft: #bbf7d0;
+    --c-green-ink: #15803d;
+    --radius-sm: 8px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --radius-pill: 999px;
+    --shadow-card: 0 1px 2px rgba(72, 62, 46, 0.05), 0 8px 24px rgba(72, 62, 46, 0.06);
+    --shadow-dock: 0 12px 32px rgba(72, 62, 46, 0.13), 0 28px 64px rgba(72, 62, 46, 0.1);
+    --shadow-focus: 0 0 0 3px var(--brand-glow);
+    --scrim: rgba(38, 35, 29, 0.48);
+    --todo-pri-default: #c6cad4;
+    --bg-code: #f6f8fa;
+    --code-text: #1f2328;
+    --code-inline-bg: rgba(13, 17, 23, 0.06);
+    --code-inline-fg: #c7254e;
+  }
+  [data-theme="dark"] {
+    --accent: #8b8bff;
+    --brand-600: color-mix(in srgb, var(--accent) 70%, #fff);
+    --brand-50: color-mix(in srgb, var(--accent) 16%, #16161f);
+    --brand-glow: color-mix(in srgb, var(--accent) 28%, transparent);
+    --bg-card-solid: rgba(255, 255, 255, 0.2);
+    --bg-card-soft: rgba(255, 255, 255, 0.1);
+    --input-bg: #1d1e29;
+    --frost-tint-a: rgba(139, 139, 255, 0.16);
+    --frost-tint-b: rgba(236, 72, 153, 0.10);
+    --frost-tint-c: rgba(59, 130, 246, 0.13);
+    --frost-base-a: rgba(255, 255, 255, 0.14);
+    --frost-base-b: rgba(255, 255, 255, 0.08);
+    --frost-surface:
+      radial-gradient(180% 130% at 0% -12%, var(--frost-tint-a), transparent 55%),
+      radial-gradient(150% 120% at 105% 6%, var(--frost-tint-b), transparent 55%),
+      radial-gradient(170% 130% at 50% 116%, var(--frost-tint-c), transparent 55%),
+      linear-gradient(150deg, var(--frost-base-a) 0%, var(--frost-base-b) 100%);
+    --frost-edge: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    --glow-a: rgba(139, 139, 255, 0.22);
+    --glow-b: rgba(236, 72, 153, 0.14);
+    --glow-c: rgba(59, 130, 246, 0.20);
+    --bg-base-a: #141520;
+    --bg-base-b: #1a1814;
+    --bg-page-surface:
+      radial-gradient(1200px 800px at 12% -8%, var(--glow-a), transparent 55%),
+      radial-gradient(1000px 700px at 100% 4%, var(--glow-b), transparent 55%),
+      radial-gradient(1200px 900px at 55% 118%, var(--glow-c), transparent 55%),
+      linear-gradient(150deg, var(--bg-base-a) 0%, var(--bg-base-b) 100%);
+    --border-soft: rgba(255, 255, 255, 0.16);
+    --border-strong: rgba(255, 255, 255, 0.28);
+    --text-1: #f2efe8;
+    --text-2: #ccc8bf;
+    --text-3: #9b968c;
+    --text-4: #817c73;
+    --text-on-accent: #20232b;
+    --c-yellow-soft: #3b3208;
+    --c-yellow-ink: #fcd34d;
+    --c-red-soft: #3f1d1d;
+    --c-red-ink: #fca5a5;
+    --c-orange-soft: #3b2a08;
+    --c-orange-ink: #fcd34d;
+    --c-green-soft: #14331f;
+    --c-green-ink: #86efac;
+    --todo-pri-default: #52525f;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 28px rgba(0, 0, 0, 0.24);
+    --shadow-dock: 0 14px 36px rgba(0, 0, 0, 0.5), 0 30px 72px rgba(0, 0, 0, 0.36);
+    --shadow-focus: 0 0 0 3px var(--brand-glow);
+    --scrim: rgba(0, 0, 0, 0.55);
+    --bg-code: #161b22;
+    --code-text: #e6edf3;
+    --code-inline-bg: rgba(240, 246, 252, 0.12);
+    --code-inline-fg: #ff9e9e;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  html { color-scheme: light; font-size: 16px; }
+  html[data-theme="dark"] { color-scheme: dark; }
+  body {
+    background: var(--bg-page-surface);
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    color: var(--text-1);
+    user-select: none;
+  }
+  button, input, textarea { font: inherit; }
+  input, textarea { user-select: text; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+  ::-webkit-scrollbar { width: 10px; background: transparent; }
+  ::-webkit-scrollbar-thumb { background-color: transparent; border: 2px solid transparent; background-clip: padding-box; border-radius: var(--radius-pill); min-height: 40px; }
+  .scrollable:hover::-webkit-scrollbar-thumb { background-color: color-mix(in srgb, var(--text-3) 40%, transparent); }
+  html, body, * { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+
+  .stage {
+    display: flex;
+    gap: 24px;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 40px 24px 60px;
+    min-height: 100vh;
+  }
+  .card {
+    background: var(--frost-surface);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--frost-edge), var(--shadow-card);
+  }
+
+  /* ===== 顶部说明条（原型标注，正式产品不含） ===== */
+  .legend {
+    width: 340px;
+    padding: 16px 18px;
+    position: sticky;
+    top: 24px;
+    flex-shrink: 0;
+  }
+  .legend h2 { font-size: 0.875rem; font-weight: 700; margin-bottom: 10px; letter-spacing: -0.01em; display: flex; align-items: center; gap: 6px; }
+  .legend .tag { font-size: 0.6875rem; font-weight: 600; color: var(--brand-500); background: var(--brand-50); border-radius: var(--radius-pill); padding: 2px 8px; }
+  .legend ol { margin: 0 0 12px 0; padding-left: 18px; display: grid; gap: 7px; }
+  .legend li { font-size: 0.75rem; line-height: 1.55; color: var(--text-2); }
+  .legend li b { color: var(--text-1); font-weight: 600; }
+  .legend .swatches { display: grid; grid-template-columns: 1fr; gap: 6px; padding: 10px 12px; background: var(--bg-code); border-radius: var(--radius-md); border: 1px solid var(--border-soft); }
+  .legend .swatch-row { display: flex; align-items: center; gap: 8px; font-size: 0.6875rem; color: var(--text-2); }
+  .legend .swatch { display: inline-block; width: 34px; padding: 2px 0; text-align: center; border-radius: var(--radius-pill); font-size: 0.625rem; font-weight: 600; }
+  .swatch.over { background: var(--c-red-soft); color: var(--c-red-ink); }
+  .swatch.today { background: var(--c-orange-soft); color: var(--c-orange-ink); }
+  .swatch.tmr { background: var(--brand-50); color: var(--brand-500); }
+  .swatch.date { background: var(--bg-card-soft); color: var(--text-3); }
+  .legend .hint { font-size: 0.6875rem; color: var(--text-4); line-height: 1.5; margin-top: 8px; }
+  .legend .hint code { font-family: ui-monospace, Consolas, monospace; font-size: 0.6875rem; background: var(--code-inline-bg); color: var(--code-inline-fg); padding: 1px 5px; border-radius: 4px; }
+
+  .toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .toolbar h1 { font-size: 0.8125rem; font-weight: 700; color: var(--text-1); letter-spacing: -0.01em; }
+  .toolbar h1 span { color: var(--text-3); font-weight: 500; margin-left: 6px; font-size: 0.6875rem; }
+  .toolbar .tb-actions { display: flex; gap: 6px; }
+  .pill-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 5px 12px; border: none; border-radius: var(--radius-pill); background: var(--brand-500); color: var(--text-on-accent); font-size: 0.6875rem; font-weight: 600; cursor: pointer; transition: background .18s, transform .18s, box-shadow .18s; }
+  .pill-btn:hover { background: var(--brand-600); box-shadow: 0 4px 12px var(--brand-glow); transform: translateY(-1px); }
+  .ghost-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); background: var(--bg-card-solid); color: var(--text-2); font-size: 0.6875rem; font-weight: 500; cursor: pointer; transition: background .18s, color .18s, border-color .18s; }
+  .ghost-btn:hover { background: var(--brand-50); color: var(--brand-500); border-color: color-mix(in srgb, var(--brand-500) 45%, transparent); }
+
+  /* ===== 待办卡片 ===== */
+  .todo-card {
+    width: 440px;
+    max-height: calc(100vh - 80px);
+    display: flex;
+    flex-direction: column;
+    padding: 14px;
+    --todo-pri-default: #c6cad4;
+    font-size: 14px;
+  }
+  [data-theme="dark"] .todo-card { --todo-pri-default: #52525f; }
+  .todo-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+  .todo-title { display: flex; align-items: center; gap: 6px; font-size: 0.8125rem; font-weight: 600; color: var(--text-1); letter-spacing: -0.01em; white-space: nowrap; }
+  .todo-title svg { color: var(--brand-500); }
+  .todo-header-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  .todo-seg { display: flex; gap: 4px; flex-shrink: 0; }
+  .filter-tab { flex-shrink: 0; border: none; background: transparent; padding: 4px 10px; border-radius: var(--radius-pill); font-size: 0.6875rem; font-weight: 500; color: var(--text-3); cursor: pointer; transition: background .18s, color .18s; white-space: nowrap; }
+  .filter-tab:hover { background: var(--brand-50); color: var(--brand-500); }
+  .filter-tab.active { background: var(--brand-500); color: var(--text-on-accent); font-weight: 600; }
+  .icon-btn { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border: none; background: transparent; border-radius: var(--radius-sm); color: var(--text-3); cursor: pointer; transition: background .18s, color .18s; }
+  .icon-btn:hover { background: var(--bg-card-soft); color: var(--text-1); }
+
+  .todo-add { margin-bottom: 10px; }
+  .todo-input {
+    width: 100%;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    background: var(--input-bg);
+    color: var(--text-1);
+    font-size: 0.8125rem;
+    padding: 7px 10px;
+    outline: none;
+    resize: none;
+    line-height: 1.45;
+    max-height: 110px;
+    overflow-y: auto;
+    display: block;
+    transition: border-color .18s, box-shadow .18s;
+  }
+  .todo-input:focus { border-color: var(--brand-500); box-shadow: var(--shadow-focus); }
+  .todo-input::placeholder { color: var(--text-4); }
+  .todo-input-hint { font-size: 0.625rem; color: var(--text-4); margin-top: 4px; line-height: 1.5; }
+  .todo-input-hint kbd { font-family: inherit; background: var(--bg-card-soft); border: 1px solid var(--border-soft); border-radius: 4px; padding: 0 4px; }
+
+  .todo-body { flex: 1; overflow-y: auto; min-height: 0; margin: 0 -4px; padding: 0 4px 4px; }
+  .todo-empty { padding: 28px 8px; text-align: center; }
+  .todo-empty p { margin: 0; font-size: 0.75rem; color: var(--text-4); }
+  .todo-empty p:first-child { font-size: 0.8125rem; font-weight: 600; color: var(--text-3); }
+
+  /* 分组头：逾期 → 今天 → 有日期 → 无日期 */
+  .todo-group { margin-top: 12px; }
+  .todo-group:first-child { margin-top: 0; }
+  .todo-group-head { display: flex; align-items: center; gap: 8px; padding: 0 6px 4px; }
+  .todo-group-head .glabel { font-size: 0.65625rem; font-weight: 600; color: var(--text-3); letter-spacing: 0.02em; }
+  .todo-group-head .gline { flex: 1; height: 1px; background: var(--border-soft); }
+  .todo-group-head .gcount { font-size: 0.625rem; color: var(--text-4); background: var(--bg-card-soft); border-radius: var(--radius-pill); padding: 0 7px; line-height: 15px; }
+
+  .todo-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px; border-radius: var(--radius-sm); transition: background .3s; }
+  .todo-row:hover { background: var(--bg-card-soft); }
+  .todo-row.highlight { background: var(--brand-50); }
+  .todo-row.sub { padding-left: 26px; }
+  .todo-row.sub .todo-label { font-size: 0.75rem; color: var(--text-2); }
+  .todo-row.done .todo-label { text-decoration: line-through; opacity: 0.6; color: var(--text-3); }
+
+  .todo-check {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    margin-top: 1px;
+    border: 1.5px solid var(--border-strong);
+    border-radius: var(--radius-pill);
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-on-accent);
+    padding: 0;
+    cursor: pointer;
+    transition: background .18s, border-color .18s, transform .18s;
+  }
+  .todo-check:hover { border-color: var(--brand-500); background: var(--brand-50); }
+  .todo-check:active { transform: scale(0.9); }
+  .todo-check.checked { background: var(--brand-500); border-color: var(--brand-500); }
+  .todo-check svg { display: block; }
+  .todo-check.sub { width: 15px; height: 15px; border-width: 1.2px; }
+
+  .todo-priority {
+    flex-shrink: 0;
+    width: 10px;
+    height: 10px;
+    margin-top: 5px;
+    border: none;
+    border-radius: 50%;
+    padding: 0;
+    cursor: pointer;
+    transition: transform .18s, filter .18s;
+  }
+  .todo-priority:hover { transform: scale(1.35); filter: brightness(0.97); }
+
+  .todo-mid { flex: 1; min-width: 0; }
+  .todo-label {
+    display: block;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    color: var(--text-1);
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    cursor: text;
+  }
+  .todo-edit {
+    width: 100%;
+    border: 1px solid var(--brand-500);
+    border-radius: 6px;
+    background: var(--bg-card-solid);
+    color: var(--text-1);
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    font-family: inherit;
+    padding: 2px 6px;
+    outline: none;
+    box-shadow: var(--shadow-focus);
+    resize: none;
+    overflow-y: auto;
+    min-height: 22px;
+  }
+  .todo-sub-input-row { display: flex; align-items: center; gap: 8px; padding: 2px 6px 2px 26px; }
+  .todo-sub-input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    background: var(--input-bg);
+    color: var(--text-1);
+    font-size: 0.75rem;
+    line-height: 1.4;
+    font-family: inherit;
+    padding: 3px 8px;
+    outline: none;
+  }
+  .todo-sub-input:focus { border-color: var(--brand-500); box-shadow: var(--shadow-focus); }
+
+  /* 截止徽标 */
+  .todo-badges { display: inline-flex; align-items: center; gap: 6px; margin-top: 3px; flex-wrap: wrap; }
+  .todo-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    border: none;
+    border-radius: var(--radius-pill);
+    padding: 1px 8px;
+    font-size: 0.625rem;
+    font-weight: 600;
+    line-height: 16px;
+    cursor: pointer;
+    transition: filter .18s, transform .18s;
+    font-family: inherit;
+  }
+  .todo-badge:hover { filter: brightness(0.96); transform: translateY(-1px); }
+  .todo-badge:active { transform: scale(0.96); }
+  .todo-badge.over { background: var(--c-red-soft); color: var(--c-red-ink); }
+  .todo-badge.today { background: var(--c-orange-soft); color: var(--c-orange-ink); }
+  .todo-badge.tmr { background: var(--brand-50); color: var(--brand-500); }
+  .todo-badge.date { background: var(--bg-card-soft); color: var(--text-3); }
+  .todo-badge.remind { background: var(--c-green-soft); color: var(--c-green-ink); cursor: default; }
+  .todo-badge.remind:hover { transform: none; filter: none; }
+  .todo-badge svg { display: block; }
+  .todo-badge-add {
+    display: inline-flex; align-items: center; gap: 3px; border: none; background: transparent;
+    border-radius: var(--radius-pill); padding: 1px 6px; font-size: 0.625rem; font-weight: 500;
+    color: var(--text-4); cursor: pointer; line-height: 16px; opacity: 0;
+    transition: opacity .18s, background .18s, color .18s;
+  }
+  .todo-row:hover .todo-badge-add, .todo-row:focus-within .todo-badge-add { opacity: 1; }
+  .todo-badge-add:hover { background: var(--bg-card-soft); color: var(--brand-500); }
+  .todo-badge-add svg { display: block; }
+
+  /* 子待办进度 */
+  .sub-progress { display: inline-flex; align-items: center; gap: 5px; }
+  .sub-progress .bar { width: 46px; height: 4px; border-radius: var(--radius-pill); background: var(--bg-card-soft); overflow: hidden; }
+  .sub-progress .bar i { display: block; height: 100%; background: var(--brand-500); border-radius: var(--radius-pill); transition: width .3s; }
+  .sub-progress .cnt { font-size: 0.625rem; font-weight: 600; color: var(--text-3); }
+
+  .todo-del {
+    flex-shrink: 0;
+    align-self: center;
+    width: 22px;
+    height: 22px;
+    border: none;
+    background: transparent;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-3);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity .18s, background .18s, color .18s;
+  }
+  .todo-row:hover .todo-del, .todo-row:focus-within .todo-del { opacity: 1; }
+  .todo-del:hover { background: var(--c-red-soft); color: var(--c-red-ink); }
+  .todo-del svg { display: block; }
+
+  /* 行尾 + 按钮（添加子待办） */
+  .todo-subadd {
+    flex-shrink: 0;
+    align-self: center;
+    width: 22px;
+    height: 22px;
+    border: none;
+    background: transparent;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-4);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity .18s, background .18s, color .18s;
+  }
+  .todo-row:hover .todo-subadd, .todo-row:focus-within .todo-subadd { opacity: 1; }
+  .todo-subadd:hover { background: var(--brand-50); color: var(--brand-500); }
+  .todo-subadd svg { display: block; }
+
+  /* ===== 截止/提醒设置弹层（模仿 Reka 日历 + 时间选择） ===== */
+  .pop-mask { position: fixed; inset: 0; z-index: 40; background: transparent; }
+  .schedule-pop {
+    position: absolute;
+    z-index: 50;
+    width: 288px;
+    background: var(--bg-card-solid);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-dock);
+    padding: 14px;
+    animation: pop-in .16s cubic-bezier(.16, 1, .3, 1);
+    -webkit-backdrop-filter: blur(18px) saturate(160%);
+    backdrop-filter: blur(18px) saturate(160%);
+  }
+  @keyframes pop-in { from { opacity: 0; transform: translateY(6px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+  .sp-title { font-size: 0.75rem; font-weight: 700; color: var(--text-1); margin-bottom: 8px; }
+  .sp-quick { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .sp-chip {
+    border: 1px solid var(--border-strong); background: var(--bg-card-soft); color: var(--text-2);
+    border-radius: var(--radius-pill); padding: 3px 10px; font-size: 0.6875rem; font-weight: 500;
+    cursor: pointer; transition: background .18s, color .18s, border-color .18s;
+  }
+  .sp-chip:hover { background: var(--brand-50); color: var(--brand-500); border-color: color-mix(in srgb, var(--brand-500) 45%, transparent); }
+  .sp-chip.on { background: var(--brand-500); color: var(--text-on-accent); border-color: var(--brand-500); }
+
+  .sp-cal { margin-bottom: 10px; }
+  .sp-cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .sp-cal-title { font-size: 0.75rem; font-weight: 600; color: var(--text-1); }
+  .sp-cal-nav { display: flex; gap: 4px; }
+  .sp-nav-btn { width: 22px; height: 22px; border: none; background: transparent; border-radius: var(--radius-sm); color: var(--text-3); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.875rem; line-height: 1; }
+  .sp-nav-btn:hover { background: var(--bg-card-soft); color: var(--text-1); }
+  .sp-week, .sp-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+  .sp-week span { text-align: center; font-size: 0.625rem; color: var(--text-4); font-weight: 600; padding: 3px 0; }
+  .sp-day {
+    border: none; background: transparent; border-radius: 6px; height: 27px;
+    font-size: 0.6875rem; color: var(--text-2); cursor: pointer; transition: background .12s, color .12s;
+    position: relative;
+  }
+  .sp-day:hover { background: var(--bg-card-soft); }
+  .sp-day.out { color: var(--text-4); opacity: 0.45; }
+  .sp-day.today { color: var(--brand-500); font-weight: 700; }
+  .sp-day.sel { background: var(--brand-500); color: var(--text-on-accent); font-weight: 600; }
+  .sp-day.sel:hover { background: var(--brand-600); }
+  .sp-day.dim::after { content: ''; position: absolute; left: 50%; bottom: 2px; transform: translateX(-50%); width: 3px; height: 3px; border-radius: 50%; background: var(--c-red-soft); }
+
+  .sp-time-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .sp-time-row label { font-size: 0.6875rem; color: var(--text-3); width: 48px; flex-shrink: 0; }
+  .sp-time-wrap { display: flex; align-items: center; gap: 4px; }
+  .sp-select {
+    border: 1px solid var(--border-soft); background: var(--input-bg); color: var(--text-1);
+    border-radius: 6px; padding: 4px 6px; font-size: 0.75rem; outline: none; width: 64px; text-align: center;
+  }
+  .sp-select:focus { border-color: var(--brand-500); box-shadow: var(--shadow-focus); }
+  .sp-colon { color: var(--text-3); font-size: 0.75rem; }
+
+  .sp-remind { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--bg-card-soft); border-radius: var(--radius-md); margin-bottom: 12px; }
+  .sp-remind .r-label { font-size: 0.6875rem; color: var(--text-2); flex: 1; }
+  .sp-remind .r-label b { display: block; color: var(--text-1); font-weight: 600; margin-bottom: 2px; }
+  .sp-toggle { position: relative; width: 30px; height: 18px; flex-shrink: 0; border-radius: var(--radius-pill); background: var(--border-strong); cursor: pointer; transition: background .18s; border: none; }
+  .sp-toggle.on { background: var(--brand-500); }
+  .sp-toggle i { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .18s; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+  .sp-toggle.on i { transform: translateX(12px); }
+
+  .sp-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .sp-btn { border: none; border-radius: var(--radius-pill); padding: 5px 14px; font-size: 0.6875rem; font-weight: 600; cursor: pointer; transition: background .18s, color .18s, transform .18s; }
+  .sp-btn:hover { transform: translateY(-1px); }
+  .sp-btn:active { transform: scale(.96); }
+  .sp-btn.clear { background: transparent; color: var(--text-4); }
+  .sp-btn.clear:hover { background: var(--c-red-soft); color: var(--c-red-ink); }
+  .sp-btn.ok { background: var(--brand-500); color: var(--text-on-accent); }
+  .sp-btn.ok:hover { background: var(--brand-600); box-shadow: 0 4px 12px var(--brand-glow); }
+
+  /* ===== toast（带撤销） ===== */
+  .toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(20px);
+    background: var(--text-1); color: var(--bg-base-a); border-radius: var(--radius-pill);
+    padding: 9px 16px; font-size: 0.75rem; box-shadow: var(--shadow-dock); z-index: 90;
+    opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s;
+    display: flex; align-items: center; gap: 12px;
+  }
+  [data-theme="dark"] .toast { background: rgba(20, 21, 32, 0.92); color: #fff; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+  .toast button { border: none; background: transparent; color: var(--brand-500); font-weight: 700; font-size: 0.75rem; cursor: pointer; padding: 0; }
+  .toast button:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <!-- 原型说明 -->
+    <aside class="card legend">
+      <h2>待办优化 <span class="tag">交互原型 v1</span></h2>
+      <ol>
+        <li><b>截止日期</b>：行内徽标（逾期红 / 今天橙 / 明天品牌色 / 其他灰），点击弹出<b>日历 + 时间</b>设置；只选日期不选时间 → 当天 23:59 截止。</li>
+        <li><b>提醒</b>：同一弹层内开关，可独立于截止时间，到点弹系统通知 + Toast。</li>
+        <li><b>子待办</b>：父条目下方缩进列表，行尾 <b>「+」</b> 或<b> Shift+Enter</b> 添加；父条目显示完成进度。</li>
+        <li><b>排序</b>：待办分组 = 逾期 → 今天 → 有日期 → 无日期，组内沿用现有规则。</li>
+      </ol>
+      <div class="swatches">
+        <div class="swatch-row"><span class="swatch over">逾期</span><span>已过截止，最优先</span></div>
+        <div class="swatch-row"><span class="swatch today">今天</span><span>当天截止</span></div>
+        <div class="swatch-row"><span class="swatch tmr">明天</span><span>近一两天</span></div>
+        <div class="swatch-row"><span class="swatch date">3月9日</span><span>更远日期</span></div>
+      </div>
+      <p class="hint">
+        可试：点徽标改日期、点 <code>+</code> 加子待办、双击改内容、点圆点切优先级、删父待办级联删子。
+        <br/>原型仅演示交互，不接真实数据。
+      </p>
+    </aside>
+
+    <!-- 待办卡片 -->
+    <div style="width: 440px;">
+      <div class="toolbar">
+        <h1>待办卡片<span>原型 · 今日 8/31</span></h1>
+        <div class="tb-actions">
+          <button class="ghost-btn" id="themeBtn" type="button">切换深色</button>
+          <button class="pill-btn" id="resetBtn" type="button">重置演示</button>
+        </div>
+      </div>
+
+      <section class="card todo-card" id="todoCard" aria-label="待办">
+        <header class="todo-header">
+          <h3 class="todo-title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 2.5-2.5L3 5"/><path d="m3 19 2.5-2.5L3 14"/><path d="M10 6h11"/><path d="M10 12h11"/><path d="M10 18h11"/></svg>
+            <span>待办</span>
+          </h3>
+          <div class="todo-header-actions">
+            <button class="icon-btn" type="button" title="待办浮窗">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg>
+            </button>
+            <div class="todo-seg" role="tablist" aria-label="视图切换">
+              <button class="filter-tab active" role="tab" data-view="pending">待办 <span id="pendingCount"></span></button>
+              <button class="filter-tab" role="tab" data-view="done">已完成 <span id="doneCount"></span></button>
+            </div>
+          </div>
+        </header>
+
+        <div id="addBox" class="todo-add">
+          <textarea id="addInput" class="todo-input" rows="2" placeholder="添加待办，回车确认（粘贴 1. 2. 3. 序号列表可一次拆多条）" aria-label="添加待办"></textarea>
+          <p class="todo-input-hint">回车：新建待办　·　<kbd>Shift</kbd>+回车：给最后一条待办加子待办</p>
+        </div>
+
+        <div id="todoBody" class="todo-body scrollable">
+          <div id="todoList"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="popRoot" style="position: relative;"></div>
+  <div class="toast" id="toast"><span id="toastMsg"></span><button id="toastAction" type="button" style="display:none;"></button></div>
+
+<script>
+(() => {
+  'use strict'
+
+  // ===== 工具 =====
+  const $ = (s, r) => (r || document).querySelector(s)
+  const $$ = (s, r) => Array.from((r || document).querySelectorAll(s))
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+  const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x }
+  const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x }
+  const pad = (n) => String(n).padStart(2, '0')
+  const isoKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  const fmtDay = (d) => `${d.getMonth() + 1}月${d.getDate()}日`
+  const fmtHM = (ts) => { const d = new Date(ts); return `${pad(d.getHours())}:${pad(d.getMinutes())}` }
+
+  // 序号列表拆分（与 src/utils/todoParse.ts 同规则，简化复刻）
+  function parseTodoItems(text) {
+    const s = text.trim()
+    if (!s) return []
+    const markerRe = /(?:^|[\s;；,，、])(\d{1,3})\s*[.．、)]\s*(?!\d)/g
+    const cut = [], starts = []
+    let m
+    while ((m = markerRe.exec(s)) !== null) { cut.push(m.index); starts.push(markerRe.lastIndex) }
+    if (starts.length < 2) return [s]
+    const items = []
+    for (let i = 0; i < starts.length; i++) {
+      const stop = i + 1 < cut.length ? cut[i + 1] : s.length
+      const content = s.slice(starts[i], stop).replace(/[\s;；,，、]+$/, '').trim()
+      if (content) items.push(content)
+    }
+    return items.length > 0 ? items : [s]
+  }
+
+  // ===== 数据 =====
+  let seq = 100
+  const now = new Date()
+  const today = startOfDay(now)
+  const mk = (o) => ({ id: ++seq, title: '', done: false, priority: 0, due_at: null, remind_at: null, parent_id: null, created_at: Date.now(), completed_at: null, ...o })
+
+  // 演示数据（日期相对今天生成，逾期/今天/明天/未来/无日期全覆盖）
+  const seed = [
+    mk({ id: 1, title: '整理月度报销单据并提交财务', priority: 2, due_at: addDays(today, -1).setHours(18, 0, 0, 0) }),
+    mk({ id: 2, title: '准备客户演示 PPT', priority: 1, due_at: today.setHours(17, 0, 0, 0), remind_at: today.setHours(15, 30, 0, 0) }),
+    mk({ id: 3, title: '确认演示大纲', parent_id: 2, done: true, priority: 0 }),
+    mk({ id: 4, title: '完成初稿', parent_id: 2, done: true, priority: 0 }),
+    mk({ id: 5, title: '配色与动效打磨', parent_id: 2, done: false, priority: 0 }),
+    mk({ id: 6, title: '提交本周周报', priority: 1, due_at: today.setHours(23, 59, 59, 999) }),
+    mk({ id: 7, title: '预约牙医复查', priority: 0, due_at: addDays(today, 1).setHours(9, 30, 0, 0), remind_at: addDays(today, 1).setHours(8, 0, 0, 0) }),
+    mk({ id: 8, title: '读完《纳瓦尔宝典》第三章并写笔记', priority: 0, due_at: addDays(today, 4).setHours(22, 0, 0, 0) }),
+    mk({ id: 9, title: '给绿萝换水', priority: 0 }),
+    mk({ id: 10, title: '更新博客 RSS 订阅列表', priority: 1 }),
+  ]
+  const todos = seed
+
+  // ===== 状态 =====
+  let view = 'pending'
+  let editingId = null
+  let subAddParentId = null        // 正在添加子待办的父 id
+  let highlightId = null
+  let popup = null                 // { todoId, el, rect }
+  let toastTimer = null
+  let undoStack = null             // 删除撤销用
+
+  // ===== 派生 =====
+  const childrenOf = (id) => todos.filter((t) => t.parent_id === id && !t.done).sort((a, b) => b.created_at - a.created_at)
+  const allChildrenOf = (id) => todos.filter((t) => t.parent_id === id)
+  const groupOf = (t) => {
+    if (!t.due_at) return 3
+    const d = startOfDay(new Date(t.due_at))
+    if (d < today) return 0                 // 逾期
+    if (isoKey(d) === isoKey(today)) return 1 // 今天
+    return 2                                 // 有日期
+  }
+  const GROUP_META = [
+    { label: '逾期', cls: 'over' },
+    { label: '今天', cls: 'today' },
+    { label: '有日期', cls: 'dated' },
+    { label: '无日期', cls: 'none' },
+  ]
+  const pendingList = () => todos.filter((t) => !t.parent_id && !t.done)
+  const doneList = () => todos.filter((t) => !t.parent_id && t.done)
+
+  // 徽标文案：逾期 → 今天 → 明天 → 日期
+  function badgeInfo(t) {
+    if (!t.due_at) return null
+    const d = startOfDay(new Date(t.due_at))
+    const diff = Math.round((d - today) / 86400000)
+    if (d < today) return { text: `逾期 ${fmtDay(d)}`, cls: 'over' }
+    if (diff === 0) {
+      const hm = new Date(t.due_at).getHours() === 23 && new Date(t.due_at).getMinutes() > 50 ? '' : fmtHM(t.due_at)
+      return { text: hm ? `今天 ${hm}` : '今天', cls: 'today' }
+    }
+    if (diff === 1) return { text: '明天', cls: 'tmr' }
+    return { text: fmtDay(d), cls: 'date' }
+  }
+
+  // ===== 渲染 =====
+  function render() {
+    renderCounts()
+    renderList()
+  }
+
+  function renderCounts() {
+    $('#pendingCount').textContent = todos.filter((t) => !t.parent_id && !t.done).length
+    $('#doneCount').textContent = todos.filter((t) => !t.parent_id && t.done).length
+    $$('.filter-tab').forEach((b) => b.classList.toggle('active', b.dataset.view === view))
+    const addBox = $('#addBox')
+    addBox.style.display = view === 'pending' ? '' : 'none'
+  }
+
+  function renderList() {
+    const listEl = $('#todoList')
+    const src = view === 'pending' ? pendingList() : doneList()
+    if (src.length === 0) {
+      listEl.innerHTML = `<div class="todo-empty"><p>${view === 'pending' ? '今天要做什么？' : '暂无已完成'}</p>${view === 'pending' ? '<p>按回车快速添加</p>' : ''}</div>`
+      return
+    }
+    let html = ''
+    if (view === 'done') {
+      html = doneList().map((t) => rowHtml(t)).join('')
+    } else {
+      // 分组：逾期 → 今天 → 有日期 → 无日期
+      for (let g = 0; g < 4; g++) {
+        const items = pendingList().filter((t) => groupOf(t) === g)
+          .sort((a, b) => b.created_at - a.created_at)
+        if (!items.length) continue
+        html += `<div class="todo-group">
+          <div class="todo-group-head">
+            <span class="glabel">${GROUP_META[g].label}</span>
+            <span class="gline"></span>
+            <span class="gcount">${items.length}</span>
+          </div>
+          ${items.map(rowHtml).join('')}
+        </div>`
+      }
+    }
+    listEl.innerHTML = html
+  }
+
+  function rowHtml(t) {
+    const isParent = allChildrenOf(t.id).length > 0
+    const kids = childrenOf(t.id)
+    const allKids = allChildrenOf(t.id)
+    const doneKids = allKids.filter((k) => k.done).length
+    const bi = badgeInfo(t)
+    const remindOn = t.remind_at && (!t.done)
+    const remindText = remindOn ? `提醒 ${fmtHM(t.remind_at)}` : null
+    const editing = editingId === t.id
+    const delTtl = isParent ? '删除（级联删除子待办）' : '删除'
+    const priBg = ['var(--todo-pri-default)', 'var(--c-yellow-soft)', 'var(--c-red-soft)'][t.priority]
+    const priTtl = ['普通', '重要', '紧急'][t.priority]
+
+    let badges = ''
+    if (bi) {
+      badges += `<button class="todo-badge ${bi.cls}" data-badge="${t.id}" type="button" title="点击设置截止/提醒">
+        ${bi.cls === 'over' ? SVG.alert : bi.cls === 'today' ? SVG.sun : SVG.cal}${esc(bi.text)}</button>`
+    } else {
+      badges += `<button class="todo-badge-add" data-badge="${t.id}" type="button" title="设置截止日期/提醒">
+        ${SVG.cal}<span>日期</span></button>`
+    }
+    if (remindText) badges += `<span class="todo-badge remind" title="到点弹提醒">${SVG.bell}${esc(remindText)}</span>`
+    if (isParent && !t.done) {
+      badges += `<span class="sub-progress" title="${doneKids}/${allKids.length} 个子待办已完成">
+        <span class="bar"><i style="width:${allKids.length ? (doneKids / allKids.length * 100) : 0}%"></i></span>
+        <span class="cnt">${doneKids}/${allKids.length}</span></span>`
+    }
+
+    const subHtml = allKids.length || subAddParentId === t.id
+      ? `<div class="todo-subs">
+          ${allKids.map((k) => rowHtml(k)).join('')}
+          ${subAddParentId === t.id ? subInputHtml(t.id) : ''}
+        </div>` : ''
+
+    return `<div class="todo-row ${t.done ? 'done' : ''} ${t.parent_id ? 'sub' : ''} ${highlightId === t.id ? 'highlight' : ''}" data-id="${t.id}">
+      <button class="todo-check ${t.done ? 'checked' : ''} ${t.parent_id ? 'sub' : ''}" data-toggle="${t.id}" type="button" title="${t.done ? '取消完成' : '标记完成'}">
+        ${t.done ? `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>` : ''}
+      </button>
+      ${t.parent_id ? '' : `<button class="todo-priority" data-pri="${t.id}" type="button" title="优先级：${priTtl}，点击切换" style="background:${priBg}"></button>`}
+      <div class="todo-mid">
+        ${editing
+          ? `<textarea class="todo-edit" data-edit="${t.id}" rows="1">${esc(t.title)}</textarea>`
+          : `<span class="todo-label" data-dbl="${t.id}">${esc(t.title)}</span>`}
+        ${t.done ? '' : badges ? `<div class="todo-badges">${badges}</div>` : ''}
+        ${subHtml}
+      </div>
+      ${!t.parent_id ? `<button class="todo-subadd" data-subadd="${t.id}" type="button" title="添加子待办">${SVG.plus}</button>` : ''}
+      <button class="todo-del" data-del="${t.id}" type="button" title="${delTtl}">${SVG.trash}</button>
+    </div>`
+  }
+
+  function subInputHtml(parentId) {
+    return `<div class="todo-sub-input-row" data-sub-input-row="${parentId}">
+      <span style="width:15px;height:15px;border:1.2px solid var(--border-strong);border-radius:50%;flex-shrink:0;margin-top:2px;display:inline-block;"></span>
+      <input class="todo-sub-input" data-sub-input="${parentId}" placeholder="输入子待办，回车确认" />
+      <button class="todo-del" data-subcancel="${parentId}" type="button" title="取消" style="opacity:1;position:static;">${SVG.x}</button>
+    </div>`
+  }
+
+  // 内联 SVG
+  const SVG = {
+    cal: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg>',
+    alert: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
+    sun: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>',
+    bell: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>',
+    plus: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>',
+    trash: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+    x: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
+  }
+
+  // ===== 交互：列表事件委托 =====
+  const listEl = $('#todoList')
+  listEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('button')
+    if (!btn) return
+    const key = Object.keys(btn.dataset)[0]
+    const id = Number(btn.dataset[key])
+    if (key === 'toggle') toggle(id)
+    else if (key === 'pri') cyclePriority(id)
+    else if (key === 'del') remove(id)
+    else if (key === 'badge') openPopup(id, btn)
+    else if (key === 'subadd') {
+      subAddParentId = subAddParentId === id ? null : id
+      renderList()
+      const inp = $(`[data-sub-input="${id}"]`)
+      if (inp) { inp.focus(); requestAnimationFrame(() => { inp.scrollIntoView({ block: 'nearest' }) }) }
+    }
+    else if (key === 'subcancel') { subAddParentId = null; renderList() }
+  })
+
+  listEl.addEventListener('dblclick', (e) => {
+    const lbl = e.target.closest('[data-dbl]')
+    if (!lbl) return
+    startEdit(Number(lbl.dataset.dbl))
+  })
+
+  // 编辑框
+  listEl.addEventListener('input', (e) => {
+    const el = e.target.closest('[data-edit]')
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  })
+
+  // 待办输入框：回车提交 / Shift+回车加子待办
+  const addInput = $('#addInput')
+  addInput.addEventListener('keydown', (e) => {
+    if (e.isComposing) return
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      onAdd()
+    } else if (e.key === 'Enter' && e.shiftKey) {
+      e.preventDefault()
+      onAddSubForLastParent()
+    }
+  })
+  addInput.addEventListener('input', () => {
+    addInput.style.height = 'auto'
+    addInput.style.height = `${Math.min(addInput.scrollHeight, 110)}px`
+  })
+
+  function onAdd() {
+    const v = addInput.value.trim()
+    if (!v) return
+    const items = parseTodoItems(v)
+    const newIds = items.map((title) => { const t = mk({ title }); todos.push(t); return t.id })
+    addInput.value = ''
+    addInput.style.height = 'auto'
+    if (newIds.length) { highlightId = newIds[newIds.length - 1]; setTimeout(() => { highlightId = null; render() }, 2200) }
+    render()
+    // 序号拆分提示
+    if (items.length > 1) toast(`已拆成 ${items.length} 条待办`)
+  }
+
+  function onAddSubForLastParent() {
+    const v = addInput.value.trim()
+    if (!v) return
+    const parents = pendingList().filter((t) => t.parent_id === null)
+    if (!parents.length) { onAdd(); return }
+    const target = parents[parents.length - 1]
+    const items = parseTodoItems(v)
+    items.forEach((title) => todos.push(mk({ title, parent_id: target.id })))
+    addInput.value = ''
+    addInput.style.height = 'auto'
+    render()
+    toast(`已加到「${target.title.slice(0, 12)}」子待办`)
+  }
+
+  // 子待办输入
+  listEl.addEventListener('keydown', (e) => {
+    const inp = e.target.closest('[data-sub-input]')
+    if (!inp || e.isComposing) return
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      const title = inp.value.trim()
+      const pid = Number(inp.dataset.subInput)
+      if (!title) { subAddParentId = null; renderList(); return }
+      todos.push(mk({ title, parent_id: pid }))
+      subAddParentId = null
+      renderList()
+    } else if (e.key === 'Escape') {
+      subAddParentId = null
+      renderList()
+    }
+  })
+
+  // 编辑提交 / 取消
+  listEl.addEventListener('blur', (e) => {
+    const el = e.target.closest('[data-edit]')
+    if (!el) return
+    commitEdit(Number(el.dataset.edit), el.value)
+  }, true)
+  listEl.addEventListener('keydown', (e) => {
+    const el = e.target.closest('[data-edit]')
+    if (!el) return
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); el.blur() }
+    else if (e.key === 'Escape') { editingId = null; renderList() }
+  })
+
+  function startEdit(id) {
+    editingId = id
+    renderList()
+    const el = $(`[data-edit="${id}"]`)
+    if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length) }
+  }
+  function commitEdit(id, raw) {
+    const t = todos.find((x) => x.id === id)
+    const title = raw.trim()
+    editingId = null
+    if (!t) { renderList(); return }
+    if (!title) { renderList(); return }
+    if (title !== t.title) t.title = title
+    renderList()
+  }
+
+  function toggle(id) {
+    const t = todos.find((x) => x.id === id)
+    if (!t) return
+    t.done = !t.done
+    t.completed_at = t.done ? Date.now() : null
+    render()
+  }
+  function cyclePriority(id) {
+    const t = todos.find((x) => x.id === id)
+    if (!t) return
+    t.priority = (t.priority + 1) % 3
+    renderList()
+  }
+  function remove(id) {
+    const t = todos.find((x) => x.id === id)
+    if (!t) return
+    const kids = allChildrenOf(id)
+    const removed = [t, ...kids]
+    todos.splice(todos.indexOf(t), 1)
+    kids.forEach((k) => todos.splice(todos.indexOf(k), 1))
+    undoStack = { items: removed, index: todos.length }
+    render()
+    toast(kids.length ? `已删除「${t.title}」及 ${kids.length} 条子待办` : `已删除「${t.title}」`, kids.length ? '撤销' : '撤销')
+    setTimeout(() => { undoStack = null }, 6000)
+  }
+
+  // ===== 截止/提醒设置弹层 =====
+  let calCursor = startOfDay(new Date())
+  let selDay = null       // Date | null
+  let selHour = 23, selMin = 59   // 只选日期不选时间 → 默认当天 23:59 截止
+  let remindOn = false, remindHour = 9, remindMin = 0
+
+  function openPopup(id, anchorBtn) {
+    const t = todos.find((x) => x.id === id)
+    if (!t) return
+    const rect = anchorBtn.getBoundingClientRect()
+    const base = t.due_at ? new Date(t.due_at) : addDays(today, 0)
+    calCursor = startOfDay(base)
+    selDay = t.due_at ? new Date(t.due_at) : addDays(today, 0)
+    selHour = t.due_at ? new Date(t.due_at).getHours() : 23
+    selMin = t.due_at ? new Date(t.due_at).getMinutes() : 59
+    remindOn = !!t.remind_at
+    if (t.remind_at) { remindHour = new Date(t.remind_at).getHours(); remindMin = new Date(t.remind_at).getMinutes() }
+    else if (t.due_at) { remindHour = selHour; remindMin = Math.max(0, selMin - 30) }
+    popup = { todoId: id, el: anchorBtn, rect }
+    renderPopup()
+  }
+
+  function closePopup() { popup = null; $('#popRoot').innerHTML = '' }
+
+  function renderPopup() {
+    const root = $('#popRoot')
+    if (!popup) { root.innerHTML = ''; return }
+    // 位置：优先下方，溢出则上方
+    const cardRect = $('#todoCard').getBoundingClientRect()
+    const popW = 288
+    let top = popup.rect.bottom + 8
+    if (top + 320 > window.innerHeight - 8) top = popup.rect.top - 8 - 320
+    let left = popup.rect.left
+    if (left + popW > cardRect.right) left = cardRect.right - popW
+    if (left < cardRect.left) left = cardRect.left
+
+    root.innerHTML = `
+      <div class="pop-mask" data-popmask></div>
+      <div class="schedule-pop" style="top:${top}px;left:${left}px;width:${popW}px;">
+        <div class="sp-title">截止日期与提醒</div>
+        <div class="sp-quick">
+          <button class="sp-chip" data-quick="today">今天</button>
+          <button class="sp-chip" data-quick="tmr">明天</button>
+          <button class="sp-chip" data-quick="week">下周一</button>
+        </div>
+        <div class="sp-cal">
+          <div class="sp-cal-head">
+            <span class="sp-cal-title">${calCursor.getFullYear()}年${calCursor.getMonth() + 1}月</span>
+            <div class="sp-cal-nav">
+              <button class="sp-nav-btn" data-cal="prev" type="button">‹</button>
+              <button class="sp-nav-btn" data-cal="next" type="button">›</button>
+            </div>
+          </div>
+          <div class="sp-week"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+          <div class="sp-days">${calGrid()}</div>
+        </div>
+        <div class="sp-time-row">
+          <label>截止时间</label>
+          <div class="sp-time-wrap">
+            <select class="sp-select" data-sel="h">${hourOpts(selHour)}</select>
+            <span class="sp-colon">:</span>
+            <select class="sp-select" data-sel="m">${minOpts(selMin)}</select>
+          </div>
+        </div>
+        <div class="sp-remind">
+          <div class="r-label"><b>提醒我</b>到点弹系统通知</div>
+          <button class="sp-toggle ${remindOn ? 'on' : ''}" data-remind-toggle type="button"><i></i></button>
+        </div>
+        <div class="sp-remind" style="${remindOn ? '' : 'display:none;'}" data-remind-time>
+          <div class="r-label">提醒时间</div>
+          <div class="sp-time-wrap">
+            <select class="sp-select" data-sel="rh">${hourOpts(remindHour)}</select>
+            <span class="sp-colon">:</span>
+            <select class="sp-select" data-sel="rm">${minOpts(remindMin)}</select>
+          </div>
+        </div>
+        <div class="sp-actions">
+          <button class="sp-btn clear" data-pop-clear type="button">清除</button>
+          <button class="sp-btn ok" data-pop-ok type="button">确定</button>
+        </div>
+      </div>`
+  }
+
+  function calGrid() {
+    const first = new Date(calCursor.getFullYear(), calCursor.getMonth(), 1)
+    let monday = addDays(first, (first.getDay() + 6) % 7 === 0 ? 0 : -((first.getDay() + 6) % 7))
+    let html = ''
+    for (let i = 0; i < 42; i++) {
+      const d = addDays(monday, i)
+      const inMonth = d.getMonth() === calCursor.getMonth()
+      const cls = ['sp-day', !inMonth ? 'out' : '', isoKey(d) === isoKey(new Date()) ? 'today' : '', selDay && isoKey(d) === isoKey(selDay) ? 'sel' : '', d < today ? 'dim' : ''].filter(Boolean).join(' ')
+      html += `<button class="${cls}" data-day="${isoKey(d)}" type="button">${d.getDate()}</button>`
+    }
+    return html
+  }
+  const hourOpts = (v) => Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === v ? 'selected' : ''}>${pad(h)}</option>`).join('')
+  const minOpts = (v) => Array.from({ length: 12 }, (_, i) => { const m = i * 5; return `<option value="${m}" ${m === v ? 'selected' : ''}>${pad(m)}</option>` }).join('')
+
+  const popRoot = $('#popRoot')
+  popRoot.addEventListener('click', (e) => {
+    if (!popup) return
+    const chip = e.target.closest('[data-quick]')
+    if (chip) {
+      const q = chip.dataset.quick
+      const base = q === 'today' ? today : q === 'tmr' ? addDays(today, 1) : addDays(today, (8 - today.getDay()) % 7 + 7)
+      // 下周一：找到下一个周一
+      selDay = q === 'week' ? nextMonday() : base
+      calCursor = startOfDay(selDay)
+      renderPopup()
+      return
+    }
+    const day = e.target.closest('[data-day]')
+    if (day) {
+      const [y, m, d] = day.dataset.day.split('-').map(Number)
+      selDay = new Date(y, m - 1, d)
+      calCursor = startOfDay(selDay)
+      renderPopup()
+      return
+    }
+    if (e.target.closest('[data-cal="prev"]')) { calCursor = new Date(calCursor.getFullYear(), calCursor.getMonth() - 1, 1); renderPopup(); return }
+    if (e.target.closest('[data-cal="next"]')) { calCursor = new Date(calCursor.getFullYear(), calCursor.getMonth() + 1, 1); renderPopup(); return }
+    if (e.target.closest('[data-remind-toggle]')) { remindOn = !remindOn; renderPopup(); return }
+    if (e.target.closest('[data-pop-clear]')) { applyClear(); return }
+    if (e.target.closest('[data-pop-ok]')) { applySchedule(); return }
+    if (e.target.closest('[data-popmask]')) { closePopup(); return }
+  })
+  popRoot.addEventListener('change', (e) => {
+    const sel = e.target.closest('[data-sel]')
+    if (!sel || !popup) return
+    const v = Number(sel.value)
+    if (sel.dataset.sel === 'h') selHour = v
+    else if (sel.dataset.sel === 'm') selMin = v
+    else if (sel.dataset.sel === 'rh') remindHour = v
+    else if (sel.dataset.sel === 'rm') remindMin = v
+  })
+
+  function nextMonday() {
+    const d = addDays(today, 1)
+    while (d.getDay() !== 1) d.setDate(d.getDate() + 1)
+    return startOfDay(d)
+  }
+
+  function applySchedule() {
+    const t = todos.find((x) => x.id === popup.todoId)
+    if (!t) { closePopup(); return }
+    if (!selDay) { closePopup(); return }
+    const due = new Date(selDay); due.setHours(selHour, selMin, 0, 0)
+    t.due_at = due.getTime()
+    t.remind_at = remindOn ? (() => { const r = new Date(selDay); r.setHours(remindHour, remindMin, 0, 0); return r.getTime() })() : null
+    closePopup()
+    render()
+    toast(remindOn ? `已设截止 ${fmtDay(due)} ${fmtHM(due.getTime())}，提醒 ${fmtHM(t.remind_at)}` : `已设截止 ${fmtDay(due)} ${fmtHM(due.getTime())}`)
+  }
+
+  function applyClear() {
+    const t = todos.find((x) => x.id === popup.todoId)
+    if (t) { t.due_at = null; t.remind_at = null }
+    closePopup()
+    render()
+    toast('已清除截止与提醒')
+  }
+
+  // ===== toast =====
+  function toast(msg, actionLabel) {
+    const el = $('#toast')
+    $('#toastMsg').textContent = msg
+    const btn = $('#toastAction')
+    if (actionLabel) {
+      btn.textContent = actionLabel
+      btn.style.display = ''
+    } else btn.style.display = 'none'
+    el.classList.add('show')
+    clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => el.classList.remove('show'), 2800)
+  }
+  $('#toastAction').addEventListener('click', () => {
+    if (undoStack) {
+      const { items, index } = undoStack
+      const t0 = todos[Math.min(index, todos.length - 1)]
+      let at = t0 ? todos.indexOf(t0) + 1 : todos.length
+      items.forEach((it, i) => todos.splice(at + i, 0, it))
+      undoStack = null
+      render()
+    }
+    $('#toast').classList.remove('show')
+  })
+
+  // ===== 标签切换 =====
+  $$('.filter-tab').forEach((b) => b.addEventListener('click', () => { view = b.dataset.view; closePopup(); subAddParentId = null; editingId = null; render() }))
+
+  // ===== 主题切换 =====
+  $('#themeBtn').addEventListener('click', () => {
+    const cur = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'
+    document.documentElement.dataset.theme = cur
+  })
+
+  // ===== 重置 =====
+  $('#resetBtn').addEventListener('click', () => {
+    todos.length = 0
+    todos.push(...seed.map((s) => mk({ ...s })))
+    view = 'pending'
+    closePopup()
+    subAddParentId = null
+    editingId = null
+    render()
+    toast('已重置演示数据')
+  })
+
+  render()
+})()
+</script>
+</body>
+</html>

@@ -24,6 +24,7 @@ mod shortcut;
 pub mod signing;
 mod sticky_window;
 mod sysmon;
+mod todo_reminder;
 mod tray;
 pub mod updater;
 mod xhub_api;
@@ -377,6 +378,9 @@ pub fn run() {
             // 启动倒计时后台驱动线程（每秒扫描到期项，托盘/隐藏时不受 WebView 节流影响）
             countdown_ticker::start(app.handle().clone());
 
+            // 启动待办提醒后台线程（remind_at 到点发系统通知 + 前端 toast）
+            todo_reminder::start(app.handle().clone());
+
             // 启动剪贴板监听线程（启动零加载历史，仅剪贴板变化时落库）
             clipboard::start_monitor(app.handle().clone());
 
@@ -448,6 +452,7 @@ pub fn run() {
             commands::toggle_todo,
             commands::update_todo,
             commands::delete_todo,
+            commands::schedule_todo,
             commands::list_stickies,
             commands::save_sticky,
             commands::get_detached_stickies,

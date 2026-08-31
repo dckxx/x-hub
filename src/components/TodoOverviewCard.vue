@@ -7,7 +7,8 @@ const props = defineProps<{ onOpenDetail?: () => void }>()
 
 const store = useStore()
 
-const todos = computed(() => store.state.todos)
+// 只统计顶级待办：子待办挂在父条目下展示进度，不进总盘子
+const todos = computed(() => store.state.todos.filter((t) => t.parent_id == null))
 
 const total = computed(() => todos.value.length)
 const doneCount = computed(() => todos.value.filter((t) => t.done).length)

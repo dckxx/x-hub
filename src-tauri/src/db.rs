@@ -70,6 +70,12 @@ fn migrate(conn: &Connection) -> Result<()> {
           title TEXT NOT NULL,
           done INTEGER NOT NULL DEFAULT 0,
           priority INTEGER NOT NULL DEFAULT 0,
+          -- 截止 / 提醒时刻（毫秒时间戳，均可空）；remind_fired 防重复提醒
+          due_at INTEGER,
+          remind_at INTEGER,
+          remind_fired INTEGER NOT NULL DEFAULT 0,
+          -- 子待办父级（删除父条目时经外键级联删除子条目）
+          parent_id INTEGER REFERENCES todos(id) ON DELETE CASCADE,
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
           updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
           completed_at TEXT
@@ -171,6 +177,9 @@ fn migrate(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
         CREATE INDEX IF NOT EXISTS idx_todos_created ON todos(created_at DESC);
+        -- 注意：idx_todos_parent / idx_todos_remind 不能放进本批次——老库的 todos 表
+        -- 尚无 parent_id/remind_at 列，CREATE INDEX 会在补列迁移前失败；
+        -- 两者统一在 migrate() 尾部（ALTER 补列之后）创建。
         CREATE INDEX IF NOT EXISTS idx_countdowns_end ON countdowns(end_at);
         CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
         CREATE INDEX IF NOT EXISTS idx_clipboard_updated ON clipboard_history(updated_at DESC);
@@ -300,12 +309,46 @@ fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    // 待办表补截止/提醒/子待办列（v0.3.4，ALTER TABLE ADD COLUMN 幂等；
+    // parent_id 带 REFERENCES 子句时 SQLite 要求默认值为 NULL，恰好就是所需默认）
+    let todo_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(todos)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !todo_cols.iter().any(|c| c == "due_at") {
+        conn.execute("ALTER TABLE todos ADD COLUMN due_at INTEGER", [])?;
+    }
+    if !todo_cols.iter().any(|c| c == "remind_at") {
+        conn.execute("ALTER TABLE todos ADD COLUMN remind_at INTEGER", [])?;
+    }
+    if !todo_cols.iter().any(|c| c == "remind_fired") {
+        conn.execute(
+            "ALTER TABLE todos ADD COLUMN remind_fired INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    if !todo_cols.iter().any(|c| c == "parent_id") {
+        conn.execute(
+            "ALTER TABLE todos ADD COLUMN parent_id INTEGER REFERENCES todos(id) ON DELETE CASCADE",
+            [],
+        )?;
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_todos_parent ON todos(parent_id)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_todos_remind ON todos(remind_at)",
+        [],
+    )?;
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::params;
 
     #[test]
     fn fresh_db_has_unified_resources() {
@@ -401,6 +444,67 @@ mod tests {
             )
             .unwrap();
         assert_eq!(apps, 2);
+    }
+
+    #[test]
+    fn legacy_todos_schema_migrates() {
+        // 构造旧版库：todos 表无 due_at/remind_at/remind_fired/parent_id 列（v0.3.3 及更早），
+        // 且已有数据。迁移必须先补列、后建引用新列的索引——若 CREATE INDEX 混在
+        // migrate() 开头的建表批次里，老库会因「no such column: parent_id」启动崩溃。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE todos (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              title TEXT NOT NULL,
+              done INTEGER NOT NULL DEFAULT 0,
+              priority INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+              completed_at TEXT
+            );
+            INSERT INTO todos (title, done) VALUES ('迁移前的老待办', 0);
+            ",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        // 新列已补齐
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(todos)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap();
+        for col in ["due_at", "remind_at", "remind_fired", "parent_id"] {
+            assert!(cols.iter().any(|c| c == col), "缺列 {col}");
+        }
+
+        // 引用新列的索引已创建
+        for idx in ["idx_todos_parent", "idx_todos_remind"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                    params![idx],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "缺索引 {idx}");
+        }
+
+        // 老数据完好，且新列取默认值
+        let (title, due, parent): (String, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT title, due_at, parent_id FROM todos WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "迁移前的老待办");
+        assert_eq!(due, None);
+        assert_eq!(parent, None);
     }
 
     #[test]

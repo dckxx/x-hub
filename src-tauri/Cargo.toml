@@ -31,7 +31,7 @@ opener = "0.7"
 rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 dirs = "6"
 chrono = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "native-tls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net"] }
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = { version = "0.3", features = ["io"] }
@@ -63,3 +63,10 @@ winreg = "0.52"
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

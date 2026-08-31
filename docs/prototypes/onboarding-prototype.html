@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>x-hub · 首次使用引导原型</title>
+<style>
+  :root {
+    --accent: #5b5bf5;
+    --bg-page: #eceff6;
+    --bg-sidebar: rgba(255,255,255,.62);
+    --bg-card: rgba(255,255,255,.74);
+    --bg-card-solid: rgba(255,255,255,.88);
+    --bg-card-soft: rgba(255,255,255,.55);
+    --input-bg: rgba(255,255,255,.86);
+    --text-1: #26231d;
+    --text-2: #57524a;
+    --text-3: #8d877d;
+    --border-soft: rgba(255,255,255,.55);
+    --border-strong: rgba(40,35,60,.22);
+    --brand-50: color-mix(in srgb, var(--accent) 12%, transparent);
+    --brand-glow: color-mix(in srgb, var(--accent) 18%, transparent);
+    --scrim: rgba(38,35,29,.48);
+    --shadow-card: 0 6px 24px rgba(40,35,60,.10), 0 2px 6px rgba(40,35,60,.06);
+    --shadow-pop: 0 18px 50px rgba(40,35,60,.22), 0 4px 14px rgba(40,35,60,.12);
+    --c-green: #22c55e; --c-green-ink: #15803d; --c-green-soft: #bbf7d0;
+    --c-yellow: #facc15; --c-yellow-ink: #806600; --c-yellow-soft: #fde68a;
+    --c-red: #ef4444; --c-red-ink: #b91c1c; --c-red-soft: #fecaca;
+    --c-blue: #3b82f6; --c-blue-ink: #1d4ed8; --c-blue-soft: #bfdbfe;
+    --c-orange: #f59e0b; --c-orange-ink: #b45309; --c-orange-soft: #fde68a;
+    --c-purple: #a78bfa; --c-purple-ink: #6d28d9; --c-purple-soft: #ddd6fe;
+    --c-pink: #ec4899; --c-pink-ink: #be185d; --c-pink-soft: #fbcfe8;
+    --c-gray: #9ca3af; --c-gray-ink: #4b5563; --c-gray-soft: #e5e7eb;
+    --fs-global: 1;
+  }
+  [data-theme="dark"] {
+    --accent: #8b8bff;
+    --bg-page: #12131b;
+    --bg-sidebar: rgba(255,255,255,.08);
+    --bg-card: rgba(255,255,255,.12);
+    --bg-card-solid: rgba(255,255,255,.20);
+    --bg-card-soft: rgba(255,255,255,.10);
+    --input-bg: #1d1e29;
+    --text-1: #f2efe8;
+    --text-2: #ccc8bf;
+    --text-3: #9b968c;
+    --border-soft: rgba(255,255,255,.16);
+    --border-strong: rgba(255,255,255,.28);
+    --brand-50: color-mix(in srgb, var(--accent) 16%, #16161f);
+    --brand-glow: color-mix(in srgb, var(--accent) 28%, transparent);
+    --scrim: rgba(0,0,0,.55);
+    --shadow-card: 0 6px 24px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.25);
+    --shadow-pop: 0 18px 50px rgba(0,0,0,.55), 0 4px 14px rgba(0,0,0,.35);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { font-size: calc(16px * var(--fs-global)); }
+  body {
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg-page);
+    color: var(--text-1);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* ============ App shell ============ */
+  #app {
+    position: fixed; inset: 0;
+    display: grid;
+    grid-template-rows: 48px 1fr;
+    grid-template-columns: 220px 1fr;
+    grid-template-areas: "title title" "sidebar main";
+    transition: grid-template-columns .18s;
+  }
+  #app.sidebar-collapsed { grid-template-columns: 56px 1fr; }
+  .titlebar {
+    grid-area: title;
+    -webkit-app-region: drag;
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 14px; font-size: 15px; font-weight: 700;
+  }
+  .titlebar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  .titlebar .win-ctrl { margin-left: auto; display: flex; gap: 4px; -webkit-app-region: no-drag; }
+  .titlebar .win-ctrl span {
+    width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+    font-size: 11px; color: var(--text-2); cursor: pointer;
+  }
+  .titlebar .win-ctrl span:hover { background: var(--bg-card-solid); }
+  /* ============ Sidebar ============ */
+  .sidebar {
+    grid-area: sidebar;
+    background: var(--bg-sidebar);
+    backdrop-filter: blur(18px);
+    border-right: 1px solid var(--border-soft);
+    display: flex; flex-direction: column;
+    padding: 10px 8px; gap: 2px;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 9px;
+    font-size: 13px; color: var(--text-2); cursor: pointer;
+    white-space: nowrap; overflow: hidden;
+  }
+  .nav-item svg { flex-shrink: 0; }
+  .nav-item:hover { background: var(--bg-card-soft); color: var(--text-1); }
+  .nav-item.active { background: var(--brand-50); color: var(--accent); font-weight: 600; }
+  #app.sidebar-collapsed .nav-item span.label { display: none; }
+  #app.sidebar-collapsed .nav-item { justify-content: center; padding: 8px 0; }
+  .sidebar .spacer { flex: 1; }
+  .sidebar .group-label { font-size: 11px; color: var(--text-3); padding: 8px 10px 4px; }
+  .nav-badge {
+    margin-left: auto; font-size: 10px; font-weight: 600; color: var(--accent);
+    background: var(--brand-50); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    padding: 1px 6px; border-radius: 999px;
+  }
+  #app.sidebar-collapsed .nav-badge, #app.sidebar-collapsed .group-label { display: none; }
+  /* ============ Main ============ */
+  .main {
+    grid-area: main; overflow: hidden; position: relative;
+    display: flex; flex-direction: column;
+  }
+  .view { height: 100%; overflow: auto; padding: 22px 26px; display: none; }
+  .view.active { display: block; animation: viewIn .22s ease; }
+  @keyframes viewIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .view-title { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+  .view-sub { font-size: 13px; color: var(--text-2); margin-bottom: 18px; }
+  /* dashboard mock */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border-soft);
+    border-radius: 16px; padding: 16px;
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(10px);
+    position: relative; overflow: hidden;
+  }
+  .card::before {
+    content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.6), transparent);
+  }
+  [data-theme="dark"] .card::before { background: linear-gradient(90deg, transparent, rgba(255,255,255,.14), transparent); }
+  .card h4 { font-size: 13px; font-weight: 600; color: var(--text-2); margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+  .card h4 svg { color: var(--accent); }
+  .clock-time { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; }
+  .clock-date { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 3px 8px; border-radius: 999px; }
+  .chip.green { background: var(--c-green-soft); color: var(--c-green-ink); }
+  .chip.yellow { background: var(--c-yellow-soft); color: var(--c-yellow-ink); }
+  .todo-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; }
+  .todo-row .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .todo-row.done { color: var(--text-3); text-decoration: line-through; }
+  .kbd {
+    font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+    padding: 2px 6px; border-radius: 5px; border: 1px solid var(--border-strong);
+    background: var(--input-bg); box-shadow: 0 1px 0 var(--border-strong);
+  }
+  /* ============ Onboarding dialog ============ */
+  .scrim {
+    position: fixed; inset: 0; background: var(--scrim);
+    display: grid; place-items: center; z-index: 50;
+    animation: fadeIn .2s ease;
+  }
+  .scrim.hidden { display: none; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .dialog {
+    width: 560px; max-width: calc(100vw - 48px);
+    background: var(--bg-card-solid);
+    border: 1px solid var(--border-soft);
+    border-radius: 18px;
+    box-shadow: var(--shadow-pop);
+    padding: 26px 28px 22px;
+    animation: pop .22s cubic-bezier(.2,.9,.3,1.2);
+  }
+  @keyframes pop { from { opacity: 0; transform: scale(.96) translateY(8px); } to { opacity: 1; transform: none; } }
+  .dialog .head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .dialog .head .logo { width: 30px; height: 30px; border-radius: 9px; background: var(--accent); display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 14px; }
+  .dialog h2 { font-size: 17px; font-weight: 700; }
+  .dialog .subtitle { font-size: 12px; color: var(--text-2); margin-bottom: 14px; }
+  .steps { display: flex; align-items: center; gap: 6px; margin-bottom: 20px; }
+  .steps .s-dot { height: 4px; flex: 1; border-radius: 999px; background: var(--bg-card-soft); border: 1px solid var(--border-soft); transition: background .2s; }
+  .steps .s-dot.on { background: var(--accent); border-color: var(--accent); }
+  .step { display: none; }
+  .step.active { display: block; animation: viewIn .2s ease; }
+  .step h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+  .opt-group { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .opt {
+    border: 1px solid var(--border-soft); background: var(--input-bg);
+    border-radius: 12px; padding: 12px 10px; cursor: pointer; text-align: center;
+    transition: border-color .15s, background .15s;
+  }
+  .opt:hover { border-color: var(--border-strong); }
+  .opt.on { border-color: var(--accent); background: var(--brand-50); box-shadow: 0 0 0 3px var(--brand-glow); }
+  .opt .icon { font-size: 18px; margin-bottom: 6px; }
+  .opt .name { font-size: 12px; font-weight: 600; }
+  .opt .desc { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+  .swatches { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+  .swatch { width: 26px; height: 26px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: transform .15s; }
+  .swatch:hover { transform: scale(1.12); }
+  .swatch.on { border-color: var(--text-1); box-shadow: 0 0 0 3px var(--brand-glow); }
+  .sw-label { font-size: 11px; color: var(--text-3); margin-right: 4px; }
+  .shortcut-row { display: flex; align-items: center; justify-content: space-between; padding: 9px 4px; border-bottom: 1px solid var(--border-soft); }
+  .shortcut-row:last-child { border-bottom: none; }
+  .shortcut-row .act { font-size: 13px; }
+  .shortcut-row .edit {
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+    font-size: 11px; color: var(--text-2);
+  }
+  .shortcut-row .edit:hover { color: var(--accent); }
+  .privacy-line {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--bg-card-soft); border: 1px solid var(--border-soft);
+    border-radius: 12px; padding: 14px; margin-bottom: 12px;
+  }
+  .privacy-line .shield { color: var(--c-green-ink); flex-shrink: 0; }
+  .privacy-line .t1 { font-size: 13px; font-weight: 600; }
+  .privacy-line .t2 { font-size: 11px; color: var(--text-2); margin-top: 2px; }
+  .switch-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 4px; }
+  .switch-row .t1 { font-size: 13px; font-weight: 600; }
+  .switch-row .t2 { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+  .switch {
+    width: 40px; height: 22px; border-radius: 999px; background: var(--bg-card-soft);
+    border: 1px solid var(--border-strong); cursor: pointer; position: relative; transition: background .2s;
+  }
+  .switch::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+    border-radius: 50%; background: var(--text-1); transition: transform .2s, background .2s;
+  }
+  .switch.on { background: var(--accent); border-color: var(--accent); }
+  .switch.on::after { transform: translateX(18px); background: #fff; }
+  .module-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .module-card {
+    display: flex; align-items: center; gap: 7px;
+    border: 1px solid var(--border-soft); background: var(--input-bg);
+    border-radius: 10px; padding: 8px 10px; cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .module-card:hover { border-color: var(--border-strong); }
+  .module-card.on { border-color: var(--accent); background: var(--brand-50); box-shadow: 0 0 0 2px var(--brand-glow); }
+  .module-card .m-icon { font-size: 15px; line-height: 1; }
+  .module-card .m-name { font-size: 12px; font-weight: 600; }
+  .module-card .m-check { margin-left: auto; font-size: 12px; font-weight: 700; color: var(--accent); }
+  .switch-row .btn { padding: 6px 12px; font-size: 12px; }
+  .dialog .foot { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
+  .dialog .foot .tip { font-size: 11px; color: var(--text-3); }
+  .btn {
+    border: none; border-radius: 9px; padding: 8px 16px; font-size: 13px; font-weight: 600;
+    cursor: pointer; font-family: inherit; transition: filter .15s, background .15s;
+  }
+  .btn.ghost { background: transparent; color: var(--text-2); }
+  .btn.ghost:hover { background: var(--bg-card-soft); color: var(--text-1); }
+  .btn.primary { background: var(--accent); color: #fff; box-shadow: 0 2px 8px var(--brand-glow); }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.link { background: transparent; color: var(--accent); font-weight: 600; }
+  /* ============ Help view ============ */
+  .help-wrap { max-width: 860px; }
+  .help-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 18px; }
+  .help-section {
+    background: var(--bg-card); border: 1px solid var(--border-soft);
+    border-radius: 14px; padding: 16px; box-shadow: var(--shadow-card);
+  }
+  .help-section h4 { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+  .help-section h4 svg { color: var(--accent); }
+  .help-section .line { font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
+  .help-section .line b { color: var(--text-1); }
+  .help-section .line .pos { font-size: 11px; color: var(--text-3); }
+  .shortcut-table { margin-top: 18px; border: 1px solid var(--border-soft); border-radius: 14px; overflow: hidden; background: var(--bg-card); box-shadow: var(--shadow-card); }
+  .shortcut-table .st-head { display: grid; grid-template-columns: 220px 1fr; padding: 10px 16px; font-size: 11px; font-weight: 700; color: var(--text-3); background: var(--bg-card-soft); border-bottom: 1px solid var(--border-soft); }
+  .shortcut-table .st-row { display: grid; grid-template-columns: 220px 1fr; padding: 9px 16px; font-size: 12.5px; border-bottom: 1px solid var(--border-soft); align-items: center; }
+  .shortcut-table .st-row:last-child { border-bottom: none; }
+  .shortcut-table .st-row .desc { color: var(--text-2); }
+  .help-actions { margin-top: 26px; display: flex; gap: 10px; }
+  .divider { height: 1px; background: var(--border-soft); margin: 22px 0; }
+  .section-tag { font-size: 12px; font-weight: 600; margin-top: 22px; color: var(--text-2); }
+  /* toast */
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: var(--bg-card-solid); border: 1px solid var(--border-soft);
+    padding: 10px 18px; border-radius: 12px; font-size: 12.5px; box-shadow: var(--shadow-pop);
+    opacity: 0; pointer-events: none; transition: all .25s ease; z-index: 99;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .demo-pill {
+    position: fixed; top: 56px; right: 14px; z-index: 40;
+    font-size: 11px; color: var(--text-2); background: var(--bg-card-solid);
+    border: 1px solid var(--border-soft); border-radius: 999px; padding: 4px 10px;
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="titlebar">
+    <span class="dot"></span>
+    <span>x-hub</span>
+    <div class="win-ctrl">
+      <span>—</span><span>▢</span><span>✕</span>
+    </div>
+  </div>
+
+  <aside class="sidebar" id="sidebar">
+    <div class="group-label">工作</div>
+    <div class="nav-item" data-view="dashboard"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span class="label">工作台</span></div>
+    <div class="nav-item" data-view="notes"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M15 3v5h5"/></svg><span class="label">速记</span></div>
+    <div class="nav-item" data-view="launcher"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg><span class="label">速达</span></div>
+    <div class="nav-item" data-view="ext"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/><circle cx="12" cy="12" r="3.5"/></svg><span class="label">扩展中心</span></div>
+    <div class="spacer"></div>
+    <div class="nav-item" data-view="help"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg><span class="label">帮助</span><span class="nav-badge">新</span></div>
+    <div class="nav-item" data-view="settings"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.2 2h-.4a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.2.35a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.2.35a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.2-.35a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.2-.35a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg><span class="label">设置</span></div>
+  </aside>
+
+  <main class="main">
+    <!-- Dashboard view -->
+    <section class="view active" id="view-dashboard">
+      <div class="view-title">工作台</div>
+      <div class="view-sub">欢迎回来 · 数据全部存储在本地</div>
+      <div class="grid">
+        <div class="card">
+          <h4><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>时钟</h4>
+          <div class="clock-time" id="clockTime">--:--</div>
+          <div class="clock-date" id="clockDate">——</div>
+        </div>
+        <div class="card">
+          <h4><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v4M18 2v4M3 9h18M5 4h14a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>待办清单</h4>
+          <div class="todo-row"><span class="dot" style="background:var(--c-red)"></span>整理本周复盘</div>
+          <div class="todo-row"><span class="dot" style="background:var(--c-yellow)"></span>给文档加快捷键表</div>
+          <div class="todo-row done"><span class="dot" style="background:var(--c-gray)"></span>配置 AI 供应商</div>
+          <div style="margin-top:8px"><span class="chip green">完成 1/3</span></div>
+        </div>
+        <div class="card">
+          <h4><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h12M3 18h7"/></svg>速记</h4>
+          <div style="font-size:13px;line-height:1.7">✏️ x-hub 首次引导方案<br>📌 快捷键速查表<br>💡 常用提示词收集</div>
+        </div>
+        <div class="card">
+          <h4><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>速达</h4>
+          <div style="font-size:13px;line-height:1.9">
+            <span class="chip green">应用</span> 12 · <span class="chip" style="background:var(--c-blue-soft);color:var(--c-blue-ink)">网页</span> 8 · <span class="chip" style="background:var(--c-orange-soft);color:var(--c-orange-ink)">文件</span> 15
+          </div>
+        </div>
+        <div class="card">
+          <h4><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>倒计时</h4>
+          <div style="font-size:24px;font-weight:700" id="countdown">25 : 00</div>
+          <div style="font-size:11px;color:var(--text-3);margin-top:2px">专注番茄钟 · 剩余</div>
+        </div>
+        <div class="card">
+          <h4><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>最近使用</h4>
+          <div style="font-size:12.5px;color:var(--text-2);line-height:1.9">VS Code · Chrome · 剪贴板历史 · 提示词百宝箱</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Help view -->
+    <section class="view" id="view-help">
+      <div class="view-title">帮助 · 功能手册</div>
+      <div class="view-sub">每个模块三句话：是什么、怎么用、设置在哪。也可以随时重看首次引导。</div>
+
+      <div class="help-wrap">
+        <div class="shortcut-table">
+          <div class="st-head"><span>快捷键</span><span>功能</span></div>
+          <div class="st-row"><span><span class="kbd">Ctrl</span> + <span class="kbd">K</span></span><span class="desc">唤起全局搜索（资源/笔记/待办）</span></div>
+          <div class="st-row"><span><span class="kbd">Ctrl</span> + <span class="kbd">Shift</span> + <span class="kbd">K</span></span><span class="desc">唤起 / 收起 AI 对话面板</span></div>
+          <div class="st-row"><span><span class="kbd">Ctrl</span> + <span class="kbd">Shift</span> + <span class="kbd">Space</span></span><span class="desc">显示 / 隐藏主窗口</span></div>
+          <div class="st-row"><span><span class="kbd">Ctrl</span> + <span class="kbd">`</span></span><span class="desc">唤起剪贴板历史浮层</span></div>
+          <div class="st-row"><span><span class="kbd">Esc</span></span><span class="desc">关闭弹窗</span></div>
+        </div>
+
+        <div class="section-tag">功能模块</div>
+        <div class="help-grid">
+          <div class="help-section">
+            <h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>工作台</h4>
+            <div class="line">时钟/天气/系统资源/便签/待办/提示词的<b>自由编排主页</b>。</div>
+            <div class="line">在布局编辑器里<b>拖拽卡片、调整宽高</b>，自定义你的首页。</div>
+            <div class="line pos">设置 → 工作台 → 布局编辑器</div>
+          </div>
+          <div class="help-section">
+            <h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M15 3v5h5"/></svg>速记</h4>
+            <div class="line">纯文本 + <b>Markdown</b> 双模式笔记，自动保存。</div>
+            <div class="line">用<b>标签</b>归类，顶部可切换预览/编辑。</div>
+            <div class="line pos">无需配置 · 侧栏「速记」进入</div>
+          </div>
+          <div class="help-section">
+            <h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>速达</h4>
+            <div class="line">应用/网页/文件<b>三类资源合一</b>，一键启动。</div>
+            <div class="line">把 exe 拖进来自动提取图标；也可<b>扫描已装应用</b>批量导入。</div>
+            <div class="line pos">设置 → 常规（数据与导入）</div>
+          </div>
+          <div class="help-section">
+            <h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M4 8h16v12H4z"/></svg>剪贴板</h4>
+            <div class="line">自动记录<b>文本/图片/文件</b>历史，一键回贴。</div>
+            <div class="line">按 <span class="kbd">Ctrl</span> + <span class="kbd">`</span> 唤起浮层。</div>
+            <div class="line pos">设置 → 剪贴板（记录开关 / 清理）</div>
+          </div>
+          <div class="help-section">
+            <h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>倒计时</h4>
+            <div class="line">时长/定时/每天/间隔<b>四种模式</b>，后台到点通知。</div>
+            <div class="line">可浮起为<b>透明水罐浮窗</b>，置顶显示。</div>
+            <div class="line pos">设置 → 常规（提示音开关）</div>
+          </div>
+          <div class="help-section">
+            <h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.7L20 10l-6.1 1.3L12 17l-1.9-5.7L4 10l6.1-1.3z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>AI 对话</h4>
+            <div class="line">OpenAI 兼容<b>流式对话</b>，支持 DeepSeek/Ollama 等。</div>
+            <div class="line">按 <span class="kbd">Ctrl</span> + <span class="kbd">Shift</span> + <span class="kbd">K</span> 唤起，可停靠四方位。</div>
+            <div class="line pos">设置 → AI助手（供应商/模型/Key）</div>
+          </div>
+          <div class="help-section">
+            <h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/><circle cx="12" cy="12" r="3.5"/></svg>扩展</h4>
+            <div class="line">安装第三方扩展（module/视图/浮窗），扩展桌面能力。</div>
+            <div class="line">扩展中心按 <b>GitHub 地址下载 zip</b> 安装。</div>
+            <div class="line pos">设置 → 扩展（权限与卸载）</div>
+          </div>
+          <div class="help-section">
+            <h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.2 2h-.4a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.2.35a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.2.35a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.2-.35a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.2-.35a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>设置</h4>
+            <div class="line"><b>10 个分类</b>管所有偏好：外观/快捷键/AI/数据/备份。</div>
+            <div class="line">改主题三轴、全局快捷键、数据路径、开机自启动。</div>
+            <div class="line pos">侧栏底部「设置」进入</div>
+          </div>
+        </div>
+
+        <div class="help-actions">
+          <button class="btn primary" id="reopenOnboarding">重新查看首次引导</button>
+          <button class="btn ghost" id="backToDashboard">返回工作台</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- placeholders for other nav views -->
+    <section class="view" id="view-notes"><div class="view-title">速记</div><div class="view-sub">（原型占位 · 点击侧栏帮助查看引导效果）</div></section>
+    <section class="view" id="view-launcher"><div class="view-title">速达</div><div class="view-sub">（原型占位 · 点击侧栏帮助查看引导效果）</div></section>
+    <section class="view" id="view-ext"><div class="view-title">扩展中心</div><div class="view-sub">（原型占位 · 点击侧栏帮助查看引导效果）</div></section>
+    <section class="view" id="view-settings"><div class="view-title">设置</div><div class="view-sub">（原型占位 · 点击侧栏帮助查看引导效果）</div></section>
+  </main>
+</div>
+
+<div class="demo-pill">交互原型 · 点侧栏「帮助」看手册 · 可拖动窗口模拟主题</div>
+
+<!-- Onboarding dialog -->
+<div class="scrim" id="obScrim">
+  <div class="dialog" id="obDialog">
+    <div class="head">
+      <div class="logo">x</div>
+      <h2>欢迎使用 x-hub</h2>
+    </div>
+    <div class="subtitle">五步搞定常用设置，之后随时可在「帮助」里重看 · 预计 60 秒</div>
+
+    <div class="steps" id="obSteps">
+      <div class="s-dot on"></div>
+      <div class="s-dot"></div>
+      <div class="s-dot"></div>
+      <div class="s-dot"></div>
+      <div class="s-dot"></div>
+    </div>
+
+    <!-- Step 1 外观 -->
+    <div class="step active" data-step="1">
+      <h3>选择外观</h3>
+      <div class="opt-group">
+        <div class="opt on" data-mode="light"><div class="icon">☀️</div><div class="name">亮色</div><div class="desc">清爽明亮</div></div>
+        <div class="opt" data-mode="dark"><div class="icon">🌙</div><div class="name">暗色</div><div class="desc">护眼夜间</div></div>
+        <div class="opt" data-mode="system"><div class="icon">🖥️</div><div class="name">跟随系统</div><div class="desc">自动切换</div></div>
+      </div>
+      <div class="swatches" style="margin-top:14px">
+        <span class="sw-label">强调色</span>
+        <div class="swatch on" data-color="#5b5bf5" style="background:#5b5bf5"></div>
+        <div class="swatch" data-color="#3b82f6" style="background:#3b82f6"></div>
+        <div class="swatch" data-color="#22c55e" style="background:#22c55e"></div>
+        <div class="swatch" data-color="#f59e0b" style="background:#f59e0b"></div>
+        <div class="swatch" data-color="#ec4899" style="background:#ec4899"></div>
+        <div class="swatch" data-color="#ef4444" style="background:#ef4444"></div>
+      </div>
+    </div>
+
+    <!-- Step 2 快捷键 -->
+    <div class="step" data-step="2">
+      <h3>全局快捷键</h3>
+      <div style="font-size:12px;color:var(--text-2);margin-bottom:6px">点击右侧即可修改（原型仅演示）</div>
+      <div class="shortcut-row"><span class="act">唤起全局搜索</span><span class="edit"><span class="kbd">Ctrl</span> + <span class="kbd">K</span> <span style="color:var(--text-3)">· 改</span></span></div>
+      <div class="shortcut-row"><span class="act">唤起 AI 对话</span><span class="edit"><span class="kbd">Ctrl</span> + <span class="kbd">Shift</span> + <span class="kbd">K</span> <span style="color:var(--text-3)">· 改</span></span></div>
+      <div class="shortcut-row"><span class="act">显示 / 隐藏主窗口</span><span class="edit"><span class="kbd">Ctrl</span> + <span class="kbd">Shift</span> + <span class="kbd">Space</span> <span style="color:var(--text-3)">· 改</span></span></div>
+      <div class="shortcut-row"><span class="act">唤起剪贴板历史</span><span class="edit"><span class="kbd">Ctrl</span> + <span class="kbd">`</span> <span style="color:var(--text-3)">· 改</span></span></div>
+    </div>
+
+    <!-- Step 3 工作台模块自定义 -->
+    <div class="step" data-step="3">
+      <h3>工作台模块</h3>
+      <div style="font-size:12px;color:var(--text-2);margin-bottom:10px">勾选你常用的卡片，工作台会按需展示 · 之后可在布局编辑器里自由拖拽调整</div>
+      <div class="module-grid">
+        <div class="module-card on"><span class="m-icon">🕐</span><span class="m-name">时钟</span><span class="m-check">✓</span></div>
+        <div class="module-card on"><span class="m-icon">📋</span><span class="m-name">待办清单</span><span class="m-check">✓</span></div>
+        <div class="module-card on"><span class="m-icon">✍️</span><span class="m-name">速记</span><span class="m-check">✓</span></div>
+        <div class="module-card on"><span class="m-icon">⚡</span><span class="m-name">速达</span><span class="m-check">✓</span></div>
+        <div class="module-card on"><span class="m-icon">⏳</span><span class="m-name">倒计时</span><span class="m-check">✓</span></div>
+        <div class="module-card on"><span class="m-icon">🧩</span><span class="m-name">扩展卡片</span><span class="m-check">✓</span></div>
+        <div class="module-card"><span class="m-icon">🌤️</span><span class="m-name">天气</span><span class="m-check"></span></div>
+        <div class="module-card"><span class="m-icon">📊</span><span class="m-name">系统资源</span><span class="m-check"></span></div>
+      </div>
+    </div>
+
+    <!-- Step 4 扩展安装 -->
+    <div class="step" data-step="4">
+      <h3>安装扩展</h3>
+      <div class="privacy-line">
+        <svg class="shield" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2z"/><path d="M7.5 12.5 11 16l5-6"/></svg>
+        <div>
+          <div class="t1">为工作台装上你想要的工具</div>
+          <div class="t2">在「扩展中心」搜索安装第三方扩展（模块 / 视图 / 浮窗），扩展能力来自 GitHub 上开源的 x-hub 扩展包。</div>
+        </div>
+      </div>
+      <div class="switch-row">
+        <div>
+          <div class="t1">快速上手一个官方示例扩展</div>
+          <div class="t2">安装即在工作台出现对应卡片</div>
+        </div>
+        <div class="switch" id="extDemo"></div>
+      </div>
+    </div>
+
+    <!-- Step 5 数据与隐私 -->
+    <div class="step" data-step="5">
+      <h3>数据与隐私</h3>
+      <div class="privacy-line">
+        <svg class="shield" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3.5V11c0 5-3.4 9.2-8 11-4.6-1.8-8-6-8-11V5.5z"/><path d="M9 12l2 2 4-4"/></svg>
+        <div>
+          <div class="t1">所有数据默认存储在本地，不上传云端</div>
+          <div class="t2">笔记、速达、剪贴板、倒计时、AI 会话都在你的电脑上。AI 仅在你主动对话时发送内容。</div>
+        </div>
+      </div>
+      <div class="switch-row">
+        <div>
+          <div class="t1">开机自启动</div>
+          <div class="t2">登录后静默驻留系统托盘</div>
+        </div>
+        <div class="switch" id="autoStart"></div>
+      </div>
+    </div>
+
+    <div class="foot">
+      <button class="btn ghost" id="skipBtn">跳过</button>
+      <span class="tip" style="margin-left:auto"></span>
+      <button class="btn primary" id="nextBtn">下一步</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  const $ = s => document.querySelector(s);
+  let step = 1;
+  const TOTAL = 5;
+
+  // clock mock
+  function tick() {
+    const d = new Date();
+    $('#clockTime').textContent = d.toTimeString().slice(0,5);
+    $('#clockDate').textContent = ['周日','周一','周二','周三','周四','周五','周六'][d.getDay()] + ' · ' + d.toLocaleDateString('zh-CN', {month:'long', day:'numeric'});
+  }
+  tick(); setInterval(tick, 1000);
+  let cd = 25*60;
+  setInterval(() => { cd = cd>0 ? cd-1 : 1500; const m=String(Math.floor(cd/60)).padStart(2,'0'); const s=String(cd%60).padStart(2,'0'); $('#countdown').textContent = m+' : '+s; }, 1000);
+
+  // onboarding flow
+  function showStep(n) {
+    step = n;
+    document.querySelectorAll('.step').forEach(el => el.classList.toggle('active', +el.dataset.step === n));
+    document.querySelectorAll('.s-dot').forEach((d,i) => d.classList.toggle('on', i < n));
+    $('#nextBtn').textContent = n === TOTAL ? '开始使用' : '下一步';
+  }
+  $('#nextBtn').addEventListener('click', () => {
+    if (step < TOTAL) showStep(step+1);
+    else closeOnboarding(true);
+  });
+  $('#skipBtn').addEventListener('click', () => closeOnboarding(true));
+  $('#obScrim').addEventListener('mousedown', e => { if (e.target === $('#obScrim')) closeOnboarding(true); });
+
+  function closeOnboarding(finished) {
+    $('#obScrim').classList.add('hidden');
+    const badge = document.querySelector('.nav-item[data-view="help"] .nav-badge');
+    if (badge) badge.remove();
+    toast(finished ? '首次引导已完成（onboarding_done = true）' : '已跳过首次引导');
+  }
+
+  // appearance options
+  document.querySelectorAll('.opt').forEach(o => o.addEventListener('click', () => {
+    document.querySelectorAll('.opt').forEach(x => x.classList.remove('on'));
+    o.classList.add('on');
+    const mode = o.dataset.mode;
+    if (mode === 'system') { document.documentElement.removeAttribute('data-theme'); }
+    else document.documentElement.setAttribute('data-theme', mode);
+  }));
+  document.querySelectorAll('.swatch').forEach(s => s.addEventListener('click', () => {
+    document.querySelectorAll('.swatch').forEach(x => x.classList.remove('on'));
+    s.classList.add('on');
+    document.documentElement.style.setProperty('--accent', s.dataset.color);
+  }));
+
+  // autostart switch
+  $('#autoStart').addEventListener('click', () => {
+    $('#autoStart').classList.toggle('on');
+    toast('自启动：' + ($('#autoStart').classList.contains('on') ? '已开启' : '已关闭'));
+  });
+
+  // workbench modules (step 3)
+  document.querySelectorAll('.module-card').forEach(c => c.addEventListener('click', () => {
+    c.classList.toggle('on');
+    c.querySelector('.m-check').textContent = c.classList.contains('on') ? '✓' : '';
+  }));
+
+  // extension demo switch (step 4)
+  $('#extDemo').addEventListener('click', () => {
+    $('#extDemo').classList.toggle('on');
+    toast('示例扩展：' + ($('#extDemo').classList.contains('on') ? '已安装' : '已移除'));
+  });
+
+  // view switching
+  function switchView(name) {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    const el = document.getElementById('view-' + name);
+    if (el) el.classList.add('active');
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === name));
+  }
+  document.querySelectorAll('.nav-item').forEach(n => n.addEventListener('click', () => {
+    switchView(n.dataset.view);
+    if (n.dataset.view === 'help') toast('帮助视图已打开 · 底部可重看首次引导');
+  }));
+
+  // reopen onboarding from help
+  $('#reopenOnboarding').addEventListener('click', () => { $('#obScrim').classList.remove('hidden'); toast('重新打开首次引导（手动重开入口）'); });
+  $('#backToDashboard').addEventListener('click', () => switchView('dashboard'));
+
+  // toast
+  let toastTimer;
+  function toast(msg) {
+    const t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+  }
+
+  // sidebar collapse on small width (demo convenience)
+  window.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!$('#obScrim').classList.contains('hidden')) closeOnboarding(false); } });
+</script>
+</body>
+</html>

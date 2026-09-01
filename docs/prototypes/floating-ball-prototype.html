@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>x-hub 桌面悬浮球 · 交互原型</title>
+<style>
+  :root {
+    --accent: #7c6cff;
+    --accent-2: #a78bfa;
+    --accent-glow: rgba(124, 108, 255, 0.55);
+    --text: #e8e6f5;
+    --text-dim: #9a97b5;
+    --card: rgba(30, 27, 58, 0.72);
+    --card-border: rgba(150, 140, 255, 0.18);
+    --danger: #ff5d6c;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; user-select: none; }
+
+  /* ---- 桌面背景：模拟系统桌面 ---- */
+  .desktop {
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(1200px 700px at 78% 12%, rgba(124, 108, 255, 0.20), transparent 60%),
+      radial-gradient(900px 600px at 12% 88%, rgba(30, 180, 200, 0.12), transparent 60%),
+      linear-gradient(135deg, #14122a 0%, #1b1836 45%, #101020 100%);
+    transition: background 0.5s;
+  }
+  .desktop::before {
+    content: ""; position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(150,140,255,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(150,140,255,0.04) 1px, transparent 1px);
+    background-size: 34px 34px;
+    pointer-events: none;
+  }
+  .hint {
+    position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
+    color: var(--text-dim); font-size: 13px; letter-spacing: 0.5px;
+    background: var(--card); border: 1px solid var(--card-border);
+    padding: 8px 18px; border-radius: 999px; backdrop-filter: blur(8px);
+    z-index: 5; text-align: center; pointer-events: none;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+  }
+  .hint b { color: var(--text); font-weight: 600; }
+
+  /* ---- 主窗口模拟 ---- */
+  .main-win {
+    position: fixed; left: 50%; top: 50%;
+    width: 520px; height: 340px; transform: translate(-50%, -50%);
+    background: var(--card); border: 1px solid var(--card-border);
+    border-radius: 16px; backdrop-filter: blur(14px);
+    display: flex; flex-direction: column;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.5);
+    transition: opacity 0.35s ease, transform 0.35s ease;
+    z-index: 20;
+  }
+  .main-win.hidden { opacity: 0; transform: translate(-50%, -50%) scale(0.94); pointer-events: none; }
+  .main-win .titlebar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-bottom: 1px solid var(--card-border);
+  }
+  .main-win .titlebar img { width: 20px; height: 20px; border-radius: 5px; }
+  .main-win .titlebar span { color: var(--text); font-size: 13px; font-weight: 600; flex: 1; }
+  .main-win .winbtn { color: var(--text-dim); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 6px; }
+  .main-win .winbtn:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+  .main-win .body { flex: 1; display: grid; place-items: center; color: var(--text-dim); font-size: 13px; }
+  .main-win .body .chip { display: flex; align-items: center; gap: 8px; }
+  .main-win .body .chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
+
+  /* ---- 设置面板（常规 → 悬浮球） ---- */
+  .settings {
+    position: fixed; right: 18px; top: 60px; width: 264px;
+    background: var(--card); border: 1px solid var(--card-border);
+    border-radius: 14px; backdrop-filter: blur(14px); padding: 14px;
+    z-index: 4; box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+  }
+  .settings h3 { color: var(--text); font-size: 13px; font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 7px; }
+  .settings h3 .tag { font-size: 10px; color: var(--accent-2); background: rgba(124,108,255,0.14); padding: 2px 7px; border-radius: 999px; font-weight: 500; }
+  .settings .row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-top: 1px solid rgba(150,140,255,0.08); }
+  .settings .row .lbl { color: var(--text); font-size: 12.5px; }
+  .settings .row .sub { color: var(--text-dim); font-size: 10.5px; margin-top: 2px; }
+  .switch { width: 34px; height: 19px; border-radius: 999px; background: rgba(255,255,255,0.12); position: relative; cursor: pointer; transition: background 0.2s; flex-shrink: 0; }
+  .switch::after { content: ""; position: absolute; width: 15px; height: 15px; border-radius: 50%; background: #fff; top: 2px; left: 2px; transition: left 0.2s; }
+  .switch.on { background: var(--accent); }
+  .switch.on::after { left: 17px; }
+
+  /* ---- 悬浮球 ---- */
+  .ball-wrap {
+    position: fixed; width: 48px; height: 48px;
+    left: calc(100% - 76px); top: calc(100% - 76px);
+    z-index: 30; cursor: grab; touch-action: none;
+    perspective: 320px; /* 球体 3D 转动的透视 */
+  }
+  .ball-wrap.dragging { cursor: grabbing; }
+  /* 球体滑行（边缘点击先挪进屏内 / 收起后滑回吸附位）：仅滑行时启用过渡，拖拽不受影响 */
+  .ball-wrap.gliding {
+    transition: left 0.24s cubic-bezier(0.25, 0.8, 0.35, 1), top 0.24s cubic-bezier(0.25, 0.8, 0.35, 1);
+  }
+
+  /* 接触阴影：悬停微升起时收窄变淡，拖拽时摊开 */
+  .ball-shadow {
+    position: absolute; left: 3%; right: 3%; bottom: -7px; height: 12px;
+    border-radius: 50%; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0) 68%);
+    filter: blur(5px);
+    transition: transform 0.25s ease, opacity 0.25s ease;
+  }
+  .ball-wrap:hover .ball-shadow { transform: scaleX(0.86); opacity: 0.78; }
+  .ball-wrap.dragging .ball-shadow { transform: scaleX(1.14) scaleY(0.8); opacity: 0.5; }
+
+  /* 光晕呼吸（悬停 / 拖拽 / 环形菜单展开时浮现） */
+  .halo {
+    position: absolute; inset: -9px; border-radius: 50%; pointer-events: none;
+    background: radial-gradient(circle, var(--accent-glow) 0%, rgba(124,108,255,0.25) 40%, transparent 68%);
+    opacity: 0; transform: scale(0.9);
+    transition: opacity 0.3s ease;
+  }
+  .ball-wrap:hover .halo, .ball-wrap.dragging .halo, .ball-wrap.ring-open .halo {
+    opacity: 1; animation: halo-breathe 2.6s ease-in-out infinite;
+  }
+  @keyframes halo-breathe { 0%,100% { transform: scale(0.97); filter: brightness(1); } 50% { transform: scale(1.07); filter: brightness(1.3); } }
+
+  /* 球体：全息能量核（canvas 粒子球 + CSS 3D 陀螺环）
+     --tx/--ty 由 JS 指针跟随写入（-1..1），驱动 .gyro 环组 3D 倾转；
+     粒子自转/核心脉冲在 canvas 内完成，正/背半球分层保证深度 */
+  .ball {
+    width: 48px; height: 48px; border-radius: 50%; position: relative;
+    transform-style: preserve-3d;
+    background: radial-gradient(circle at 42% 36%,
+      rgba(124,108,255,0.18) 0%, rgba(30,24,84,0.30) 50%, rgba(10,8,40,0.10) 68%, transparent 74%);
+  }
+  .ball canvas {
+    position: absolute; left: -36px; top: -36px; width: 120px; height: 120px;
+    pointer-events: none;
+  }
+  /* 陀螺环组：三环不同轴自旋，随指针倾转（preserve-3d + 父级 perspective） */
+  .gyro {
+    position: absolute; inset: 0; pointer-events: none;
+    transform-style: preserve-3d;
+    transform: rotateX(calc(var(--ty, 0) * -16deg)) rotateY(calc(var(--tx, 0) * 16deg));
+    transition: transform 0.18s ease-out;
+  }
+  .gyro .oring { position: absolute; left: 50%; top: 50%; border-radius: 50%; }
+  .gyro .r1 {
+    width: 82px; height: 82px; margin: -41px 0 0 -41px;
+    border: 1.5px solid rgba(167,139,250,0.30);
+    border-top-color: rgba(214,205,255,1);
+    border-right-color: rgba(124,108,255,0.70);
+    filter: drop-shadow(0 0 4px rgba(124,108,255,0.8));
+    animation: gyro-a 7s linear infinite;
+  }
+  .gyro .r2 {
+    width: 66px; height: 66px; margin: -33px 0 0 -33px;
+    border: 1.5px solid rgba(76,214,255,0.22);
+    border-top-color: rgba(170,238,255,1);
+    border-left-color: rgba(76,214,255,0.55);
+    filter: drop-shadow(0 0 4px rgba(76,214,255,0.7));
+    animation: gyro-b 4.6s linear infinite reverse;
+  }
+  .gyro .r3 {
+    width: 94px; height: 94px; margin: -47px 0 0 -47px;
+    border: 1px dashed rgba(196,181,255,0.42);
+    animation: gyro-c 12s linear infinite;
+  }
+  @keyframes gyro-a { from { transform: rotateX(66deg) rotateZ(0deg); } to { transform: rotateX(66deg) rotateZ(360deg); } }
+  @keyframes gyro-b { from { transform: rotateY(64deg) rotateX(14deg) rotateZ(360deg); } to { transform: rotateY(64deg) rotateX(14deg) rotateZ(0deg); } }
+  @keyframes gyro-c { from { transform: rotateX(76deg) rotateY(-14deg) rotateZ(0deg); } to { transform: rotateX(76deg) rotateY(-14deg) rotateZ(-360deg); } }
+
+  /* 吸附预览线 */
+  .snap-line {
+    position: fixed; background: linear-gradient(90deg, transparent, var(--accent-glow), transparent);
+    height: 1px; left: 0; right: 0; pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 29;
+  }
+
+  /* ---- 环形菜单（大圆） ---- */
+  .ring-backdrop { position: fixed; inset: 0; z-index: 25; display: none; }
+  .ring-backdrop.show { display: block; }
+  .ring {
+    position: fixed; width: 0; height: 0; z-index: 28; display: none;
+  }
+  .ring.show { display: block; }
+  .ring .rbtn {
+    position: absolute; width: 52px; height: 52px; border-radius: 50%;
+    left: -26px; top: -26px;
+    background: linear-gradient(160deg, rgba(255,255,255,0.12), rgba(255,255,255,0.03));
+    border: 1px solid var(--card-border);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+    color: var(--text); cursor: pointer;
+    backdrop-filter: blur(10px);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.4), inset 0 1px 1px rgba(255,255,255,0.15);
+    transition: box-shadow 0.14s ease, border-color 0.14s, opacity 0.18s ease;
+    transform-origin: center;
+    --ring-r: 130px;
+    transform: rotate(var(--fa, 0deg)) translateY(calc(-1 * var(--ring-r))) rotate(calc(-1 * var(--fa, 0deg)));
+    opacity: 0;
+  }
+  .ring .rbtn svg { width: 20px; height: 20px; }
+  .ring .rbtn .rt { font-size: 9px; color: var(--text-dim); white-space: nowrap; }
+  .ring .rbtn:hover {
+    transform: rotate(var(--fa, 0deg)) translateY(calc(-1 * var(--ring-r))) rotate(calc(-1 * var(--fa, 0deg))) scale(1.14);
+    border-color: var(--accent-2);
+    box-shadow: 0 8px 22px rgba(0,0,0,0.5), 0 0 16px var(--accent-glow);
+    color: #fff;
+  }
+  .ring .rbtn:hover .rt { color: var(--accent-2); }
+
+  /* 展开/收起动画：按钮从球心沿圆弧转圈扫出，逐个螺旋入场 */
+  .ring.show .rbtn {
+    animation: rbtn-sweep 0.55s cubic-bezier(0.3, 1.4, 0.45, 1) both;
+    animation-delay: calc(var(--i, 0) * 60ms);
+  }
+  @keyframes rbtn-sweep {
+    0% {
+      opacity: 0;
+      transform: rotate(calc(var(--fa, 0deg) - 120deg)) translateY(-14px) rotate(calc(-1 * (var(--fa, 0deg) - 120deg))) scale(0.4);
+    }
+    55% { opacity: 1; }
+    100% {
+      opacity: 1;
+      transform: rotate(var(--fa, 0deg)) translateY(calc(-1 * var(--ring-r))) rotate(calc(-1 * var(--fa, 0deg))) scale(1);
+    }
+  }
+  /* 收回：沿原轨迹倒序逐个螺旋退回球心 */
+  .ring.hide { display: block; }
+  .ring.hide .rbtn {
+    pointer-events: none;
+    animation: rbtn-retreat 0.42s cubic-bezier(0.5, 0, 0.75, 0.4) both;
+    animation-delay: calc((var(--n, 6) - 1 - var(--i, 0)) * 45ms);
+  }
+  @keyframes rbtn-retreat {
+    0% {
+      opacity: 1;
+      transform: rotate(var(--fa, 0deg)) translateY(calc(-1 * var(--ring-r))) rotate(calc(-1 * var(--fa, 0deg))) scale(1);
+    }
+    45% { opacity: 1; }
+    100% {
+      opacity: 0;
+      transform: rotate(calc(var(--fa, 0deg) - 120deg)) translateY(-14px) rotate(calc(-1 * (var(--fa, 0deg) - 120deg))) scale(0.4);
+    }
+  }
+  .ring.hide .ring-arc { opacity: 0; transition: opacity 0.2s ease; }
+  .ring.show .ring-arc { animation: arc-in 0.4s ease-out both; }
+  @keyframes arc-in { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: scale(1); } }
+  .ring-arc {
+    position: absolute; border-radius: 50%;
+    border: 1px dashed rgba(160,150,255,0.28);
+    opacity: 0.9;
+  }
+  .ring-arc.arc1 { width: 260px; height: 260px; left: -130px; top: -130px; }
+  .ring-arc.arc2 { width: 168px; height: 168px; left: -84px; top: -84px; border-style: solid; border-width: 1px; border-color: rgba(160,150,255,0.10); }
+
+  /* ---- 右键菜单 ---- */
+  .ctx {
+    position: fixed; width: 168px; background: rgba(24,21,46,0.92);
+    border: 1px solid var(--card-border); border-radius: 10px; backdrop-filter: blur(14px);
+    padding: 5px; z-index: 40; box-shadow: 0 14px 40px rgba(0,0,0,0.5); display: none;
+  }
+  .ctx.show { display: block; animation: ctx-in 0.12s ease-out; }
+  @keyframes ctx-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+  .ctx .item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 7px; color: var(--text); font-size: 12.5px; cursor: pointer; }
+  .ctx .item svg { width: 15px; height: 15px; color: var(--text-dim); }
+  .ctx .item:hover { background: rgba(124,108,255,0.18); color: #fff; }
+  .ctx .item:hover svg { color: var(--accent-2); }
+  .ctx .sep { height: 1px; background: var(--card-border); margin: 4px 6px; }
+  .ctx .item.danger { color: var(--danger); }
+
+  /* ---- toast ---- */
+  .toast {
+    position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%) translateY(20px);
+    background: rgba(24,21,46,0.92); border: 1px solid var(--card-border); border-radius: 10px;
+    padding: 10px 20px; color: var(--text); font-size: 12.5px; z-index: 50;
+    backdrop-filter: blur(12px); opacity: 0; pointer-events: none; transition: all 0.25s ease;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.5);
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast b { color: var(--accent-2); }
+</style>
+</head>
+<body>
+
+<div class="desktop"></div>
+<div class="hint">拖拽<b>悬浮球</b> → 靠近边缘自动吸附（不隐藏）· 单击展开<b>大圆环形菜单</b> · 双击<b>显示主窗口</b> · 右键<b>快捷菜单</b> · 悬停<b>全息粒子激发</b></div>
+
+<!-- 模拟主窗口 -->
+<div class="main-win hidden" id="mainWin">
+  <div class="titlebar">
+    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="">
+    <span>x-hub 工作台</span>
+    <span class="winbtn" onclick="closeMain()">—</span>
+    <span class="winbtn" onclick="closeMain()">✕</span>
+  </div>
+  <div class="body"><span class="chip"><i></i> 主窗口已显示，悬浮球自动收起（Q2=B）</span></div>
+</div>
+
+<!-- 设置面板：常规 → 悬浮球 -->
+<div class="settings">
+  <h3>⚙ 常规 <span class="tag">悬浮球</span></h3>
+  <div class="row">
+    <div>
+      <div class="lbl">启用悬浮球</div>
+      <div class="sub">默认开启，Windows 上随启动出现</div>
+    </div>
+    <div class="switch on" onclick="toggle(this,'ballMode')"></div>
+  </div>
+  <div class="row">
+    <div>
+      <div class="lbl">靠边吸附</div>
+      <div class="sub">靠近屏幕边缘时自动贴边（不隐藏）</div>
+    </div>
+    <div class="switch on" onclick="toggle(this,'snapMode')"></div>
+  </div>
+  <div class="row">
+    <div>
+      <div class="lbl">环形按钮</div>
+      <div class="sub">可在设置中增删/换顺序（原型演示默认 6 个）</div>
+    </div>
+  </div>
+</div>
+
+<!-- 悬浮球 -->
+<div class="ball-wrap" id="ballWrap">
+  <div class="ball-shadow"></div>
+  <div class="halo"></div>
+  <div class="ball">
+    <div class="gyro"><div class="oring r1"></div><div class="oring r2"></div><div class="oring r3"></div></div>
+    <!-- canvas 粒子球由 JS 注入 -->
+  </div>
+</div>
+
+<div class="ring-backdrop" id="ringBackdrop"></div>
+<div class="ring" id="ring">
+  <div class="ring-arc arc1"></div>
+  <div class="ring-arc arc2"></div>
+</div>
+
+<div class="ctx" id="ctxMenu"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+
+// ---- 环形按钮配置（演示默认 6 个） ----
+const RING_ACTIONS = [
+  { id: 'search',    label: '全局搜索', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>' },
+  { id: 'clipboard', label: '剪贴板',   svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>' },
+  { id: 'ai',        label: 'AI 面板',  svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/></svg>' },
+  { id: 'note',      label: '新建速记', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>' },
+  { id: 'todo',      label: '新建待办', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>' },
+  { id: 'timer',     label: '开始倒计时', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2"/><path d="M9 2h6"/></svg>' },
+];
+
+const el = (sel) => document.querySelector(sel);
+const ballWrap = el('#ballWrap');
+const ball = el('.ball');
+const ring = el('#ring');
+const ringBackdrop = el('#ringBackdrop');
+const ctxMenu = el('#ctxMenu');
+const toast = el('#toast');
+const mainWin = el('#mainWin');
+
+const RADIUS = 130;          // 大圆半径
+const BALL = 48;
+const EDGE_GAP = 12;
+const dragThreshold = 4;
+
+let state = {
+  mode: { ball: true, snap: true },
+  ringOpen: false,
+  dragging: false,
+  dragged: false,
+  pos: null,          // {x,y} 球体左上角
+  snapEdge: 'right',  // 当前吸附边
+  lastClick: 0,
+};
+
+// ---- 初始化位置：右下角吸附 ----
+function clampToViewport() {
+  const bw = ballWrap.offsetWidth, bh = ballWrap.offsetHeight;
+  let x = state.pos ? state.pos.x : innerWidth - bw - EDGE_GAP;
+  let y = state.pos ? state.pos.y : innerHeight - bh - EDGE_GAP;
+  x = Math.max(EDGE_GAP, Math.min(x, innerWidth - bw - EDGE_GAP));
+  y = Math.max(EDGE_GAP, Math.min(y, innerHeight - bh - EDGE_GAP));
+  state.pos = { x, y };
+  applyPos();
+}
+
+function applyPos() {
+  if (state.mode.ball) {
+    ballWrap.style.left = state.pos.x + 'px';
+    ballWrap.style.top = state.pos.y + 'px';
+  }
+}
+
+// ---- 环形菜单 ----
+function buildRing() {
+  ring.innerHTML = `
+    <div class="ring-arc arc1"></div>
+    <div class="ring-arc arc2"></div>
+  `;
+  const n = RING_ACTIONS.length;
+  ring.style.setProperty('--n', n);   // 收回动画倒序错峰用
+  RING_ACTIONS.forEach((a, i) => {
+    const angle = (360 / n) * i - 90; // 从正上方顺时针
+    const b = document.createElement('div');
+    b.className = 'rbtn';
+    b.dataset.id = a.id;
+    b.innerHTML = `${a.svg}<span class="rt">${a.label}</span>`;
+    b.style.setProperty('--fa', `${angle}deg`);   // 终角，转圈入场动画用
+    b.style.setProperty('--i', i);                // 序号，逐个入场错峰用
+    b.onclick = (e) => { e.stopPropagation(); doAction(a); };
+    ring.appendChild(b);
+  });
+}
+buildRing();
+
+// 环形菜单：边缘点击先把球滑进屏内（保证大圆完整显示），随后展开；收起时球滑回吸附位
+let openTimer = null, glideTimer = null;
+
+function glideTo(x, y, dur = 240) {
+  ballWrap.classList.add('gliding');
+  state.pos = { x, y };
+  applyPos();
+  clearTimeout(glideTimer);
+  glideTimer = setTimeout(() => ballWrap.classList.remove('gliding'), dur + 60);
+}
+
+function openRing() {
+  if (!state.mode.ball) return;
+  clearTimeout(openTimer);
+  clearTimeout(hideTimer);
+  ring.classList.remove('hide');
+
+  const doOpen = () => {
+    const nx = state.pos.x + BALL / 2, ny = state.pos.y + BALL / 2;
+    // 兜底位移：极小窗口下仍保证大圆尽量在屏内
+    let ox = 0, oy = 0;
+    if (nx - RADIUS < 0) ox = -(nx - RADIUS);
+    if (nx + RADIUS > innerWidth) ox = innerWidth - (nx + RADIUS);
+    if (ny - RADIUS < 0) oy = -(ny - RADIUS);
+    if (ny + RADIUS > innerHeight) oy = innerHeight - (ny + RADIUS);
+    ring.style.left = (nx + ox) + 'px';
+    ring.style.top = (ny + oy) + 'px';
+    ring.classList.add('show');
+    ringBackdrop.classList.add('show');
+    ballWrap.classList.add('ring-open');
+    state.ringOpen = true;
+  };
+
+  // 靠边时：先把球挪到屏内（留出环形菜单半径裕度），再展开
+  const cx = state.pos.x + BALL / 2, cy = state.pos.y + BALL / 2;
+  const tx = Math.max(RADIUS, Math.min(cx, innerWidth - RADIUS));
+  const ty = Math.max(RADIUS, Math.min(cy, innerHeight - RADIUS));
+  if (Math.abs(tx - cx) > 1 || Math.abs(ty - cy) > 1) {
+    state.preRingPos = { ...state.pos };
+    glideTo(tx - BALL / 2, ty - BALL / 2);
+    openTimer = setTimeout(doOpen, 240);
+  } else {
+    doOpen();
+  }
+}
+
+let hideTimer = null;
+function closeRing(opts = {}) {
+  if (!state.ringOpen && !ring.classList.contains('show')) { ring.classList.remove('hide'); return; }
+  clearTimeout(openTimer);
+  clearTimeout(hideTimer);
+  ring.classList.remove('show');
+  ringBackdrop.classList.remove('show');
+  ballWrap.classList.remove('ring-open');
+  state.ringOpen = false;
+  // 转圈收回：倒序逐个螺旋退回球心，播完清 hide
+  ring.classList.add('hide');
+  hideTimer = setTimeout(() => ring.classList.remove('hide'), 900);
+  // 球滑回展开前的吸附位
+  if (!opts.skipReturn && state.preRingPos) {
+    glideTo(state.preRingPos.x, state.preRingPos.y);
+    state.preRingPos = null;
+  }
+}
+
+function toggleRing() { state.ringOpen ? closeRing() : openRing(); }
+
+ringBackdrop.onmousedown = closeRing;
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeRing(); });
+// 失焦关闭（模拟窗口 blur）
+window.addEventListener('blur', () => { closeRing(); hideCtx(); });
+
+// ---- 全息粒子球：斐波那契球面点云 + 近邻连线 + 能量核心 + 雷达刻度（canvas，120px）----
+const stage = ball;   // .ball 元素本身作为 canvas 挂载点
+const cvs = document.createElement('canvas');
+cvs.width = 240; cvs.height = 240;
+stage.prepend(cvs);
+const ctx2d = cvs.getContext('2d');
+
+const N = 150, ORB = 35, CORE = 120;   // 点数 / 球半径 / 画布中心（240 画布空间，CSS 显示 120px）
+const pts = [];
+const GA = Math.PI * (3 - Math.sqrt(5));
+for (let i = 0; i < N; i++) {
+  const y = 1 - (i / (N - 1)) * 2;
+  const r = Math.sqrt(1 - y * y);
+  const th = GA * i;
+  pts.push({ x: Math.cos(th) * r, y, z: Math.sin(th) * r });
+}
+
+let yaw = 0, pitch = -0.28;
+let energy = 0, targetEnergy = 0;   // 0 巡航 .. 1 激发（悬停/拖拽），平滑过渡
+let corePhase = 0;
+const clamp1 = (v) => Math.max(-1, Math.min(1, v));
+
+function project(p) {
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const x1 = p.x * cy - p.z * sy;
+  const z1 = p.x * sy + p.z * cy;
+  const y2 = p.y * cp - z1 * sp;
+  const z2 = p.y * sp + z1 * cp;
+  const s = ORB / (1 - z2 * 0.22);          // 轻透视：近大远小
+  return { sx: CORE + x1 * s, sy: CORE + y2 * s, z: z2, sc: s / ORB };
+}
+
+let lastT = performance.now();
+function drawBall(t) {
+  const dt = Math.min(0.05, (t - lastT) / 1000); lastT = t;
+  energy += (targetEnergy - energy) * Math.min(1, dt * 7);
+  yaw += dt * (0.45 + energy * 1.2);        // 悬停/拖拽时自转加快
+  corePhase += dt * (1.6 + energy * 2.4);
+
+  ctx2d.clearRect(0, 0, 240, 240);
+  ctx2d.save();
+  ctx2d.translate(CORE, CORE); ctx2d.scale(0.5, 0.5); ctx2d.translate(-CORE, -CORE); // 240→120
+
+  const proj = pts.map(project);
+  const dot = (p, a) => {
+    ctx2d.fillStyle = `rgba(178,166,255,${a})`;
+    ctx2d.beginPath(); ctx2d.arc(p.sx, p.sy, 0.85 + p.sc * 1.4, 0, 6.2832); ctx2d.fill();
+  };
+
+  for (const p of proj) if (p.z < 0) dot(p, 0.32);          // 背面半球（暗）
+  for (let i = 0; i < N; i++) {                             // 近邻连线（正面，能量网）
+    const a = proj[i];
+    if (a.z <= 0) continue;
+    for (let j = i + 1; j < N; j++) {
+      const b = proj[j];
+      if (b.z <= 0) continue;
+      const dx = a.sx - b.sx, dy = a.sy - b.sy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < 225) {
+        ctx2d.strokeStyle = `rgba(146,130,255,${(1 - Math.sqrt(d2) / 15) * (0.16 + energy * 0.32)})`;
+        ctx2d.lineWidth = 0.8;
+        ctx2d.beginPath(); ctx2d.moveTo(a.sx, a.sy); ctx2d.lineTo(b.sx, b.sy); ctx2d.stroke();
+      }
+    }
+  }
+  for (const p of proj) if (p.z >= 0) dot(p, 0.60 + p.z * 0.38); // 正面半球（亮）
+
+  const cx = CORE, cy = CORE;
+  const pulse = 0.86 + Math.sin(corePhase) * 0.10 + energy * 0.06;
+  const cr = 14 * pulse;
+  let g = ctx2d.createRadialGradient(cx, cy, 0, cx, cy, cr * 2.6);   // 核外辉
+  g.addColorStop(0, `rgba(124,108,255,${0.30 + energy * 0.20})`);
+  g.addColorStop(1, 'rgba(124,108,255,0)');
+  ctx2d.fillStyle = g;
+  ctx2d.beginPath(); ctx2d.arc(cx, cy, cr * 2.6, 0, 6.2832); ctx2d.fill();
+  g = ctx2d.createRadialGradient(cx - 3, cy - 3, 1, cx, cy, cr);     // 核盘
+  g.addColorStop(0, 'rgba(240,238,255,0.95)');
+  g.addColorStop(0.5, 'rgba(150,132,255,0.55)');
+  g.addColorStop(1, 'rgba(124,108,255,0.12)');
+  ctx2d.fillStyle = g;
+  ctx2d.beginPath(); ctx2d.arc(cx, cy, cr, 0, 6.2832); ctx2d.fill();
+  ctx2d.strokeStyle = 'rgba(255,255,255,0.95)';                      // X 徽记
+  ctx2d.lineWidth = 2.2; ctx2d.lineCap = 'round';
+  const k = 4.6 * pulse;
+  ctx2d.beginPath();
+  ctx2d.moveTo(cx - k, cy - k); ctx2d.lineTo(cx + k, cy + k);
+  ctx2d.moveTo(cx + k, cy - k); ctx2d.lineTo(cx - k, cy + k);
+  ctx2d.stroke();
+  ctx2d.save();                                                      // 雷达刻度环
+  ctx2d.translate(cx, cy);
+  ctx2d.rotate(yaw * 0.6);
+  for (let i = 0; i < 24; i++) {
+    ctx2d.rotate(Math.PI / 12);
+    const long = i % 6 === 0;
+    ctx2d.strokeStyle = `rgba(196,188,255,${(long ? 0.40 : 0.16) * (0.7 + energy * 0.6)})`;
+    ctx2d.lineWidth = long ? 1.4 : 1;
+    ctx2d.beginPath();
+    ctx2d.moveTo(ORB + 5, 0); ctx2d.lineTo(ORB + 5 + (long ? 5 : 3), 0);
+    ctx2d.stroke();
+  }
+  ctx2d.restore();
+
+  ctx2d.restore();
+  requestAnimationFrame(drawBall);
+}
+requestAnimationFrame(drawBall);
+
+// ---- 悬停 3D 倾转：指针跟随驱动 --tx/--ty（-1..1），陀螺环组跟随；粒子能量同步激发 ----
+function resetTilt() {
+  ballWrap.style.removeProperty('--tx');
+  ballWrap.style.removeProperty('--ty');
+}
+ballWrap.addEventListener('pointerenter', () => { if (!state.dragging) targetEnergy = 1; });
+ballWrap.addEventListener('pointermove', (e) => {
+  if (state.dragging || state.ringOpen || !state.mode.ball) return;
+  const r = ballWrap.getBoundingClientRect();
+  const tx = clamp1(((e.clientX - r.left) / r.width) * 2 - 1);
+  const ty = clamp1(((e.clientY - r.top) / r.height) * 2 - 1);
+  ballWrap.style.setProperty('--tx', tx.toFixed(3));
+  ballWrap.style.setProperty('--ty', ty.toFixed(3));
+  pitch = -0.28 + ty * 0.35;
+});
+ballWrap.addEventListener('pointerleave', () => { targetEnergy = 0; resetTilt(); });
+ballWrap.addEventListener('pointerdown', () => { targetEnergy = 1; });
+window.addEventListener('pointerup', () => { if (!state.dragging) targetEnergy = ballWrap.matches(':hover') ? 1 : 0; });
+
+// ---- 拖拽 + 吸附 ----
+ballWrap.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  resetTilt();
+  state.dragging = true; state.dragged = false;
+  const sx = e.clientX, sy = e.clientY;
+  const bx = state.pos.x, by = state.pos.y;
+  ballWrap.classList.add('dragging');
+  const onMove = (ev) => {
+    if (!state.dragging) return;
+    let dx = ev.clientX - sx, dy = ev.clientY - sy;
+    if (!state.dragged && Math.hypot(dx, dy) > dragThreshold) {
+      state.dragged = true;
+      // 展开状态拖动：立即收回菜单；取消滑行/待展开，球随指针走
+      clearTimeout(openTimer);
+      clearTimeout(glideTimer);
+      ballWrap.classList.remove('gliding');
+      state.preRingPos = null;
+      if (state.ringOpen) closeRing({ skipReturn: true });
+    }
+    if (!state.dragged) return;
+    state.pos = { x: bx + dx, y: by + dy };
+    applyPos();
+  };
+  const onUp = (ev) => {
+    state.dragging = false;
+    ballWrap.classList.remove('dragging');
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    if (state.dragged) snap();
+    else {
+      // 单击
+      const now = Date.now();
+      if (now - state.lastClick < 320) { // 双击 → 显示主窗口
+        state.lastClick = 0;
+        showMain();
+      } else {
+        state.lastClick = now;
+        setTimeout(() => {
+          if (Date.now() - state.lastClick >= 320) toggleRing();
+        }, 330);
+      }
+    }
+  };
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+});
+
+function snap() {
+  if (!state.mode.snap) return;
+  const cx = state.pos.x + BALL / 2;
+  const cy = state.pos.y + BALL / 2;
+  const NEAR = 60; // 靠近屏幕边缘 60px 内才吸附
+  const distL = cx, distR = innerWidth - cx, distT = cy, distB = innerHeight - cy;
+  const min = Math.min(distL, distR, distT, distB);
+  if (min > NEAR) { showToast('位置已记忆'); return; }
+  if (min === distL) { state.pos.x = EDGE_GAP; state.snapEdge = 'left'; }
+  else if (min === distR) { state.pos.x = innerWidth - BALL - EDGE_GAP; state.snapEdge = 'right'; }
+  else if (min === distT) { state.pos.y = EDGE_GAP; }
+  else { state.pos.y = innerHeight - BALL - EDGE_GAP; }
+  applyPos();
+  showToast('已吸附到' + (state.snapEdge === 'left' ? '左' : state.snapEdge === 'right' ? '右' : '屏幕边缘') + '，位置已记忆');
+}
+
+// ---- 右键菜单（与托盘一致） ----
+function buildCtx(x, y) {
+  ctxMenu.innerHTML = `
+    <div class="item" data-act="show">${icon('eye')} 显示主窗口</div>
+    <div class="item" data-act="hide">${icon('hide')} 隐藏（回托盘）</div>
+    <div class="sep"></div>
+    <div class="item" data-act="open-settings">${icon('gear')} 设置</div>
+    <div class="sep"></div>
+    <div class="item danger" data-act="quit">${icon('quit')} 退出 x-hub</div>
+  `;
+  const w = 168;
+  ctxMenu.style.left = Math.min(x, innerWidth - w - 8) + 'px';
+  ctxMenu.style.top = Math.min(y, innerHeight - 210) + 'px';
+  ctxMenu.classList.add('show');
+}
+function icon(k) {
+  const m = {
+    eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>',
+    hide: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 8 10 8a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3 8 10 8a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>',
+    gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    dot: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg>',
+    quit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
+  };
+  return m[k] || '';
+}
+ballWrap.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  closeRing();
+  buildCtx(e.clientX, e.clientY);
+});
+document.addEventListener('mousedown', (e) => {
+  if (!ctxMenu.classList.contains('show')) return;
+  if (ctxMenu.contains(e.target)) return;
+  hideCtx();
+});
+ctxMenu.addEventListener('click', (e) => {
+  const item = e.target.closest('.item');
+  if (!item) return;
+  hideCtx();
+  const act = item.dataset.act;
+  if (act === 'show') showMain();
+  else if (act === 'hide') { mainWin.classList.add('hidden'); showToast('已隐藏到托盘'); }
+  else if (act === 'open-settings') showToast('打开 设置 → 常规 → 悬浮球');
+  else if (act === 'quit') showToast('退出 x-hub（演示）');
+});
+function hideCtx() { ctxMenu.classList.remove('show'); }
+
+// ---- 动作执行 ----
+function doAction(a) {
+  closeRing();
+  const names = { search: '全局搜索', clipboard: '剪贴板历史', ai: 'AI 对话面板', note: '新建速记', todo: '新建待办', timer: '开始倒计时' };
+  showToast(`已执行：<b>${names[a.id] || a.label}</b>（原型演示）`);
+}
+
+// ---- 主窗口显隐 ----
+function showMain() {
+  closeRing();
+  mainWin.classList.remove('hidden');
+  resetTilt();
+  ballWrap.style.opacity = '0'; ballWrap.style.transition = 'opacity 0.25s'; setTimeout(() => ballWrap.style.display = 'none', 260);
+  showToast('主窗口已显示，悬浮球自动收起');
+}
+function closeMain() {
+  mainWin.classList.add('hidden');
+  ballWrap.style.display = 'block'; setTimeout(() => { ballWrap.style.opacity = '1'; ballWrap.style.transition = ''; }, 30);
+  clampToViewport();
+  showToast('主窗口已隐藏，悬浮球出现');
+}
+
+// 悬停 3D 转动由 JS pointermove + CSS 变量（--tx/--ty）驱动；扫光与光晕由 CSS hover 状态驱动
+
+// ---- toast ----
+let toastTimer = null;
+function showToast(html) {
+  toast.innerHTML = html;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
+}
+
+// ---- 设置面板开关 ----
+function toggle(sw, modeKey) {
+  sw.classList.toggle('on');
+  if (modeKey === 'snapMode') {
+    state.mode.snap = sw.classList.contains('on');
+  } else {
+    state.mode.ball = sw.classList.contains('on');
+    if (state.mode.ball) { ballWrap.style.display = 'block'; clampToViewport(); }
+    else { ballWrap.style.display = 'none'; closeRing(); }
+  }
+}
+
+// ---- 启动 ----
+window.addEventListener('resize', () => { if (state.mode.ball) clampToViewport(); });
+setTimeout(() => { clampToViewport(); }, 50);
+</script>
+</body>
+</html>

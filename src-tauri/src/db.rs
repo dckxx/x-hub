@@ -508,6 +508,98 @@ mod tests {
     }
 
     #[test]
+    fn legacy_v033_full_schema_migrates_twice_and_works() {
+        // v0.3.3 → v0.4.1 直接升级路径：0.3.3 与 0.4.1 的建表差异只有两处——
+        // todos 缺 due_at/remind_at/remind_fired/parent_id，countdowns 缺 auto_paused；
+        // 其余表结构相同（由 IF NOT EXISTS 兜底）。本测试构造这两张差异表 + 存量数据，
+        // 验证：migrate 连跑两次都成功（幂等）、老数据无损、业务层 repo 正常读写、级联删除生效。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE todos (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              title TEXT NOT NULL,
+              done INTEGER NOT NULL DEFAULT 0,
+              priority INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+              completed_at TEXT
+            );
+            CREATE TABLE countdowns (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              repeat_mode TEXT NOT NULL DEFAULT 'once' CHECK (repeat_mode IN ('once', 'daily', 'interval')),
+              end_at INTEGER NOT NULL,
+              total_ms INTEGER NOT NULL DEFAULT 0,
+              interval_minutes INTEGER,
+              paused INTEGER NOT NULL DEFAULT 0,
+              paused_remaining_ms INTEGER,
+              finished INTEGER NOT NULL DEFAULT 0,
+              floated INTEGER NOT NULL DEFAULT 0,
+              float_x REAL,
+              float_y REAL,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+            );
+            INSERT INTO todos (title, done) VALUES ('升级前待办A', 0);
+            INSERT INTO todos (title, done, completed_at) VALUES ('升级前待办B', 1, '2026-08-01 10:00:00.000');
+            INSERT INTO countdowns (name, end_at, total_ms) VALUES ('升级前倒计时', 9999999999999, 60000);
+            ",
+        )
+        .unwrap();
+
+        // 连跑两次：第二次验证已迁移库上的幂等性（不重复加列/建索引报错）
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+
+        // 差异列全部补齐
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(todos)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap();
+        for col in ["due_at", "remind_at", "remind_fired", "parent_id"] {
+            assert!(cols.iter().any(|c| c == col), "todos 缺列 {col}");
+        }
+        let cd_cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(countdowns)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap();
+        assert!(cd_cols.iter().any(|c| c == "auto_paused"), "countdowns 缺 auto_paused");
+
+        // 存量数据无损
+        let todo_n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(todo_n, 2);
+        let cd_n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM countdowns", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cd_n, 1);
+
+        // 业务层读取正常（SELECT 引用全部新列，迁移不完整会在此暴露）
+        let todos = crate::repo::todo::list(&conn).unwrap();
+        assert_eq!(todos.len(), 2);
+        assert!(todos.iter().all(|t| t.due_at.is_none() && t.parent_id.is_none()));
+
+        // 新能力可用：父子级联删除（外键 ON DELETE CASCADE 经 ALTER 补列后生效）
+        let parent = crate::repo::todo::create(&conn, "父待办", None, None).unwrap();
+        let child = crate::repo::todo::create(&conn, "子待办", Some(parent.id), None).unwrap();
+        let removed = crate::repo::todo::delete(&conn, parent.id).unwrap();
+        assert_eq!(removed, vec![child.id]);
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM todos WHERE id IN (?1, ?2)", params![parent.id, child.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
     fn ai_usage_table_is_dropped_on_migrate() {
         // 构造旧版库：含 ai_usage 表（旧版 token 统计专用）及其索引，模拟老用户升级
         let conn = Connection::open_in_memory().unwrap();

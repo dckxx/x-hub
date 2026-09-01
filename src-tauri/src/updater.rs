@@ -17,7 +17,9 @@
 //!      有标记 → 解包 → `exe → exe.old` / `新 exe → exe` 两步就位
 //!      （Windows 允许 rename 正在运行的 exe；数据根与 exe 跨盘时 rename
 //!      报 os error 17，move_file 退化为复制）→ 校验新 exe 具名 → 删 .old。
-//!      任一步失败回滚并保留标记，下次启动重试。
+//!      就位成功后立即以新 exe 拉起子进程接管启动、当前进程退出——当前
+//!      进程镜像已被改名成 .old，原地继续跑只会是旧版本。任一步失败
+//!      回滚并保留标记，下次启动重试。启动时顺手清理上次升级残留的 .old。
 //!
 //! 事件：`update-available`、`update-download-progress`、`update-ready`。
 
@@ -623,8 +625,19 @@ fn read_pending() -> Option<PendingUpdate> {
 /// 应用待更新版本（每次启动早期调用，幂等）。
 /// Windows 允许 rename 正在运行的 exe：`exe → exe.old`、`新 exe → exe`。
 /// 任一步失败回滚（.old 还原）并保留标记，下次启动重试。
-/// 成功则删除标记 + 旧版本剩余文件。
+/// 成功则删除标记 + 更新包，并立即以新 exe 拉起子进程、当前进程退出——
+/// 当前进程镜像已被改名成 .old，原地继续跑的仍是旧版本（「点了重启
+/// 还是旧版」的根因）。新实例再进这里时无标记，直接跳过，不会循环。
+/// 另外每次进入先清理上次升级残留的 .old（此刻已无进程占用，可安全删）。
 pub fn apply_pending_update(current_version: &str) {
+    // 清理上次自替换残留的 .old：升级时运行中进程的镜像被改名成了
+    // exe.old，Windows 不允许删除运行中进程的镜像文件，当时必删失败；
+    // 等到下一次启动它已无进程占用，这里统一清掉，避免 exe 目录长期躺着 .old
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let _ = std::fs::remove_file(exe_dir.join(exe_file_name_with_old(&exe_path)));
+        }
+    }
     let Some(pending) = read_pending() else {
         return;
     };
@@ -723,13 +736,32 @@ pub fn apply_pending_update(current_version: &str) {
         let _ = std::fs::remove_dir_all(&staging);
         return;
     }
-    // 3) 清理 .old 与新包残余
+    // 3) 清理新包残余（.old 是当前运行中进程的镜像，Windows 不允许删除，
+    //    必删失败属预期；留给下一次启动的开头统一清理）
     let _ = std::fs::remove_file(&old_path);
     let _ = std::fs::remove_dir_all(&staging);
     let _ = std::fs::remove_file(&zip_path);
     let _ = remove_pending_file();
 
-    log::info!("应用已自替换升级到 v{}（重启后生效）", pending.version);
+    log::info!("应用已自替换升级到 v{}", pending.version);
+
+    // 4) 立即以新 exe 拉起子进程并退出：当前进程镜像已被改名成 .old，
+    //    原地继续跑的仍是旧版本——不换进程的话，用户重启后看到的还是
+    //    旧版界面（旧缺陷）。新实例启动时无标记，直接跳过，不会循环。
+    match std::process::Command::new(&exe_path)
+        .args(std::env::args_os().skip(1))
+        .spawn()
+    {
+        Ok(_) => {
+            log::info!("已以新版本 v{} 拉起子进程，当前进程退出", pending.version);
+            std::process::exit(0);
+        }
+        // 拉起失败（如被安全软件拦截）：保持旧流程兜底——磁盘上已是新 exe，
+        // 用户下次手动启动即新版本；当前实例继续以旧版本跑完本次启动
+        Err(e) => {
+            log::error!("以新版本 v{} 重启失败（{e}），下次启动生效", pending.version);
+        }
+    }
 }
 
 fn remove_pending_file() -> std::io::Result<()> {

@@ -478,7 +478,7 @@ docs/r2-distribution-and-updater.md   （本文档）
 | 更新清单 | 新文件 `src-tauri/src/updater.rs`：`UpdateManifest`（schemaVersion=1 / version / minimumUpgradable / notes / platforms.windows-x86_64{ url, portableUrl, sha256, portableSha256, size, portableSize }） |
 | 检查更新 | `check_for_update`：拉取 `update_endpoint`（默认 `https://r2.dckxx.com/releases/update.json`，可配置）+ `.sig` → Ed25519 验签（复用 `signing::verify_detached`，失败一律不信任且**静默**不打扰用户）→ semver 比较（复用 `market::version_cmp`）+ `minimumUpgradable` 跳级保护 → 平台匹配（便携版 `paths::is_portable()` 优先 portableUrl）→ 命中广播 `update-available` |
 | 下载更新 | `download_update(version)`：重新拉取清单并验签（防竞态下载旧条目）→ 流式下载到 `updates/<version>/x-hub.zip.tmp`，边下边算 sha256（与清单比对，不符删文件中止）→ rename 原子就位 → 写 `updates/.pending.json` 标记 → 广播 `update-ready`；进度经 `update-download-progress` 节流（≥256KB 一次） |
-| 自替换 | `apply_pending_update`：每次启动在 setup 早期（db 初始化前）调用，幂等无副作用；无标记即返回；有标记则 `extract_zip_read` 解包 → `locate_new_exe`（根/一层子目录取体积最大的 .exe）→ `exe → exe.old`、`新 exe → exe` 两步 rename（Windows 允许 rename 运行中的 exe）→ 删 .old + 新包 + 标记；任一步失败回滚（.old 还原）并保留标记下次启动重试 |
+| 自替换 | `apply_pending_update`：每次启动在 setup 早期（db 初始化前）调用，幂等无副作用；进入时先清掉上次升级残留的 `.old`（此刻无进程占用，运行中被改名的镜像删不掉）；无标记即返回；有标记则 `extract_zip_read` 解包 → `locate_new_exe`（根/一层子目录取体积最大的 .exe）→ `exe → exe.old`、`新 exe → exe` 两步 rename（Windows 允许 rename 运行中的 exe）→ 删新包 + 标记 → **立即以新 exe 拉起子进程、当前进程退出**（当前进程镜像已是 .old，原地继续跑仍是旧版本——修复「点了立即重启还是旧版」）；任一步失败回滚（.old 还原）并保留标记下次启动重试 |
 | 状态查询 | `get_update_status`：无网络请求，读本地标记返回是否 ready（供前端启动展示「重启更新」） |
 | 定时检查 | setup 内 spawned task：启动 5s 后 + 每 `update_interval_hours`（默认 4h）循环，受 `auto_update_enabled` 控制，失败静默 |
 | 配置 | `config.rs` 新增 `update_endpoint` / `auto_update_enabled`（默认 true）/ `update_interval_hours`（默认 4） |

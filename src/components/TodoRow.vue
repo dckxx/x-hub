@@ -205,51 +205,53 @@ function hideTip() {
         @keydown.esc="editing = false"
         @blur="commitEdit"
       ></textarea>
-      <span
-        v-else
-        class="todo-label"
-        :data-tip="todo.title"
-        @dblclick="startEdit"
-        @mouseenter="showTip"
-        @mouseleave="hideTip"
-      >{{ todo.title }}</span>
-
-      <div v-if="!todo.done" class="todo-badges">
-        <button
-          v-if="badge"
-          class="todo-badge"
-          :class="badge.kind"
-          type="button"
-          title="点击设置截止/提醒"
-          @click="onBadgeClick"
-        >
-          <AlertTriangle v-if="badge.kind === 'over'" :size="10" :stroke-width="2" />
-          <Sun v-else-if="badge.kind === 'today'" :size="10" :stroke-width="2" />
-          <CalendarDays v-else :size="10" :stroke-width="2" />
-          {{ badge.text }}
-        </button>
-        <button
-          v-else
-          class="todo-badge-add"
-          type="button"
-          title="设置截止日期/提醒"
-          @click="onBadgeClick"
-        >
-          <CalendarDays :size="10" :stroke-width="2" />
-          <span>日期</span>
-        </button>
-        <span v-if="remindOn && todo.remind_at != null" class="todo-badge remind" title="到点弹提醒">
-          <Bell :size="10" :stroke-width="2" />
-          提醒 {{ fmtHM(todo.remind_at) }}
-        </span>
+      <div v-else class="todo-line">
         <span
-          v-if="showProgress"
-          class="sub-progress"
-          :title="`${doneKids}/${kids.length} 个子待办已完成`"
-        >
-          <span class="bar"><i :style="{ width: (doneKids / kids.length) * 100 + '%' }"></i></span>
-          <span class="cnt">{{ doneKids }}/{{ kids.length }}</span>
-        </span>
+          class="todo-label"
+          :data-tip="todo.title"
+          @dblclick="startEdit"
+          @mouseenter="showTip"
+          @mouseleave="hideTip"
+        >{{ todo.title }}</span>
+
+        <!-- 徽标与标题同一 flex 行：短标题尾随同行，长标题放不下自动换行兜底 -->
+        <div v-if="!todo.done" class="todo-badges">
+          <button
+            v-if="badge"
+            class="todo-badge"
+            :class="badge.kind"
+            type="button"
+            title="点击设置截止/提醒"
+            @click="onBadgeClick"
+          >
+            <AlertTriangle v-if="badge.kind === 'over'" :size="10" :stroke-width="2" />
+            <Sun v-else-if="badge.kind === 'today'" :size="10" :stroke-width="2" />
+            <CalendarDays v-else :size="10" :stroke-width="2" />
+            {{ badge.text }}
+          </button>
+          <button
+            v-else
+            class="todo-badge-add"
+            type="button"
+            title="设置截止日期/提醒"
+            @click="onBadgeClick"
+          >
+            <CalendarDays :size="10" :stroke-width="2" />
+            <span>日期</span>
+          </button>
+          <span v-if="remindOn && todo.remind_at != null" class="todo-badge remind" title="到点弹提醒">
+            <Bell :size="10" :stroke-width="2" />
+            提醒 {{ fmtHM(todo.remind_at) }}
+          </span>
+          <span
+            v-if="showProgress"
+            class="sub-progress"
+            :title="`${doneKids}/${kids.length} 个子待办已完成`"
+          >
+            <span class="bar"><i :style="{ width: (doneKids / kids.length) * 100 + '%' }"></i></span>
+            <span class="cnt">{{ doneKids }}/{{ kids.length }}</span>
+          </span>
+        </div>
       </div>
 
       <div v-if="kids.length || addingSub" class="todo-subs">
@@ -401,11 +403,22 @@ function hideTip() {
   flex: 1;
   min-width: 0;
 }
+/* 标题 + 徽标同一 flex 行：徽标尾随标题末尾，放不下时整组换行到下一行 */
+.todo-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 2px;
+  min-width: 0;
+}
 .todo-label {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 5;
   overflow: hidden;
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: 0.8125em;
   line-height: 1.45;
   color: var(--text-1);
@@ -446,7 +459,6 @@ function hideTip() {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-top: 3px;
   flex-wrap: wrap;
 }
 .todo-badge {
@@ -458,7 +470,7 @@ function hideTip() {
   padding: 1px 8px;
   font-size: 0.625em;
   font-weight: 600;
-  line-height: 16px;
+  line-height: 14px;
   cursor: pointer;
   transition: filter 0.18s, transform 0.18s;
   font-family: inherit;
@@ -496,7 +508,7 @@ function hideTip() {
   filter: none;
 }
 .todo-badge-add {
-  display: inline-flex;
+  display: none;
   align-items: center;
   gap: 3px;
   border: none;
@@ -507,14 +519,14 @@ function hideTip() {
   font-weight: 500;
   color: var(--text-4);
   cursor: pointer;
-  line-height: 16px;
-  opacity: 0;
-  transition: opacity 0.18s, background 0.18s, color 0.18s;
+  line-height: 14px;
+  transition: background 0.18s, color 0.18s;
   font-family: inherit;
 }
+/* hover 才占位渲染：避免隐形徽标在标题较长时挤出一行幻影空行 */
 .todo-row:hover .todo-badge-add,
 .todo-row:focus-within .todo-badge-add {
-  opacity: 1;
+  display: inline-flex;
 }
 .todo-badge-add:hover {
   background: var(--bg-card-soft);

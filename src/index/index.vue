@@ -5,21 +5,15 @@ import TitleBar from '../components/TitleBar.vue'
 import TodoCard from '../components/TodoCard.vue'
 import Suda from '../components/Suda.vue'
 import NoteList from '../components/NoteList.vue'
-import GlobalSearch from '../components/GlobalSearch.vue'
-import SettingsView from '../components/SettingsView.vue'
 import NotesOverviewCard from '../components/NotesOverviewCard.vue'
 import TodoOverviewCard from '../components/TodoOverviewCard.vue'
 import ResourcesOverviewCard from '../components/ResourcesOverviewCard.vue'
 import SysMonitorCard from '../components/SysMonitorCard.vue'
 import PromptBoxCard from '../components/PromptBoxCard.vue'
-import PromptManageDialog from '../components/PromptManageDialog.vue'
 import RecentBar from '../components/RecentBar.vue'
 import ClockCard from '../components/ClockCard.vue'
 import StickyCard from '../components/StickyCard.vue'
 import CountdownCard from '../components/CountdownCard.vue'
-import ChatPanel from '../components/ChatPanel.vue'
-import ExtensionCenter from '../components/ExtensionCenter.vue'
-import ExtensionView from '../components/ExtensionView.vue'
 import { useStore } from '../stores/workbench'
 import { isTauri, tauriApi } from '../api/tauri'
 import { convertFileSrc } from '@tauri-apps/api/core'
@@ -30,11 +24,17 @@ import type { Component } from 'vue'
 import { useTheme } from '../composables/useTheme'
 import { broadcastThemeToFrames } from '../composables/themeTokens'
 import { iconSrc } from '../composables/useResourceIcon'
-import DashboardLayoutEditor from '../components/DashboardLayoutEditor.vue'
 import { useDashboardLayout, type DashPlacement } from '../composables/useDashboardLayout'
 
-// 速记编辑器（Milkdown Crepe）体量较大，异步分包按需加载
+// 大体量/低频视图异步分包按需加载，缩小首屏主 chunk
 const NoteEditor = defineAsyncComponent(() => import('../components/NoteEditor.vue'))
+const GlobalSearch = defineAsyncComponent(() => import('../components/GlobalSearch.vue'))
+const SettingsView = defineAsyncComponent(() => import('../components/SettingsView.vue'))
+const PromptManageDialog = defineAsyncComponent(() => import('../components/PromptManageDialog.vue'))
+const ChatPanel = defineAsyncComponent(() => import('../components/ChatPanel.vue'))
+const ExtensionCenter = defineAsyncComponent(() => import('../components/ExtensionCenter.vue'))
+const ExtensionView = defineAsyncComponent(() => import('../components/ExtensionView.vue'))
+const DashboardLayoutEditor = defineAsyncComponent(() => import('../components/DashboardLayoutEditor.vue'))
 
 const store = useStore()
 

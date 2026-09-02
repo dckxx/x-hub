@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, ref, type ComputedRef, type ComponentPublicInstance } from 'vue'
+import { computed, inject, nextTick, ref, type ComputedRef, type ComponentPublicInstance, type Ref } from 'vue'
 import {
   AlertTriangle,
   Bell,
@@ -38,6 +38,9 @@ const childrenMap = inject<ComputedRef<Map<number, Todo[]>>>(
   'todoChildren',
   computed(() => new Map()),
 )
+/** 组内上下拖动：仅顶级行上报给卡片层（子待办不支持拖动），由卡片决定落点与持久化 */
+const dragStart = inject<(t: Todo, e: PointerEvent) => void>('todoDragStart', () => {})
+const dragId = inject<Ref<number | null>>('todoDragId', ref(null))
 
 const PRIORITY_LABELS = ['普通', '重要', '紧急'] as const
 const PRIORITY_BG = ['var(--todo-pri-default)', 'var(--c-yellow-soft)', 'var(--c-red-soft)'] as const
@@ -53,6 +56,15 @@ const showProgress = computed(() => !props.isSub && !props.todo.done && kids.val
 function onBadgeClick(e: MouseEvent) {
   const el = e.currentTarget
   if (el instanceof HTMLElement) openSchedule(props.todo, el)
+}
+
+function onRowPointerDown(e: PointerEvent) {
+  if (props.isSub) return
+  const target = e.target as HTMLElement | null
+  // 子待办行嵌在父行 DOM 内，按下会冒泡到父行监听——
+  // 只响应最近 .todo-row 恰为当前行的按下，避免拖子待办误拖起父待办
+  if (target && target.closest('.todo-row') !== e.currentTarget) return
+  dragStart(props.todo, e)
 }
 
 async function toggle() {
@@ -168,8 +180,9 @@ function hideTip() {
 <template>
   <div
     class="todo-row"
-    :class="{ done: todo.done, sub: isSub, highlight: todo.id === highlightId }"
+    :class="{ done: todo.done, sub: isSub, highlight: todo.id === highlightId, dragging: todo.id === dragId }"
     :data-todo-id="todo.id"
+    @pointerdown="onRowPointerDown"
   >
     <button
       class="todo-check"
@@ -252,6 +265,30 @@ function hideTip() {
             <span class="cnt">{{ doneKids }}/{{ kids.length }}</span>
           </span>
         </div>
+
+        <!-- 父级操作按钮：跟在标题/徽标后面（不挂在整行最右），有子待办时不会沉到整块底部 -->
+        <button
+          v-if="!isSub"
+          class="todo-subadd"
+          type="button"
+          :title="addingSub ? '收起' : '添加子待办'"
+          :aria-label="addingSub ? '收起子待办输入' : '添加子待办'"
+          @mousedown.prevent
+          @click="toggleSubAdd"
+        >
+          <X v-if="addingSub" :size="12" :stroke-width="2.4" />
+          <Plus v-else :size="12" :stroke-width="2.4" />
+        </button>
+        <button
+          v-if="!isSub"
+          class="todo-del"
+          type="button"
+          :title="kids.length ? '删除（级联删除子待办）' : '删除'"
+          :aria-label="kids.length ? '删除（级联删除子待办）' : '删除'"
+          @click="removeTodo(todo)"
+        >
+          <Trash2 :size="12" :stroke-width="2" />
+        </button>
       </div>
 
       <div v-if="kids.length || addingSub" class="todo-subs">
@@ -288,23 +325,13 @@ function hideTip() {
       </div>
     </div>
 
+    <!-- 子待办的删除按钮仍挂行尾（父级按钮已移入标题行内） -->
     <button
-      v-if="!isSub"
-      class="todo-subadd"
-      type="button"
-      :title="addingSub ? '收起' : '添加子待办'"
-      :aria-label="addingSub ? '收起子待办输入' : '添加子待办'"
-      @mousedown.prevent
-      @click="toggleSubAdd"
-    >
-      <X v-if="addingSub" :size="12" :stroke-width="2.4" />
-      <Plus v-else :size="12" :stroke-width="2.4" />
-    </button>
-    <button
+      v-if="isSub"
       class="todo-del"
       type="button"
-      :title="kids.length ? '删除（级联删除子待办）' : '删除'"
-      :aria-label="kids.length ? '删除（级联删除子待办）' : '删除'"
+      title="删除"
+      aria-label="删除子待办"
       @click="removeTodo(todo)"
     >
       <Trash2 :size="12" :stroke-width="2" />
@@ -340,6 +367,10 @@ function hideTip() {
 .todo-row.highlight {
   background: var(--brand-50);
   transition: background 0.5s;
+}
+/* 拖拽中的行半透明让位（落点由卡片层插入线指示） */
+.todo-row.dragging {
+  opacity: 0.35;
 }
 /* 子行嵌在父行 .todo-mid（父待办首字列）内，不再额外缩进，
    让子复选框与父待办第一个字对齐 */
@@ -603,7 +634,7 @@ function hideTip() {
   opacity: 1;
 }
 
-/* ---- 行尾按钮 ---- */
+/* ---- 行内操作按钮：父级跟在标题/徽标后，子级删除仍挂行尾 ---- */
 .todo-subadd,
 .todo-del {
   flex-shrink: 0;

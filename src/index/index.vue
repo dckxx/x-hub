@@ -21,7 +21,7 @@ import type { Countdown, ExtensionEntry, Note, Resource, Todo } from '../api/tau
 import { playChime } from '../utils/chime'
 import { FileText, FolderOpen, LayoutDashboard, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight, AppWindow, PanelRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
-import { useTheme } from '../composables/useTheme'
+import { useTheme, systemDarkMode } from '../composables/useTheme'
 import { broadcastThemeToFrames } from '../composables/themeTokens'
 import { iconSrc } from '../composables/useResourceIcon'
 import { useDashboardLayout, type DashPlacement } from '../composables/useDashboardLayout'
@@ -41,22 +41,35 @@ const store = useStore()
 // 初始化三轴主题系统（应用 data-theme/data-preset/inline --accent，监听系统变化）
 useTheme()
 
-// ---- 应用壁纸：主窗口所有视图共用一张，浮窗不跟随；文件失效时静默回退渐变背景 ----
+// ---- 应用壁纸：主窗口所有视图共用，浮窗不跟随；文件失效时静默回退渐变背景 ----
+// 亮/暗主题各自一套壁纸配置：暗色未单独设置时跟随亮色（升级兼容，老用户观感不变）
 const wallpaperFailed = ref(false)
+const isDarkTheme = computed(() => {
+  const mode = store.state.config.theme_mode
+  return mode === 'dark' || (mode === 'system' && systemDarkMode().value)
+})
 watch(
-  () => store.state.config.wallpaper_path,
+  () => [store.state.config.wallpaper_path, store.state.config.wallpaper_path_dark] as const,
   () => {
     wallpaperFailed.value = false
   },
 )
 const wallpaperSrc = computed(() => {
-  const p = store.state.config.wallpaper_path
+  const { wallpaper_path, wallpaper_path_dark } = store.state.config
+  const p = isDarkTheme.value ? wallpaper_path_dark || wallpaper_path : wallpaper_path
   if (!p || wallpaperFailed.value || !isTauri()) return ''
   return convertFileSrc(p)
 })
 
-// 蒙版不透明度钳制 0–0.85：85% 封顶保证壁纸仍可辨识
-const wallpaperVeil = computed(() => Math.min(0.85, Math.max(0, store.state.config.wallpaper_veil)))
+// 蒙版不透明度钳制 0–0.85：85% 封顶保证壁纸仍可辨识；暗色负值 = 跟随亮色值
+const wallpaperVeil = computed(() => {
+  const clamp = (v: number) => Math.min(0.85, Math.max(0, v))
+  if (isDarkTheme.value) {
+    const dark = store.state.config.wallpaper_veil_dark
+    if (dark >= 0) return clamp(dark)
+  }
+  return clamp(store.state.config.wallpaper_veil)
+})
 
 // 壁纸在场标记（html data-wallpaper）：壁纸态可读性增强的作用域开关。
 // data-wallpaper-clear：卡片真实透底（低玻璃透明度或沉浸模式）时才为真，控制卡片文字光晕的启停

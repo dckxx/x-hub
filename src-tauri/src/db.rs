@@ -76,6 +76,8 @@ fn migrate(conn: &Connection) -> Result<()> {
           remind_fired INTEGER NOT NULL DEFAULT 0,
           -- 子待办父级（删除父条目时经外键级联删除子条目）
           parent_id INTEGER REFERENCES todos(id) ON DELETE CASCADE,
+          -- 手动拖拽排序位（分组内升序；NULL = 未手动排序，组内按创建时间倒序）
+          sort_order INTEGER,
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
           updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
           completed_at TEXT
@@ -333,6 +335,10 @@ fn migrate(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    // 待办手动排序位（v0.4.3，拖拽排序；NULL = 未手动排序）
+    if !todo_cols.iter().any(|c| c == "sort_order") {
+        conn.execute("ALTER TABLE todos ADD COLUMN sort_order INTEGER", [])?;
+    }
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_todos_parent ON todos(parent_id)",
         [],
@@ -478,7 +484,7 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<Vec<String>>>()
             .unwrap();
-        for col in ["due_at", "remind_at", "remind_fired", "parent_id"] {
+        for col in ["due_at", "remind_at", "remind_fired", "parent_id", "sort_order"] {
             assert!(cols.iter().any(|c| c == col), "缺列 {col}");
         }
 
@@ -561,7 +567,7 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<Vec<String>>>()
             .unwrap();
-        for col in ["due_at", "remind_at", "remind_fired", "parent_id"] {
+        for col in ["due_at", "remind_at", "remind_fired", "parent_id", "sort_order"] {
             assert!(cols.iter().any(|c| c == col), "todos 缺列 {col}");
         }
         let cd_cols: Vec<String> = conn

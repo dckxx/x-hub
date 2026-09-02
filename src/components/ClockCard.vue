@@ -18,22 +18,25 @@ import { describeWeather } from '../utils/weather'
 const store = useStore()
 
 const now = ref(new Date())
-let timer: ReturnType<typeof setInterval> | null = null
+let timer: ReturnType<typeof setTimeout> | null = null
 
 onMounted(() => {
-  timer = setInterval(() => {
+  const tick = () => {
     now.value = new Date()
-  }, 30_000)
+    // 对齐下一秒边界触发，避免相位漂移导致的跳秒；每次读钟不自增，节流后回前台也能立即正确
+    timer = setTimeout(tick, 1005 - (Date.now() % 1000))
+  }
+  tick()
 })
 onBeforeUnmount(() => {
-  if (timer) clearInterval(timer)
+  if (timer) clearTimeout(timer)
 })
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'] as const
 
 const timeText = computed(() => {
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(now.value.getHours())}:${pad(now.value.getMinutes())}`
+  return `${pad(now.value.getHours())}:${pad(now.value.getMinutes())}:${pad(now.value.getSeconds())}`
 })
 
 const dateText = computed(() => {

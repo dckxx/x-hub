@@ -1,6 +1,6 @@
 # x-hub (个人效率工作台)
 
-**生成:** 2026-08-29 | **分支:** master | **版本:** 0.4.2
+**生成:** 2026-08-29 | **分支:** master | **版本:** 0.4.3
 
 ## 概述
 
@@ -138,7 +138,7 @@ x-hub/
 | `resources` | 速达资源（app/web/file，category/icon/args/sort_order/last_launched_at） |
 | `notes` | 速记笔记（title/content） |
 | `tags` / `note_tags` | 笔记标签（多对多） |
-| `todos` | 待办（done/priority/completed_at/due_at/remind_at/parent_id 子待办） |
+| `todos` | 待办（done/priority/completed_at/due_at/remind_at/parent_id 子待办/sort_order 手动拖拽排序位） |
 | `stickies` / `detached_stickies` | 便签（slot 1/2）与脱离浮窗 |
 | `snippets` | 提示词（is_pinned/copy_count/last_copied_at） |
 | `countdowns` | 倒计时（repeat_mode once/daily/interval + end_at/total_ms/interval_minutes/paused/finished/floated/float_x/float_y） |
@@ -191,7 +191,7 @@ x-hub/
 
 39. **扩展 iframe 后台久置空白与两层自愈：** 扩展 iframe 是跨源帧（`asset.localhost` ≠ 主窗 `tauri.localhost`，独立渲染进程），窗口长时间不可见（隐藏到托盘/最小化/完全遮挡）后 WebView2 会挂起或丢弃其渲染状态，恢复前台后扩展区表现为空白而宿主 UI 正常，且点击「同一个」已打开的扩展不会自愈——`openExtensionSurface` 每次都 new 对象但 id/surface 值不变，useExtensionFrame 的 watch 比较值、不触发重载。两层修复：① `useExtensionFrame` 监听 `visibilitychange`，恢复可见且后台超 60s（`RESUME_RELOAD_AFTER_MS`）即重载 iframe（短时切换不重载，避免丢扩展内输入状态；`hiddenAt` 初始化即隐藏也统计，覆盖 `--autostart-hidden` 静默驻留场景）；② 宿主每次「打开某扩展」（`onOpenExtension`/`openExtensionSurface` view+drawer 分支/`openExtensionDrawer`）递增 `extensionReloadTick`，经 `ExtensionView` 的 `reloadKey` prop 纳入 watch 源，点击同一扩展也强制重新导航。此前表现为「后台久了点开扩展空白、来回切换才恢复」，切换之所以有效正是触发了 extId 变化那条重载路径
 
-40. **待办排期/子待办（v0.3.4，原型 docs/prototypes/todo-schedule-prototype.html）：** 待办支持**截止日期 + 提醒 + 子待办**。数据层：`todos` 表加 `due_at`/`remind_at`（毫秒时间戳，倒计时同款 epoch 基准）、`remind_fired`（防重复提醒）、`parent_id`（REFERENCES todos ON DELETE CASCADE，删父级联删子；仅一层无嵌套）；老库经 `db.rs` 幂等 ALTER 迁移。命令：`create_todo` 增可选 `parentId`、`schedule_todo(id, dueAt, remindAt)`（每次排期重置 remind_fired 重新武装提醒）。提醒触发在 Rust `todo_reminder.rs` 后台线程（1s 轮询 `remind_at` 到期且未完成未触发的项；超 5s 视为错过静默跳过不补发——与倒计时 ticker 同款语义），到点发托盘气泡通知 + emit `todo-remind`（主窗 toast）+ `todos-changed`。前端：分组规则 逾期→今天→有日期→无日期（`utils/todoSchedule.ts` 纯函数，徽标 逾期红/今天橙/明天品牌色/更远灰，仅日期的截止按当天 23:59 展示为「今天」无时间）；行渲染抽成递归子组件 `TodoRow.vue`（子待办缩进嵌在父行内、子行无优先级圆点/无「+」；父行显示 n/m 进度条），卡片经 provide 注入 `todoOpenSchedule`/`todoRemoveTodo`（排期弹层单实例 Teleport 到 body；删除在卡片做级联+撤销恢复）。注意：待办浮窗与待办概览卡只统计/展示**顶级待办**（`parent_id == null`），子待办不进总盘子
+40. **待办排期/子待办（v0.3.4，原型 docs/prototypes/todo-schedule-prototype.html）：** 待办支持**截止日期 + 提醒 + 子待办**。数据层：`todos` 表加 `due_at`/`remind_at`（毫秒时间戳，倒计时同款 epoch 基准）、`remind_fired`（防重复提醒）、`parent_id`（REFERENCES todos ON DELETE CASCADE，删父级联删子；仅一层无嵌套）；老库经 `db.rs` 幂等 ALTER 迁移。命令：`create_todo` 增可选 `parentId`、`schedule_todo(id, dueAt, remindAt)`（每次排期重置 remind_fired 重新武装提醒）。提醒触发在 Rust `todo_reminder.rs` 后台线程（1s 轮询 `remind_at` 到期且未完成未触发的项；超 5s 视为错过静默跳过不补发——与倒计时 ticker 同款语义），到点发托盘气泡通知 + emit `todo-remind`（主窗 toast）+ `todos-changed`。前端：分组规则 逾期→今天→有日期→无日期（`utils/todoSchedule.ts` 纯函数，徽标 逾期红/今天橙/明天品牌色/更远灰，仅日期的截止按当天 23:59 展示为「今天」无时间）；行渲染抽成递归子组件 `TodoRow.vue`（子待办缩进嵌在父行内、子行无优先级圆点/无「+」；父行显示 n/m 进度条），卡片经 provide 注入 `todoOpenSchedule`/`todoRemoveTodo`（排期弹层单实例 Teleport 到 body；删除在卡片做级联+撤销恢复）。注意：待办浮窗与待办概览卡只统计/展示**顶级待办**（`parent_id == null`），子待办不进总盘子。**拖拽排序（v0.4.3）**：顶级待办支持组内上下拖动（`todos.sort_order` 列，NULL=未手动排序；指针实现而非 HTML5 DnD，同约定 14/38），落点后整组 id 顺序经 `reorder_todo_orders` 写回 sort_order；组内排序键统一 `utils/todoSchedule.ts` 的 `compareByOrder`（sort_order 升序，未排序按创建时间倒序排在前），TodoCard / TodoFloat 共用；改截止日期换组时 `repo::schedule` 清空该条 sort_order 回默认排序，新建条目落入手动排序过的组时由 store.createTodo 以 [新条目, ...组内原序] 整组重写补置顶位；子待办不参与拖动
 
 ## 命令速查
 
@@ -200,6 +200,7 @@ npm run dev           # Vite 开发服务器（浏览器预览 http://localhost:
 npm run tauri:dev     # Tauri 开发窗口（需 Rust 工具链）
 npm run build         # vue-tsc 类型检查 + vite build
 npm run tauri:build   # 构建桌面应用（产物在 src-tauri/target/release/bundle/）
+npm run tauri:test    # Rust 单元测试（Windows 必须走此包装脚本，见注意事项「cargo test」）
 ```
 
 ## 发版清单（版本号单一来源 = README）
@@ -225,6 +226,7 @@ npm run tauri:build   # 构建桌面应用（产物在 src-tauri/target/release/
 - **reka-ui 调试：** segment 输入/焦点问题必须用**真实键盘事件**验证（Playwright `browser_press_key` 逐个按键），`browser.type` 类工具是直接改 DOM 文本、不触发 `keydown`，会造成「显示变了但 v-model 不同步」的假象；验证时检查快照中 segment 的 `[active]`（焦点位置）与隐藏 input 的 value（如 `15:45:00`）是否同步
 - **指定浏览器打开网页（v0.3.0）：** 速达右键网页资源可「用 XX 打开」；浏览器列表来自注册表 `SOFTWARE\Clients\StartMenuInternet`（HKLM+HKCU+Wow6432Node，`browsers.rs` 枚举，按 exe 路径去重、按显示名排序；显示名取键默认值/LocalizedString，间接字符串或缺失时按 exe 文件名兜底）；`open_url_with_browser` 仅放行 Web 资源 + http/https，成功后与默认打开一致刷新 `last_launched_at`；前端在 Suda.vue 挂载时预热列表缓存，右键零等待
 - **右键菜单置位必须在事件派发外（陷阱）：** `ContextMenu.vue` 在 window 上监听 `contextmenu`/`click` 用于点别处关闭菜单；若在卡片 `@contextmenu` 处理器里**同步**置 `menu.visible = true`，同一事件冒泡到 window 的关闭监听会把刚开的菜单立刻关掉（表现为右键无反应），且菜单已开时在另一资源上右键会因 visible 未变化不触发定位 watch（菜单出现在旧位置）。Suda.vue `openMenu` 用 `setTimeout(0)` 把置位推迟到派发结束后——新增右键入口时必须沿用此模式
+- **cargo test（Windows 必须走包装脚本）：** 直接 `cargo test` 的测试 exe 启动即死（`STATUS_ENTRYPOINT_NOT_FOUND` 0xC0000139）——tauri/wry 静态导入 `comctl32!TaskDialogIndirect`，该导出只存在于 Common-Controls v6 程序集，而测试 exe 不经 tauri-build 的 manifest 嵌入（后者只作用于 bin 目标），缺激活上下文时 loader 用 comctl32 5.82 解析导入。修复：`npm run tauri:test`（`scripts/cargo-test.ps1`）——`cargo test --no-run` 后用 SDK `mt.exe` 给每个测试 exe 嵌入 `src-tauri/windows/app.manifest`（幂等覆盖 RT_MANIFEST）再运行。诊断手法：PE 导入表逐符号 `GetProcAddress` 探测缺失导出（误报需过滤）；`cargo:rustc-link-arg-tests` 不覆盖 lib 单元测试（仅 tests/ 目录），别再尝试链接器路线
 
 ## 待实现
 

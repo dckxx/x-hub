@@ -3,7 +3,7 @@ use crate::repo::now;
 use rusqlite::{params, Connection, Result};
 
 const COLS: &str =
-    "id, title, done, priority, created_at, updated_at, completed_at, due_at, remind_at, remind_fired, parent_id";
+    "id, title, done, priority, created_at, updated_at, completed_at, due_at, remind_at, remind_fired, parent_id, sort_order";
 
 pub fn list(conn: &Connection) -> Result<Vec<Todo>> {
     let mut stmt = conn.prepare(&format!(
@@ -64,6 +64,8 @@ pub fn update(conn: &Connection, id: i64, title: &str, priority: i64) -> Result<
 
 /// 设置截止/提醒时刻（毫秒时间戳；NULL 表示清除）。
 /// 每次排期都重置 remind_fired，用户改提醒时间后重新武装后台触发。
+/// 同时清空手动排序位：截止日期决定分组归属，换组后原顺序语义失效，
+/// 该条目回到新组默认位置（创建时间倒序）。
 pub fn schedule(
     conn: &Connection,
     id: i64,
@@ -71,7 +73,7 @@ pub fn schedule(
     remind_at: Option<i64>,
 ) -> Result<Todo> {
     conn.execute(
-        "UPDATE todos SET due_at = ?1, remind_at = ?2, remind_fired = 0, updated_at = ?3 WHERE id = ?4",
+        "UPDATE todos SET due_at = ?1, remind_at = ?2, remind_fired = 0, sort_order = NULL, updated_at = ?3 WHERE id = ?4",
         params![due_at, remind_at, now(), id],
     )?;
     get(conn, id)
@@ -101,6 +103,20 @@ pub fn children_ids(conn: &Connection, id: i64) -> Result<Vec<i64>> {
     let mut stmt = conn.prepare("SELECT id FROM todos WHERE parent_id = ?1 ORDER BY id")?;
     let rows = stmt.query_map(params![id], |r| r.get(0))?;
     rows.collect()
+}
+
+/// 按传入顺序写入手动排序位（拖拽排序；ids[i] 的 sort_order = i+1）。
+/// 只更新传入的条目——前端按分组计算顺序，后端不做分组解释。
+pub fn reorder(conn: &Connection, ids: &[i64]) -> Result<()> {
+    let ts = now();
+    let tx = conn.unchecked_transaction()?;
+    for (i, id) in ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE todos SET sort_order = ?1, updated_at = ?2 WHERE id = ?3",
+            params![(i + 1) as i64, ts, id],
+        )?;
+    }
+    tx.commit()
 }
 
 pub fn search(conn: &Connection, keyword: &str) -> Result<Vec<Todo>> {
@@ -145,6 +161,7 @@ pub fn row_to_todo(row: &rusqlite::Row) -> Result<Todo> {
         remind_at: row.get(8)?,
         remind_fired: row.get::<_, i64>(9)? != 0,
         parent_id: row.get(10)?,
+        sort_order: row.get(11)?,
     })
 }
 
@@ -273,6 +290,32 @@ mod tests {
         let cleared = schedule(&conn, t.id, None, None).unwrap();
         assert_eq!(cleared.due_at, None);
         assert_eq!(cleared.remind_at, None);
+    }
+
+    #[test]
+    fn reorder_assigns_sort_order_in_given_sequence() {
+        let conn = setup();
+        let a = create(&conn, "任务 A", None, None).unwrap();
+        let b = create(&conn, "任务 B", None, None).unwrap();
+        let c = create(&conn, "任务 C", None, None).unwrap();
+        // 新建条目未手动排序
+        assert!(list(&conn).unwrap().iter().all(|t| t.sort_order.is_none()));
+        reorder(&conn, &[c.id, a.id, b.id]).unwrap();
+        let got = |id: i64| get(&conn, id).unwrap().sort_order;
+        assert_eq!(got(c.id), Some(1));
+        assert_eq!(got(a.id), Some(2));
+        assert_eq!(got(b.id), Some(3));
+    }
+
+    #[test]
+    fn schedule_clears_manual_sort_order() {
+        // 截止日期决定分组归属，换组后原手动顺序失效，应回到默认排序
+        let conn = setup();
+        let t = create(&conn, "换组的任务", None, None).unwrap();
+        reorder(&conn, &[t.id]).unwrap();
+        assert_eq!(get(&conn, t.id).unwrap().sort_order, Some(1));
+        let s = schedule(&conn, t.id, Some(1_800_000_000_000), None).unwrap();
+        assert_eq!(s.sort_order, None);
     }
 
     #[test]

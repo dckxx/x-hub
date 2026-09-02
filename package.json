@@ -1,7 +1,7 @@
 {
   "name": "x-hub",
   "private": true,
-  "version": "0.4.2",
+  "version": "0.4.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:test": "pwsh -NoProfile -File scripts/cargo-test.ps1"
   },
   "dependencies": {
     "@internationalized/date": "^3.12.3",

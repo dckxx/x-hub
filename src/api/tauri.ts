@@ -46,6 +46,8 @@ export interface Todo {
   remind_fired: boolean
   /** 父待办 id（子待办），顶级为 null */
   parent_id: number | null
+  /** 手动拖拽排序位（分组内升序）；null = 未手动排序，按创建时间倒序 */
+  sort_order: number | null
 }
 
 export interface Sticky {
@@ -122,6 +124,10 @@ export interface AppConfig {
   wallpaper_blur: boolean
   /** 壁纸蒙版：主题底色罩层不透明度（0–0.85，默认 0.3） */
   wallpaper_veil: number
+  /** 暗色主题专属壁纸绝对路径（空 = 跟随亮色壁纸） */
+  wallpaper_path_dark: string
+  /** 暗色主题壁纸蒙版不透明度（0–0.85；负值 = 跟随 wallpaper_veil） */
+  wallpaper_veil_dark: number
   /** 沉浸模式：卡片真毛玻璃局部取景模糊（ADR 0003 受控例外，默认关） */
   wallpaper_immersive: boolean
   /** 卡片玻璃透明度（0.4–1.0，默认 1.0 = 不透明） */
@@ -492,6 +498,8 @@ export const tauriApi = {
   deleteTodo: (id: number) => invoke<void>('delete_todo', { id }),
   scheduleTodo: (id: number, dueAt: number | null, remindAt: number | null) =>
     invoke<Todo>('schedule_todo', { id, dueAt, remindAt }),
+  /** 待办拖拽排序：按传入顺序写入手动排序位（前端按分组计算完整顺序） */
+  reorderTodoOrders: (ids: number[]) => invoke<void>('reorder_todo_orders', { ids }),
   listStickies: () => invoke<Sticky[]>('list_stickies'),
   getDetachedStickies: () => invoke<DetachedSticky[]>('get_detached_stickies'),
   saveSticky: (slot: number, content: string) =>
@@ -514,7 +522,8 @@ export const tauriApi = {
     invoke<string | null>('import_icon_file', { source }),
   importWallpaper: (source: string) =>
     invoke<string>('import_wallpaper', { source }),
-  removeWallpaper: () => invoke<void>('remove_wallpaper'),
+  /** 清理壁纸目录中当前配置（亮/暗）均未引用的文件；前端先改配置再调用 */
+  cleanupWallpapers: () => invoke<void>('cleanup_wallpapers'),
   /** 保存笔记图片（base64，不含 data: 前缀）：落盘 notes/images，返回 xhub-note 协议 URL */
   importNoteImage: (dataB64: string, ext: string) =>
     invoke<string>('import_note_image', { dataB64, ext }),

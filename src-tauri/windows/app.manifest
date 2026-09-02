@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  cargo test 专用：测试 exe 不经 tauri-build 对 bin 目标的 manifest 嵌入，
+  而 tauri/wry 导入的 comctl32!TaskDialogIndirect 只存在于 Common-Controls v6
+  程序集——缺激活上下文时测试进程启动即死（STATUS_ENTRYPOINT_NOT_FOUND）。
+  由 scripts/cargo-test.ps1 在 cargo test --no-run 后用 SDK mt.exe 嵌入本文件
+  （cargo:rustc-link-arg-tests 不覆盖 lib 单元测试，链接器路线已放弃）。
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0" processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df" language="*"/>
+    </dependentAssembly>
+  </dependency>
+</assembly>

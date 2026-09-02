@@ -20,9 +20,34 @@ const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
 
 // ---- 应用壁纸与卡片玻璃透明度（见 docs/adr/0002：模糊作用于壁纸层整体） ----
-const wallpaperSrc = computed(() => {
+// 壁纸按亮/暗主题独立配置：暗色未单独设图时跟随亮色；蒙版负值 = 跟随亮色值（升级兼容）
+const wallpaperTab = ref<'light' | 'dark'>(
+  document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
+)
+
+const lightWallpaperSrc = computed(() => {
   const p = store.state.config.wallpaper_path
   return p && isTauri() ? convertFileSrc(p) : ''
+})
+const darkWallpaperFollowsLight = computed(() => !store.state.config.wallpaper_path_dark)
+const darkWallpaperSrc = computed(() => {
+  const p = darkWallpaperFollowsLight.value
+    ? store.state.config.wallpaper_path
+    : store.state.config.wallpaper_path_dark
+  return p && isTauri() ? convertFileSrc(p) : ''
+})
+const hasAnyWallpaper = computed(() => !!(lightWallpaperSrc.value || darkWallpaperSrc.value))
+
+// 当前页签的预览与蒙版（暗色蒙版未显式设置时显示实际生效的亮色值）
+const activeWallpaperSrc = computed(() =>
+  wallpaperTab.value === 'dark' ? darkWallpaperSrc.value : lightWallpaperSrc.value,
+)
+const activeVeilValue = computed(() => {
+  if (wallpaperTab.value === 'dark') {
+    const dark = store.state.config.wallpaper_veil_dark
+    if (dark >= 0) return dark
+  }
+  return store.state.config.wallpaper_veil
 })
 
 async function pickWallpaper() {
@@ -34,21 +59,31 @@ async function pickWallpaper() {
     })
     if (typeof file !== 'string') return
     const stored = await tauriApi.importWallpaper(file)
-    await store.setWallpaper(stored)
-    showToast('壁纸已更新')
+    if (wallpaperTab.value === 'dark') {
+      await store.setWallpaperDark(stored)
+      showToast('暗色壁纸已更新')
+    } else {
+      await store.setWallpaper(stored)
+      showToast('壁纸已更新')
+    }
   } catch (e) {
     showToast(`壁纸导入失败：${String(e)}`)
   }
 }
 
 async function clearWallpaper() {
+  if (wallpaperTab.value === 'dark') {
+    await store.setWallpaperDark('')
+  } else {
+    await store.setWallpaper('')
+  }
   try {
-    await tauriApi.removeWallpaper()
+    // 先更新配置再清理目录：回收两主题均未引用的壁纸文件
+    await tauriApi.cleanupWallpapers()
   } catch {
     // 目录已不存在等场景不阻塞：配置置空即达成清除
   }
-  await store.setWallpaper('')
-  showToast('已清除壁纸')
+  showToast(wallpaperTab.value === 'dark' ? '已清除暗色壁纸（回到跟随亮色）' : '已清除壁纸')
 }
 
 function onToggleWallpaperBlur() {
@@ -60,7 +95,12 @@ function onToggleWallpaperImmersive() {
 }
 
 function onWallpaperVeilInput(e: Event) {
-  void store.setWallpaperVeil(Number((e.target as HTMLInputElement).value))
+  const v = Number((e.target as HTMLInputElement).value)
+  if (wallpaperTab.value === 'dark') {
+    void store.setWallpaperVeilDark(v)
+  } else {
+    void store.setWallpaperVeil(v)
+  }
 }
 
 function onGlassOpacityInput(e: Event) {
@@ -713,23 +753,76 @@ function onAccentInput(e: Event) {
               </div>
             </div>
 
-            <!-- ④ 应用壁纸：主窗口所有视图共用，浮窗不跟随；模糊为整屏静态层（ADR 0002） -->
+            <!-- ④ 应用壁纸：主窗口所有视图共用，浮窗不跟随；模糊为整屏静态层（ADR 0002）。
+                 亮/暗主题各可单独设置图片与蒙版；暗色未设置时跟随亮色 -->
             <div class="theme-row theme-row-stack">
               <span class="theme-label">应用壁纸</span>
               <div class="wallpaper-box">
-                <div class="wallpaper-preview" :class="{ empty: !wallpaperSrc }">
-                  <img v-if="wallpaperSrc" :src="wallpaperSrc" alt="壁纸预览" />
+                <div class="wallpaper-tabs" role="tablist" aria-label="壁纸适用主题">
+                  <button
+                    class="wallpaper-tab"
+                    :class="{ active: wallpaperTab === 'light' }"
+                    type="button"
+                    role="tab"
+                    :aria-selected="wallpaperTab === 'light'"
+                    @click="wallpaperTab = 'light'"
+                  >
+                    亮色主题
+                  </button>
+                  <button
+                    class="wallpaper-tab"
+                    :class="{ active: wallpaperTab === 'dark' }"
+                    type="button"
+                    role="tab"
+                    :aria-selected="wallpaperTab === 'dark'"
+                    @click="wallpaperTab = 'dark'"
+                  >
+                    暗色主题
+                  </button>
+                </div>
+                <div class="wallpaper-preview" :class="{ empty: !activeWallpaperSrc }">
+                  <img v-if="activeWallpaperSrc" :src="activeWallpaperSrc" alt="壁纸预览" />
                   <span v-else class="wallpaper-empty">未设置壁纸（当前使用主题渐变背景）</span>
+                </div>
+                <div
+                  v-if="wallpaperTab === 'dark' && darkWallpaperFollowsLight && lightWallpaperSrc"
+                  class="wallpaper-follow-hint"
+                >
+                  当前跟随亮色壁纸，可单独选择暗色专属图片
                 </div>
                 <div class="wallpaper-actions">
                   <button class="ghost-btn" @click="pickWallpaper">
-                    {{ wallpaperSrc ? '更换图片' : '选择图片' }}
+                    <template v-if="wallpaperTab === 'light'">{{ lightWallpaperSrc ? '更换图片' : '选择图片' }}</template>
+                    <template v-else>{{ darkWallpaperFollowsLight ? '选择图片' : '更换图片' }}</template>
                   </button>
-                  <button v-if="wallpaperSrc" class="ghost-btn" @click="clearWallpaper">
-                    清除壁纸
+                  <button
+                    v-if="wallpaperTab === 'light' ? lightWallpaperSrc : !darkWallpaperFollowsLight"
+                    class="ghost-btn"
+                    @click="clearWallpaper"
+                  >
+                    {{ wallpaperTab === 'light' ? '清除壁纸' : '清除暗色壁纸' }}
                   </button>
                 </div>
-                <div v-if="wallpaperSrc" class="setting-row wallpaper-blur-row">
+                <div v-if="activeWallpaperSrc" class="setting-row wallpaper-blur-row">
+                  <div class="setting-info">
+                    <span class="setting-name">壁纸蒙版</span>
+                    <span class="setting-desc">叠一层主题底色，改善文字与图标对比度；0% 壁纸最鲜亮，越高越接近原背景</span>
+                  </div>
+                  <div class="font-edit">
+                    <input
+                      class="opacity-slider"
+                      type="range"
+                      min="0"
+                      max="0.85"
+                      step="0.01"
+                      :value="activeVeilValue"
+                      aria-label="壁纸蒙版"
+                      @input="onWallpaperVeilInput"
+                    />
+                    <span class="opacity-value">{{ Math.round(activeVeilValue * 100) }}%</span>
+                  </div>
+                </div>
+                <div v-if="hasAnyWallpaper" class="setting-row wallpaper-blur-row">
                   <div class="setting-info">
                     <span class="setting-name">沉浸模式</span>
                     <span class="setting-desc">卡片改用真毛玻璃：壁纸在卡片间隙完整清晰展示，卡内文字自动可读（低端核显滚动可能掉帧）</span>
@@ -745,29 +838,10 @@ function onAccentInput(e: Event) {
                     <span class="toggle-knob"></span>
                   </button>
                 </div>
-                <div v-if="wallpaperSrc" class="setting-row wallpaper-blur-row">
-                  <div class="setting-info">
-                    <span class="setting-name">壁纸蒙版</span>
-                    <span class="setting-desc">叠一层主题底色，改善文字与图标对比度；0% 壁纸最鲜亮，越高越接近原背景</span>
-                  </div>
-                  <div class="font-edit">
-                    <input
-                      class="opacity-slider"
-                      type="range"
-                      min="0"
-                      max="0.85"
-                      step="0.01"
-                      :value="store.state.config.wallpaper_veil"
-                      aria-label="壁纸蒙版"
-                      @input="onWallpaperVeilInput"
-                    />
-                    <span class="opacity-value">{{ Math.round(store.state.config.wallpaper_veil * 100) }}%</span>
-                  </div>
-                </div>
-                <div v-if="wallpaperSrc && !store.state.config.wallpaper_immersive" class="setting-row wallpaper-blur-row">
+                <div v-if="hasAnyWallpaper && !store.state.config.wallpaper_immersive" class="setting-row wallpaper-blur-row">
                   <div class="setting-info">
                     <span class="setting-name">背景模糊</span>
-                    <span class="setting-desc">柔化整张壁纸（含卡片间空隙透出的部分），文字更易读；沉浸模式下不生效</span>
+                    <span class="setting-desc">柔化整张壁纸（含卡片间空隙透出的部分），文字更易读；沉浸模式下不生效；亮/暗主题共用</span>
                   </div>
                   <button
                     class="toggle"
@@ -1768,6 +1842,41 @@ function onAccentInput(e: Event) {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+}
+/* 亮/暗主题页签：分段控件样式，选中项用实底强调 */
+.wallpaper-tabs {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+}
+.wallpaper-tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 5px 12px;
+  border-radius: calc(var(--radius-md) - 2px);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.wallpaper-tab:hover {
+  color: var(--text-2);
+}
+.wallpaper-tab.active {
+  background: var(--accent);
+  color: #ffffff;
+}
+/* 暗色页签跟随亮色时的提示行 */
+.wallpaper-follow-hint {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  margin-top: calc(var(--space-3) * -1);
 }
 .wallpaper-preview {
   height: 96px;

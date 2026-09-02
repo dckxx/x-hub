@@ -7,6 +7,7 @@ import { isTauri } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useTheme } from '../composables/useTheme'
 import { parseTodoItems } from '../utils/todoParse'
+import { compareByOrder } from '../utils/todoSchedule'
 
 const store = useStore()
 
@@ -45,7 +46,10 @@ onBeforeUnmount(() => {
 
 const input = ref('')
 
-const pendingTodos = computed(() => store.state.todos.filter((t) => !t.done && t.parent_id == null))
+// 与待办卡片同一排序规则：手动拖过的（sort_order）优先，其余按创建时间倒序
+const pendingTodos = computed(() =>
+  store.state.todos.filter((t) => !t.done && t.parent_id == null).sort(compareByOrder),
+)
 
 async function onAdd() {
   const v = input.value.trim()

@@ -351,6 +351,21 @@ pub fn schedule_todo(
     Ok(todo)
 }
 
+/// 待办拖拽排序：按传入顺序写入手动排序位（前端按分组计算完整顺序）
+#[tauri::command]
+pub fn reorder_todo_orders(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    ids: Vec<i64>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    todo::reorder(&conn, &ids).map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("todos-changed", ());
+    log::debug!("待办排序更新: {} 条", ids.len());
+    Ok(())
+}
+
 // ---------- 便签 ----------
 
 #[tauri::command]
@@ -1625,8 +1640,8 @@ const WALLPAPER_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp"];
 const WALLPAPER_MAX_BYTES: u64 = 30 * 1024 * 1024;
 
 /// 导入用户选择的壁纸图片：复制进数据根 wallpapers 目录（内容哈希命名），
-/// 并清掉目录内其它文件（该目录为本应用专属，避免 %APPDATA% 堆积废弃图片）。
-/// 返回落盘后的绝对路径，前端写入配置 wallpaper_path
+/// 并清理目录内不再被任何主题引用的文件（亮/暗主题各可引用一张，避免 %APPDATA% 堆积废弃图片）。
+/// 返回落盘后的绝对路径，前端写入配置 wallpaper_path / wallpaper_path_dark
 #[tauri::command]
 pub fn import_wallpaper(source: String) -> Result<String, String> {
     use std::collections::hash_map::DefaultHasher;
@@ -1658,27 +1673,51 @@ pub fn import_wallpaper(source: String) -> Result<String, String> {
     let output_path = dir.join(format!("{:016x}.{}", hasher.finish(), ext));
     std::fs::write(&output_path, &bytes).map_err(|e| format!("保存壁纸失败: {}", e))?;
 
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p != output_path {
-                let _ = std::fs::remove_file(&p);
-            }
-        }
-    }
+    // 内容哈希命名天然去重：两主题引用同一张图时落盘只有一份。
+    // 此时磁盘上的 config 尚未指向新文件，引用集 = 旧配置两路径 + 新文件
+    let config = crate::config::load();
+    prune_wallpapers_unreferenced(&dir, &config, Some(&output_path));
 
     log::info!("壁纸导入成功: {} -> {}", source, output_path.display());
     Ok(output_path.to_string_lossy().into_owned())
 }
 
-/// 清除壁纸：清空 wallpapers 目录（配置中的 wallpaper_path 由前端一并置空）
+/// 清空 wallpapers 目录中当前配置（亮/暗两主题）均未引用的壁纸文件
+fn prune_wallpapers_unreferenced(
+    dir: &std::path::Path,
+    config: &crate::config::AppConfig,
+    extra_keep: Option<&std::path::Path>,
+) {
+    let mut keep: Vec<std::path::PathBuf> = Vec::new();
+    if !config.wallpaper_path.is_empty() {
+        keep.push(std::path::PathBuf::from(&config.wallpaper_path));
+    }
+    if !config.wallpaper_path_dark.is_empty() {
+        keep.push(std::path::PathBuf::from(&config.wallpaper_path_dark));
+    }
+    if let Some(e) = extra_keep {
+        keep.push(e.to_path_buf());
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !keep.iter().any(|k| k == &p) {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+}
+
+/// 壁纸目录清理：删除当前配置（亮/暗两主题）均未引用的壁纸文件。
+/// 前端先更新配置再调用本命令，即可完成「清除某主题壁纸」并顺手回收孤儿文件
 #[tauri::command]
-pub fn remove_wallpaper() -> Result<(), String> {
+pub fn cleanup_wallpapers() -> Result<(), String> {
     let dir = crate::paths::data_root().join("wallpapers");
     if dir.exists() {
-        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+        let config = crate::config::load();
+        prune_wallpapers_unreferenced(&dir, &config, None);
     }
-    log::info!("壁纸已清除");
+    log::info!("壁纸目录已按当前配置清理");
     Ok(())
 }
 

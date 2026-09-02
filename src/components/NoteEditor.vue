@@ -4,13 +4,16 @@ import { Crepe } from '@milkdown/crepe'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
 import { editorViewCtx } from '@milkdown/kit/core'
+import { TextSelection, type EditorState } from '@milkdown/kit/prose/state'
 import { Tag as TagIcon, Trash2 } from 'lucide-vue-next'
 import { isTauri, tauriApi, type Note, type Tag } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { attachBlockDrag } from '../utils/blockDrag'
 import { deriveNoteTitle } from '../utils/markdown'
+import { getQuickEmojis } from '../utils/emoji'
 import { saveNoteImageFile } from '../utils/noteImage'
 import { parseTimestamp } from '../utils/time'
+import EmojiPicker from './EmojiPicker.vue'
 
 /**
  * 速记编辑器：Milkdown Crepe 所见即所得（Markdown 为真相源，序列化结果经 600ms 防抖落盘）。
@@ -94,6 +97,31 @@ async function mountEditor(content: string) {
           blockCaptionPlaceholderText: '填写图片说明',
         },
         [Crepe.Feature.BlockEdit]: {
+          // 把手悬停偏移 16→4px：配合收窄后的编辑区左右内边距（72px），
+          // 保证把手（66px 宽 + offset）完整落在边距内，不翻转盖字、不触发横向滚动
+          blockHandle: {
+            getOffset: () => 4,
+          },
+          // 斜杠菜单扩展：在「插入」右侧新增「表情」分组
+          // 快捷表情（最近使用优先）点击即插入；「更多表情…」打开完整选择器（分类/搜索/最近使用）
+          buildMenu: (builder) => {
+            const group = builder.addGroup('emoji', '表情')
+            getQuickEmojis().forEach((it) => {
+              group.addItem(`emoji-${it.e}`, {
+                label: it.n,
+                icon: it.e,
+                onRun: () => insertEmojiText(it.e),
+              })
+            })
+            group.addItem('emoji-more', {
+              label: '更多表情…',
+              icon: emojiMoreIcon,
+              onRun: () => {
+                removeSlashQuery()
+                emojiPickerVisible.value = true
+              },
+            })
+          },
           textGroup: {
             label: '文本',
             text: { label: '正文' },
@@ -288,6 +316,98 @@ function formatSavedTime(iso: string): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${t.getFullYear()}年${t.getMonth() + 1}月${t.getDate()}日${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`
 }
+
+// ---- 表情插入 ----
+const emojiPickerVisible = ref(false)
+
+/** 斜杠菜单「更多表情…」的图标（Material mood 风格，fill 型，与 Crepe 自带图标一致） */
+const emojiMoreIcon = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/>
+  </svg>
+`
+
+/** 光标前同一文本块内斜杠指令「/query」的起点；光标不在指令后则返回 null。
+ *  斜杠菜单的自定义项（表情）不会像内置项那样清掉指令文本（内置项走 clearTextInCurrentBlock），
+ *  插入表情/打开表情选择器前需先定位并删除它 */
+function slashQueryStart(state: EditorState, from: number): number | null {
+  const $from = state.doc.resolve(from)
+  if ($from.depth === 0 || !$from.parent.inlineContent) return null
+  const blockStart = $from.start()
+  // leafText 占位符保证内联叶子节点（硬换行等）也是 1 字符，字符串下标与文档位置 1:1 对应
+  const textBefore = state.doc.textBetween(blockStart, from, '\n', '\uFFFC')
+  const m = /(?:^|\s)(\/[^\s]*)$/.exec(textBefore)
+  if (!m) return null
+  // m[0] 含可选前导（行首零宽或一个空白），指令起点 = 匹配起点 + 前导长度，
+  // 即 m.index + (m[0].length - m[1].length)。直接用 m.index + m[1].length
+  // 会落在指令中间甚至指令之外，导致替换/删除后斜杠指令残留。
+  return blockStart + m.index + (m[0].length - m[1].length)
+}
+
+/** 删除光标前的斜杠指令文本（「更多表情…」入口用：先清指令再开选择器，取消选择也不留残渣） */
+function removeSlashQuery() {
+  const c = crepe
+  if (!c) return
+  c.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const { state } = view
+    const start = slashQueryStart(state, state.selection.from)
+    if (start == null) return
+    view.dispatch(state.tr.delete(start, state.selection.to))
+  })
+}
+
+/** 在光标处插入文本（表情即纯文本，走 ProseMirror 事务，一次撤销步骤）；
+ *  光标停在斜杠指令后时连指令一起替换，斜杠不残留（与其他菜单项行为一致） */
+function insertEmojiText(text: string) {
+  const c = crepe
+  if (!c) return
+  c.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const { state } = view
+    const { from, to } = state.selection
+    const start = slashQueryStart(state, from) ?? from
+    const tr = state.tr.insertText(text, start, to)
+    view.dispatch(tr)
+    view.focus()
+  })
+}
+
+function onPickEmoji(e: string) {
+  insertEmojiText(e)
+}
+
+// ---- 点击编辑区任意位置聚焦（需求：点空白处把光标落到文末，点在内容上则原地定位） ----
+/** 编辑区内的浮层/专属交互元素：块把手、斜杠菜单、工具栏、链接气泡、图片块、间隙光标。
+ *  命中这些时让位给各自逻辑，不抢焦点。 */
+const EDITOR_FLOAT_UI_SELECTOR =
+  '.milkdown-block-handle, .milkdown-slash-menu, .milkdown-toolbar, .milkdown-link-edit, ' +
+  '.milkdown-link-preview, .milkdown-image-block, .crepe-image-block, .ProseMirror-gapcursor'
+
+function onEditorAreaMouseDown(e: MouseEvent) {
+  if (e.button !== 0) return
+  const root = rootEl.value
+  if (!root) return
+  const target = e.target
+  if (!(target instanceof Element)) return
+  const pm = root.querySelector('.ProseMirror')
+  if (!pm) return
+  // 点击落在可编辑内容（含其内边距）上：ProseMirror 原生把光标定位到最近可输入点，不干预
+  if (pm.contains(target)) return
+  if (target.closest(EDITOR_FLOAT_UI_SELECTOR)) return
+  // .milkdown 自身且命中滚动条区域（右缘/下缘）：是在拖滚动条，不动焦点
+  if (target.classList.contains('milkdown')) {
+    const el = target as HTMLElement
+    if (e.offsetX >= el.clientWidth || e.offsetY >= el.clientHeight) return
+  }
+  // 空白/非可编辑区：阻止默认失焦，把光标送到全文最后一个可输入点（文档末尾）
+  e.preventDefault()
+  crepe?.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)).scrollIntoView())
+    view.focus()
+  })
+}
 </script>
 
 <template>
@@ -318,7 +438,7 @@ function formatSavedTime(iso: string): string {
         </button>
       </header>
 
-      <div ref="rootEl" class="crepe-root"></div>
+      <div ref="rootEl" class="crepe-root" @mousedown.capture="onEditorAreaMouseDown"></div>
 
       <!-- 底栏：左标签行 + 右保存状态 -->
       <footer class="ed-footer">
@@ -367,6 +487,8 @@ function formatSavedTime(iso: string): string {
         </span>
       </footer>
     </template>
+
+    <EmojiPicker :visible="emojiPickerVisible" @select="onPickEmoji" @close="emojiPickerVisible = false" />
   </div>
 </template>
 
@@ -377,7 +499,7 @@ function formatSavedTime(iso: string): string {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 16px 24px 12px;
+  padding: 12px 16px 10px;
   overflow: hidden;
   /* 速记模块字号：全局基准 × 模块系数 */
   font-size: calc(1rem * var(--fs-notes, 1));
@@ -594,6 +716,25 @@ html[data-wallpaper-clear='1'] .crepe-root .milkdown {
   --crepe-color-on-inverse: rgba(255, 255, 255, 0.92);
   --crepe-color-hover: rgba(255, 255, 255, 0.14);
   --crepe-color-selected: rgba(255, 255, 255, 0.22);
+}
+
+/* 编辑区内边距：Crepe 默认 padding 60px 120px 过大（文字距卡片边缘 145px），收紧为上下 20 / 左右 72。
+   左右 72px 是块把手悬停空间（把手 66px 宽 + offset 4px，见 featureConfigs 的 blockHandle.getOffset），
+   再小会导致把手翻转盖住文字或触发横向滚动 */
+.crepe-root .milkdown .ProseMirror {
+  padding: 20px 72px;
+}
+
+/* 把手容器默认 margin 0 10px：随边距收窄一并去掉，保证把手完整落在边距内 */
+.crepe-root .milkdown .milkdown-block-handle {
+  margin: 0;
+}
+
+/* 斜杠菜单「表情」分组：emoji 字符作为图标（icon 字段），默认 16px 偏小，放大一档；
+   svg 图标（更多表情…）尺寸由 CSS width/height 固定，不受 font-size 影响 */
+.crepe-root .milkdown-slash-menu .menu-group .milkdown-icon {
+  font-size: 20px;
+  line-height: 1;
 }
 
 /* 引用块：Crepe 默认 padding-left 40px，文字离左侧引用条太远，收紧到贴条显示 */

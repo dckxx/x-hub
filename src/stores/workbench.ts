@@ -1,4 +1,5 @@
 import { reactive, readonly } from 'vue'
+import { compareByOrder, groupOf } from '../utils/todoSchedule'
 import {
   tauriApi,
   isTauri,
@@ -59,6 +60,8 @@ const state = reactive<StoreState>({
     wallpaper_path: '',
     wallpaper_blur: true,
     wallpaper_veil: 0.3,
+    wallpaper_path_dark: '',
+    wallpaper_veil_dark: -1,
     wallpaper_immersive: false,
     glass_opacity: 1,
     sidebar_toggle: false,
@@ -337,8 +340,23 @@ export function useStore() {
           remind_at: null,
           remind_fired: false,
           parent_id: parentId,
+          sort_order: null,
         }
     state.todos.push(t)
+    // 顶级待办落入「手动排序过」的分组时（组内已有 sort_order 非空条目），
+    // 以 [新条目, ...组内原序] 整组重写排序位，让新建条目维持「新的在最上」直觉；
+    // 组内全部未排序则不用管，创建时间倒序天然置顶。批量创建（序号拆分）并发补值
+    // 出现的次序抖动与原有「新条目置顶、组内倒序」默认行为一致。
+    if (isTauri() && t.parent_id == null) {
+      const now = new Date()
+      const group = groupOf(t, now)
+      const peers = state.todos
+        .filter((x) => x.parent_id == null && x.id !== t.id && groupOf(x, now) === group)
+        .sort(compareByOrder)
+      if (peers.some((x) => x.sort_order != null)) {
+        void assignTodoOrder([t.id, ...peers.map((x) => x.id)])
+      }
+    }
     return t
   }
 
@@ -390,9 +408,25 @@ export function useStore() {
       state.todos[i] = updated
       return updated
     }
-    const updated = { ...state.todos[i], due_at: dueAt, remind_at: remindAt, remind_fired: false, updated_at: new Date().toISOString() }
+    // 截止日期决定分组归属，换组后原手动顺序失效，同步清空排序位
+    const updated = { ...state.todos[i], due_at: dueAt, remind_at: remindAt, remind_fired: false, sort_order: null, updated_at: new Date().toISOString() }
     state.todos[i] = updated
     return updated
+  }
+
+  /** 按传入顺序写入手动排序位：本地乐观更新 + 后端持久化（ids[i] → sort_order i+1） */
+  async function assignTodoOrder(ids: number[]) {
+    const rank = new Map(ids.map((id, i) => [id, i + 1]))
+    state.todos = state.todos.map((t) => {
+      const r = rank.get(t.id)
+      return r == null ? t : { ...t, sort_order: r }
+    })
+    if (isTauri()) await tauriApi.reorderTodoOrders(ids)
+  }
+
+  /** 拖拽排序落库：前端按分组计算完整顺序后调用 */
+  function reorderTodos(ids: number[]) {
+    return assignTodoOrder(ids)
   }
 
   /** 待办浮窗等外部修改后刷新列表 */
@@ -618,6 +652,18 @@ export function useStore() {
 
   async function setWallpaper(path: string) {
     state.config.wallpaper_path = path
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
+  async function setWallpaperDark(path: string) {
+    state.config.wallpaper_path_dark = path
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
+  async function setWallpaperVeilDark(value: number) {
+    state.config.wallpaper_veil_dark = value
     if (!isTauri()) return
     await tauriApi.saveConfig(state.config)
   }
@@ -986,6 +1032,7 @@ export function useStore() {
     updateTodo,
     deleteTodo,
     scheduleTodo,
+    reorderTodos,
     refreshTodos,
     saveSticky,
     detachSticky,
@@ -1009,8 +1056,10 @@ export function useStore() {
     setThemePreset,
     setAccentColor,
     setWallpaper,
+    setWallpaperDark,
     setWallpaperBlur,
     setWallpaperVeil,
+    setWallpaperVeilDark,
     setWallpaperImmersive,
     setGlassOpacity,
     setSidebarToggle,

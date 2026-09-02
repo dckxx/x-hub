@@ -88,9 +88,19 @@ export function useTheme() {
     { immediate: true },
   )
   watch(
-    () => [store.state.config.wallpaper_immersive, store.state.config.wallpaper_path] as const,
-    ([immersive, path]) => {
-      applyImmersive(immersive && !!path)
+    () =>
+      [
+        store.state.config.wallpaper_immersive,
+        store.state.config.wallpaper_path,
+        store.state.config.wallpaper_path_dark,
+        store.state.config.theme_mode,
+        systemDark.value,
+      ] as const,
+    ([immersive, path, pathDark, mode]) => {
+      // 沉浸模式按当前生效主题的壁纸判定（暗色未设图时跟随亮色）
+      const dark = mode === 'dark' || (mode === 'system' && systemDark.value)
+      const effective = dark ? pathDark || path : path
+      applyImmersive(immersive && !!effective)
       // 沉浸模式/壁纸在场改变扩展令牌的壁纸状态与表面 alpha，同步广播
       requestAnimationFrame(() => broadcastThemeToFrames())
     },

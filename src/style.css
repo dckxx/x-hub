@@ -921,6 +921,9 @@ html[data-wallpaper-clear='1'] main {
   --input-bg: rgba(20, 22, 32, 0.3);
   --bg-chat-panel: rgba(28, 29, 41, 0.97);
   --brand-50: color-mix(in srgb, var(--accent) 16%, #16161f);
+  /* 描边墨阶同步翻白墨：--border-strong 亮色默认是深墨，透底态在照片上
+     呈"黑色圈"看不清（用户反馈：待办复选框），与输入框白描边同极性 */
+  --border-strong: rgba(255, 255, 255, 0.35);
 }
 html[data-wallpaper-clear='1'] .sidebar,
 html[data-wallpaper-clear='1'] .title-bar {
@@ -991,6 +994,13 @@ html[data-wallpaper-clear='1'] .ed-content::placeholder,
 html[data-wallpaper-clear='1'] .ed-title-input::placeholder,
 html[data-wallpaper-clear='1'] .tag-input::placeholder {
   color: rgba(255, 255, 255, 0.5);
+}
+/* 待办复选框圈环：圈大文字小、仅 0.35 白描边在照片上仍偏弱，
+   提亮一档并加暗晕，明暗照片都可见；勾选后为实色 accent 底不受影响 */
+html[data-wallpaper-clear='1'] .todo-check,
+html[data-wallpaper-clear='1'] .tf-check {
+  border-color: rgba(255, 255, 255, 0.55);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 /* 玻璃拟态：常驻表面用烘焙渐变（--frost-surface）实现伪毛玻璃；仅弹层/下拉/菜单等瞬态表面保留真 blur */
 .modal-card,

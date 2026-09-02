@@ -60,6 +60,9 @@ pub struct Todo {
     /// 父待办 id（子待办缩进挂在父条目下；顶级为 NULL）
     #[serde(default)]
     pub parent_id: Option<i64>,
+    /// 手动拖拽排序位（分组内按此升序）；NULL = 未手动排序，按创建时间倒序
+    #[serde(default)]
+    pub sort_order: Option<i64>,
 }
 
 /// 便签（工作台左上，slot 1/2 两张卡，每卡一条多行文本）

@@ -58,6 +58,23 @@ export function groupOf(t: { due_at: number | null }, today: Date): number {
 }
 
 /**
+ * 组内排序（TodoCard / TodoFloat 等展示层统一使用）：
+ * 手动拖过的（sort_order 非空）按 sort_order 升序，未排序的按创建时间倒序排在前
+ * （与「新建待办置顶」的默认直觉一致）。拖动会整组赋值，稳态下两组不混排；
+ * 万一混排（补值失败等异常路径），未排序条目浮到组顶也是合理兜底。
+ */
+export function compareByOrder(
+  a: { sort_order: number | null; created_at: string },
+  b: { sort_order: number | null; created_at: string },
+): number {
+  const ao = a.sort_order
+  const bo = b.sort_order
+  if (ao != null && bo != null) return ao - bo
+  if (ao == null && bo == null) return b.created_at.localeCompare(a.created_at)
+  return ao == null ? -1 : 1
+}
+
+/**
  * 截止徽标：逾期(红) → 今天(橙，末尾时段只显「今天」) → 明天(品牌色) → M月D日(灰)
  */
 export function dueBadge(t: { due_at: number | null }, today: Date): DueBadge | null {

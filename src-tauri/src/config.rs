@@ -56,6 +56,12 @@ pub struct AppConfig {
     /// 壁纸蒙版：主题底色罩层不透明度（0–0.85，默认 0.3），在壁纸鲜亮度与文字对比度间取平衡
     #[serde(default = "default_wallpaper_veil")]
     pub wallpaper_veil: f64,
+    /// 暗色主题专属壁纸：绝对路径（空 = 跟随亮色壁纸 wallpaper_path）
+    #[serde(default)]
+    pub wallpaper_path_dark: String,
+    /// 暗色主题壁纸蒙版不透明度（0–0.85）；负值 = 跟随 wallpaper_veil（升级兼容默认，老用户观感不变）
+    #[serde(default = "default_wallpaper_veil_dark")]
+    pub wallpaper_veil_dark: f64,
     /// 沉浸模式：卡片改用真毛玻璃 backdrop-filter 局部取景模糊（ADR 0003 受控例外，默认关）
     #[serde(default)]
     pub wallpaper_immersive: bool,
@@ -194,6 +200,11 @@ fn default_wallpaper_veil() -> f64 {
     0.3
 }
 
+/// 暗色蒙版默认取 -1（跟随亮色值）：老配置升级后暗色观感与原共用蒙版一致
+fn default_wallpaper_veil_dark() -> f64 {
+    -1.0
+}
+
 fn default_quote_source() -> String {
     "online".to_string()
 }
@@ -229,6 +240,8 @@ impl Default for AppConfig {
             wallpaper_path: String::new(),
             wallpaper_blur: true,
             wallpaper_veil: default_wallpaper_veil(),
+            wallpaper_path_dark: String::new(),
+            wallpaper_veil_dark: default_wallpaper_veil_dark(),
             wallpaper_immersive: false,
             glass_opacity: 1.0,
             sidebar_toggle: false,

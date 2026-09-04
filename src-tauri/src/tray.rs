@@ -108,6 +108,22 @@ pub fn hide_window(app: &AppHandle) {
     }
 }
 
+/// 悬浮球双击主窗开关：主窗「开着」（自维护可见且未最小化）→ 隐藏；否则显示并聚焦。
+/// 与 toggle_window 的区别：被其他窗口盖住时也算「开着」，双击同样收起。
+pub fn toggle_main_window(app: &AppHandle) {
+    let minimized = app
+        .get_webview_window("main")
+        .and_then(|w| w.is_minimized().ok())
+        .unwrap_or(false);
+    if is_main_window_visible() && !minimized {
+        log::info!("[悬浮球] 双击：主窗开着，隐藏");
+        hide_window(app);
+    } else {
+        log::info!("[悬浮球] 双击：主窗未开，显示");
+        show_window(app);
+    }
+}
+
 /// 切换主窗口显隐（全局快捷键 / 托盘左键共用）：
 /// - 自维护状态为隐藏（已隐藏至托盘）→ 显示并聚焦
 /// - 窗口最小化 → 取消最小化并聚焦

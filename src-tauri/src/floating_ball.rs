@@ -1,5 +1,5 @@
 //! 桌面悬浮球（ADR 0004）：常驻透明置顶小球，仅主窗口隐藏时显示。
-//! 单击展开环形快捷菜单、双击显示主窗口、右键托盘同款菜单；
+//! 单击展开环形快捷菜单、双击切换主窗口（开着则收起）、右键托盘同款菜单；
 //! 拖拽记忆位置，靠近屏幕边缘自动吸附——停靠姿态为「完整贴边」：球缘距屏边
 //! SNAP_GAP 停住、球体完整可见（与交互原型一致；曾实现为「半挂」球心贴屏边、
 //! 半个球藏屏外，用户实测觉得吸附没用且难拖回，已改回完整贴边）。
@@ -26,9 +26,11 @@ pub const MENU_SIZE: f64 = 312.0;
 /// 球体半径（逻辑 px）：前端 .fb-ball 视觉 48px 直径的半径；
 /// 用于默认初始位置与吸附停靠的贴边定位（球心距屏边 = BALL_R + SNAP_GAP）
 const BALL_R: f64 = 24.0;
-/// 吸附触发距离（逻辑 px）：拖拽松手时球心距屏幕边缘小于该值 → 完整贴边停靠。
-/// 60 = 与交互原型 NEAR 一致：球缘距屏边约 36px 内松手即吸附
-const SNAP_TRIGGER: f64 = 60.0;
+/// 吸附触发距离（逻辑 px，球心距屏幕边缘）：拖拽松手时小于该值 → 完整贴边停靠。
+/// 曾为 60（球缘 ~36px 内才吸附）：贴边松手时球本来就离停靠位只差 SNAP_GAP，
+/// 视觉上开与不开毫无区别（用户反馈）。120 ≈ 一个球宽：球缘距屏边 96px 内松手
+/// 即被明显吸到贴边位，吸附开/关差异一目了然
+const SNAP_TRIGGER: f64 = 120.0;
 /// 贴边停靠留白：默认初始位置与吸附停靠共用——球缘距屏幕边缘的视觉间距（逻辑 px），
 /// 球整体完整可见地停在屏内（不做「半挂」藏球，用户实测半挂觉得吸附没用）
 const SNAP_GAP: f64 = 7.0;
@@ -447,11 +449,15 @@ pub async fn floating_ball_expand(app: AppHandle, expanded: bool) {
 }
 
 /// 环形菜单/双击动作分发：view:*/act:search/act:note 作用于主窗口（先显示再派发事件）；
-/// act:clipboard 直呼剪贴板浮层（不弹主窗）；act:main 仅显示主窗口
+/// act:clipboard 直呼剪贴板浮层（不弹主窗）；act:main 双击切换主窗口（开着则收起）
 #[tauri::command]
 pub fn floating_ball_trigger(app: AppHandle, id: String) {
     if id == "act:clipboard" {
         crate::clipboard::toggle_overlay(&app);
+        return;
+    }
+    if id == "act:main" {
+        crate::tray::toggle_main_window(&app);
         return;
     }
     crate::tray::show_window(&app);

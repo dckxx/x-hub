@@ -1010,6 +1010,35 @@ html[data-wallpaper-clear='1'] .tf-check {
   border-color: rgba(255, 255, 255, 0.55);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
+/* 倒计时条目类型底（icon 圆盘/类型徽章）：基底是 --bg-card-solid 的 color-mix，
+   透底态该令牌只剩 ~0.2 alpha，类型色底压不住壁纸、深墨图标/文字随之发虚 →
+   白墨态统一转烟玻璃深底 + 浅墨（同上方 toast 固定深底的处理逻辑） */
+html[data-wallpaper-clear='1'] .cc-mode-icon {
+  background: color-mix(in srgb, var(--accent) 34%, rgba(16, 18, 28, 0.62));
+  color: #e3e0ff;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+html[data-wallpaper-clear='1'] .cc-mode-icon.interval {
+  background: color-mix(in srgb, var(--c-green) 32%, rgba(16, 18, 28, 0.62));
+  color: #a7f3c9;
+}
+html[data-wallpaper-clear='1'] .cc-mode-icon.finished {
+  background: rgba(16, 18, 28, 0.55);
+  color: rgba(255, 255, 255, 0.62);
+}
+html[data-wallpaper-clear='1'] .cc-badge {
+  background: rgba(16, 18, 28, 0.55);
+  color: rgba(255, 255, 255, 0.78);
+  border-color: rgba(255, 255, 255, 0.26);
+}
+html[data-wallpaper-clear='1'] .cc-badge.daily {
+  background: color-mix(in srgb, var(--accent) 34%, rgba(16, 18, 28, 0.62));
+  color: #e3e0ff;
+}
+html[data-wallpaper-clear='1'] .cc-badge.interval {
+  background: color-mix(in srgb, var(--c-green) 32%, rgba(16, 18, 28, 0.62));
+  color: #a7f3c9;
+}
 /* 玻璃拟态：常驻表面用烘焙渐变（--frost-surface）实现伪毛玻璃；仅弹层/下拉/菜单等瞬态表面保留真 blur */
 .modal-card,
 .ctx-menu {

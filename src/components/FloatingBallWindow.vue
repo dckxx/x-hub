@@ -696,9 +696,15 @@ onBeforeUnmount(() => {
   height: 52px;
   margin: -26px 0 0 -26px;
   border-radius: 50%;
-  border: 1px solid rgba(150, 140, 255, 0.18);
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.03));
-  color: #e8e6f5;
+  border: 1px solid color-mix(in srgb, var(--fb-accent, #7c6cff) 38%, rgba(255, 255, 255, 0.22));
+  /* 暗色烟玻璃打底（以强调色着色）：白玻璃渐变在亮色壁纸上与浅色文字一起消失，
+     实底保证亮/暗壁纸下按钮与文字都有稳定对比 */
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--fb-accent, #7c6cff) 30%, rgba(30, 27, 62, 0.9)),
+    color-mix(in srgb, var(--fb-accent, #7c6cff) 14%, rgba(15, 13, 36, 0.94))
+  );
+  color: #eceaf8;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -727,6 +733,11 @@ onBeforeUnmount(() => {
   transform: rotate(var(--fa)) translateY(calc(-1 * var(--ring-r))) rotate(calc(-1 * var(--fa)))
     scale(1.14);
   border-color: var(--fb-accent, #a78bfa);
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--fb-accent, #7c6cff) 44%, rgba(34, 30, 70, 0.92)),
+    color-mix(in srgb, var(--fb-accent, #7c6cff) 22%, rgba(18, 16, 42, 0.95))
+  );
   box-shadow:
     0 8px 22px rgba(0, 0, 0, 0.5),
     0 0 16px color-mix(in srgb, var(--fb-accent, #7c6cff) 55%, transparent);
@@ -741,7 +752,7 @@ onBeforeUnmount(() => {
 .fb-btn-label {
   font-size: 9px;
   line-height: 1;
-  color: rgba(232, 230, 245, 0.75);
+  color: rgba(236, 234, 248, 0.9);
   white-space: nowrap;
   transition: color 0.14s ease;
 }

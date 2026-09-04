@@ -1,5 +1,7 @@
 import { ref, watch } from 'vue'
+import { emitTo } from '@tauri-apps/api/event'
 import { useStore } from '../stores/workbench'
+import { isTauri } from '../api/tauri'
 import { broadcastThemeToFrames } from './themeTokens'
 
 // 系统偏好监听：三个窗口（主窗/便签浮窗/倒计时浮窗）共用同一模块级单例
@@ -28,6 +30,11 @@ export function applyTheme(opts: { mode: string; preset: string; accent: string 
   }
   // 主题变化后广播给所有活动扩展 iframe（扩展页面实时跟随宿主换色/换主题）
   requestAnimationFrame(() => broadcastThemeToFrames())
+  // 推送悬浮球窗口（独立 WebView：启动时经 get_theme_config 自取初始值，
+  // 此处负责运行时跟随；球未启用/窗口不存在时静默失败）
+  if (isTauri()) {
+    emitTo('floating-ball', 'floating-ball-theme', { accent: opts.accent, dark }).catch(() => {})
+  }
 }
 
 interface FontScale {
@@ -92,15 +99,10 @@ export function useTheme() {
       [
         store.state.config.wallpaper_immersive,
         store.state.config.wallpaper_path,
-        store.state.config.wallpaper_path_dark,
-        store.state.config.theme_mode,
-        systemDark.value,
       ] as const,
-    ([immersive, path, pathDark, mode]) => {
-      // 沉浸模式按当前生效主题的壁纸判定（暗色未设图时跟随亮色）
-      const dark = mode === 'dark' || (mode === 'system' && systemDark.value)
-      const effective = dark ? pathDark || path : path
-      applyImmersive(immersive && !!effective)
+    ([immersive, path]) => {
+      // 沉浸模式仅在存在壁纸时生效（壁纸单一套，所有主题共用）
+      applyImmersive(immersive && !!path)
       // 沉浸模式/壁纸在场改变扩展令牌的壁纸状态与表面 alpha，同步广播
       requestAnimationFrame(() => broadcastThemeToFrames())
     },

@@ -20,7 +20,7 @@ use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use tauri::{Manager, State};
 
@@ -157,6 +157,24 @@ static CAPABILITIES: &[Capability] = &[
         method: "remove",
         permission: Some("shared-storage"),
         handler: CapabilityHandler::Sync(shared_storage_remove),
+    },
+    Capability {
+        namespace: "fs",
+        method: "saveText",
+        permission: Some("fs"),
+        handler: CapabilityHandler::Sync(fs_save_text),
+    },
+    Capability {
+        namespace: "fs",
+        method: "saveFile",
+        permission: Some("fs"),
+        handler: CapabilityHandler::Sync(fs_save_file),
+    },
+    Capability {
+        namespace: "fs",
+        method: "saveAs",
+        permission: Some("fs"),
+        handler: CapabilityHandler::Async(fs_save_as),
     },
     Capability {
         namespace: "service",
@@ -675,6 +693,233 @@ fn shared_storage_remove(
     Ok(Value::Null)
 }
 
+// ---------- fs（受控文件保存：写入系统下载目录，需 fs 权限） ----------
+//
+// 背景：Tauri/WebView2 下网页级下载（<a download> + blob 等）默认被宿主拦截
+// （wry 仅在注册 download handler 时才监听 DownloadStarting，且默认参数禁用了
+// WebView2 原生下载 UI），扩展页面的「下载」按钮会静默失效。这里提供走桥 API
+// 的落盘通道：扩展把内容交宿主写盘，位置固定为系统下载目录，扩展不可指定
+// 任意路径（完整的沙箱文件读写见 extension-api.md §6 后续规划）。
+
+/// fs 保存字节量上限（解码后 64MB）：内容经 JSON+base64 过桥，限上限既防扩展
+/// 误用打爆内存，也覆盖工具类扩展的导出场景。
+const FS_SAVE_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// 清洗扩展提交的保存文件名：仅保留最后一段路径分量（杜绝路径穿越 / 绝对路径）、
+/// 剔除 Windows 非法字符与 ASCII 控制符、修剪首尾空白与句点、限长 180；
+/// 清洗后为空则回退带时间戳的默认名。
+fn sanitize_save_name(raw: &str) -> String {
+    let last_segment = raw.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = last_segment
+        .chars()
+        .filter(|c| !"<>:\"|?*".contains(*c) && !c.is_ascii_control())
+        .collect();
+    let cleaned = cleaned.trim().trim_end_matches('.').trim();
+    let mut name: String = cleaned.chars().take(180).collect();
+    if name.is_empty() || is_reserved_device_name(&name) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        name = format!("download-{ts}");
+    }
+    name
+}
+
+/// Windows 保留设备名（CON/PRN/AUX/NUL、COM0-9、LPT0-9，含带扩展名形式如 CON.txt）：
+/// 以这类名字写盘会命中设备而非文件（如 COM1 可能无限阻塞写入线程），统一回退默认名
+fn is_reserved_device_name(name: &str) -> bool {
+    let stem = Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        stem.len() > prefix.len()
+            && stem.starts_with(prefix)
+            && stem[prefix.len()..].bytes().all(|b| b.is_ascii_digit())
+    };
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered("COM") || numbered("LPT")
+}
+
+/// 目标路径冲突时自动追加序号：`name (1).ext`、`name (2).ext` …
+fn dedupe_save_path(dir: &Path, name: &str) -> PathBuf {
+    let base = dir.join(name);
+    if !base.exists() {
+        return base;
+    }
+    let path = Path::new(name);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("download")
+        .to_string();
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string());
+    for i in 1u32..10_000 {
+        let candidate = match &ext {
+            Some(e) => format!("{stem} ({i}).{e}"),
+            None => format!("{stem} ({i})"),
+        };
+        let p = dir.join(candidate);
+        if !p.exists() {
+            return p;
+        }
+    }
+    // 理论兜底：同毫秒级高频冲突（几乎不可能），退时间戳名
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    dir.join(format!("download-{ts}"))
+}
+
+/// fs.save* 共用实现：清洗文件名 → 下载目录冲突改名 → 写盘。
+/// 返回 `{ path, name }`（name 为最终落盘文件名，可能与请求名因冲突改名而不同）。
+fn fs_save_bytes(
+    app: &tauri::AppHandle,
+    ext_id: &str,
+    name: &str,
+    bytes: Vec<u8>,
+) -> Result<Value, String> {
+    if bytes.len() > FS_SAVE_MAX_BYTES {
+        return Err("INVALID_ARGUMENT: 保存内容超过 64MB 上限".to_string());
+    }
+    let safe_name = sanitize_save_name(name);
+    let dir = app
+        .path()
+        .download_dir()
+        .map_err(|e| format!("IO_ERROR: 解析系统下载目录失败: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("IO_ERROR: 创建下载目录失败: {e}"))?;
+    let path = dedupe_save_path(&dir, &safe_name);
+    std::fs::write(&path, &bytes).map_err(|e| format!("IO_ERROR: 写入文件失败: {e}"))?;
+    let final_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&safe_name)
+        .to_string();
+    log::info!("扩展保存文件: {ext_id} -> {}", path.display());
+    Ok(json!({
+        "path": path.to_string_lossy(),
+        "name": final_name,
+    }))
+}
+
+/// fs.saveText：把 UTF-8 文本保存为文件（需 `fs` 权限，dispatch 统一校验）。
+fn fs_save_text(
+    app: &tauri::AppHandle,
+    _state: &DbState,
+    ext_id: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "INVALID_ARGUMENT: 缺少 name".to_string())?;
+    let content = args
+        .get("content")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "INVALID_ARGUMENT: 缺少 content".to_string())?;
+    fs_save_bytes(app, ext_id, name, content.as_bytes().to_vec())
+}
+
+/// fs.saveFile：把 base64 编码的二进制内容保存为文件（需 `fs` 权限）。
+fn fs_save_file(
+    app: &tauri::AppHandle,
+    _state: &DbState,
+    ext_id: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "INVALID_ARGUMENT: 缺少 name".to_string())?;
+    let data = args
+        .get("base64")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "INVALID_ARGUMENT: 缺少 base64".to_string())?;
+    // 解码前先按 base64 膨胀系数（4/3）预检查，避免超大串先解码再拒收
+    let max_b64 = (FS_SAVE_MAX_BYTES / 3 + 1) * 4;
+    if data.len() > max_b64 {
+        return Err("INVALID_ARGUMENT: 保存内容超过 64MB 上限".to_string());
+    }
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| format!("INVALID_ARGUMENT: base64 解码失败: {e}"))?;
+    fs_save_bytes(app, ext_id, name, bytes)
+}
+
+/// fs.saveAs：把 base64 编码的二进制内容保存为文件，先弹系统「另存为」对话框
+/// 由用户选择目录与文件名（需 `fs` 权限）。用户确认 → 写盘返回
+/// `{ path, name, canceled: false }`；取消返回 `{ canceled: true }`（不写盘）。
+fn fs_save_as(
+    app: tauri::AppHandle,
+    ext_id: String,
+    args: Value,
+) -> BoxFuture<Result<Value, String>> {
+    Box::pin(async move {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "INVALID_ARGUMENT: 缺少 name".to_string())?;
+        let data = args
+            .get("base64")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "INVALID_ARGUMENT: 缺少 base64".to_string())?;
+        // 解码前先按 base64 膨胀系数（4/3）预检查，避免超大串先解码再拒收
+        let max_b64 = (FS_SAVE_MAX_BYTES / 3 + 1) * 4;
+        if data.len() > max_b64 {
+            return Err("INVALID_ARGUMENT: 保存内容超过 64MB 上限".to_string());
+        }
+        // 弹原生保存对话框（spawn_blocking：对话框会一直等到用户操作，别占 tokio worker）
+        let safe_name = sanitize_save_name(name);
+        let picked = {
+            let app = app.clone();
+            let default_name = safe_name.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                use tauri_plugin_dialog::DialogExt as _;
+                app.dialog()
+                    .file()
+                    .set_file_name(&default_name)
+                    .blocking_save_file()
+            })
+            .await
+            .map_err(|e| format!("INTERNAL: 保存对话框线程失败: {e}"))?
+        };
+        let Some(picked) = picked else {
+            return Ok(json!({ "canceled": true }));
+        };
+        let path: PathBuf = match picked {
+            tauri_plugin_dialog::FilePath::Path(p) => p,
+            tauri_plugin_dialog::FilePath::Url(u) => u
+                .to_file_path()
+                .map_err(|_| "IO_ERROR: 对话框未返回本地文件路径".to_string())?,
+        };
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|e| format!("INVALID_ARGUMENT: base64 解码失败: {e}"))?;
+        if bytes.len() > FS_SAVE_MAX_BYTES {
+            return Err("INVALID_ARGUMENT: 保存内容超过 64MB 上限".to_string());
+        }
+        std::fs::write(&path, &bytes).map_err(|e| format!("IO_ERROR: 写入文件失败: {e}"))?;
+        let final_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&safe_name)
+            .to_string();
+        log::info!("扩展另存文件: {ext_id} -> {}", path.display());
+        Ok(json!({
+            "path": path.to_string_lossy(),
+            "name": final_name,
+            "canceled": false,
+        }))
+    })
+}
+
 // ---------- events（扩展间事件总线；emit 权限校验在 dispatch，广播在前端） ----------
 
 /// events.emit：只做权限校验占位（dispatch 已统一校验 events 权限）。
@@ -812,5 +1057,65 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn fs_capabilities_declare_fs_permission() {
+        for c in CAPABILITIES {
+            if c.namespace == "fs" {
+                assert_eq!(c.permission, Some("fs"), "fs capability {}:{} must require fs", c.namespace, c.method);
+            }
+        }
+    }
+
+    #[test]
+    fn sanitize_save_name_strips_traversal_and_illegal_chars() {
+        // 路径穿越 / 绝对路径：只保留最后一段分量
+        assert_eq!(sanitize_save_name("../../etc/passwd"), "passwd");
+        assert_eq!(sanitize_save_name("C:\\Users\\a\\out.txt"), "out.txt");
+        assert_eq!(sanitize_save_name("/tmp/x/result.json"), "result.json");
+        // Windows 非法字符被剔除
+        assert_eq!(sanitize_save_name("a<b>c:d\"e|f?g*h.csv"), "abcdefgh.csv");
+        // 首尾空白 / 句点修剪
+        assert_eq!(sanitize_save_name("  report.  "), "report");
+        // 空 / 全非法字符回退默认名（带时间戳前缀）
+        let fallback = sanitize_save_name("");
+        assert!(fallback.starts_with("download-"));
+        let fallback2 = sanitize_save_name("???");
+        assert!(fallback2.starts_with("download-"));
+        // Windows 保留设备名（含带扩展名形式）回退默认名
+        for reserved in ["CON", "con.txt", "NUL", "Com1", "lpt3.log"] {
+            assert!(
+                sanitize_save_name(reserved).starts_with("download-"),
+                "reserved device name {reserved} must fall back"
+            );
+        }
+        // 非保留名不受影响（stem 非保留词即可）
+        assert_eq!(sanitize_save_name("console.txt"), "console.txt");
+        // 正常名不动
+        assert_eq!(sanitize_save_name("ctool-2026-08-29.txt"), "ctool-2026-08-29.txt");
+        // 超长截断到 180 字符
+        let long = "x".repeat(300);
+        assert_eq!(sanitize_save_name(&long).chars().count(), 180);
+    }
+
+    #[test]
+    fn dedupe_save_path_appends_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dedupe_save_path(dir.path(), "out.txt");
+        assert_eq!(first.file_name().unwrap(), "out.txt");
+        std::fs::write(&first, b"x").unwrap();
+        // 第二次同文名 → out (1).txt
+        let second = dedupe_save_path(dir.path(), "out.txt");
+        assert_eq!(second.file_name().unwrap(), "out (1).txt");
+        std::fs::write(&second, b"x").unwrap();
+        // 第三次 → out (2).txt
+        let third = dedupe_save_path(dir.path(), "out.txt");
+        assert_eq!(third.file_name().unwrap(), "out (2).txt");
+        // 无扩展名文件同样适用
+        let a = dedupe_save_path(dir.path(), "Makefile");
+        std::fs::write(&a, b"x").unwrap();
+        let b = dedupe_save_path(dir.path(), "Makefile");
+        assert_eq!(b.file_name().unwrap(), "Makefile (1)");
     }
 }

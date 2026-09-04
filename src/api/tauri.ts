@@ -124,10 +124,6 @@ export interface AppConfig {
   wallpaper_blur: boolean
   /** 壁纸蒙版：主题底色罩层不透明度（0–0.85，默认 0.3） */
   wallpaper_veil: number
-  /** 暗色主题专属壁纸绝对路径（空 = 跟随亮色壁纸） */
-  wallpaper_path_dark: string
-  /** 暗色主题壁纸蒙版不透明度（0–0.85；负值 = 跟随 wallpaper_veil） */
-  wallpaper_veil_dark: number
   /** 沉浸模式：卡片真毛玻璃局部取景模糊（ADR 0003 受控例外，默认关） */
   wallpaper_immersive: boolean
   /** 卡片玻璃透明度（0.4–1.0，默认 1.0 = 不透明） */
@@ -194,12 +190,43 @@ export interface AppConfig {
   update_interval_hours: number
   /** 用户「跳过此版本」记录的版本号（空 = 未跳过） */
   skipped_update_version: string
+  /** 桌面悬浮球总开关（ADR 0004，默认开启）：主窗口隐藏时在桌面显示悬浮球 */
+  floating_ball_enabled: boolean
+  /** 悬浮球贴边吸附（拖到屏幕边缘附近自动贴边停靠，球完整留在屏内） */
+  floating_ball_snap: boolean
+  /** 与主窗口同时显示：主窗可见时球保持常驻（默认 false = 仅主窗隐藏/最小化时出现） */
+  floating_ball_with_main: boolean
+  /** 环形快捷菜单按钮 id 列表（view:xxx / act:xxx，去重后最多 8 个） */
+  floating_ball_buttons: string[]
+  /** 悬浮球窗口位置（物理 px，拖拽后由后端记忆） */
+  floating_ball_x: number | null
+  floating_ball_y: number | null
 }
 
 export interface AppInfo {
   version: string
   changelog: string
   latest_section: string
+}
+
+/** 悬浮球状态（Rust floating_ball::get_state） */
+export interface FloatingBallState {
+  enabled: boolean
+  snap: boolean
+  /** 与主窗口同时显示（主窗可见时球保持常驻） */
+  with_main: boolean
+  buttons: string[]
+  /** 记忆的球心位置（物理 px，拖拽后由后端记忆） */
+  x: number | null
+  y: number | null
+  menu_size: number
+}
+
+/** 主题配置（悬浮球等独立窗口自取：主窗 useTheme 推送之外的初始值来源） */
+export interface ThemeConfig {
+  mode: string
+  preset: string
+  accent: string | null
 }
 
 /** 已安装扩展的注册表项（后端 extension.rs 扫描返回） */
@@ -556,6 +583,19 @@ export const tauriApi = {
   minimizeWindow: () => invoke<void>('minimize_window'),
   toggleMaximize: () => invoke<void>('toggle_maximize'),
   hideToTray: () => invoke<void>('hide_to_tray'),
+  // ---- 桌面悬浮球（ADR 0004，窗口几何恒定 + 椭圆命中区域/吸附/位置记忆均在 Rust 侧） ----
+  floatingBallGetState: () => invoke<FloatingBallState>('floating_ball_get_state'),
+  floatingBallSaveSettings: (
+    enabled: boolean,
+    snap: boolean,
+    withMain: boolean,
+    buttons: string[],
+  ) => invoke<void>('floating_ball_save_settings', { enabled, snap, withMain, buttons }),
+  floatingBallDragEnd: () => invoke<void>('floating_ball_drag_end'),
+  floatingBallExpand: (expanded: boolean) => invoke<void>('floating_ball_expand', { expanded }),
+  floatingBallTrigger: (id: string) => invoke<void>('floating_ball_trigger', { id }),
+  floatingBallContextMenu: () => invoke<void>('floating_ball_context_menu'),
+  getThemeConfig: () => invoke<ThemeConfig>('get_theme_config'),
   getSystemInfo: () => invoke<SystemInfo>('get_system_info'),
   listSnippets: () => invoke<Snippet[]>('list_snippets'),
   createSnippet: (title: string, content: string) =>

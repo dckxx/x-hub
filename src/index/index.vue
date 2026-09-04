@@ -21,7 +21,7 @@ import type { Countdown, ExtensionEntry, Note, Resource, Todo } from '../api/tau
 import { playChime } from '../utils/chime'
 import { FileText, FolderOpen, LayoutDashboard, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight, AppWindow, PanelRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
-import { useTheme, systemDarkMode } from '../composables/useTheme'
+import { useTheme } from '../composables/useTheme'
 import { broadcastThemeToFrames } from '../composables/themeTokens'
 import { iconSrc } from '../composables/useResourceIcon'
 import { useDashboardLayout, type DashPlacement } from '../composables/useDashboardLayout'
@@ -42,34 +42,24 @@ const store = useStore()
 useTheme()
 
 // ---- 应用壁纸：主窗口所有视图共用，浮窗不跟随；文件失效时静默回退渐变背景 ----
-// 亮/暗主题各自一套壁纸配置：暗色未单独设置时跟随亮色（升级兼容，老用户观感不变）
+// 壁纸单一套，所有主题模式共用同一张
 const wallpaperFailed = ref(false)
-const isDarkTheme = computed(() => {
-  const mode = store.state.config.theme_mode
-  return mode === 'dark' || (mode === 'system' && systemDarkMode().value)
-})
 watch(
-  () => [store.state.config.wallpaper_path, store.state.config.wallpaper_path_dark] as const,
+  () => store.state.config.wallpaper_path,
   () => {
     wallpaperFailed.value = false
   },
 )
 const wallpaperSrc = computed(() => {
-  const { wallpaper_path, wallpaper_path_dark } = store.state.config
-  const p = isDarkTheme.value ? wallpaper_path_dark || wallpaper_path : wallpaper_path
+  const p = store.state.config.wallpaper_path
   if (!p || wallpaperFailed.value || !isTauri()) return ''
   return convertFileSrc(p)
 })
 
-// 蒙版不透明度钳制 0–0.85：85% 封顶保证壁纸仍可辨识；暗色负值 = 跟随亮色值
-const wallpaperVeil = computed(() => {
-  const clamp = (v: number) => Math.min(0.85, Math.max(0, v))
-  if (isDarkTheme.value) {
-    const dark = store.state.config.wallpaper_veil_dark
-    if (dark >= 0) return clamp(dark)
-  }
-  return clamp(store.state.config.wallpaper_veil)
-})
+// 蒙版不透明度钳制 0–0.85：85% 封顶保证壁纸仍可辨识
+const wallpaperVeil = computed(() =>
+  Math.min(0.85, Math.max(0, store.state.config.wallpaper_veil)),
+)
 
 // 壁纸在场标记（html data-wallpaper）：壁纸态可读性增强的作用域开关。
 // data-wallpaper-clear：卡片真实透底（低玻璃透明度或沉浸模式）时才为真，控制卡片文字光晕的启停
@@ -380,6 +370,24 @@ onMounted(async () => {
       const title = e.payload?.title ?? ''
       showToast(title ? `待办提醒：「${title}」` : '待办提醒时间到')
     })
+    // 桌面悬浮球动作（ADR 0004）：切视图 / 全局搜索 / 新建速记
+    // （Rust trigger 已先显示主窗口；剪贴板 act:clipboard 在 Rust 直呼浮层，不经这里）
+    unlistenBallAction = await listen<string>('floating-ball-action', (e) => {
+      const id = e.payload ?? ''
+      if (id.startsWith('view:')) {
+        const v = id.slice(5)
+        if (v === 'chat') {
+          activeView.value = 'chat'
+          if (!chatOpen.value) toggleChat()
+        } else {
+          activeView.value = v as ViewId
+        }
+      } else if (id === 'act:search') {
+        searchVisible.value = true
+      } else if (id === 'act:note') {
+        void onCreateNote()
+      }
+    })
   }
   window.addEventListener('keydown', onSearchKeydown)
   window.addEventListener('keydown', onChatKeydown)
@@ -393,6 +401,7 @@ let unlistenNotesChanged: (() => void) | null = null
 let unlistenSnippetsChanged: (() => void) | null = null
 let unlistenTodosChanged: (() => void) | null = null
 let unlistenTodoRemind: (() => void) | null = null
+let unlistenBallAction: (() => void) | null = null
 
 onUnmounted(() => {
   store.stopOnlineMonitor()
@@ -403,6 +412,7 @@ onUnmounted(() => {
   unlistenSnippetsChanged?.()
   unlistenTodosChanged?.()
   unlistenTodoRemind?.()
+  unlistenBallAction?.()
   window.removeEventListener('keydown', onSearchKeydown)
   window.removeEventListener('keydown', onChatKeydown)
 })

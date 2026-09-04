@@ -1,6 +1,6 @@
 # x-hub (个人效率工作台)
 
-**生成:** 2026-08-29 | **分支:** master | **版本:** 0.4.3
+**生成:** 2026-08-29 | **分支:** master | **版本:** 0.5.0
 
 ## 概述
 
@@ -192,6 +192,8 @@ x-hub/
 39. **扩展 iframe 后台久置空白与两层自愈：** 扩展 iframe 是跨源帧（`asset.localhost` ≠ 主窗 `tauri.localhost`，独立渲染进程），窗口长时间不可见（隐藏到托盘/最小化/完全遮挡）后 WebView2 会挂起或丢弃其渲染状态，恢复前台后扩展区表现为空白而宿主 UI 正常，且点击「同一个」已打开的扩展不会自愈——`openExtensionSurface` 每次都 new 对象但 id/surface 值不变，useExtensionFrame 的 watch 比较值、不触发重载。两层修复：① `useExtensionFrame` 监听 `visibilitychange`，恢复可见且后台超 60s（`RESUME_RELOAD_AFTER_MS`）即重载 iframe（短时切换不重载，避免丢扩展内输入状态；`hiddenAt` 初始化即隐藏也统计，覆盖 `--autostart-hidden` 静默驻留场景）；② 宿主每次「打开某扩展」（`onOpenExtension`/`openExtensionSurface` view+drawer 分支/`openExtensionDrawer`）递增 `extensionReloadTick`，经 `ExtensionView` 的 `reloadKey` prop 纳入 watch 源，点击同一扩展也强制重新导航。此前表现为「后台久了点开扩展空白、来回切换才恢复」，切换之所以有效正是触发了 extId 变化那条重载路径
 
 40. **待办排期/子待办（v0.3.4，原型 docs/prototypes/todo-schedule-prototype.html）：** 待办支持**截止日期 + 提醒 + 子待办**。数据层：`todos` 表加 `due_at`/`remind_at`（毫秒时间戳，倒计时同款 epoch 基准）、`remind_fired`（防重复提醒）、`parent_id`（REFERENCES todos ON DELETE CASCADE，删父级联删子；仅一层无嵌套）；老库经 `db.rs` 幂等 ALTER 迁移。命令：`create_todo` 增可选 `parentId`、`schedule_todo(id, dueAt, remindAt)`（每次排期重置 remind_fired 重新武装提醒）。提醒触发在 Rust `todo_reminder.rs` 后台线程（1s 轮询 `remind_at` 到期且未完成未触发的项；超 5s 视为错过静默跳过不补发——与倒计时 ticker 同款语义），到点发托盘气泡通知 + emit `todo-remind`（主窗 toast）+ `todos-changed`。前端：分组规则 逾期→今天→有日期→无日期（`utils/todoSchedule.ts` 纯函数，徽标 逾期红/今天橙/明天品牌色/更远灰，仅日期的截止按当天 23:59 展示为「今天」无时间）；行渲染抽成递归子组件 `TodoRow.vue`（子待办缩进嵌在父行内、子行无优先级圆点/无「+」；父行显示 n/m 进度条），卡片经 provide 注入 `todoOpenSchedule`/`todoRemoveTodo`（排期弹层单实例 Teleport 到 body；删除在卡片做级联+撤销恢复）。注意：待办浮窗与待办概览卡只统计/展示**顶级待办**（`parent_id == null`），子待办不进总盘子。**拖拽排序（v0.4.3）**：顶级待办支持组内上下拖动（`todos.sort_order` 列，NULL=未手动排序；指针实现而非 HTML5 DnD，同约定 14/38），落点后整组 id 顺序经 `reorder_todo_orders` 写回 sort_order；组内排序键统一 `utils/todoSchedule.ts` 的 `compareByOrder`（sort_order 升序，未排序按创建时间倒序排在前），TodoCard / TodoFloat 共用；改截止日期换组时 `repo::schedule` 清空该条 sort_order 回默认排序，新建条目落入手动排序过的组时由 store.createTodo 以 [新条目, ...组内原序] 整组重写补置顶位；子待办不参与拖动
+
+41. **运行时禁止现场创建/销毁 WebView2 窗口（悬浮球/剪贴板浮层卡死铁律，v0.5.0）：** 应用启动后**运行时** `WebviewWindowBuilder::build()` 或 `win.destroy()` 一个 WebView2 窗口是主线程长任务，与悬浮球菜单收拢/几何切换等窗口操作在主线程事件循环上交错时，**WebView2 controller 创建会挂起 → 整窗未响应（卡死）**。曾两次踩中：剪贴板浮层现场创建与悬浮球操作交错（已改启动预创建隐藏常驻，见 `clipboard.rs::init_overlay_window` 注释）；悬浮球「停用 = destroy、启用 = 运行时 rebuild」（设置开关反复切换即卡死，已改为启动预创建 + 开关只 `hide()/show()`，见 `floating_ball.rs::init/apply_enabled`）。**铁律：凡是会随设置开关/高频切换存在性、或与悬浮球/拖拽/菜单等窗口操作可能交错的浮窗，一律启动期预创建 + 隐藏常驻，唤起/收起/开关只做 ShowWindow 级快操作，绝不现场 build/destroy**（renderer 常驻内存 = 换取零卡死 + 零建窗延迟的既定代价）。新增浮窗生命周期先照此自查：能常驻就常驻；确需随用随建的（便签/倒计时浮窗等低频瞬态窗口）也要避开与上述窗口操作同时发生。相关：新增浮窗的 label 四处同步见约定 31
 
 ## 命令速查
 

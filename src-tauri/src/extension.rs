@@ -484,6 +484,11 @@ const XHUB_BRIDGE_SCRIPT: &str = r#"
       todos:{list:function(){return call('data','todos.list',{});}},
       resources:{list:function(){return call('data','resources.list',{});}}
     },
+    fs:{
+      saveText:function(name,content){return call('fs','saveText',{name:name,content:content});},
+      saveFile:function(name,base64){return call('fs','saveFile',{name:name,base64:base64});},
+      saveAs:function(name,base64){return call('fs','saveAs',{name:name,base64:base64});}
+    },
     service:{
       request:function(path,init){
         init=init||{};

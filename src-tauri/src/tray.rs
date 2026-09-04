@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{ContextMenu, Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
@@ -9,13 +9,24 @@ use tauri::{AppHandle, Manager};
 /// 这里以「我们自己的 show/hide 调用」为准，避免依赖系统接口。
 static MAIN_WINDOW_VISIBLE: AtomicBool = AtomicBool::new(true);
 
-pub fn setup(app: &tauri::App) -> tauri::Result<()> {
-    let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-    let hide_item = MenuItem::with_id(app, "hide", "隐藏主窗口", true, None::<&str>)?;
-    let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
-    let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+/// 主窗当前显隐状态（floating_ball 等模块联动用）
+pub fn is_main_window_visible() -> bool {
+    MAIN_WINDOW_VISIBLE.load(Ordering::SeqCst)
+}
 
-    let menu = Menu::with_items(app, &[&show_item, &hide_item, &separator, &quit_item])?;
+/// 托盘 / 悬浮球右键菜单共用构造：文案改这里两处同步生效（ADR 0004「改一处两处生效」）。
+/// prefix 用于区分事件来源：托盘 ""（show/hide/quit），悬浮球 "fb-"（fb-show/...），
+/// 悬浮球菜单事件走 app.on_menu_event，与托盘菜单事件互不干扰。
+fn build_menu(app: &AppHandle, prefix: &str) -> tauri::Result<Menu<tauri::Wry>> {
+    let show_item = MenuItem::with_id(app, format!("{prefix}show"), "显示主窗口", true, None::<&str>)?;
+    let hide_item = MenuItem::with_id(app, format!("{prefix}hide"), "隐藏主窗口", true, None::<&str>)?;
+    let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
+    let quit_item = MenuItem::with_id(app, format!("{prefix}quit"), "退出", true, None::<&str>)?;
+    Menu::with_items(app, &[&show_item, &hide_item, &separator, &quit_item])
+}
+
+pub fn setup(app: &tauri::App) -> tauri::Result<()> {
+    let menu = build_menu(app.handle(), "")?;
 
     let icon = app.default_window_icon().cloned().ok_or_else(|| {
         log::warn!("未找到托盘图标，使用默认图标");
@@ -55,6 +66,27 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
         })
         .build(app)?;
     log::info!("系统托盘初始化完成");
+
+    // 悬浮球右键菜单事件（fb- 前缀，见 build_menu / popup_context_menu）
+    app.on_menu_event(|app, event| match event.id.as_ref() {
+        "fb-show" => show_window(app),
+        "fb-hide" => hide_window(app),
+        "fb-quit" => {
+            log::info!("悬浮球菜单退出，应用结束");
+            app.exit(0);
+        }
+        _ => {}
+    });
+    Ok(())
+}
+
+/// 悬浮球右键菜单：弹出托盘同款菜单（floating_ball::floating_ball_context_menu 调用）
+pub fn popup_context_menu(app: &AppHandle) -> tauri::Result<()> {
+    let menu = build_menu(app, "fb-")?;
+    if let Some(win) = app.get_webview_window(crate::floating_ball::LABEL) {
+        // WebviewWindow 无公开 Window 访问器，经 AsRef<Webview>::window() 取底层窗口句柄
+        menu.popup(win.as_ref().window().clone())?;
+    }
     Ok(())
 }
 
@@ -64,6 +96,7 @@ pub fn show_window(app: &AppHandle) {
         let _ = window.unminimize();
         let _ = window.set_focus();
         MAIN_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
+        crate::floating_ball::sync_with_main(app);
     }
 }
 
@@ -71,6 +104,7 @@ pub fn hide_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
         MAIN_WINDOW_VISIBLE.store(false, Ordering::SeqCst);
+        crate::floating_ball::sync_with_main(app);
     }
 }
 

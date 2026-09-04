@@ -9,7 +9,8 @@
     "clipboard",
     "ext-*",
     "prompt-float",
-    "todo-float"
+    "todo-float",
+    "floating-ball"
   ],
   "permissions": [
     "core:default",

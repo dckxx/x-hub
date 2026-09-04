@@ -770,6 +770,14 @@ html[data-prompt-float] #app,
 html[data-todo-float] #app {
   padding: 0;
 }
+/* 桌面悬浮球：窗口透明无边框，body 透明，只显示球体/环形菜单本体 */
+html[data-floating-ball] body {
+  background: transparent !important;
+}
+html[data-floating-ball] #app {
+  padding: 0;
+  background: transparent !important;
+}
 html[data-prompt-float] .pf-root,
 html[data-todo-float] .tf-root {
   border: 1px solid var(--border-strong);

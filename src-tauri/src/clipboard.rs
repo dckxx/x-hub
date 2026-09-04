@@ -44,9 +44,6 @@ const ECHO_SUPPRESS_SECONDS: u64 = 10;
 const HTML_RETRY_DELAYS_MS: [u64; 7] = [0, 40, 80, 140, 220, 360, 560];
 /// 剪贴板事件去抖：一次复制可能触发多次 WM_CLIPBOARDUPDATE（多格式逐步写入）
 const SETTLE_MS: u64 = 80;
-/// 剪贴板浮层「延迟回收」等待时间：收起后窗口先隐藏，超过该时长仍未再次唤起才销毁，
-/// 期间再次唤起直接复用窗口（无 WebView2 冷启动），兼顾体感与内存回收。
-const OVERLAY_RECYCLE_SECS: u64 = 30;
 
 /// 跨命令共享的剪贴板浮层状态
 pub struct ClipboardState {
@@ -72,10 +69,6 @@ static MOUSE_HOOK: Mutex<Option<isize>> = Mutex::new(None);
 /// 浮层窗口句柄缓存：钩子回调运行在监听线程，禁止跨线程 Tauri 调用，
 /// 显示浮层时写入，钩子回调只读它做矩形判断。
 static OVERLAY_HWND: Mutex<Option<isize>> = Mutex::new(None);
-
-/// 延迟回收代际计数：每次隐藏/销毁都会递增，延迟销毁任务启动时记下当前代际，
-/// 到期后若代际已变（说明期间被再次唤起/重建），则不再执行销毁，避免误杀复用中的窗口。
-static OVERLAY_RECYCLE_GEN: Mutex<u64> = Mutex::new(0);
 
 /// 一次延迟窗口操作任务：粘贴后恢复焦点+注入按键，或收起后归还焦点。
 /// 统一交给单一 worker 线程串行执行，避免频繁 spawn 短命线程造成线程数波动。
@@ -1121,41 +1114,62 @@ fn unregister_esc_hotkey() {
     }
 }
 
-/// 唤起/收起剪贴板浮层（全局快捷键触发）：
+/// 浮层窗口原生可见性：`WebviewWindow::is_visible()` 在 Windows 上对 WebView2 子窗口
+/// 返回不准（隐藏后仍可能报 true，见 tray.rs 顶部同款注释），会让 toggle_overlay 误入
+/// 「收起」分支——表现为从悬浮球唤起剪贴板毫无反应。直查 Win32 IsWindowVisible
+/// （对自身的 ShowWindow(SW_SHOW/HIDE) 判定准确）。
+#[cfg(target_os = "windows")]
+fn overlay_native_visible(win: &tauri::WebviewWindow) -> bool {
+    match win.hwnd() {
+        Ok(hwnd) => unsafe { IsWindowVisible(hwnd.0) != 0 },
+        Err(_) => win.is_visible().unwrap_or(false),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn overlay_native_visible(win: &tauri::WebviewWindow) -> bool {
+    win.is_visible().unwrap_or(false)
+}
+
+/// 唤起/收起剪贴板浮层（全局快捷键 / 悬浮球菜单触发）：
 /// 唤起前记录当前前台窗口（粘贴还原目标），浮层为独立置顶小窗。
 /// 浮层以「无激活」方式显示（不抢走当前输入框焦点），用户点击搜索框时才激活。
+///
+/// 窗口生命周期：启动时由 init_overlay_window 预创建并隐藏常驻——运行时现场
+/// 创建 WebView2 窗口是主线程长任务，曾与悬浮球菜单收拢等并发窗口操作交错导致
+/// 整窗未响应。唤起/收起只做 ShowWindow 级快操作，绝不现场 build。
 pub fn toggle_overlay(app: &AppHandle) {
     // 已存在且可见：收起走统一 hide_overlay（注销热键/钩子 + 归还唤起前窗口焦点）。
     // 不要在此覆盖 prev_focus——浮层被激活后前台是浮层自身，覆盖会把还原目标错写成浮层。
     if let Some(win) = app.get_webview_window(CLIPBOARD_WINDOW_LABEL) {
-        if win.is_visible().unwrap_or(false) {
+        if overlay_native_visible(&win) {
+            log::info!("剪贴板浮层：toggle 时已可见，执行收起");
             hide_overlay(app);
             return;
         }
     }
+    log::info!("剪贴板浮层：toggle 唤起");
 
-    // 显示（含首次创建）：记录唤起前的前台窗口，供关闭/粘贴时还原焦点
+    // 显示：记录唤起前的前台窗口，供关闭/粘贴时还原焦点
     let prev = unsafe { GetForegroundWindow() } as isize;
     if let Ok(mut guard) = app.state::<ClipboardState>().prev_focus.lock() {
         *guard = Some(prev);
     }
 
-    if let Some(win) = app.get_webview_window(CLIPBOARD_WINDOW_LABEL) {
-        // 取消任何挂起的延迟回收：该窗口即将被重新显示，不能让回收任务销毁它
-        bump_overlay_recycle_gen();
-        // 每次唤起都重新定位到鼠标附近（窗口可能被拖走过、或显示器布局变化）
-        if let Some((px, py)) = cursor_anchor_position() {
-            let _ = win
-                .set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(px, py)));
+    let Some(win) = app.get_webview_window(CLIPBOARD_WINDOW_LABEL) else {
+        // 兜底：窗口不在（预创建失败或被销毁）时现场补建并显示。正常路径由
+        // init_overlay_window 启动预创建，这里极少走到
+        if let Ok(win) = build_overlay_window(app) {
+            log::info!("剪贴板浮层窗口已补建");
+            show_ready_overlay(&win, app);
         }
-        show_overlay_no_activate(&win);
-        register_esc_hotkey();
-        install_mouse_hook();
-        let _ = app.emit_to(CLIPBOARD_WINDOW_LABEL, "clipboard-shown", ());
         return;
-    }
+    };
+    show_ready_overlay(&win, app);
+}
 
-    let (px, py) = cursor_anchor_position().unwrap_or((200, 200));
+/// 构建剪贴板浮层窗口（visible=false，显示由调用方决定）
+fn build_overlay_window(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     let mut builder = tauri::WebviewWindowBuilder::new(
         app,
         CLIPBOARD_WINDOW_LABEL,
@@ -1178,20 +1192,35 @@ pub fn toggle_overlay(app: &AppHandle) {
     {
         builder = builder.shadow(false);
     }
+    builder.build()
+}
 
-    match builder.build() {
-        Ok(win) => {
-            // 创建后先按物理像素定位（HiDPI 安全）再显示，避免闪现默认位置
-            let _ = win
-                .set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(px, py)));
-            show_overlay_no_activate(&win);
-            register_esc_hotkey();
-            install_mouse_hook();
-            let _ = app.emit_to(CLIPBOARD_WINDOW_LABEL, "clipboard-shown", ());
-            log::info!("剪贴板浮层窗口已创建");
-        }
-        Err(e) => log::warn!("剪贴板浮层窗口创建失败: {}", e),
+/// 启动时预创建剪贴板浮层窗口（隐藏常驻）：
+/// 运行时现场创建 WebView2 窗口曾在点击悬浮球「剪贴板」时与菜单收拢的窗口
+/// 操作在主线程事件循环上交错，导致整窗未响应（WebView2 controller 创建挂起、
+/// 嵌套消息循环重入）。改为启动阶段（无并发窗口操作）一次性建好，此后唤起
+/// /收起均为 ShowWindow 级快操作。代价：renderer 常驻内存（约 60–120MB）。
+pub fn init_overlay_window(app: &AppHandle) {
+    if app.get_webview_window(CLIPBOARD_WINDOW_LABEL).is_some() {
+        return;
     }
+    match build_overlay_window(app) {
+        Ok(_) => log::info!("剪贴板浮层窗口已预创建（隐藏常驻）"),
+        Err(e) => log::warn!("剪贴板浮层窗口预创建失败: {}", e),
+    }
+}
+
+/// 显示就绪的浮层：定位到鼠标附近 + 无激活显示 + 热键/钩子 + 通知页面刷新
+fn show_ready_overlay(win: &tauri::WebviewWindow, app: &AppHandle) {
+    // 每次唤起都重新定位到鼠标附近（窗口可能被拖走过、或显示器布局变化）
+    if let Some((px, py)) = cursor_anchor_position() {
+        let _ = win
+            .set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(px, py)));
+    }
+    show_overlay_no_activate(win);
+    register_esc_hotkey();
+    install_mouse_hook();
+    let _ = app.emit_to(CLIPBOARD_WINDOW_LABEL, "clipboard-shown", ());
 }
 
 /// 无激活显示浮层：附加 WS_EX_NOACTIVATE 后以 SW_SHOWNA 显示并置顶，
@@ -1244,10 +1273,9 @@ pub fn activate_overlay(app: &AppHandle) {
     }
 }
 
-/// 收起浮层：先立即隐藏（视觉立刻消失），再启动「延迟回收」——等待 OVERLAY_RECYCLE_SECS
-/// 后若期间未被再次唤起（代际未变）才真正 destroy 释放 WebView2 renderer 内存。
-/// 纯隐藏时 renderer 常驻（约 60–120MB），立即销毁则每次唤起都要 WebView2 冷启动（数百 ms），
-/// 延迟回收在两者之间取平衡：短时间连续唤起零冷启动，长期不用才回收内存。
+/// 收起浮层：仅隐藏（窗口由 init_overlay_window 预创建后常驻，不做销毁回收）。
+/// 销毁会迫使下次唤起现场重建 WebView2 窗口——该路径曾与悬浮球操作交错导致
+/// 整窗未响应；renderer 常驻内存是换取唤起零等待 + 无运行时建窗的代价。
 fn hide_overlay_window(win: &tauri::WebviewWindow) {
     // 先清掉浮层窗口句柄缓存，避免低层鼠标钩子残留句柄对已隐藏窗口做矩形判断
     if let Ok(mut guard) = OVERLAY_HWND.lock() {
@@ -1259,47 +1287,14 @@ fn hide_overlay_window(win: &tauri::WebviewWindow) {
             unsafe {
                 ShowWindow(hwnd.0, SW_HIDE);
             }
-            schedule_overlay_recycle(win);
             return;
         }
         let _ = win.hide();
-        schedule_overlay_recycle(win);
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = win.hide();
-        schedule_overlay_recycle(win);
     }
-}
-
-/// 记录一次「收起/唤起」代际变更，使任何已排期的延迟回收作废。
-/// 在 toggle_overlay 重新显示浮层时调用，避免延迟任务误销毁复用中的窗口。
-fn bump_overlay_recycle_gen() {
-    if let Ok(mut guard) = OVERLAY_RECYCLE_GEN.lock() {
-        *guard = guard.wrapping_add(1);
-    }
-}
-
-/// 排期延迟回收：等待 OVERLAY_RECYCLE_SECS 后，若代际未变且窗口仍处于隐藏态，
-/// 则销毁该窗口释放 WebView2 renderer。期间被再次唤起（代际已变）则不执行。
-fn schedule_overlay_recycle(win: &tauri::WebviewWindow) {
-    let app = win.app_handle().clone();
-    let label = win.label().to_string();
-    let gen = *OVERLAY_RECYCLE_GEN.lock().unwrap_or_else(|e| e.into_inner());
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(OVERLAY_RECYCLE_SECS));
-        let current = *OVERLAY_RECYCLE_GEN.lock().unwrap_or_else(|e| e.into_inner());
-        if current != gen {
-            return; // 期间被再次唤起/重建，作废本次回收
-        }
-        let Some(win) = app.get_webview_window(&label) else {
-            return;
-        };
-        if !win.is_visible().unwrap_or(false) {
-            log::info!("剪贴板浮层：延迟回收销毁（{}s 未再唤起）", OVERLAY_RECYCLE_SECS);
-            let _ = win.destroy();
-        }
-    });
 }
 
 /// 收起浮层：隐藏后若前台仍在本应用（浮层/主窗口），把焦点还给唤起前的窗口
@@ -1309,7 +1304,7 @@ pub fn hide_overlay(app: &AppHandle) {
     let Some(win) = app.get_webview_window(CLIPBOARD_WINDOW_LABEL) else {
         return;
     };
-    let was_visible = win.is_visible().unwrap_or(false);
+    let was_visible = overlay_native_visible(&win);
     hide_overlay_window(&win);
     if !was_visible {
         return;

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.4.3"
+version = "0.5.0"
 description = "本地个人效率工作台"
 authors = ["you"]
 license = ""

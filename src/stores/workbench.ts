@@ -60,8 +60,6 @@ const state = reactive<StoreState>({
     wallpaper_path: '',
     wallpaper_blur: true,
     wallpaper_veil: 0.3,
-    wallpaper_path_dark: '',
-    wallpaper_veil_dark: -1,
     wallpaper_immersive: false,
     glass_opacity: 1,
     sidebar_toggle: false,
@@ -108,6 +106,19 @@ const state = reactive<StoreState>({
     auto_update_enabled: true,
     update_interval_hours: 4,
     skipped_update_version: '',
+    floating_ball_enabled: true,
+    floating_ball_snap: true,
+    floating_ball_with_main: false,
+    floating_ball_buttons: [
+      'view:dashboard',
+      'view:notes',
+      'view:suda',
+      'act:search',
+      'act:clipboard',
+      'view:settings',
+    ],
+    floating_ball_x: null,
+    floating_ball_y: null,
   },
   systemInfo: null,
   online: false,
@@ -656,18 +667,6 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
-  async function setWallpaperDark(path: string) {
-    state.config.wallpaper_path_dark = path
-    if (!isTauri()) return
-    await tauriApi.saveConfig(state.config)
-  }
-
-  async function setWallpaperVeilDark(value: number) {
-    state.config.wallpaper_veil_dark = value
-    if (!isTauri()) return
-    await tauriApi.saveConfig(state.config)
-  }
-
   async function setWallpaperBlur(value: boolean) {
     state.config.wallpaper_blur = value
     if (!isTauri()) return
@@ -831,6 +830,53 @@ export function useStore() {
       state.config.run_at_startup = prevEnabled
       throw e
     }
+  }
+
+  // ---- 桌面悬浮球（ADR 0004）：开关/吸附/同显/按钮统一经 floating_ball_save_settings 落盘，
+  // 不走 saveConfig（后端对悬浮球字段做磁盘合并保护，见 commands::save_config） ----
+  async function setFloatingBallEnabled(value: boolean) {
+    state.config.floating_ball_enabled = value
+    if (!isTauri()) return
+    await tauriApi.floatingBallSaveSettings(
+      value,
+      state.config.floating_ball_snap,
+      state.config.floating_ball_with_main,
+      state.config.floating_ball_buttons,
+    )
+  }
+
+  async function setFloatingBallSnap(value: boolean) {
+    state.config.floating_ball_snap = value
+    if (!isTauri()) return
+    await tauriApi.floatingBallSaveSettings(
+      state.config.floating_ball_enabled,
+      value,
+      state.config.floating_ball_with_main,
+      state.config.floating_ball_buttons,
+    )
+  }
+
+  async function setFloatingBallWithMain(value: boolean) {
+    state.config.floating_ball_with_main = value
+    if (!isTauri()) return
+    await tauriApi.floatingBallSaveSettings(
+      state.config.floating_ball_enabled,
+      state.config.floating_ball_snap,
+      value,
+      state.config.floating_ball_buttons,
+    )
+  }
+
+  async function setFloatingBallButtons(value: string[]) {
+    // 去重 + 上限钳制，与后端 floating_ball::MAX_BUTTONS 对齐
+    state.config.floating_ball_buttons = [...new Set(value)].slice(0, 8)
+    if (!isTauri()) return
+    await tauriApi.floatingBallSaveSettings(
+      state.config.floating_ball_enabled,
+      state.config.floating_ball_snap,
+      state.config.floating_ball_with_main,
+      state.config.floating_ball_buttons,
+    )
   }
 
   // ---- 系统资源 ----
@@ -1056,10 +1102,8 @@ export function useStore() {
     setThemePreset,
     setAccentColor,
     setWallpaper,
-    setWallpaperDark,
     setWallpaperBlur,
     setWallpaperVeil,
-    setWallpaperVeilDark,
     setWallpaperImmersive,
     setGlassOpacity,
     setSidebarToggle,
@@ -1079,6 +1123,10 @@ export function useStore() {
     setSidebarExtensionBulk,
     setExtensionOpenMode,
     setRunAtStartup,
+    setFloatingBallEnabled,
+    setFloatingBallSnap,
+    setFloatingBallWithMain,
+    setFloatingBallButtons,
     setClipboardShortcut,
     setClipboardPaused,
     setClipboardRetention,

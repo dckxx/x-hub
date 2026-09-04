@@ -133,11 +133,23 @@ pub fn stop_service(app: &tauri::AppHandle, ext_id: &str) {
         Ok(mut map) => map.remove(ext_id),
         Err(_) => return,
     };
-    if let Some(mut child) = rt.as_mut().and_then(|r| r.child.take()) {
-        let _ = child.kill();
-        let _ = child.wait();
+    if let Some(child) = rt.as_mut().and_then(|r| r.child.take()) {
+        kill_and_reap(child);
     }
     log::info!("service 扩展已停止: {ext_id}");
+}
+
+/// kill + 有界回收：TerminateProcess 后子进程应立即终止，但为防异常进程把
+/// 宿主退出流程拖死，轮询 try_wait 至多 1s，超时则放弃（进程句柄由系统回收）
+fn kill_and_reap(mut child: std::process::Child) {
+    let _ = child.kill();
+    for _ in 0..20 {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_) => break,
+        }
+    }
 }
 
 /// 宿主退出时停止所有 service 后端进程，避免残留
@@ -150,9 +162,8 @@ pub fn stop_all(app: &tauri::AppHandle) {
     let ids: Vec<String> = map.keys().cloned().collect();
     for id in ids {
         if let Some(mut rt) = map.remove(&id) {
-            if let Some(mut child) = rt.child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+            if let Some(child) = rt.child.take() {
+                kill_and_reap(child);
             }
         }
     }

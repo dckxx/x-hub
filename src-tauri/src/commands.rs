@@ -943,13 +943,40 @@ pub fn get_app_info(app: tauri::AppHandle) -> Result<AppInfo, String> {
 
 // ---------- 配置 ----------
 
+/// 主题配置（悬浮球等独立窗口自取通道：主窗 useTheme 运行时推送之外的初始值来源）
+#[derive(serde::Serialize)]
+pub struct ThemeConfig {
+    pub mode: String,
+    pub preset: String,
+    pub accent: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_theme_config() -> ThemeConfig {
+    let cfg = crate::config::load();
+    ThemeConfig {
+        mode: cfg.theme_mode,
+        preset: cfg.theme_preset,
+        accent: cfg.accent_color,
+    }
+}
+
 #[tauri::command]
 pub fn save_config(config: AppConfig) -> Result<AppConfig, String> {
     let _guard = crate::config::lock();
     // 模型配置只经 save_chat_models 变更：这里以磁盘为准，防止前端启动时的旧快照
     // （chat_models 可能为空/过期）在保存主题/快捷键等任意设置时整体覆盖掉模型配置
     let mut merged = config;
-    merged.chat_models = crate::config::load().chat_models;
+    let disk = crate::config::load();
+    merged.chat_models = disk.chat_models;
+    // 悬浮球字段均由后端管理（位置由 drag_end 记忆、开关经 save_settings 变更），
+    // 同样以磁盘为准，防止主窗旧快照把拖拽后的位置/设置覆盖回去
+    merged.floating_ball_enabled = disk.floating_ball_enabled;
+    merged.floating_ball_snap = disk.floating_ball_snap;
+    merged.floating_ball_with_main = disk.floating_ball_with_main;
+    merged.floating_ball_buttons = disk.floating_ball_buttons;
+    merged.floating_ball_x = disk.floating_ball_x;
+    merged.floating_ball_y = disk.floating_ball_y;
     crate::config::save(&merged)?;
     log::info!(
         "配置已保存: theme_mode={} theme_preset={} accent_color={:?} window={}x{} always_on_top={}",
@@ -1640,8 +1667,8 @@ const WALLPAPER_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp"];
 const WALLPAPER_MAX_BYTES: u64 = 30 * 1024 * 1024;
 
 /// 导入用户选择的壁纸图片：复制进数据根 wallpapers 目录（内容哈希命名），
-/// 并清理目录内不再被任何主题引用的文件（亮/暗主题各可引用一张，避免 %APPDATA% 堆积废弃图片）。
-/// 返回落盘后的绝对路径，前端写入配置 wallpaper_path / wallpaper_path_dark
+/// 并清理目录内不再被配置引用的文件，避免 %APPDATA% 堆积废弃图片。
+/// 返回落盘后的绝对路径，前端写入配置 wallpaper_path
 #[tauri::command]
 pub fn import_wallpaper(source: String) -> Result<String, String> {
     use std::collections::hash_map::DefaultHasher;
@@ -1673,8 +1700,8 @@ pub fn import_wallpaper(source: String) -> Result<String, String> {
     let output_path = dir.join(format!("{:016x}.{}", hasher.finish(), ext));
     std::fs::write(&output_path, &bytes).map_err(|e| format!("保存壁纸失败: {}", e))?;
 
-    // 内容哈希命名天然去重：两主题引用同一张图时落盘只有一份。
-    // 此时磁盘上的 config 尚未指向新文件，引用集 = 旧配置两路径 + 新文件
+    // 内容哈希命名天然去重：重复导入同一张图时落盘只有一份。
+    // 此时磁盘上的 config 尚未指向新文件，引用集 = 旧配置路径 + 新文件
     let config = crate::config::load();
     prune_wallpapers_unreferenced(&dir, &config, Some(&output_path));
 
@@ -1682,7 +1709,7 @@ pub fn import_wallpaper(source: String) -> Result<String, String> {
     Ok(output_path.to_string_lossy().into_owned())
 }
 
-/// 清空 wallpapers 目录中当前配置（亮/暗两主题）均未引用的壁纸文件
+/// 清空 wallpapers 目录中当前配置未引用的壁纸文件
 fn prune_wallpapers_unreferenced(
     dir: &std::path::Path,
     config: &crate::config::AppConfig,
@@ -1691,9 +1718,6 @@ fn prune_wallpapers_unreferenced(
     let mut keep: Vec<std::path::PathBuf> = Vec::new();
     if !config.wallpaper_path.is_empty() {
         keep.push(std::path::PathBuf::from(&config.wallpaper_path));
-    }
-    if !config.wallpaper_path_dark.is_empty() {
-        keep.push(std::path::PathBuf::from(&config.wallpaper_path_dark));
     }
     if let Some(e) = extra_keep {
         keep.push(e.to_path_buf());
@@ -1708,8 +1732,8 @@ fn prune_wallpapers_unreferenced(
     }
 }
 
-/// 壁纸目录清理：删除当前配置（亮/暗两主题）均未引用的壁纸文件。
-/// 前端先更新配置再调用本命令，即可完成「清除某主题壁纸」并顺手回收孤儿文件
+/// 壁纸目录清理：删除当前配置未引用的壁纸文件。
+/// 前端先更新配置再调用本命令，即可完成「清除壁纸」并顺手回收孤儿文件
 #[tauri::command]
 pub fn cleanup_wallpapers() -> Result<(), String> {
     let dir = crate::paths::data_root().join("wallpapers");

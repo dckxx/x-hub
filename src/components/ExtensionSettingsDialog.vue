@@ -75,6 +75,23 @@ function kindLabel(kind: string): string {
   }
 }
 
+/** 权限标识 → 用户可读说明（未登记的权限原样展示） */
+const PERMISSION_LABELS: Record<string, string> = {
+  'data:read': '读取宿主数据（笔记 / 待办 / 速达）',
+  'data:write': '写入宿主数据',
+  fs: '保存文件（写入系统下载目录）',
+  clipboard: '访问剪贴板',
+  network: '访问网络',
+  system: '打开应用 / 网页 / 本地路径',
+  notify: '发送系统通知',
+  events: '广播扩展事件',
+  'shared-storage': '读写跨扩展共享存储',
+}
+
+function permissionLabel(perm: string): string {
+  return PERMISSION_LABELS[perm] ?? perm
+}
+
 function runtimeLabel(runtime: 'web' | 'service'): string {
   return runtime === 'service' ? 'service（含本地后端进程）' : 'web（纯前端）'
 }
@@ -171,8 +188,8 @@ async function confirmUninstall() {
             <section class="es-block">
               <h3 class="es-block-title">权限</h3>
               <div v-if="ext.permissions.length" class="es-perm-list">
-                <div v-for="p in ext.permissions" :key="p" class="es-perm-row">
-                  <span class="es-perm-name">{{ p }}</span>
+                <div v-for="p in ext.permissions" :key="p" class="es-perm-row" :title="p">
+                  <span class="es-perm-name">{{ permissionLabel(p) }}</span>
                   <button
                     class="toggle"
                     role="switch"

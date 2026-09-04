@@ -56,12 +56,6 @@ pub struct AppConfig {
     /// 壁纸蒙版：主题底色罩层不透明度（0–0.85，默认 0.3），在壁纸鲜亮度与文字对比度间取平衡
     #[serde(default = "default_wallpaper_veil")]
     pub wallpaper_veil: f64,
-    /// 暗色主题专属壁纸：绝对路径（空 = 跟随亮色壁纸 wallpaper_path）
-    #[serde(default)]
-    pub wallpaper_path_dark: String,
-    /// 暗色主题壁纸蒙版不透明度（0–0.85）；负值 = 跟随 wallpaper_veil（升级兼容默认，老用户观感不变）
-    #[serde(default = "default_wallpaper_veil_dark")]
-    pub wallpaper_veil_dark: f64,
     /// 沉浸模式：卡片改用真毛玻璃 backdrop-filter 局部取景模糊（ADR 0003 受控例外，默认关）
     #[serde(default)]
     pub wallpaper_immersive: bool,
@@ -170,6 +164,24 @@ pub struct AppConfig {
     /// 用户「跳过此版本」记录的版本号（空 = 未跳过）；check 命中时若与清单版本一致则不再提示
     #[serde(default)]
     pub skipped_update_version: String,
+    /// 桌面悬浮球总开关（ADR 0004，默认开启）：主窗口隐藏时在桌面显示悬浮球
+    #[serde(default = "default_true")]
+    pub floating_ball_enabled: bool,
+    /// 悬浮球贴边吸附：拖到屏幕边缘附近自动贴边停靠（球完整留在屏内，不藏球）
+    #[serde(default = "default_true")]
+    pub floating_ball_snap: bool,
+    /// 与主窗口同时显示：默认 false = 球仅在主窗隐藏/最小化时出现；
+    /// 开启后球常驻桌面，主窗显示也不隐藏（sync_with_main 读此字段联动）
+    #[serde(default)]
+    pub floating_ball_with_main: bool,
+    /// 环形快捷菜单按钮 id 列表（view:xxx / act:xxx，去重后最多 8 个，见 floating_ball.rs）
+    #[serde(default = "default_floating_ball_buttons")]
+    pub floating_ball_buttons: Vec<String>,
+    /// 悬浮球窗口位置（物理 px，拖拽松手后由后端记忆；与倒计时浮窗同约定）
+    #[serde(default)]
+    pub floating_ball_x: Option<f64>,
+    #[serde(default)]
+    pub floating_ball_y: Option<f64>,
 }
 
 fn one() -> f64 {
@@ -200,11 +212,6 @@ fn default_wallpaper_veil() -> f64 {
     0.3
 }
 
-/// 暗色蒙版默认取 -1（跟随亮色值）：老配置升级后暗色观感与原共用蒙版一致
-fn default_wallpaper_veil_dark() -> f64 {
-    -1.0
-}
-
 fn default_quote_source() -> String {
     "online".to_string()
 }
@@ -231,6 +238,21 @@ fn default_market_endpoint() -> String {
     DEFAULT_MARKET_ENDPOINT.to_string()
 }
 
+/// 环形菜单默认 6 个按钮（ADR 0004）：工作台 / 速记 / 速达 / 全局搜索 / 剪贴板 / 设置
+pub fn default_floating_ball_buttons() -> Vec<String> {
+    [
+        "view:dashboard",
+        "view:notes",
+        "view:suda",
+        "act:search",
+        "act:clipboard",
+        "view:settings",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -240,8 +262,6 @@ impl Default for AppConfig {
             wallpaper_path: String::new(),
             wallpaper_blur: true,
             wallpaper_veil: default_wallpaper_veil(),
-            wallpaper_path_dark: String::new(),
-            wallpaper_veil_dark: default_wallpaper_veil_dark(),
             wallpaper_immersive: false,
             glass_opacity: 1.0,
             sidebar_toggle: false,
@@ -283,6 +303,12 @@ impl Default for AppConfig {
             auto_update_enabled: true,
             update_interval_hours: default_update_interval_hours(),
             skipped_update_version: String::new(),
+            floating_ball_enabled: true,
+            floating_ball_snap: true,
+            floating_ball_with_main: false,
+            floating_ball_buttons: default_floating_ball_buttons(),
+            floating_ball_x: None,
+            floating_ball_y: None,
         }
     }
 }

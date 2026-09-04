@@ -9,6 +9,7 @@ mod countdown_ticker;
 mod countdown_window;
 mod db;
 mod extension;
+mod floating_ball;
 mod float_window;
 pub mod market;
 mod models;
@@ -141,7 +142,7 @@ fn fix_icon_paths(conn: &Connection) {
 }
 
 /// 验证窗口位置是否在任意可用的显示器内
-fn is_position_on_screen(x: f64, y: f64) -> bool {
+pub(crate) fn is_position_on_screen(x: f64, y: f64) -> bool {
     // Tauri 2 没有直接枚举显示器的 API，使用一个合理的边界检查
     // 允许负坐标（多显示器配置），但限制在合理范围内
     x >= -10000.0 && x <= 10000.0 && y >= -10000.0 && y <= 10000.0
@@ -322,6 +323,10 @@ pub fn run() {
                 crate::tray::hide_window(app.handle());
             }
 
+            // 桌面悬浮球（ADR 0004）：须在 autostart-hidden 的 hide_window 之后初始化，
+            // 显隐联动（主窗隐藏 → 球显示）才能覆盖静默启动场景
+            floating_ball::init(app.handle());
+
             // 主窗口启动时隐藏（tauri.conf.json visible:false），等前端内容可绘制后再 show，
             // 避免 WebView2 冷启动期间出现空白/白屏等待窗口；这里先铺上主题底色，
             // 若 show 早于首帧绘制，也只会闪主题色而非纯白
@@ -387,15 +392,30 @@ pub fn run() {
             // 启动剪贴板延迟窗口操作 worker（粘贴/归还焦点统一串行执行，避免频繁 spawn 短命线程）
             clipboard::init_win_op_worker();
 
+            // 预创建剪贴板浮层窗口（隐藏常驻）：运行时现场创建 WebView2 窗口曾与
+            // 悬浮球操作交错导致整窗未响应（见 clipboard.rs::init_overlay_window 注释）
+            clipboard::init_overlay_window(app.handle());
+
             // 关闭事件：拦截默认关闭，改为隐藏至托盘
             if let Some(window) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
+                let win_for_events = window.clone();
                 window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        log::info!("收到关闭请求：保存状态并隐藏至托盘");
-                        persist_window_state(&app_handle);
-                        api.prevent_close();
-                        crate::tray::hide_window(&app_handle);
+                    match event {
+                        tauri::WindowEvent::CloseRequested { api, .. } => {
+                            log::info!("收到关闭请求：保存状态并隐藏至托盘");
+                            persist_window_state(&app_handle);
+                            api.prevent_close();
+                            crate::tray::hide_window(&app_handle);
+                        }
+                        // 最小化/还原联动悬浮球：最小化也是主窗「视觉不可见」，
+                        // 球应出现。Windows 上最小化状态变化伴随 Resized 事件，借此
+                        // 检测（MAIN_WINDOW_VISIBLE 状态位只覆盖托盘/快捷键显隐链）
+                        tauri::WindowEvent::Resized(_) => {
+                            let minimized = win_for_events.is_minimized().unwrap_or(false);
+                            crate::floating_ball::set_main_minimized(&app_handle, minimized);
+                        }
+                        _ => {}
                     }
                 });
             }
@@ -567,6 +587,13 @@ commands::set_chat_panel,
             commands::get_quote,
             commands::set_weather_city,
             commands::locate_weather_by_ip,
+            floating_ball::floating_ball_get_state,
+            floating_ball::floating_ball_save_settings,
+            floating_ball::floating_ball_drag_end,
+            floating_ball::floating_ball_expand,
+            floating_ball::floating_ball_trigger,
+            floating_ball::floating_ball_context_menu,
+            commands::get_theme_config,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -574,6 +601,9 @@ commands::set_chat_panel,
             // 宿主退出：停止所有 service 后端进程，避免 Node 子进程残留
             if let tauri::RunEvent::Exit = event {
                 service::stop_all(app);
+                // Windows 上 WebView2 子窗口/托盘销毁偶发把退出流程拖死（托盘点「退出」
+                // 后进程不消失），清理完成后直接结束进程，保证退出 100% 生效
+                std::process::exit(0);
             }
         });
 }

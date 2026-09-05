@@ -1,29 +1,29 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-  打包扩展并生成本地发布产物（R2 市场清单 v2）。
-  生成到 <OutDir>（默认 <仓库>/dist/market）：
+  打包扩展并生成本地发布产物（市场清单 v2）。
+  生成到 <OutDir>（默认 <仓库>/dist-market）：
     packages/<id>/<version>/<id>-<version>.xhpack — 扩展包（zip 格式，后缀统一 .xhpack，不可变路径）
     icons/<id>.<ext>                              — 图标（manifest.icon 存在时）
     registry.json                                 — 合并后的完整清单（upsert 该扩展）
     registry.json.sig                             — Ed25519 分离签名（base64 文本）
-  上传用 rclone（脚本末尾打印命令），CI 里由 release-extension.yml 自动完成。
+  上传用 scripts/upload-market.ps1（rclone sftp 到自建服务器），CI 里由 release-extension.yml 自动完成。
 
 .PARAMETER ExtDir
   扩展源码目录（含 manifest.json）。
 .PARAMETER SignKey
   Ed25519 私钥 PEM 路径（默认取环境变量 XHUB_SIGNING_KEY）。
 .PARAMETER Endpoint
-  市场 CDN 根 URL，默认 https://r2.dckxx.com/extensions。
+  市场根 URL，默认取环境变量 XHUB_DIST_BASE_URL（如 http://IP:8080）拼 /extensions；两者都缺则报错。
 .PARAMETER OutDir
-  产物根目录，默认 <仓库>/dist/market。
+  产物根目录，默认 <仓库>/dist-market。
 .EXAMPLE
   ./scripts/publish-extension.ps1 -ExtDir E:\workspace\x-hub-extensions\extensions\hello-web -SignKey E:\workspace\.x-hub-signing\market.key
 #>
 param(
   [Parameter(Mandatory = $true)][string]$ExtDir,
   [string]$SignKey = $env:XHUB_SIGNING_KEY,
-  [string]$Endpoint = 'https://r2.dckxx.com/extensions',
+  [string]$Endpoint = $(if ($env:XHUB_DIST_BASE_URL) { "$($env:XHUB_DIST_BASE_URL.TrimEnd('/'))/extensions" } else { '' }),
   [string]$OutDir = (Join-Path $PSScriptRoot '..\dist-market')
 )
 
@@ -33,6 +33,7 @@ $ErrorActionPreference = 'Stop'
 $manifestPath = Join-Path $ExtDir 'manifest.json'
 if (-not (Test-Path $manifestPath)) { throw "未找到 manifest.json: $manifestPath" }
 if (-not $SignKey) { throw '缺少签名私钥：请用 -SignKey 指定或设置环境变量 XHUB_SIGNING_KEY' }
+if (-not $Endpoint) { throw '未指定市场端点：请用 -Endpoint 传入或设置环境变量 XHUB_DIST_BASE_URL' }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw '需要 Node.js（用于 Ed25519 签名）' }
 
 $manifest = Get-Content $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json
@@ -120,7 +121,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Ed25519 签名失败' }
 
 # ---------- 6. 输出 ----------
 Write-Host ''
-Write-Host '==== 发布产物（上传到 R2 桶根，与 dist-market 内容对应） ====' -ForegroundColor Cyan
+Write-Host '==== 发布产物（上传到分发服务器 extensions/，与 dist-market 内容对应） ====' -ForegroundColor Cyan
 Write-Host "xhpack  : $zip"
 Write-Host "sha256   : $sha256"
 Write-Host "size     : $size bytes"
@@ -128,6 +129,4 @@ if ($iconUrl) { Write-Host "icon     : $iconUrl" }
 Write-Host "registry : $registryPath"
 Write-Host "sig      : $sigPath"
 Write-Host ''
-Write-Host '上传命令参考（rclone 已配置 r2 remote 时）：' -ForegroundColor Yellow
-Write-Host "  rclone copy $OutDir r2:x-hub-dist/extensions --include 'registry.json*' --header-upload 'Cache-Control: no-cache' -P"
-Write-Host "  rclone copy $OutDir r2:x-hub-dist/extensions --include 'packages/**' --include 'icons/**' --header-upload 'Cache-Control: public, max-age=31536000, immutable' -P"
+Write-Host '上传：运行 scripts\upload-market.ps1（读 XHUB_DEPLOY_* 环境变量，sftp 上传并校验）。' -ForegroundColor Yellow

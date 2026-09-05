@@ -5,6 +5,8 @@ import {
   Bell,
   CalendarDays,
   Check,
+  ChevronDown,
+  ChevronRight,
   Plus,
   Sun,
   Trash2,
@@ -48,6 +50,13 @@ const PRIORITY_BG = ['var(--todo-pri-default)', 'var(--c-yellow-soft)', 'var(--c
 // 子待办（仅一层）
 const kids = computed(() => childrenMap.value.get(props.todo.id) ?? [])
 const doneKids = computed(() => kids.value.filter((k) => k.done).length)
+
+// ---- 子待办折叠/展开：默认展开；行内瞬态状态，不持久化（切走再回来仍展开） ----
+const collapsed = ref(false)
+
+function toggleCollapse() {
+  collapsed.value = !collapsed.value
+}
 
 const badge = computed(() => (props.todo.done ? null : dueBadge(props.todo, new Date())))
 const remindOn = computed(() => !props.todo.done && props.todo.remind_at != null)
@@ -129,6 +138,8 @@ function toggleSubAdd() {
   addingSub.value = !addingSub.value
   subText.value = ''
   if (addingSub.value) {
+    // 折叠中点「+」先展开，保证输入行与既有子待办一起可见
+    collapsed.value = false
     nextTick(() => {
       const el = subInputRef.value
       el?.focus()
@@ -267,6 +278,20 @@ function hideTip() {
         </div>
 
         <!-- 父级操作按钮：跟在标题/徽标后面（不挂在整行最右），有子待办时不会沉到整块底部 -->
+        <!-- 折叠/展开子待办：默认展开；折叠态图标常驻可见，否则找不到展开入口 -->
+        <button
+          v-if="!isSub && kids.length"
+          class="todo-collapser"
+          :class="{ collapsed }"
+          type="button"
+          :title="collapsed ? '展开子待办' : '折叠子待办'"
+          :aria-label="collapsed ? '展开子待办' : '折叠子待办'"
+          :aria-expanded="!collapsed"
+          @click="toggleCollapse"
+        >
+          <ChevronRight v-if="collapsed" :size="12" :stroke-width="2.2" />
+          <ChevronDown v-else :size="12" :stroke-width="2.2" />
+        </button>
         <button
           v-if="!isSub"
           class="todo-subadd"
@@ -291,7 +316,8 @@ function hideTip() {
         </button>
       </div>
 
-      <div v-if="kids.length || addingSub" class="todo-subs">
+      <!-- 折叠时隐藏子待办列表；addingSub 打开时输入行必须可见（toggleSubAdd 已先展开，此处兜底） -->
+      <div v-if="(kids.length && !collapsed) || addingSub" class="todo-subs">
         <TodoRow
           v-for="k in kids"
           :key="k.id"
@@ -635,6 +661,7 @@ function hideTip() {
 }
 
 /* ---- 行内操作按钮：父级跟在标题/徽标后，子级删除仍挂行尾 ---- */
+.todo-collapser,
 .todo-subadd,
 .todo-del {
   flex-shrink: 0;
@@ -651,17 +678,30 @@ function hideTip() {
   opacity: 0;
   transition: opacity 0.18s, background 0.18s, color 0.18s;
 }
+.todo-collapser {
+  color: var(--text-3);
+}
 .todo-subadd {
   color: var(--text-4);
 }
 .todo-del {
   color: var(--text-3);
 }
+.todo-row:hover .todo-collapser,
 .todo-row:hover .todo-subadd,
 .todo-row:hover .todo-del,
+.todo-row:focus-within .todo-collapser,
 .todo-row:focus-within .todo-subadd,
 .todo-row:focus-within .todo-del {
   opacity: 1;
+}
+/* 折叠态常驻显示（不随 hover 隐藏）：重新展开的入口必须随时可见 */
+.todo-collapser.collapsed {
+  opacity: 1;
+}
+.todo-collapser:hover {
+  background: var(--brand-50);
+  color: var(--brand-500);
 }
 .todo-subadd:hover {
   background: var(--brand-50);

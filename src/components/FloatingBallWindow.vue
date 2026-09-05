@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 桌面悬浮球（ADR 0004）：透明置顶小窗（label=floating-ball），「全息能量核」视觉方案。
 // 拖拽移动（系统原生拖动循环 + 松手吸附/记忆位置）、单击展开环形菜单（螺旋扫出/倒序收回）、
-// 双击显示主窗口、右键托盘同款菜单；窗口尺寸恒定（菜单态几何 312），展开/收起只切换
+// 双击显示主窗口、右键托盘同款菜单；窗口尺寸恒定（菜单态几何 260），展开/收起只切换
 // Rust 侧椭圆命中区域（球态小圆 ↔ 菜单态大圆），不 resize——避免 WebView 重排滞后帧跳动。
 // 视觉构成：canvas 粒子球（斐波那契点云 + 能量网 + 脉冲能量核 + 雷达刻度）
 //          + CSS 3D 陀螺环（三环自旋 + 悬停指针倾转）+ 光晕呼吸 + 接触阴影 + 悬停微升起；
@@ -38,8 +38,8 @@ const buttons = computed(() =>
     .filter((b) => b.label),
 )
 
-/** 按钮轨道半径：菜单窗 312 → 中心 156 - 按钮外沿 26 - 余量 12 = 118（与 Rust MENU_SIZE 匹配） */
-const ringR = computed(() => Math.round((st.value?.menu_size ?? 312) / 2) - 38)
+/** 按钮轨道半径：菜单窗 260 → 中心 130 - 按钮外沿 26 - 余量 12 = 92（与 Rust MENU_SIZE 匹配） */
+const ringR = computed(() => Math.round((st.value?.menu_size ?? 260) / 2) - 38)
 
 /** 环形布局：第一个按钮在正上方顺时针均分；rotate/translate 链式定位，供螺旋动画插值 */
 function btnVars(i: number): CSSProperties {
@@ -53,7 +53,7 @@ function btnVars(i: number): CSSProperties {
   }
 }
 
-// ---- 菜单开合：窗口几何（球态 100 ↔ 菜单态 312）由 Rust expand 以球心为锚原子切换，
+// ---- 菜单开合：窗口几何（球态 100 ↔ 菜单态 260）由 Rust expand 以球心为锚原子切换，
 // 页面只管动画态。窗口 resize 时 WebView2 内容重排滞后一帧（旧帧按旧视口渲染，
 // 球会先跳向窗口移动方向再弹回）——开合前先把整窗内容淡出、重排落定后恢复，
 // 把跳动帧掩盖在「球化开成菜单」的过渡里 ----
@@ -654,7 +654,8 @@ onBeforeUnmount(() => {
   pointer-events: auto;
 }
 
-/* ---- 双层轨道环 ---- */
+/* ---- 双层轨道环（菜单态装饰）：arc1 直径 = 2 × ringR（按钮轨道），arc2 为内衬环；
+   调整 MENU_SIZE / ringR 时同步这里 ---- */
 .fb-arc {
   position: absolute;
   left: 50%;
@@ -663,16 +664,16 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 .fb-arc1 {
-  width: 236px;
-  height: 236px;
-  margin: -118px 0 0 -118px;
+  width: 184px;
+  height: 184px;
+  margin: -92px 0 0 -92px;
   border: 1px dashed color-mix(in srgb, var(--fb-accent, #7c6cff) 28%, transparent);
   animation: fb-arc-in 0.4s ease-out both;
 }
 .fb-arc2 {
-  width: 152px;
-  height: 152px;
-  margin: -76px 0 0 -76px;
+  width: 120px;
+  height: 120px;
+  margin: -60px 0 0 -60px;
   border: 1px solid color-mix(in srgb, var(--fb-accent, #7c6cff) 10%, transparent);
   animation: fb-arc-in 0.4s ease-out both;
 }

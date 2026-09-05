@@ -1,8 +1,8 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-  应用发版：打两个 zip（标准版 + 便携版）→ 生成 update.json + Ed25519 签名 → rclone 上传到 R2，
-  并保留 `releases/win-x64/` 下最近 2 版。
+  应用发版：打两个 zip（标准版 + 便携版）→ 生成 update.json + Ed25519 签名 →
+  经 scripts/upload-release.ps1（rclone sftp）上传到自建分发服务器，并保留 `releases/win-x64/` 下最近 2 版。
 
 .DESCRIPTION
   配合客户端自研 updater.rs（方案 A）：
@@ -20,7 +20,7 @@
 .PARAMETER MinimumUpgradable
   可升级的最低版本下限（跳级保护；默认 0.1.0）。
 .PARAMETER BaseUrl
-  应用发布 CDN 根 URL，默认 https://r2.dckxx.com/releases。
+  应用发布根 URL，默认取环境变量 XHUB_DIST_BASE_URL（如 http://IP:8080）拼 /releases；两者都缺则报错。
 .PARAMETER OutDir
   本地产物目录，默认 <仓库>/dist-release。
 
@@ -33,7 +33,7 @@ param(
   [string]$SignKey = $env:XHUB_SIGNING_KEY,
   [string]$Notes = '',
   [string]$MinimumUpgradable = '0.1.0',
-  [string]$BaseUrl = 'https://r2.dckxx.com/releases',
+  [string]$BaseUrl = $(if ($env:XHUB_DIST_BASE_URL) { "$($env:XHUB_DIST_BASE_URL.TrimEnd('/'))/releases" } else { '' }),
   [string]$OutDir = (Join-Path $PSScriptRoot '..\dist-release')
 )
 
@@ -44,6 +44,7 @@ if (-not (Test-Path -LiteralPath $ExePath)) { throw "未找到 exe: $ExePath" }
 if ((Get-Item -LiteralPath $ExePath).Extension -ne '.exe') { throw "ExePath 需为 .exe 文件" }
 if (-not ($Version -match '^\d+\.\d+\.\d+$')) { throw "Version 需为语义化版本（x.y.z），实际: $Version" }
 if (-not $SignKey -and -not (Test-Path -LiteralPath $SignKey)) { throw '缺少签名私钥：请用 -SignKey 指定或设置环境变量 XHUB_SIGNING_KEY' }
+if (-not $BaseUrl) { throw '未指定发布根 URL：请用 -BaseUrl 传入或设置环境变量 XHUB_DIST_BASE_URL' }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw '需要 Node.js（用于 Ed25519 签名）' }
 
 # ---------- 目录 ----------
@@ -111,7 +112,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Ed25519 签名失败' }
 
 # ---------- 输出 ----------
 Write-Host ''
-Write-Host '==== 发布产物（上传到 R2 releases/，与 dist-release 内容对应） ====' -ForegroundColor Cyan
+Write-Host '==== 发布产物（上传到分发服务器 releases/，与 dist-release 内容对应） ====' -ForegroundColor Cyan
 Write-Host "standard : $stdZip"
 Write-Host "  sha256 : $stdSha  ($stdSize bytes)"
 Write-Host "portable : $portableZip"
@@ -119,8 +120,4 @@ Write-Host "  sha256 : $portableSha  ($portableSize bytes)"
 Write-Host "manifest : $updateJson"
 Write-Host "sig      : $sigPath"
 Write-Host ''
-Write-Host '上传命令参考（rclone 已配置 r2 remote 时）：' -ForegroundColor Yellow
-Write-Host "  rclone copy $OutDir r2:x-hub-dist/releases --include 'update.json*' --header-upload 'Cache-Control: no-cache' -P"
-Write-Host "  rclone copy $OutDir r2:x-hub-dist/releases --include 'win-x64/**' --include 'packages/**' --header-upload 'Cache-Control: public, max-age=31536000, immutable' -P"
-Write-Host ''
-Write-Host '或直接使用 upload-release.ps1（读取 R2_* 环境变量，自动上传并校验）。' -ForegroundColor Yellow
+Write-Host '上传：运行 scripts\upload-release.ps1（读 XHUB_DEPLOY_* 环境变量，sftp 上传并校验）。' -ForegroundColor Yellow

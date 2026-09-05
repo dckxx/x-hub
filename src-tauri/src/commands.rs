@@ -1413,10 +1413,15 @@ pub fn change_data_dir(state: State<'_, DbState>, new_dir: String) -> Result<(),
     Ok(())
 }
 
-/// 重启应用（更改数据目录 / 恢复数据后前端调用）
+/// 重启应用（更改数据目录 / 恢复数据 / 更新就绪后前端调用）。
+/// 统一走 `updater::relaunch_app`：释放 single-instance 互斥后 spawn 新进程并退出。
+/// 不再用 `app.restart()`：tauri 的重启在非主线程（IPC 命令线程）触发时依赖
+/// `RunEvent::Exit` 事件循环分支，而 x-hub 在 `.run()` 回调里对 Exit 直接
+/// `std::process::exit(0)`（为保证托盘退出生效），会先杀死进程导致 restart
+/// 永不执行——表现为「点了立即重启却只退出不重启」。显式 spawn 规避该路径。
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
-    app.restart();
+    crate::updater::relaunch_app(&app);
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {

@@ -1,6 +1,6 @@
 # x-hub (个人效率工作台)
 
-**生成:** 2026-08-29 | **分支:** master | **版本:** 0.5.0
+**生成:** 2026-08-29 | **分支:** master | **版本:** 0.5.1
 
 ## 概述
 
@@ -94,6 +94,7 @@ x-hub/
 │   ├── reka-ui.md              # Reka UI 使用规范（铁律/踩坑记录/调试指南，新增组件前必读）
 │   ├── （已迁移）扩展系统文档   # extension-spec/api/evolution 等现位于 x-hub-extensions 仓库 docs/
 │   ├── r2-distribution-and-updater.md        # 扩展市场 R2 分发与应用自动更新方案（P0–P3 已实施）
+│   ├── self-hosted-distribution.md           # 分发端点迁移方案（腾讯云 COS 替代 R2，脚本/CI 已切换；Nginx 备选）
 │   ├── file-search-plan.md                   # 本地文件搜索方案（已定稿待实现）
 │   └── adr/                    # 架构决策记录（0001 首次使用引导：已决策未实施）
 ├── DESIGN.md                   # 当前设计系统（唯一实现基线，与 style.css 对齐；§8 为 Reka UI 组件规范）

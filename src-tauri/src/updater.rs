@@ -20,6 +20,11 @@
 //!      就位成功后立即以新 exe 拉起子进程接管启动、当前进程退出——当前
 //!      进程镜像已被改名成 .old，原地继续跑只会是旧版本。任一步失败
 //!      回滚并保留标记，下次启动重试。启动时顺手清理上次升级残留的 .old。
+//!      拉起前必须先 `tauri_plugin_single_instance::destroy` 释放单实例互斥
+//!      与隐藏窗口：否则新实例启动时插件 setup 里 CreateMutexW 会撞上旧进程
+//!      未释放的互斥（旧进程 std::process::exit 不触发插件的 Exit 清理），
+//!      新实例被判为「第二实例」自杀退出——表现为升级后应用没有自动重启，
+//!      需用户手动再开（历史反复出现的现象，见 `relaunch_app` 注释）。
 //!
 //! 事件：`update-available`、`update-download-progress`、`update-ready`。
 
@@ -31,6 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::Emitter;
+use tauri::Manager;
 
 /// 更新清单 schema 版本。
 const SCHEMA_VERSION: u32 = 1;
@@ -629,7 +635,8 @@ fn read_pending() -> Option<PendingUpdate> {
 /// 当前进程镜像已被改名成 .old，原地继续跑的仍是旧版本（「点了重启
 /// 还是旧版」的根因）。新实例再进这里时无标记，直接跳过，不会循环。
 /// 另外每次进入先清理上次升级残留的 .old（此刻已无进程占用，可安全删）。
-pub fn apply_pending_update(current_version: &str) {
+/// 拉起走 `relaunch_app`（先释放 single-instance 互斥，见其注释）。
+pub fn apply_pending_update(app: &tauri::AppHandle, current_version: &str) {
     // 清理上次自替换残留的 .old：升级时运行中进程的镜像被改名成了
     // exe.old，Windows 不允许删除运行中进程的镜像文件，当时必删失败；
     // 等到下一次启动它已无进程占用，这里统一清掉，避免 exe 目录长期躺着 .old
@@ -748,18 +755,49 @@ pub fn apply_pending_update(current_version: &str) {
     // 4) 立即以新 exe 拉起子进程并退出：当前进程镜像已被改名成 .old，
     //    原地继续跑的仍是旧版本——不换进程的话，用户重启后看到的还是
     //    旧版界面（旧缺陷）。新实例启动时无标记，直接跳过，不会循环。
-    match std::process::Command::new(&exe_path)
+    //    注意：必须先释放 single-instance 互斥与隐藏窗口，否则新实例在
+    //    插件 setup 里 CreateMutexW 撞上旧进程未释放的互斥，被判第二实例
+    //    自杀退出——升级后「没有自动重启」的根因（relaunch_app 内部处理）。
+    relaunch_app(app);
+}
+
+/// 重启当前进程（以磁盘上的 exe 重新拉起后退出当前进程）。
+/// 供三处共用：① updater 自替换成功后接管启动；② 「立即重启」按钮
+/// （restart_app 命令，数据目录迁移/更新就绪后重启）。
+///
+/// 为什么先 `tauri_plugin_single_instance::destroy`：single-instance 插件的
+/// mutex（`x-hub-sim`）与隐藏窗口是在插件 setup 时创建的，正常由插件的
+/// `RunEvent::Exit` on_event 销毁。但这里是用 `std::process::exit(0)` 硬退
+/// （不触发 RunEvent::Exit / 事件循环），互斥只能靠 OS 在进程终止时回收——
+/// spawn 的新实例启动到插件 setup（CreateMutexW）往往先于旧进程句柄清理
+/// 完成，于是被判为「第二实例」而自杀退出，升级/重启表现为「没有自动
+/// 重启，应用消失需手动再开」（历史反复出现的现象）。因此在 spawn 前显式
+/// 释放互斥与隐藏窗口，保证新实例必然成为主实例。
+pub fn relaunch_app(app: &tauri::AppHandle) {
+    // 直接 exit(0) 不会触发 RunEvent::Exit，service 后端子进程需在此手动停掉，
+    // 否则 Node 子进程残留（标准退出路径由 lib.rs RunEvent::Exit → stop_all 兜底）。
+    // setup 早期（apply_pending_update 路径）ServiceState 尚未 manage：try_state 判空跳过。
+    if app.try_state::<crate::service::ServiceState>().is_some() {
+        crate::service::stop_all(app);
+    }
+    // 释放 single-instance 互斥与隐藏窗口（幂等：句柄不存在时 Release/Close 失败即忽略）
+    tauri_plugin_single_instance::destroy(app);
+    let Ok(exe) = std::env::current_exe() else {
+        log::error!("重启失败：无法定位当前 exe");
+        return;
+    };
+    match std::process::Command::new(&exe)
         .args(std::env::args_os().skip(1))
         .spawn()
     {
         Ok(_) => {
-            log::info!("已以新版本 v{} 拉起子进程，当前进程退出", pending.version);
+            log::info!("已拉起新进程接管启动，当前进程退出");
             std::process::exit(0);
         }
-        // 拉起失败（如被安全软件拦截）：保持旧流程兜底——磁盘上已是新 exe，
-        // 用户下次手动启动即新版本；当前实例继续以旧版本跑完本次启动
+        // 拉起失败（如被安全软件拦截）：磁盘上 exe 已就位（自替换或本就该版本），
+        // 用户下次手动启动即生效；当前实例保留运行完成本次会话
         Err(e) => {
-            log::error!("以新版本 v{} 重启失败（{e}），下次启动生效", pending.version);
+            log::error!("重启拉起失败（{e}），请手动重启应用");
         }
     }
 }

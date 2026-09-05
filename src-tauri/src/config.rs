@@ -220,11 +220,11 @@ fn default_runtime_strategy() -> String {
     "auto".to_string()
 }
 
-/// 默认市场清单远端地址（Cloudflare R2 公开桶 + 自定义域名）
-pub const DEFAULT_MARKET_ENDPOINT: &str = "https://r2.dckxx.com/extensions/registry.json";
+/// 默认市场清单远端地址（腾讯云 COS 公有读桶）
+pub const DEFAULT_MARKET_ENDPOINT: &str = "https://x-hub-dist-1251402600.cos.ap-guangzhou.myqcloud.com/extensions/registry.json";
 
-/// 默认应用升级清单远端地址（与实际部署的 R2 桶对应）
-pub const DEFAULT_UPDATE_ENDPOINT: &str = "https://r2.dckxx.com/releases/update.json";
+/// 默认应用升级清单远端地址（与实际部署的 COS 桶对应）
+pub const DEFAULT_UPDATE_ENDPOINT: &str = "https://x-hub-dist-1251402600.cos.ap-guangzhou.myqcloud.com/releases/update.json";
 
 fn default_update_endpoint() -> String {
     DEFAULT_UPDATE_ENDPOINT.to_string()

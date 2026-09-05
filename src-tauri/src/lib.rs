@@ -294,7 +294,7 @@ pub fn run() {
 
             // 升级自替换非常早期执行：必须在数据库/其他句柄持有 exe 相关资源前，
             // 且仅在真正待应用时才做替换（幂等）。失败只记日志不阻断启动。
-            updater::apply_pending_update(&app.package_info().version.to_string());
+            updater::apply_pending_update(app.handle(), &app.package_info().version.to_string());
 
             let conn = init_database()?;
             fix_icon_paths(&conn);

@@ -1,26 +1,46 @@
-# upload-release.ps1 — 上传 dist-release 产物到 Cloudflare R2（应用升级清单 + win-x64 包 + 历史包名副本），
-# 并清理 `releases/win-x64/` 下最近 2 版之外的旧 zip。
+# upload-release.ps1 — 上传 dist-release 产物到分发端点，并清理 `releases/win-x64/` 下最近 N 版之外的旧 zip。
+# 三通道：-Target cos（默认，腾讯云 COS）/-Target r2（过渡期兜底，Cloudflare R2）/-Target sftp（备选，自建 Nginx）。
+# 过渡期每次发布建议 cos + r2 各跑一遍；详见 docs/self-hosted-distribution.md §6。
 # 用法:
-#   .\scripts\upload-release.ps1 -AccountId <R2_ACCOUNT_ID> -AccessKeyId <R2_ACCESS_KEY_ID> -SecretAccessKey <R2_SECRET_ACCESS_KEY>
-# 或从环境变量读（GitHub Actions 同款变量名）:
-#   $env:R2_ACCOUNT_ID / $env:R2_ACCESS_KEY_ID / $env:R2_SECRET_ACCESS_KEY
+#   .\scripts\upload-release.ps1                                 # cos → 腾讯云 COS（读 COS_* 环境变量）
+#   .\scripts\upload-release.ps1 -Target r2                      # → R2（读 R2_* 环境变量）
+# 环境变量:
+#   COS_SECRET_ID / COS_SECRET_KEY / COS_BUCKET(含 APPID 后缀) / COS_REGION(如 ap-guangzhou)
+#   R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
+#   XHUB_DEPLOY_HOST / XHUB_DEPLOY_PORT(默认22) / XHUB_DEPLOY_USER(默认deploy) / XHUB_DEPLOY_KEY
 # 依赖: rclone (winget install --id Rclone.Rclone)
 
 param(
-  [string]$AccountId      = $env:R2_ACCOUNT_ID,
-  [string]$AccessKeyId    = $env:R2_ACCESS_KEY_ID,
+  [ValidateSet('cos', 'sftp', 'r2')][string]$Target = 'cos',
+
+  # —— cos（腾讯云 COS，长期主通道）——
+  [string]$CosSecretId  = $env:COS_SECRET_ID,
+  [string]$CosSecretKey = $env:COS_SECRET_KEY,
+  [string]$CosBucket    = $env:COS_BUCKET,
+  [string]$CosRegion    = $env:COS_REGION,
+
+  # —— sftp（自建 Nginx，备选）——
+  [string]$SftpHost    = $env:XHUB_DEPLOY_HOST,
+  [string]$SftpPort    = $env:XHUB_DEPLOY_PORT,
+  [string]$SftpUser    = $env:XHUB_DEPLOY_USER,
+  [string]$SftpKeyPath = $env:XHUB_DEPLOY_KEY,
+  [int]$HttpPort       = 8080,
+  [string]$RemoteRoot  = "/srv/x-hub-dist",
+
+  # —— r2（过渡期兜底）——
+  [string]$AccountId       = $env:R2_ACCOUNT_ID,
+  [string]$AccessKeyId     = $env:R2_ACCESS_KEY_ID,
   [string]$SecretAccessKey = $env:R2_SECRET_ACCESS_KEY,
-  [string]$Bucket         = "x-hub-dist",
-  [string]$BaseUrl        = "https://r2.dckxx.com",
-  [string]$DistDir        = (Join-Path $PSScriptRoot "..\dist-release"),
-  [int]$KeepVersions      = 2
+  [string]$Bucket          = "x-hub-dist",
+  [string]$R2BaseUrl       = "https://r2.dckxx.com",
+
+  # —— 通用 ——
+  [string]$DistDir   = (Join-Path $PSScriptRoot "..\dist-release"),
+  [int]$KeepVersions = 2
 )
 
 $ErrorActionPreference = "Stop"
 
-if (-not $AccountId -or -not $AccessKeyId -or -not $SecretAccessKey) {
-  Write-Error "缺少 R2 凭据。请用 -AccountId/-AccessKeyId/-SecretAccessKey 传入，或先设置 R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY 环境变量。"
-}
 if (-not (Test-Path (Join-Path $DistDir "update.json"))) {
   Write-Error "本地产物缺失 update.json：请先运行 publish-release.ps1（$DistDir 不存在或未生成）。"
 }
@@ -39,48 +59,104 @@ if (-not (Get-Command rclone -ErrorAction SilentlyContinue)) {
   }
 }
 
-# --- 2. 用环境变量配置临时 rclone remote ---
-$env:RCLONE_CONFIG_R2_TYPE            = "s3"
-$env:RCLONE_CONFIG_R2_PROVIDER        = "Cloudflare"
-$env:RCLONE_CONFIG_R2_ACCESS_KEY_ID   = $AccessKeyId
-$env:RCLONE_CONFIG_R2_SECRET_ACCESS_KEY = $SecretAccessKey
-$env:RCLONE_CONFIG_R2_ENDPOINT        = "https://$AccountId.r2.cloudflarestorage.com"
+# --- 2. 按通道配置临时 rclone remote（环境变量，不落地 config）+ 目标 URL ---
+$noCacheHeader   = "Cache-Control: no-cache"
+$immutableHeader = "Cache-Control: public, max-age=31536000, immutable"
 
-$remote = "r2:$Bucket"
-$target = "$remote/releases"
-Write-Host "[1/5] 校验 R2 凭据（lsd）..."
+if ($Target -eq 'cos') {
+  if (-not $CosSecretId -or -not $CosSecretKey -or -not $CosBucket -or -not $CosRegion) {
+    Write-Error "缺少 COS 参数。请设置 COS_SECRET_ID / COS_SECRET_KEY / COS_BUCKET（含 APPID 后缀，如 x-hub-dist-125xxxxxxx）/ COS_REGION（如 ap-guangzhou）环境变量。"
+  }
+
+  $env:RCLONE_CONFIG_COS_TYPE              = "s3"
+  $env:RCLONE_CONFIG_COS_PROVIDER          = "TencentCOS"
+  $env:RCLONE_CONFIG_COS_ACCESS_KEY_ID     = $CosSecretId
+  $env:RCLONE_CONFIG_COS_SECRET_ACCESS_KEY = $CosSecretKey
+  $env:RCLONE_CONFIG_COS_ENDPOINT          = "cos.$CosRegion.myqcloud.com"
+
+  $remote  = "cos:$CosBucket"
+  $urlBase = "https://$CosBucket.cos.$CosRegion.myqcloud.com"
+  Write-Host "通道: cos → $remote/releases（缓存头随上传设置）"
+} elseif ($Target -eq 'sftp') {
+  if (-not $SftpHost -or -not $SftpKeyPath) {
+    Write-Error "缺少部署参数。请用 -SftpHost/-SftpKeyPath 传入，或设置 XHUB_DEPLOY_HOST / XHUB_DEPLOY_KEY 环境变量（XHUB_DEPLOY_USER 默认 deploy、XHUB_DEPLOY_PORT 默认 22）。"
+  }
+  if (-not ($SftpUser)) { $SftpUser = "deploy" }
+  if (-not ($SftpPort)) { $SftpPort = "22" }
+  if (-not (Test-Path -LiteralPath $SftpKeyPath)) { Write-Error "未找到私钥文件: $SftpKeyPath" }
+
+  $env:RCLONE_CONFIG_XHUBSFTP_TYPE           = "sftp"
+  $env:RCLONE_CONFIG_XHUBSFTP_HOST           = $SftpHost
+  $env:RCLONE_CONFIG_XHUBSFTP_PORT           = $SftpPort
+  $env:RCLONE_CONFIG_XHUBSFTP_USER           = $SftpUser
+  $env:RCLONE_CONFIG_XHUBSFTP_KEY_FILE       = $SftpKeyPath
+  # 首次连接跳过 host key 校验；要加固可预置 known_hosts 并改用 known_hosts_file 选项
+  $env:RCLONE_CONFIG_XHUBSFTP_HOST_KEY_VERIFY = "false"
+
+  $remote  = "xhubsftp:$RemoteRoot"
+  $urlBase = "http://$SftpHost`:$HttpPort"
+  Write-Host "通道: sftp → $remote/releases（缓存头由服务器端 Nginx 管理）"
+} else {
+  if (-not $AccountId -or -not $AccessKeyId -or -not $SecretAccessKey) {
+    Write-Error "缺少 R2 凭据。请用 -AccountId/-AccessKeyId/-SecretAccessKey 传入，或设置 R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY 环境变量。"
+  }
+
+  $env:RCLONE_CONFIG_R2_TYPE              = "s3"
+  $env:RCLONE_CONFIG_R2_PROVIDER          = "Cloudflare"
+  $env:RCLONE_CONFIG_R2_ACCESS_KEY_ID     = $AccessKeyId
+  $env:RCLONE_CONFIG_R2_SECRET_ACCESS_KEY = $SecretAccessKey
+  $env:RCLONE_CONFIG_R2_ENDPOINT          = "https://$AccountId.r2.cloudflarestorage.com"
+
+  $remote  = "r2:$Bucket"
+  $urlBase = $R2BaseUrl
+  Write-Host "通道: r2 → $remote/releases（缓存头随上传设置）"
+}
+
+$dest = "$remote/releases"
+$useHeader = ($Target -ne 'sftp')   # 对象存储通道缓存头随上传设置；sftp 通道由 Nginx 管理
+
+# --- 3. 上传（清单可回源，包体不可变）---
+Write-Host "[1/4] 校验连接与目录（lsd）..."
 rclone lsd $remote
-if ($LASTEXITCODE -ne 0) { Write-Error "rclone lsd 失败，请检查凭据/账户 ID/endpoint。" }
-Write-Host "      凭据 OK" -ForegroundColor Green
+if ($LASTEXITCODE -ne 0) { Write-Error "rclone lsd 失败，请检查通道凭据与目标目录。" }
+Write-Host "      连接 OK" -ForegroundColor Green
 
-Write-Host "[2/5] 上传 update.json(.sig)，Cache-Control: no-cache ..."
-rclone copy $DistDir $target --include "update.json*" --header-upload "Cache-Control: no-cache" -P
+Write-Host "[2/4] 上传 update.json(.sig) 与版本副本 ..."
+if ($useHeader) {
+  rclone copy $DistDir $dest --include "update.json*" --include "packages/update-*.json" --header-upload $noCacheHeader -P
+} else {
+  rclone copy $DistDir $dest --include "update.json*" --include "packages/update-*.json" -P
+}
 if ($LASTEXITCODE -ne 0) { Write-Error "update.json 上传失败。" }
 Write-Host "      update.json OK" -ForegroundColor Green
 
-Write-Host "[3/5] 上传 win-x64/** 与 packages/**，Cache-Control: immutable ..."
-rclone copy $DistDir $target --include "win-x64/**" --include "packages/**" --header-upload "Cache-Control: public, max-age=31536000, immutable" -P
+Write-Host "[3/4] 上传 win-x64/** 包体 ..."
+if ($useHeader) {
+  rclone copy $DistDir $dest --include "win-x64/**" --header-upload $immutableHeader -P
+} else {
+  rclone copy $DistDir $dest --include "win-x64/**" -P
+}
 if ($LASTEXITCODE -ne 0) { Write-Error "包体上传失败。" }
 Write-Host "      packages OK" -ForegroundColor Green
 
 # --- 4. 保留策略：win-x64 下只留最近 N 版的 zip（按文件名内嵌版本号排序）---
-Write-Host "[4/5] 清理 win-x64 下旧版本（保留最近 $KeepVersions 版）..."
-$listed = rclone lsf $target/win-x64 --files-only 2>&1
+Write-Host "[4/4] 清理 win-x64 下旧版本（保留最近 $KeepVersions 版）..."
+$listed = rclone lsf $dest/win-x64 --files-only 2>&1
 if ($LASTEXITCODE -ne 0) { Write-Error "win-x64 列目录失败。" }
 $zips = @($listed | Where-Object { $_ -match '\.zip$' } | ForEach-Object { $_.Trim() } |
   Sort-Object { if ($_ -match '-(\d+\.\d+\.\d+)-') { [version]$Matches[1].ToString() } else { [version]"0.0.0" } } -Descending)
 $toRemove = @($zips | Select-Object -Skip ($KeepVersions * 2))
 foreach ($f in $toRemove) {
-  rclone delete "$target/win-x64/$f"
+  rclone delete "$dest/win-x64/$f"
   if ($LASTEXITCODE -eq 0) { Write-Host "  已清理: $f" }
 }
 
-# --- 5. 验证 HTTPS 可访问性 ---
-Write-Host "[5/5] 验证 HTTPS 可访问性 ..."
+# --- 5. 验证 HTTP 可访问性 ---
+Write-Host "验证 HTTP 可访问性 ..."
 foreach ($p in "update.json", "update.json.sig") {
-  $url = "$BaseUrl/releases/$p"
+  $url = "$urlBase/releases/$p"
   $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20
   "{0} -> HTTP {1} ({2} bytes)" -f $url, $r.StatusCode, $r.RawContentLength
   if ($r.StatusCode -ne 200) { Write-Error "$url 未返回 200" }
 }
-Write-Host "全部完成 ✔ 升级清单现已可访问: $BaseUrl/releases/update.json" -ForegroundColor Green
+Write-Host "全部完成 ✔ 升级清单现已可访问: $urlBase/releases/update.json" -ForegroundColor Green

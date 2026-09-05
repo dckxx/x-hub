@@ -40,16 +40,17 @@ jobs:
           mv rclone-*-linux-amd64/rclone "$HOME/bin/"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: 配置 R2 remote
+      - name: 配置 COS remote
         env:
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          COS_BUCKET: ${{ secrets.COS_BUCKET }}
+          COS_REGION: ${{ secrets.COS_REGION }}
         run: |
-          rclone config create r2 s3 provider Cloudflare \
-            access_key_id "$R2_ACCESS_KEY_ID" \
-            secret_access_key "$R2_SECRET_ACCESS_KEY" \
-            endpoint "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" \
+          rclone config create cos s3 provider TencentCOS \
+            access_key_id "$COS_SECRET_ID" \
+            secret_access_key "$COS_SECRET_KEY" \
+            endpoint "cos.$COS_REGION.myqcloud.com" \
             --non-interactive
 
       - name: 写入签名私钥（Secret → 临时文件）
@@ -71,9 +72,19 @@ jobs:
             -SignKey "$env:KEY_PATH" `
             -Endpoint "$env:CDN_BASE_URL/extensions"
 
-      - name: 上传 R2（清单 no-cache，包/图标 immutable 长缓存）
+      - name: 上传 COS（清单 no-cache，包/图标 immutable 长缓存）
         env:
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          COS_BUCKET: ${{ secrets.COS_BUCKET }}
         run: |
-          rclone copy dist-market r2:"$R2_BUCKET/extensions" --include 'registry.json*' --header-upload 'Cache-Control: no-cache' -P
-          rclone copy dist-market r2:"$R2_BUCKET/extensions" --include 'packages/**' --include 'icons/**' --header-upload 'Cache-Control: public, max-age=31536000, immutable' -P
+          rclone copy dist-market "cos:$COS_BUCKET/extensions" --include 'registry.json*' --header-upload 'Cache-Control: no-cache' -P
+          rclone copy dist-market "cos:$COS_BUCKET/extensions" --include 'packages/**' --include 'icons/**' --header-upload 'Cache-Control: public, max-age=31536000, immutable' -P
+
+      - name: 验证 HTTP 可访问性
+        env:
+          CDN_BASE_URL: ${{ secrets.CDN_BASE_URL }}
+        run: |
+          for p in registry.json registry.json.sig; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$CDN_BASE_URL/extensions/$p")
+            echo "$p -> HTTP $code"
+            if [ "$code" != "200" ]; then echo "可访问性校验失败"; exit 1; fi
+          done

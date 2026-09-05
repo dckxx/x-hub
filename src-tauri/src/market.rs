@@ -1,7 +1,7 @@
 //! 扩展市场（spec §11 安装页「市场」tab）。
 //!
 //! 数据源为**远端市场清单**：`config::market_endpoint`（默认
-//! `https://r2.dckxx.com/extensions/registry.json`）。客户端拉取清单后做
+//! `https://x-hub-dist-1251402600.cos.ap-guangzhou.myqcloud.com/extensions/registry.json`）。客户端拉取清单后做
 //! Ed25519 验签（`signing` 模块），通过才原子缓存到 `data_root()/market/registry.json`；
 //! 离线 / 验签失败时回退本地缓存，市场仍可浏览（带警示）。
 //!

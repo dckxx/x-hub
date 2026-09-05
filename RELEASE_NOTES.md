@@ -1,3 +1,11 @@
+# v0.5.1 发布说明
+
+- **分发端点迁移：腾讯云 COS 替代 Cloudflare R2**——客户端默认市场/升级清单端点切到 COS（广州），国内下载更快更稳；CI 扩展发布通道同步切换（rclone TencentCOS）并新增 registry.json(.sig) 可访问性校验步骤；upload-market / upload-release 脚本三通道化（cos 主通道 / r2 过渡兜底 / sftp 自建 Nginx 备选），publish 脚本端点改由 XHUB_DIST_BASE_URL 环境变量驱动，产物目录 dist/market、dist/release → dist-market、dist-release；新增 docs/self-hosted-distribution.md（迁移总方案与六阶段切换）、scripts/sync-r2-to-cos.ps1（阶段 0 R2→COS 一键平移）、scripts/server/（自建 Nginx 一键初始化与站点配置）
+- **修复升级/重启链路**——新增 updater::relaunch_app：拉起新进程前先释放 single-instance 互斥与隐藏窗口（tauri_plugin_single_instance::destroy）并停掉 service 后端子进程，修复「升级自替换后 / 点立即重启后应用不自动重启（新实例被误判第二实例自杀退出）」的历史问题；restart_app 从 app.restart() 统一改走 relaunch_app（规避非主线程 restart 被 Exit 分支截杀只退出不重启）
+- **悬浮球环形菜单收紧**——菜单窗口 312 → 260，按钮轨道半径 118 → 92（按钮内沿距球缘 45px → 19px），装饰双轨道环同步缩小
+- **待办子待办折叠/展开**——父待办行内新增折叠/展开按钮（默认展开、不持久化，折叠态图标常驻可见），折叠时隐藏子列表，点「+」添加子待办时自动展开
+- **版本同步**——package.json / tauri.conf.json / Cargo.toml / README 徽章 / AGENTS.md 元信息统一升至 0.5.1
+
 # v0.5.0 发布说明
 
 - **桌面悬浮球（ADR 0004）**：主窗口隐藏/最小化时桌面常驻悬浮球——单击展开环形快捷菜单（默认 6 键：工作台/速记/速达/全局搜索/剪贴板/设置，设置页可增删排序、最多 8 个），双击显示主窗口，右键托盘同款菜单，Esc/失焦/点击空白/再点球体收起；全息粒子球视觉（canvas 粒子云 + 3D 陀螺环），配色跟随主题强调色并实时跟随主题切换；支持拖拽、屏幕边缘完整贴边吸附（球不滑出屏）、位置记忆；窗口启动期预创建隐藏常驻，开关只切显隐（规避运行时创建/销毁 WebView2 窗口导致整窗卡死）

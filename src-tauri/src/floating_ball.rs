@@ -21,8 +21,9 @@ pub const LABEL: &str = "floating-ball";
 /// 球态窗口尺寸（逻辑 px：48 中心球体 + 光晕/粒子/陀螺环余量，避免视觉被窗口裁切；
 /// 100 = 容纳陀螺环最外圈视觉 94px + 3px 余量）
 pub const BALL_SIZE: f64 = 100.0;
-/// 环形菜单展开态窗口尺寸（逻辑 px：按钮轨道半径 118 + 按钮 26 → 外沿 144，中心 156 留 12px 余量）
-pub const MENU_SIZE: f64 = 312.0;
+/// 环形菜单展开态窗口尺寸（逻辑 px：按钮轨道半径 92 + 按钮 26 → 外沿 118，中心 130 留 12px 余量；
+/// 用户反馈 312 太空旷——按钮内沿距球缘 45px，收紧到 260 后空隙约 19px，8 键 hover 仍不重叠）
+pub const MENU_SIZE: f64 = 260.0;
 /// 球体半径（逻辑 px）：前端 .fb-ball 视觉 48px 直径的半径；
 /// 用于默认初始位置与吸附停靠的贴边定位（球心距屏边 = BALL_R + SNAP_GAP）
 const BALL_R: f64 = 24.0;
@@ -435,7 +436,7 @@ pub async fn floating_ball_drag_end(app: AppHandle) {
     let _ = app;
 }
 
-/// 展开/收起环形菜单：以球心为锚切换窗口几何（球态 100 ↔ 菜单态 312，一次原子
+/// 展开/收起环形菜单：以球心为锚切换窗口几何（球态 100 ↔ 菜单态 260，一次原子
 /// SetWindowPos）。WebView2 重排滞后帧由前端开合淡出掩盖（见 FloatingBallWindow）。
 /// async 与 drag_end 同理（窗口操作离开主线程）。
 #[tauri::command]

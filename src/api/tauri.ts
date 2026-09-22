@@ -263,6 +263,8 @@ export interface AppConfig {
   font_prompt: number
   /** 待办模块字体缩放系数 */
   font_todo: number
+  /** 速记编辑器模式：wysiwyg（实时预览）/ split（分屏预览）/ source（源码） */
+  note_editor_mode: string
   /** service 扩展运行时策略：auto / builtin / system */
   runtime_strategy: string
   /** 固定到左侧栏的扩展 id 列表（点击侧栏菜单即在主区打开对应扩展） */

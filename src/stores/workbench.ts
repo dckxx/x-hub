@@ -1,4 +1,5 @@
 import { reactive, readonly } from 'vue'
+import { normalizeNoteEditorMode } from '../utils/noteEditorMode'
 import { compareByOrder, groupOf } from '../utils/todoSchedule'
 import {
   tauriApi,
@@ -114,6 +115,7 @@ const state = reactive<StoreState>({
     font_notes: 1,
     font_prompt: 1,
     font_todo: 1,
+    note_editor_mode: 'wysiwyg',
     runtime_strategy: 'auto',
     sidebar_extensions: [],
     extension_open_modes: {},
@@ -976,6 +978,15 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 速记编辑器模式（实时预览 / 分屏预览 / 源码），按用户记住 */
+  async function setNoteEditorMode(value: string) {
+    const mode = normalizeNoteEditorMode(value)
+    if (state.config.note_editor_mode === mode) return
+    state.config.note_editor_mode = mode
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   /** service 扩展运行时策略：auto（自动检测）/ builtin（始终内置）/ system（始终系统） */
   async function setRuntimeStrategy(value: 'auto' | 'builtin' | 'system') {
     state.config.runtime_strategy = value
@@ -1340,6 +1351,7 @@ export function useStore() {
   refreshConfig,
     setFontScale,
     setModuleFontScale,
+    setNoteEditorMode,
     setRuntimeStrategy,
     setSidebarExtension,
     setSidebarExtensionBulk,

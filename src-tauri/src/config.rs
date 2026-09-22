@@ -154,6 +154,10 @@ pub struct AppConfig {
     /// 待办模块字体缩放系数（默认 1.0）
     #[serde(default = "one")]
     pub font_todo: f64,
+    /// 速记编辑器模式：wysiwyg（实时预览，默认）/ split（分屏预览）/ source（源码）。
+    /// 按用户记住，不按单篇笔记。非法值由前端读入时归一为 wysiwyg。
+    #[serde(default = "default_note_editor_mode")]
+    pub note_editor_mode: String,
     /// service 扩展运行时策略：auto（自动检测，默认）/ builtin（始终内置）/ system（始终系统）
     #[serde(default = "default_runtime_strategy")]
     pub runtime_strategy: String,
@@ -279,6 +283,10 @@ fn default_runtime_strategy() -> String {
     "auto".to_string()
 }
 
+fn default_note_editor_mode() -> String {
+    "wysiwyg".to_string()
+}
+
 /// x-hub 平台服务端地址（账号登录 / 平台额度 / 申请开发者 / 发布扩展 / 市场清单 / 升级清单都基于它）。
 ///
 /// **唯一真相源，且刻意不可配置**：正式域名启用后，设置页的「服务器地址」入口已移除
@@ -371,6 +379,7 @@ impl Default for AppConfig {
             font_notes: 1.0,
             font_prompt: 1.0,
             font_todo: 1.0,
+            note_editor_mode: default_note_editor_mode(),
             runtime_strategy: "auto".to_string(),
             sidebar_extensions: Vec::new(),
             extension_open_modes: std::collections::HashMap::new(),
@@ -602,6 +611,15 @@ mod tests {
         assert!(!c.window.always_on_top);
         assert_eq!(c.global_shortcut, crate::shortcut::DEFAULT_TOGGLE_SHORTCUT);
         assert_eq!(c.dashboard_mid_content, "countdown");
+        assert_eq!(c.note_editor_mode, "wysiwyg");
+    }
+
+    #[test]
+    fn note_editor_mode_missing_falls_back_to_wysiwyg() {
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        value.as_object_mut().unwrap().remove("note_editor_mode");
+        let loaded: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(loaded.note_editor_mode, "wysiwyg");
     }
 
     #[test]

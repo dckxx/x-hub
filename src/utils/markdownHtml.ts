@@ -1,5 +1,5 @@
 import DOMPurify from 'dompurify'
-import { marked } from 'marked'
+import { marked, Renderer } from 'marked'
 
 /**
  * 轻量 Markdown → 安全 HTML（待办描述等**只读展示**用）。
@@ -28,4 +28,24 @@ export function renderMarkdown(text: string): string {
   if (cache.size >= CACHE_MAX) cache.clear()
   cache.set(text, html)
   return html
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/** 围栏代码块带上语言标签和独立底色。默认 `<pre>` 用卡片浅底，叠在预览白底上几乎看不见。 */
+const noteRenderer = new Renderer()
+noteRenderer.code = ({ text, lang }) => {
+  const language = (lang ?? '').trim()
+  const label = language ? `<div class="md-code-lang">${escapeHtml(language)}</div>` : ''
+  return `<div class="md-code">${label}<pre><code>${escapeHtml(text)}</code></pre></div>`
+}
+
+/** 速记分屏的只读预览。按 CommonMark/GFM 渲染（不把单个换行强转成 <br>，与 Crepe 序列化对齐）。 */
+export function renderNoteMarkdown(text: string): string {
+  if (!text) return ''
+  return DOMPurify.sanitize(
+    marked.parse(text, { async: false, gfm: true, renderer: noteRenderer }) as string,
+  )
 }

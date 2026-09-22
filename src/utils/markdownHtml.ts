@@ -42,14 +42,40 @@ noteRenderer.code = ({ text, lang }) => {
   return `<div class="md-code">${label}<pre><code>${escapeHtml(text)}</code></pre></div>`
 }
 
+const BR_LINE = /^[ \t]*<br\s*\/?\s*>[ \t]*$/i
+const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/
+
 /**
- * 单独成行的 `<br>` 在 CommonMark 里会开启 HTML 块，一直吞到下一个空行。
- * 围栏、标题因此变成普通文本。换成空行后，后面的块按正常 Markdown 解析。
- * 行内的 `hello<br />world` 不动。
+ * 单独成行的 `<br>` 在 CommonMark 里会开启 HTML 块，一直吞到下一个空行，
+ * 后面的围栏、标题因此变成普通文本。换成空行后，后面的块按正常 Markdown 解析。
+ * 行内的 `hello<br />world` 不动。围栏和 `$$` 公式里的 `<br />` 是正文，也不能删。
  */
 export function loosenHtmlBreaks(text: string): string {
   if (!/<br\b/i.test(text)) return text
-  return text.replace(/^[ \t]*<br\s*\/?\s*>[ \t]*$/gim, '')
+  const lines = text.split('\n')
+  let fence: { char: string; len: number } | null = null
+  let math = false
+  const out = lines.map((line) => {
+    const mark = FENCE_LINE.exec(line)
+    if (mark && !(mark[1][0] === '`' && mark[2].includes('`'))) {
+      const token = mark[1]
+      const bare = mark[2].trim() === ''
+      if (!fence) {
+        fence = { char: token[0], len: token.length }
+      } else if (fence.char === token[0] && token.length >= fence.len && bare) {
+        fence = null
+      }
+      return line
+    }
+    if (fence) return line
+    if (line.trim() === '$$') {
+      math = !math
+      return line
+    }
+    if (math) return line
+    return BR_LINE.test(line) ? '' : line
+  })
+  return out.join('\n')
 }
 
 /** 速记分屏的只读预览。按 CommonMark/GFM 渲染（不把单个换行强转成 <br>，与 Crepe 序列化对齐）。 */

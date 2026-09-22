@@ -10,7 +10,7 @@ import { codeBlockSchema } from '@milkdown/kit/preset/commonmark'
 import { createTable } from '@milkdown/kit/preset/gfm'
 import { Fragment, type Node as ProseNode, type Schema } from '@milkdown/kit/prose/model'
 import type { EditorView } from '@milkdown/kit/prose/view'
-import { TextSelection, type EditorState } from '@milkdown/kit/prose/state'
+import { NodeSelection, TextSelection, type EditorState } from '@milkdown/kit/prose/state'
 import { Tag as TagIcon, Trash2, X } from 'lucide-vue-next'
 import { isTauri, tauriApi, type Note, type Tag } from '../api/tauri'
 import { useStore } from '../stores/workbench'
@@ -54,6 +54,8 @@ const previewEl = ref<HTMLDivElement | null>(null)
 let splitResize: ResizeObserver | null = null
 
 let crepe: Crepe | null = null
+/** 当前 Crepe 挂在哪一个容器上。容器被换掉（v-if 重建）时必须重挂，不能只看 crepe 是否非空。 */
+let mountedOn: HTMLElement | null = null
 let mounting = false
 /** 挂载期间又切换了笔记：完成后需按最新笔记重挂一次（否则编辑器停留旧内容、防抖保存会跨笔记污染） */
 let remountQueued = false
@@ -83,6 +85,7 @@ async function destroyEditor() {
   detachBlockDrag = null
   const c = crepe
   crepe = null
+  mountedOn = null
   if (c) {
     try {
       await c.destroy()
@@ -209,6 +212,7 @@ async function mountEditor(content: string) {
       })
     })
     crepe = c
+    mountedOn = rootEl.value
     attachImageListeners()
     // 块拖拽（六点把手）指针实现：create 完成后从 ctx 取 EditorView 接管把手拖拽
     c.editor.action((ctx) => {
@@ -243,12 +247,14 @@ const noteTags = ref<Tag[]>([])
 const tagInputVisible = ref(false)
 const tagInput = ref('')
 
-// flush:'post'：immediate 在 setup 阶段触发时模板尚未渲染，等编辑器容器出来再挂载
+// 必须同时观察 rootEl：Crepe 容器在 setup 阶段还没渲染，只盯笔记 id 时首次挂载会落空（约定 38 时序陷阱①）。
+// flush:'post' 等本次渲染把容器交出来；容器晚一拍出现时，rootEl 变化会再进一次回调。
 watch(
-  () => props.note?.id,
-  async (id, prev) => {
+  [() => props.note?.id, rootEl],
+  async ([id, el], prev) => {
+    const prevId = prev?.[0]
     // 回调触发时 props.note 已是新笔记，Crepe 里仍是上一篇。先取出上一篇正文再落盘，避免写到新笔记上。
-    if (typeof prev === 'number' && prev !== id) {
+    if (typeof prevId === 'number' && prevId !== id) {
       if (mode.value === 'wysiwyg') {
         const captured = captureCrepeMarkdown()
         if (captured != null && captured !== localContent.value) {
@@ -257,7 +263,7 @@ watch(
           dirty.value = true
         }
       }
-      flushLeavingNote(prev)
+      flushLeavingNote(prevId)
     }
     if (!props.note) {
       await destroyEditor()
@@ -265,14 +271,15 @@ watch(
       noteTags.value = []
       return
     }
-    syncLocal()
+    const noteChanged = prevId !== id
+    if (noteChanged) syncLocal()
     if (mode.value === 'wysiwyg') {
-      await nextTick()
-      if (rootEl.value && (props.note?.id ?? null) === id) void mountEditor(localContent.value)
-    } else {
+      // 源码/分屏没有这块容器。el 为空就等下一次 rootEl 赋值，不能当成「笔记没了」去清正文。
+      if (el && (noteChanged || !crepe || mountedOn !== el)) void mountEditor(localContent.value)
+    } else if (noteChanged) {
       await destroyEditor()
     }
-    if (!props.note || props.note.id !== id) return
+    if (!noteChanged || !props.note || props.note.id !== id) return
     if (isTauri()) {
       noteTags.value = await tauriApi.getNoteTags(props.note.id)
     } else {
@@ -417,9 +424,28 @@ function onCrepeKeydown(e: KeyboardEvent) {
     const view = ctx.get(editorViewCtx)
     const { state } = view
     const { $from, empty } = state.selection
-    if (!empty) return
+    // 第三个 `-` 会被 Milkdown 的输入规则收成分隔线，并选中这条线。
+    // 这时默认回车会在线的上方再插一段（线是父节点第一个子节点时），光标回到「开始记录…」，看起来像没转成。
+    if (!empty) {
+      const selected = state.selection
+      if (!(selected instanceof NodeSelection) || selected.node.type.name !== 'hr') return
+      const paragraph = state.schema.nodes.paragraph
+      if (!paragraph) return
+      const after = selected.to
+      let tr = state.tr
+      const next = state.doc.resolve(after).nodeAfter
+      if (!next || !next.isTextblock) tr = tr.insert(after, paragraph.create())
+      const sel = TextSelection.findFrom(tr.doc.resolve(Math.min(after + 1, tr.doc.content.size)), 1, true)
+      if (!sel) return
+      view.dispatch(tr.setSelection(sel).scrollIntoView())
+      view.focus()
+      handled = true
+      return
+    }
     const parent = $from.parent
     if (!parent.isTextblock || parent.type.spec.code) return
+    // 光标不在行尾时回车只是拆行，不能把整行快捷标记换掉
+    if ($from.parentOffset !== parent.content.size) return
     const shortcut = matchWysiwygLine(parent.textContent)
     if (!shortcut) return
     const start = $from.before()
@@ -575,13 +601,8 @@ async function applyMode(next: NoteEditorMode, persist: boolean) {
   }
   mode.value = next
   if (persist) void store.setNoteEditorMode(next)
-  await nextTick()
-  if (!props.note) return
-  if (next === 'wysiwyg') {
-    if (rootEl.value) await mountEditor(localContent.value)
-  } else {
-    await destroyEditor()
-  }
+  if (next !== 'wysiwyg') await destroyEditor()
+  // 切回实时预览时容器会重新出现，上面的 rootEl watch 负责挂载
 }
 
 function onPreviewClick(e: MouseEvent) {

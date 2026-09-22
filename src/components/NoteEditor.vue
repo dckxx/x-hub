@@ -8,7 +8,7 @@ import type { Ctx } from '@milkdown/kit/ctx'
 import { imageBlockSchema } from '@milkdown/kit/component/image-block'
 import { codeBlockSchema } from '@milkdown/kit/preset/commonmark'
 import { createTable } from '@milkdown/kit/preset/gfm'
-import type { Node as ProseNode, Schema } from '@milkdown/kit/prose/model'
+import { Fragment, type Node as ProseNode, type Schema } from '@milkdown/kit/prose/model'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import { TextSelection, type EditorState } from '@milkdown/kit/prose/state'
 import { Tag as TagIcon, Trash2, X } from 'lucide-vue-next'
@@ -16,7 +16,7 @@ import { isTauri, tauriApi, type Note, type Tag } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { attachBlockDrag } from '../utils/blockDrag'
 import { expandOnEnter, matchWysiwygLine, type LineShortcut } from '../utils/markdownEnter'
-import { renderNoteMarkdown } from '../utils/markdownHtml'
+import { loosenHtmlBreaks, renderNoteMarkdown } from '../utils/markdownHtml'
 import { deriveNoteTitle } from '../utils/markdown'
 import { NOTE_EDITOR_MODES, normalizeNoteEditorMode, type NoteEditorMode } from '../utils/noteEditorMode'
 import { getQuickEmojis } from '../utils/emoji'
@@ -28,7 +28,7 @@ import EmojiPicker from './EmojiPicker.vue'
  * 速记编辑器：实时预览（Crepe 所见即所得）/ 分屏预览 / 源码。Markdown 为真相源，600ms 防抖落盘。
  * 模式记在配置 note_editor_mode，按用户记住，不按笔记。
  * 行尾回车补结构（三种模式同一套判断）：``` / $$ 闭合，未写完的图片补成 ![]()，
- * |列x行| 或表头行生成表格。实时预览里对应变成代码块、公式块、图片块和表格节点。
+ * |列x行| 或表头行生成表格。实时预览里回车同样把 #、>、-、1.、---、- [ ] 收成标题、引用、列表和分隔线。
  * 图片（粘贴/拖拽/点击上传）统一由 Crepe 的上传管线处理：plugin-upload 的 handlePaste/
  * handleDrop + ImageBlock 的 onUpload 配置 → saveNoteImageFile（notes/images + xhub-note 协议）。
  * 注意勿再自建 DOM paste 监听——plugin-upload 已处理粘贴，叠加监听会导致图片重复插入。
@@ -49,6 +49,9 @@ const store = useStore()
 const mode = ref<NoteEditorMode>(normalizeNoteEditorMode(store.state.config.note_editor_mode))
 
 const rootEl = ref<HTMLDivElement>()
+const splitSourceEl = ref<HTMLTextAreaElement | null>(null)
+const previewEl = ref<HTMLDivElement | null>(null)
+let splitResize: ResizeObserver | null = null
 
 let crepe: Crepe | null = null
 let mounting = false
@@ -70,6 +73,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', onResizeUp)
   resizeCtx = null
   window.removeEventListener('keydown', onPreviewKeydown)
+  splitResize?.disconnect()
+  splitResize = null
   void destroyEditor()
 })
 
@@ -102,7 +107,7 @@ async function mountEditor(content: string) {
     await destroyEditor()
     const c = new Crepe({
       root: rootEl.value,
-      defaultValue: content,
+      defaultValue: loosenHtmlBreaks(content),
       // AI 特性需外部模型服务，保持纯本地
       features: { [Crepe.Feature.AI]: false },
       featureConfigs: {
@@ -359,7 +364,30 @@ function flushLeavingNote(id: number) {
 function onSourceInput(e: Event) {
   const value = (e.target as HTMLTextAreaElement).value
   adoptMarkdown(value)
+  if (mode.value === 'split') void nextTick(syncPreviewScroll)
 }
+
+/** 分屏时右边预览按左边源码的滚动比例跟着走。两边高度不同，对齐的是滚动条位置而不是某一行。 */
+function syncPreviewScroll() {
+  const source = splitSourceEl.value
+  const preview = previewEl.value
+  if (!source || !preview) return
+  const sourceMax = source.scrollHeight - source.clientHeight
+  const previewMax = preview.scrollHeight - preview.clientHeight
+  preview.scrollTop = sourceMax <= 0 || previewMax <= 0 ? 0 : (source.scrollTop / sourceMax) * previewMax
+}
+
+watch([splitSourceEl, previewEl], () => {
+  splitResize?.disconnect()
+  splitResize = null
+  const source = splitSourceEl.value
+  const preview = previewEl.value
+  if (!source || !preview) return
+  splitResize = new ResizeObserver(() => syncPreviewScroll())
+  splitResize.observe(source)
+  splitResize.observe(preview)
+  syncPreviewScroll()
+})
 
 /** 行尾回车补上代码块、公式、图片、表格。光标留在新结构里。 */
 function onSourceKeydown(e: KeyboardEvent) {
@@ -370,12 +398,15 @@ function onSourceKeydown(e: KeyboardEvent) {
   if (!expanded) return
   e.preventDefault()
   adoptMarkdown(expanded.value)
-  void nextTick(() => el.setSelectionRange(expanded.cursor, expanded.cursor))
+  void nextTick(() => {
+    el.setSelectionRange(expanded.cursor, expanded.cursor)
+    if (mode.value === 'split') syncPreviewScroll()
+  })
 }
 
 /**
  * 实时预览里 Milkdown 要在标记后面加空格才变成对应节点，单独回车只是换行。
- * 捕获阶段接住回车，把整行快捷标记换成代码块、公式块、图片块或表格。
+ * 捕获阶段接住回车，把整行快捷标记换成代码块、公式块、图片块、表格、标题、引用、列表或分隔线。
  */
 function onCrepeKeydown(e: KeyboardEvent) {
   if (e.key !== 'Enter' || e.shiftKey || e.isComposing || !crepe) return
@@ -399,6 +430,37 @@ function onCrepeKeydown(e: KeyboardEvent) {
       const tr = state.tr.delete($from.start(), $from.end()).setBlockType($from.start(), $from.start(), codeBlock, {
         language: shortcut.type === 'math' ? 'LaTeX' : shortcut.language,
       })
+      view.dispatch(tr.scrollIntoView())
+      view.focus()
+      handled = true
+      return
+    }
+    if (shortcut.type === 'heading') {
+      const heading = state.schema.nodes.heading
+      if (!heading) return
+      if (!$from.node(-1).canReplaceWith($from.index(-1), $from.indexAfter(-1), heading)) return
+      const from = $from.start()
+      const to = Math.min(from + shortcut.prefix, $from.end())
+      let tr = state.tr
+      if (to > from) tr = tr.delete(from, to)
+      const pos = tr.mapping.map(from)
+      tr = tr.setBlockType(pos, pos, heading, { level: shortcut.level })
+      view.dispatch(tr.scrollIntoView())
+      view.focus()
+      handled = true
+      return
+    }
+    if (shortcut.type === 'hr') {
+      const hrType = state.schema.nodes.hr ?? state.schema.nodes.horizontal_rule
+      const paragraph = state.schema.nodes.paragraph
+      if (!hrType || !paragraph) return
+      const hr = hrType.create()
+      const blank = paragraph.create()
+      const fragment = Fragment.from([hr, blank])
+      if (!$from.node(-1).canReplace($from.index(-1), $from.indexAfter(-1), fragment)) return
+      let tr = state.tr.replaceWith(start, end, fragment)
+      const sel = TextSelection.findFrom(tr.doc.resolve(Math.min(start + hr.nodeSize + 1, tr.doc.content.size)), 1, true)
+      if (sel) tr = tr.setSelection(sel)
       view.dispatch(tr.scrollIntoView())
       view.focus()
       handled = true
@@ -438,7 +500,38 @@ function shortcutNode(ctx: Ctx, schema: Schema, shortcut: LineShortcut): ProseNo
   }
   if (shortcut.type === 'table-size') return createTable(ctx, shortcut.rows, shortcut.cols)
   if (shortcut.type === 'table-row') return tableFromCells(schema, shortcut.cells)
+  if (shortcut.type === 'blockquote' || shortcut.type === 'bullet' || shortcut.type === 'ordered' || shortcut.type === 'task') {
+    return wrappedBlock(schema, shortcut)
+  }
   return null
+}
+
+function wrappedBlock(
+  schema: Schema,
+  shortcut: Extract<LineShortcut, { type: 'blockquote' | 'bullet' | 'ordered' | 'task' }>,
+): ProseNode | null {
+  const paragraph = schema.nodes.paragraph
+  if (!paragraph) return null
+  const inner = shortcut.text ? paragraph.create(null, schema.text(shortcut.text)) : paragraph.create()
+  if (shortcut.type === 'blockquote') {
+    const quote = schema.nodes.blockquote
+    return quote ? quote.create(null, inner) : null
+  }
+  const itemType = schema.nodes.list_item
+  if (!itemType) return null
+  const attrs: Record<string, unknown> = {}
+  if (shortcut.type === 'ordered') {
+    attrs.listType = 'ordered'
+    attrs.label = `${shortcut.order}.`
+  }
+  if (shortcut.type === 'task' && itemType.spec.attrs?.checked) attrs.checked = shortcut.checked
+  const item = itemType.create(attrs, inner)
+  if (shortcut.type === 'ordered') {
+    const list = schema.nodes.ordered_list
+    return list ? list.create({ order: shortcut.order }, item) : null
+  }
+  const list = schema.nodes.bullet_list
+  return list ? list.create(null, item) : null
 }
 
 function tableFromCells(schema: Schema, cells: string[]): ProseNode | null {
@@ -888,16 +981,19 @@ function onEditorAreaMouseDown(e: MouseEvent) {
       />
       <div v-else class="ed-split">
         <textarea
+          ref="splitSourceEl"
           class="md-source"
           :value="localContent"
           spellcheck="false"
           placeholder="开始记录…"
           aria-label="Markdown 源码"
           @input="onSourceInput"
-        @keydown="onSourceKeydown"
+          @keydown="onSourceKeydown"
+          @scroll="syncPreviewScroll"
         />
         <div
           v-if="localContent.trim()"
+          ref="previewEl"
           class="md-preview"
           aria-label="预览"
           v-html="previewHtml"
@@ -1039,6 +1135,7 @@ function onEditorAreaMouseDown(e: MouseEvent) {
 
 .crepe-root {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border-soft);
@@ -1048,6 +1145,8 @@ function onEditorAreaMouseDown(e: MouseEvent) {
 
 .crepe-root :deep(.milkdown) {
   height: 100%;
+  min-width: 0;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
@@ -1138,7 +1237,10 @@ function onEditorAreaMouseDown(e: MouseEvent) {
 
 .md-preview :deep(h1),
 .md-preview :deep(h2),
-.md-preview :deep(h3) {
+.md-preview :deep(h3),
+.md-preview :deep(h4),
+.md-preview :deep(h5),
+.md-preview :deep(h6) {
   margin: 0.2em 0 0.4em;
   font-weight: 650;
   line-height: 1.3;
@@ -1432,6 +1534,49 @@ html[data-wallpaper-clear='1'] .crepe-root .milkdown {
    再小会导致把手翻转盖住文字或触发横向滚动 */
 .crepe-root .milkdown .ProseMirror {
   padding: 20px 72px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 长行在栏宽内折行，不再把整块编辑区撑出横向滚动。
+   代码块靠 white-space: break-spaces 让 CodeMirror 自己认出折行（光标、点击仍按视觉行计算）。 */
+.crepe-root .milkdown .milkdown-code-block,
+.crepe-root .milkdown .milkdown-table-block {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.crepe-root .milkdown .cm-editor,
+.crepe-root .milkdown .cm-scroller {
+  max-width: 100%;
+}
+
+.crepe-root .milkdown .cm-scroller {
+  overflow-x: hidden;
+}
+
+.crepe-root .milkdown .cm-content {
+  flex-shrink: 1;
+  max-width: 100%;
+  white-space: break-spaces;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.crepe-root .milkdown .milkdown-table-block table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.crepe-root .milkdown .milkdown-table-block th,
+.crepe-root .milkdown .milkdown-table-block td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.crepe-root .milkdown .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 /* 把手容器默认 margin 0 10px：随边距收窄一并去掉，保证把手完整落在边距内 */

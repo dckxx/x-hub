@@ -9,6 +9,12 @@ export type LineShortcut =
   | { type: 'image'; caption: string; src: string }
   | { type: 'table-size'; cols: number; rows: number }
   | { type: 'table-row'; cells: string[] }
+  | { type: 'heading'; level: number; text: string; prefix: number }
+  | { type: 'blockquote'; text: string }
+  | { type: 'bullet'; text: string }
+  | { type: 'ordered'; order: number; text: string }
+  | { type: 'task'; checked: boolean; text: string }
+  | { type: 'hr' }
 
 const MAX_COLS = 10
 const MAX_ROWS = 20
@@ -72,6 +78,38 @@ export function matchWysiwygLine(line: string): LineShortcut | null {
 
   const cells = pipeRow(line)
   if (cells && !isSeparator(cells)) return { type: 'table-row', cells }
+  return blockShortcut(line)
+}
+
+/** 整行是标题、引用、列表或分隔线时，回车转成对应块（Milkdown 原本只认标记后的空格）。 */
+function blockShortcut(line: string): LineShortcut | null {
+  const task = /^[-+*]\s+\[([ xX])\](?:\s+(.*))?$/.exec(line)
+  if (task) return { type: 'task', checked: task[1].toLowerCase() === 'x', text: task[2] ?? '' }
+
+  const heading = /^(#{1,6})(?:\s+(.*))?$/.exec(line)
+  if (heading) {
+    const text = heading[2] ?? ''
+    return {
+      type: 'heading',
+      level: heading[1].length,
+      text,
+      prefix: text ? line.length - text.length : line.length,
+    }
+  }
+
+  if (/^(-{3,}|\*{3,}|_{3,})$/.test(line)) return { type: 'hr' }
+
+  const quote = /^>\s*(.*)$/.exec(line)
+  if (quote) return { type: 'blockquote', text: quote[1] ?? '' }
+
+  const ordered = /^(\d{1,9})\.(?:\s+(.*))?$/.exec(line)
+  if (ordered) {
+    const order = Number(ordered[1])
+    if (order >= 0) return { type: 'ordered', order, text: ordered[2] ?? '' }
+  }
+
+  const bullet = /^[-+*](?:\s+(.*))?$/.exec(line)
+  if (bullet) return { type: 'bullet', text: bullet[1] ?? '' }
   return null
 }
 

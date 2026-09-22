@@ -42,10 +42,20 @@ noteRenderer.code = ({ text, lang }) => {
   return `<div class="md-code">${label}<pre><code>${escapeHtml(text)}</code></pre></div>`
 }
 
+/**
+ * 单独成行的 `<br>` 在 CommonMark 里会开启 HTML 块，一直吞到下一个空行。
+ * 围栏、标题因此变成普通文本。换成空行后，后面的块按正常 Markdown 解析。
+ * 行内的 `hello<br />world` 不动。
+ */
+export function loosenHtmlBreaks(text: string): string {
+  if (!/<br\b/i.test(text)) return text
+  return text.replace(/^[ \t]*<br\s*\/?\s*>[ \t]*$/gim, '')
+}
+
 /** 速记分屏的只读预览。按 CommonMark/GFM 渲染（不把单个换行强转成 <br>，与 Crepe 序列化对齐）。 */
 export function renderNoteMarkdown(text: string): string {
   if (!text) return ''
   return DOMPurify.sanitize(
-    marked.parse(text, { async: false, gfm: true, renderer: noteRenderer }) as string,
+    marked.parse(loosenHtmlBreaks(text), { async: false, gfm: true, renderer: noteRenderer }) as string,
   )
 }

@@ -13,7 +13,7 @@ export type LineShortcut =
   | { type: 'blockquote'; text: string }
   | { type: 'bullet'; text: string }
   | { type: 'ordered'; order: number; text: string }
-  | { type: 'task'; checked: boolean; text: string }
+  | { type: 'task'; checked: boolean; text: string; prefix: number }
   | { type: 'hr' }
 
 const MAX_COLS = 10
@@ -83,8 +83,8 @@ export function matchWysiwygLine(line: string): LineShortcut | null {
 
 /** 整行是标题、引用、列表或分隔线时，回车转成对应块（Milkdown 原本只认标记后的空格）。 */
 function blockShortcut(line: string): LineShortcut | null {
-  const task = /^[-+*]\s+\[([ xX])\](?:\s+(.*))?$/.exec(line)
-  if (task) return { type: 'task', checked: task[1].toLowerCase() === 'x', text: task[2] ?? '' }
+  const task = taskShortcut(line)
+  if (task) return task
 
   const heading = /^(#{1,6})(?:\s+(.*))?$/.exec(line)
   if (heading) {
@@ -111,6 +111,22 @@ function blockShortcut(line: string): LineShortcut | null {
   const bullet = /^[-+*](?:\s+(.*))?$/.exec(line)
   if (bullet) return { type: 'bullet', text: bullet[1] ?? '' }
   return null
+}
+
+/**
+ * `- [ ]` 未完成，`- [x]` 已完成。
+ * 实时预览里先打出 `- ` 会被收成列表，段里只剩 `[ ]` / `[x]`，所以破折号可有可无。
+ */
+function taskShortcut(line: string): LineShortcut | null {
+  const task = /^(?:[-+*]\s+)?\[([ xX])\](?:\s+(.*))?$/.exec(line)
+  if (!task) return null
+  const text = task[2] ?? ''
+  return {
+    type: 'task',
+    checked: task[1].toLowerCase() === 'x',
+    text,
+    prefix: text ? line.length - text.length : line.length,
+  }
 }
 
 function insertAfter(

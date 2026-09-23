@@ -16,7 +16,7 @@ import { isTauri, tauriApi, type Note, type Tag } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { attachBlockDrag } from '../utils/blockDrag'
 import { expandOnEnter, matchWysiwygLine, type LineShortcut } from '../utils/markdownEnter'
-import { loosenHtmlBreaks, renderNoteMarkdown } from '../utils/markdownHtml'
+import { loosenHtmlBreaks, renderNoteMarkdown, restoreCrepeMarkdown } from '../utils/markdownHtml'
 import { deriveNoteTitle } from '../utils/markdown'
 import { NOTE_EDITOR_MODES, normalizeNoteEditorMode, type NoteEditorMode } from '../utils/noteEditorMode'
 import { getQuickEmojis } from '../utils/emoji'
@@ -28,7 +28,7 @@ import EmojiPicker from './EmojiPicker.vue'
  * 速记编辑器：实时预览（Crepe 所见即所得）/ 分屏预览 / 源码。Markdown 为真相源，600ms 防抖落盘。
  * 模式记在配置 note_editor_mode，按用户记住，不按笔记。
  * 行尾回车补结构（三种模式同一套判断）：``` / $$ 闭合，未写完的图片补成 ![]()，
- * |列x行| 或表头行生成表格。实时预览里回车同样把 #、>、-、1.、---、- [ ] 收成标题、引用、列表和分隔线。
+ * |列x行| 或表头行生成表格。实时预览里回车同样把 #、>、-、1.、---、- [ ]、- [x] 收成标题、引用、列表、分隔线和任务。
  * 图片（粘贴/拖拽/点击上传）统一由 Crepe 的上传管线处理：plugin-upload 的 handlePaste/
  * handleDrop + ImageBlock 的 onUpload 配置 → saveNoteImageFile（notes/images + xhub-note 协议）。
  * 注意勿再自建 DOM paste 监听——plugin-upload 已处理粘贴，叠加监听会导致图片重复插入。
@@ -257,9 +257,10 @@ watch(
     if (typeof prevId === 'number' && prevId !== id) {
       if (mode.value === 'wysiwyg') {
         const captured = captureCrepeMarkdown()
-        if (captured != null && captured !== localContent.value) {
-          localContent.value = captured
-          deriveTitleFromContent(captured)
+        const restored = captured == null ? null : restoreCrepeMarkdown(captured)
+        if (restored != null && restored !== localContent.value) {
+          localContent.value = restored
+          deriveTitleFromContent(restored)
           dirty.value = true
         }
       }
@@ -326,7 +327,8 @@ function normalizeTitle(title: string): string {
 
 function onEdited(markdown: string) {
   if (!props.note || mode.value !== 'wysiwyg') return
-  adoptMarkdown(markdown)
+  // Crepe 序列化会加上 \[ \* 并把列表/分隔线改写成星号。收回来再存，切到分屏才和实时预览一致。
+  adoptMarkdown(restoreCrepeMarkdown(markdown))
   // ratio 等图片属性可能经撤销/属性事务变化，同步一次宽度（幂等、无强制布局）
   syncImageWidths()
 }
@@ -476,6 +478,23 @@ function onCrepeKeydown(e: KeyboardEvent) {
       handled = true
       return
     }
+    if (shortcut.type === 'task') {
+      const itemDepth = listItemDepth($from)
+      if (itemDepth > 0) {
+        const item = $from.node(itemDepth)
+        if (!item.type.spec.attrs || !('checked' in item.type.spec.attrs)) return
+        const from = $from.start()
+        const to = Math.min(from + shortcut.prefix, $from.end())
+        let tr = state.tr
+        if (to > from) tr = tr.delete(from, to)
+        const pos = tr.mapping.map($from.before(itemDepth))
+        tr = tr.setNodeMarkup(pos, undefined, { ...item.attrs, checked: shortcut.checked })
+        view.dispatch(tr.scrollIntoView())
+        view.focus()
+        handled = true
+        return
+      }
+    }
     if (shortcut.type === 'hr') {
       const hrType = state.schema.nodes.hr ?? state.schema.nodes.horizontal_rule
       const paragraph = state.schema.nodes.paragraph
@@ -550,7 +569,12 @@ function wrappedBlock(
     attrs.listType = 'ordered'
     attrs.label = `${shortcut.order}.`
   }
-  if (shortcut.type === 'task' && itemType.spec.attrs?.checked) attrs.checked = shortcut.checked
+  if (shortcut.type === 'task') {
+    if (!itemType.spec.attrs || !('checked' in itemType.spec.attrs)) return null
+    attrs.checked = shortcut.checked
+    attrs.listType = 'bullet'
+    attrs.label = '•'
+  }
   const item = itemType.create(attrs, inner)
   if (shortcut.type === 'ordered') {
     const list = schema.nodes.ordered_list
@@ -558,6 +582,13 @@ function wrappedBlock(
   }
   const list = schema.nodes.bullet_list
   return list ? list.create(null, item) : null
+}
+
+function listItemDepth($from: EditorState['selection']['$from']): number {
+  for (let depth = $from.depth; depth > 0; depth--) {
+    if ($from.node(depth).type.name === 'list_item') return depth
+  }
+  return -1
 }
 
 function tableFromCells(schema: Schema, cells: string[]): ProseNode | null {
@@ -597,7 +628,7 @@ async function applyMode(next: NoteEditorMode, persist: boolean) {
   if (next === mode.value) return
   if (mode.value === 'wysiwyg') {
     const captured = captureCrepeMarkdown()
-    if (captured != null) adoptMarkdown(captured)
+    if (captured != null) adoptMarkdown(restoreCrepeMarkdown(captured))
   }
   mode.value = next
   if (persist) void store.setNoteEditorMode(next)
@@ -1254,6 +1285,12 @@ function onEditorAreaMouseDown(e: MouseEvent) {
 .md-preview :deep(pre),
 .md-preview :deep(blockquote) {
   margin: 0 0 0.6em;
+}
+
+.md-preview :deep(input[type='checkbox']) {
+  margin: 0 6px 0 0;
+  accent-color: var(--brand-500);
+  vertical-align: -2px;
 }
 
 .md-preview :deep(h1),

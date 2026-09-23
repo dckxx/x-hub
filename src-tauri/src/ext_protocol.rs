@@ -429,6 +429,11 @@ fn rewrite_tag_refs(tag: &str, id: &str, doc_dir: &[String]) -> String {
 
 /// 改写入口 HTML 里会丢扩展前缀的资源引用。`rel_parts` 是该 HTML 在扩展目录内的路径段
 /// （最后一段是文件名，用于算出它所在目录）。
+///
+/// 边界：只按「属性名」识别，不解析 HTML 结构——因此注释与内联脚本里**形如标签**的引用
+/// （如 `<!-- <img src="../a.png"> -->`、`document.write('<img src="../a.png">')`）同样会被改写；
+/// `<style>`/CSS 的 `url()` 不含 src/href/poster 属性，不受影响。除被改写的属性值外，其余
+/// 内容逐字节保留。行为由 `rewrites_tag_shaped_refs_inside_comments_and_inline_scripts` 钉住。
 pub(crate) fn rewrite_entry_refs(html: &str, id: &str, rel_parts: &[String]) -> String {
     if !html.contains("src") && !html.contains("href") && !html.contains("poster") {
         return html.to_string();
@@ -793,12 +798,51 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_is_byte_stable_when_nothing_to_change() {        let html = concat!(
+    fn rewrite_is_byte_stable_when_nothing_to_change() {
+        let html = concat!(
             "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"/>",
             "<title>Ctool</title></head><body id=\"root\"><div class=\"a b\"></div>",
             "<input disabled></body></html>",
         );
-        assert_eq!(rewrite_entry_refs(html, "com.x-hub.x", &parts(&["tool.html"])), html);
+        assert_eq!(
+            rewrite_entry_refs(html, "com.x-hub.x", &parts(&["tool.html"])),
+            html
+        );
+    }
+
+    /// 边界实测（探针 `tmp_probe_comment_and_inline_script` 转正）：改写只按属性名识别，
+    /// 不解析 HTML 结构，所以注释与内联脚本里「形如标签」的引用也会被改写——功能无害
+    /// （这类引用在本协议下本来就写错），但确实与「逐字节保留」口径有出入，故在此钉住。
+    #[test]
+    fn rewrites_tag_shaped_refs_inside_comments_and_inline_scripts() {
+        let id = "com.x-hub.x";
+        let html = concat!(
+            "<!-- <script src=\"../assets/in-comment.js\"></script> -->\n",
+            "<script>document.write('<img src=\"../assets/in-js.png\">')</script>\n",
+            "<style>body{background:url(../assets/bg.png)}</style>\n",
+            "<a href=\"../page.html?x=1#f\">p</a>\n",
+            "<base href=\"/base/\">\n",
+        );
+        let got = rewrite_entry_refs(html, id, &parts(&["tool.html"]));
+
+        // 注释：改的是注释文本，对渲染无影响
+        assert!(
+            got.contains(&format!("src=\"/{id}/assets/in-comment.js\"")),
+            "{got}"
+        );
+        // 内联脚本字符串里形如标签的引用同样会被改写（本例正是期望结果）
+        assert!(
+            got.contains(&format!("src=\"/{id}/assets/in-js.png\"")),
+            "{got}"
+        );
+        // `<style>` 的 `url()` 不是属性；按文档相对解析后本来就落在 /<id>/assets/，保持原样
+        assert!(got.contains("url(../assets/bg.png)"), "{got}");
+        // 普通标签：query/fragment 保留、根绝对路径补前缀
+        assert!(
+            got.contains(&format!("href=\"/{id}/page.html?x=1#f\"")),
+            "{got}"
+        );
+        assert!(got.contains(&format!("href=\"/{id}/base/\"")), "{got}");
     }
 
     /// 回归 fixture：`tests/extensions/nested-import/`（三级模块链 + 旧 `.xhpack` 的 `../assets/…` 写法）。
@@ -809,10 +853,19 @@ mod tests {
         const INDEX: &str = include_str!("../../tests/extensions/nested-import/index.html");
         const ID: &str = "com.x-hub.nested-import";
         let got = rewrite_entry_refs(INDEX, ID, &parts(&["index.html"]));
-        assert!(got.contains(&format!("src=\"/{ID}/assets/entry.js\"")), "{got}");
-        assert!(got.contains(&format!("href=\"/{ID}/assets/probe.css\"")), "{got}");
+        assert!(
+            got.contains(&format!("src=\"/{ID}/assets/entry.js\"")),
+            "{got}"
+        );
+        assert!(
+            got.contains(&format!("href=\"/{ID}/assets/probe.css\"")),
+            "{got}"
+        );
         // 无目录的根级引用（`../favicon.svg`）：修复前连 Referer 回退都走不到（空 rel_parts 直接 404）
-        assert!(got.contains(&format!("href=\"/{ID}/favicon.svg\"")), "{got}");
+        assert!(
+            got.contains(&format!("href=\"/{ID}/favicon.svg\"")),
+            "{got}"
+        );
 
         // fixture 的模块链必须真有嵌套，否则失去回归价值
         const ENTRY: &str = include_str!("../../tests/extensions/nested-import/assets/entry.js");

@@ -835,7 +835,10 @@ mod tests {
             got.contains(&format!("src=\"/{id}/assets/in-js.png\"")),
             "{got}"
         );
-        // `<style>` 的 `url()` 不是属性；按文档相对解析后本来就落在 /<id>/assets/，保持原样
+        // `<style>` 的 `url()` 不是 src/href/poster 属性 → 不受改写影响。注意它**能**用不是
+        // 因为「解析后没丢前缀」：`url(../assets/bg.png)` 相对入口 `/<id>/tool.html` 会解析成
+        // `/assets/bg.png`（前缀照样丢），靠的是请求 Referer 是入口文档（外链 CSS 则是 CSS 自身
+        // URL）、首段=扩展 id，由 Referer 回退兜住。
         assert!(got.contains("url(../assets/bg.png)"), "{got}");
         // 普通标签：query/fragment 保留、根绝对路径补前缀
         assert!(

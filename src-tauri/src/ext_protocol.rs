@@ -265,6 +265,215 @@ fn fallback_from_referer(raw_path: &str, referer: &str) -> Option<(String, Vec<S
     Some((id, rel))
 }
 
+// ---------------- 入口 HTML 的资源引用改写 ----------------
+//
+// 为什么需要（线上故障，见 issue「插件安装后无法使用」）：
+// 入口 URL 是 `/<id>/<rel>`。HTML 里若写 `../assets/x.js`（旧 `.xhpack/<surface>.html`
+// 布局留下的写法）或根绝对路径 `/assets/x.js`，浏览器解析成 `/assets/x.js`——**丢掉 `<id>` 段**。
+// `fallback_from_referer` 只能救回一层：发起者是入口文档时 Referer 首段就是扩展 id，所以
+// 插件首屏打得开；但 chunk 里的 `import("./y.js")` 按**模块自身 URL** 解析成
+// `/assets/y.js`，此时 Referer 是该 chunk 的 URL（首段 `assets`，不是已装扩展）→ 回退失效
+// → 404 → 页面报 `Failed to fetch dynamically imported module`。
+//
+// 在入口 HTML 过手时（本来就为注入桥脚本读它）把这类引用改成 `/<id>/…`，其后的嵌套
+// import 按模块 URL 解析就自然落回扩展内。注意顺序：**先改写、后注入桥脚本**。
+//
+// 只动 `src` / `href` / `poster` 三个属性的值，且逐字节保留其余内容；`#…`、带 scheme、
+// `//host`、空值一律不动。深层入口（如 `module/index.html`）里的 `../x` 解析后没丢前缀，
+// 保持原样。残余：写在 **JS/CSS 里**的绝对路径（`import("/assets/x.js")`、`url(/…)`）
+// 改写不到，仍需 Referer 回退兜底。
+
+/// 是否带 scheme（`http:`、`data:`、`blob:`…）：首字符字母，其后字母数字与 `+.-` 直到 `:`。
+fn has_scheme(v: &str) -> bool {
+    let mut chars = v.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    for c in chars {
+        if c == ':' {
+            return true;
+        }
+        if !(c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')) {
+            return false;
+        }
+    }
+    false
+}
+
+/// 拆出 `path` 与 `?query#fragment` 尾巴（改写只针对 path，尾巴原样接回）
+fn split_query_fragment(v: &str) -> (&str, &str) {
+    let idx = v.find(['?', '#']).unwrap_or(v.len());
+    (&v[..idx], &v[idx..])
+}
+
+/// 把相对引用按入口所在目录解析成段列表。返回 `None` = 解析后没丢扩展前缀（保持原样）；
+/// 返回 `Some(段)` = 中途越过扩展根（当前会丢前缀），按这些段改写成扩展内绝对路径。
+fn resolve_relative_ref(doc_dir: &[String], path: &str) -> Option<Vec<String>> {
+    let mut stack: Vec<String> = doc_dir.to_vec();
+    let mut escaped = false;
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if stack.pop().is_none() {
+                    escaped = true;
+                }
+            }
+            s => stack.push(s.to_string()),
+        }
+    }
+    escaped.then_some(stack)
+}
+
+/// 改写单个属性值（不是 `src`/`href`/`poster` 或不该动的引用一律原样返回）
+fn rewrite_ref_value(name: &str, value: &str, id: &str, doc_dir: &[String]) -> String {
+    let lower = name.to_ascii_lowercase();
+    if !matches!(lower.as_str(), "src" | "href" | "poster") {
+        return value.to_string();
+    }
+    if value.is_empty() || value.starts_with('#') || value.starts_with("//") || has_scheme(value) {
+        return value.to_string();
+    }
+    // 两侧带空白的值（浏览器会 trim）不碰：改写要按原样保留空白，容易出岔子
+    if value.trim() != value {
+        return value.to_string();
+    }
+    let (path, tail) = split_query_fragment(value);
+    if path.is_empty() {
+        return value.to_string();
+    }
+    if path.starts_with('/') {
+        return format!("/{id}{path}{tail}");
+    }
+    match resolve_relative_ref(doc_dir, path) {
+        Some(segments) => format!("/{id}/{}{tail}", segments.join("/")),
+        None => value.to_string(),
+    }
+}
+
+fn is_html_ws(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
+}
+
+/// 改写一个标签内部的引用属性。除被改写的值外**逐字节**照抄原内容。
+fn rewrite_tag_refs(tag: &str, id: &str, doc_dir: &[String]) -> String {
+    let bytes = tag.as_bytes();
+    let len = bytes.len();
+    let mut out = String::with_capacity(tag.len() + 32);
+    // `<` + 标签名
+    let mut i = 1;
+    while i < len && !is_html_ws(bytes[i]) && bytes[i] != b'>' && bytes[i] != b'/' {
+        i += 1;
+    }
+    out.push_str(&tag[..i]);
+    while i < len {
+        // 属性前的空白
+        let ws_start = i;
+        while i < len && is_html_ws(bytes[i]) {
+            i += 1;
+        }
+        out.push_str(&tag[ws_start..i]);
+        if i >= len || bytes[i] == b'>' || bytes[i] == b'/' {
+            out.push_str(&tag[i..]);
+            break;
+        }
+        // 属性名
+        let name_start = i;
+        while i < len && !is_html_ws(bytes[i]) && !matches!(bytes[i], b'=' | b'>' | b'/') {
+            i += 1;
+        }
+        let name = &tag[name_start..i];
+        out.push_str(name);
+        // 可选的 `= 值`
+        let before_eq = i;
+        while i < len && is_html_ws(bytes[i]) {
+            i += 1;
+        }
+        if i >= len || bytes[i] != b'=' {
+            i = before_eq; // 无 `=`：布尔属性，空白留给下一轮
+            continue;
+        }
+        out.push_str(&tag[before_eq..i]);
+        i += 1;
+        out.push('=');
+        let after_eq = i;
+        while i < len && is_html_ws(bytes[i]) {
+            i += 1;
+        }
+        out.push_str(&tag[after_eq..i]);
+        if i < len && (bytes[i] == b'"' || bytes[i] == b'\'') {
+            let quote = bytes[i];
+            i += 1;
+            let value_start = i;
+            while i < len && bytes[i] != quote {
+                i += 1;
+            }
+            let value = &tag[value_start..i];
+            out.push(quote as char);
+            out.push_str(&rewrite_ref_value(name, value, id, doc_dir));
+            out.push(quote as char);
+            if i < len {
+                i += 1; // 收尾引号
+            }
+        } else {
+            let value_start = i;
+            while i < len && !is_html_ws(bytes[i]) && bytes[i] != b'>' {
+                i += 1;
+            }
+            out.push_str(&rewrite_ref_value(name, &tag[value_start..i], id, doc_dir));
+        }
+    }
+    out
+}
+
+/// 改写入口 HTML 里会丢扩展前缀的资源引用。`rel_parts` 是该 HTML 在扩展目录内的路径段
+/// （最后一段是文件名，用于算出它所在目录）。
+pub(crate) fn rewrite_entry_refs(html: &str, id: &str, rel_parts: &[String]) -> String {
+    if !html.contains("src") && !html.contains("href") && !html.contains("poster") {
+        return html.to_string();
+    }
+    let doc_dir: Vec<String> = rel_parts[..rel_parts.len().saturating_sub(1)].to_vec();
+    let bytes = html.as_bytes();
+    let mut out = String::with_capacity(html.len() + 64);
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            // 找标签结束（属性值里的 `>` 不算），找不到就当普通文本继续
+            let mut j = i + 1;
+            let mut quote: Option<u8> = None;
+            while j < bytes.len() {
+                let b = bytes[j];
+                match quote {
+                    Some(q) => {
+                        if b == q {
+                            quote = None;
+                        }
+                    }
+                    None => {
+                        if b == b'"' || b == b'\'' {
+                            quote = Some(b);
+                        } else if b == b'>' {
+                            j += 1;
+                            break;
+                        }
+                    }
+                }
+                j += 1;
+            }
+            if quote.is_none() && j <= bytes.len() && bytes[j - 1] == b'>' {
+                out.push_str(&rewrite_tag_refs(&html[i..j], id, &doc_dir));
+                i = j;
+                continue;
+            }
+        }
+        let ch = html[i..].chars().next().unwrap_or(' ');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 /// 解析并读取路径：`<扩展 id>/<相对路径>`。失败时返回 HTTP 状态码。
 fn serve(app: &tauri::AppHandle, raw_path: &str, referer: Option<&str>) -> Result<(String, Vec<u8>), u16> {
     let (mut id, mut rel_parts) = parse_request_path(raw_path)?;
@@ -318,7 +527,9 @@ fn serve(app: &tauri::AppHandle, raw_path: &str, referer: Option<&str>) -> Resul
     // 桥脚本从未注入，表现为「扩展自己的 JS 能跑、但没有 window.xhub、8 秒后判白屏」。
     if is_html(&full_canon) {
         if let Ok(html) = std::str::from_utf8(&bytes) {
-            bytes = crate::extension::inject_bridge(html, crate::extension::XHUB_BRIDGE_SCRIPT)
+            // 先改写引用、后注入桥脚本：顺序反了会连桥脚本里的字符串一起过一遍改写规则
+            let rewritten = rewrite_entry_refs(html, &id, &rel_parts);
+            bytes = crate::extension::inject_bridge(&rewritten, crate::extension::XHUB_BRIDGE_SCRIPT)
                 .into_bytes();
         }
     }
@@ -486,5 +697,127 @@ mod tests {
         assert_eq!(parse_request_path("com.x-hub.x/C:/Windows/win.ini").unwrap_err(), 400); // 盘符冒号
         assert_eq!(parse_request_path("com.x-hub.x/a%00b.js").unwrap_err(), 400); // NUL
         assert_eq!(parse_request_path("com.x-hub.x/a%0Ab.js").unwrap_err(), 400); // 控制字符
+    }
+
+    // ---------------- 入口 HTML 引用改写 ----------------
+
+    fn parts(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn rewrites_refs_that_would_drop_the_extension_prefix() {
+        let id = "com.x-hub.ctool";
+        // 线上 ctool 2.9.x 的真实写法（解包自 com.x-hub.ctool-2.9.0.xhpack）
+        let html = concat!(
+            "<link rel=\"icon\" href=\"../favicon.ico\" type=\"image/x-ico\">\n",
+            "<script type=\"module\" crossorigin src=\"../assets/tool-CAKAZgPx.js\"></script>\n",
+            "<link rel=\"modulepreload\" crossorigin href=\"../assets/vendor-monaco-DSX5bDTJ.js\">\n",
+            "<link rel=\"stylesheet\" crossorigin href=\"../assets/tool-DHREzKTU.css\">\n",
+        );
+        let got = rewrite_entry_refs(html, id, &parts(&["tool.html"]));
+        assert!(got.contains(&format!("href=\"/{id}/favicon.ico\"")), "{got}");
+        assert!(
+            got.contains(&format!("src=\"/{id}/assets/tool-CAKAZgPx.js\"")),
+            "{got}"
+        );
+        assert!(
+            got.contains(&format!("href=\"/{id}/assets/vendor-monaco-DSX5bDTJ.js\"")),
+            "{got}"
+        );
+        assert!(
+            got.contains(&format!("href=\"/{id}/assets/tool-DHREzKTU.css\"")),
+            "{got}"
+        );
+        // 其余内容逐字节保留（属性顺序、引号、crossorigin 都不动）
+        assert!(got.contains("<script type=\"module\" crossorigin "), "{got}");
+    }
+
+    #[test]
+    fn rewrites_root_absolute_refs_at_any_depth() {
+        let id = "com.x-hub.x";
+        // 根绝对路径在任何深度都会丢前缀
+        let got = rewrite_entry_refs(
+            r#"<img src="/root-abs.png"><script src='assets/ok.js'></script>"#,
+            id,
+            &parts(&["module", "index.html"]),
+        );
+        assert!(got.contains(&format!("src=\"/{id}/root-abs.png\"")), "{got}");
+        // 没丢前缀的相对引用保持原样（深层入口的 `assets/ok.js` 本来就对）
+        assert!(got.contains("src='assets/ok.js'"), "{got}");
+    }
+
+    #[test]
+    fn leaves_non_escaping_refs_and_foreign_urls_alone() {
+        let id = "com.x-hub.x";
+        let html = concat!(
+            "<script src=\"https://cdn.example/x.js\"></script>",
+            "<script src=\"//cdn.example/y.js\"></script>",
+            "<script src=\"data:text/javascript,\"></script>",
+            "<script src=\"blob:abc\"></script>",
+            "<a href=\"#anchor\">a</a>",
+            "<img src=\"assets/local.png\">",
+            "<img src=\"../escapes.png\">",
+            "<div data-src=\"../assets/not-an-asset.js\">d</div>",
+        );
+        // 深层入口：`../assets/a.js`、`../escapes.png` 解析后是 /<id>/…，本来就没丢前缀
+        let deep = rewrite_entry_refs(html, id, &parts(&["module", "index.html"]));
+        assert_eq!(deep, html, "不该改的引用被动了");
+        // 同一份 HTML 放在扩展根：`../…` 会丢前缀，必须改写
+        let root = rewrite_entry_refs(html, id, &parts(&["tool.html"]));
+        assert!(
+            root.contains("data-src=\"../assets/not-an-asset.js\""),
+            "非 src/href/poster 属性不该动: {root}"
+        );
+        assert!(root.contains(&format!("src=\"/{id}/escapes.png\"")), "{root}");
+        // 扩展根下的普通相对引用本来就对，保持原样
+        assert!(root.contains("src=\"assets/local.png\""), "{root}");
+    }
+
+    #[test]
+    fn keeps_query_fragment_and_clamps_above_root() {
+        let id = "com.x-hub.x";
+        let got = rewrite_entry_refs(
+            r#"<img src="../a/b.png?x=1#f"><img src="../../x.png">"#,
+            id,
+            &parts(&["tool.html"]),
+        );
+        assert!(
+            got.contains(&format!("src=\"/{id}/a/b.png?x=1#f\"")),
+            "query/fragment 必须保留: {got}"
+        );
+        assert!(
+            got.contains(&format!("src=\"/{id}/x.png\"")),
+            "越过扩展根的 `..` 要夹在根上: {got}"
+        );
+    }
+
+    #[test]
+    fn rewrite_is_byte_stable_when_nothing_to_change() {        let html = concat!(
+            "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"/>",
+            "<title>Ctool</title></head><body id=\"root\"><div class=\"a b\"></div>",
+            "<input disabled></body></html>",
+        );
+        assert_eq!(rewrite_entry_refs(html, "com.x-hub.x", &parts(&["tool.html"])), html);
+    }
+
+    /// 回归 fixture：`tests/extensions/nested-import/`（三级模块链 + 旧 `.xhpack` 的 `../assets/…` 写法）。
+    /// 用 `include_str!` 绑住真实 fixture：谁把 `../` 改成 `./`、或删掉嵌套层，测试立刻失败，
+    /// 而不是等线上再出一次「点进去正常、点任意功能报 Failed to fetch dynamically imported module」。
+    #[test]
+    fn nested_import_fixture_refs_are_rewritten() {
+        const INDEX: &str = include_str!("../../tests/extensions/nested-import/index.html");
+        const ID: &str = "com.x-hub.nested-import";
+        let got = rewrite_entry_refs(INDEX, ID, &parts(&["index.html"]));
+        assert!(got.contains(&format!("src=\"/{ID}/assets/entry.js\"")), "{got}");
+        assert!(got.contains(&format!("href=\"/{ID}/assets/probe.css\"")), "{got}");
+        // 无目录的根级引用（`../favicon.svg`）：修复前连 Referer 回退都走不到（空 rel_parts 直接 404）
+        assert!(got.contains(&format!("href=\"/{ID}/favicon.svg\"")), "{got}");
+
+        // fixture 的模块链必须真有嵌套，否则失去回归价值
+        const ENTRY: &str = include_str!("../../tests/extensions/nested-import/assets/entry.js");
+        const LEVEL1: &str = include_str!("../../tests/extensions/nested-import/assets/level1.js");
+        assert!(ENTRY.contains("./level1.js"), "entry 必须 import level1");
+        assert!(LEVEL1.contains("./level2.js"), "level1 必须 import level2");
     }
 }

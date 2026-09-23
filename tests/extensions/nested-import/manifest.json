@@ -1,0 +1,12 @@
+{
+  "id": "com.x-hub.nested-import",
+  "name": "嵌套 import 回归（验收用）",
+  "version": "0.0.1",
+  "description": "仅用于回归：入口 HTML 用旧 .xhpack 布局的 `../assets/…` 写法，且模块链有三级嵌套（entry → level1 → level2）。不发布到市场。",
+  "runtime": "web",
+  "kind": "view",
+  "surfaces": ["view"],
+  "openIn": ["view"],
+  "entry": { "view": "./index.html" },
+  "permissions": []
+}

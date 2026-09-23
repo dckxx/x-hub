@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>嵌套 import 回归（验收用）</title>
+    <!--
+      ⚠️ 这里是**故意**保留的旧 `.xhpack/<surface>.html` 布局写法：入口在扩展根，
+      却用 `../assets/…` 引用资源。0.6.5 起入口 URL 变成 `/<id>/index.html`，
+      浏览器会把 `../assets/entry.js` 规范化成 `/assets/entry.js`（丢掉 `<id>` 段）。
+      宿主靠 Referer 只能救回一层，所以 entry.js 能加载、它内部的 `import("./level1.js")`
+      就 404 —— 修复前本页会停在「加载中」并报 Failed to fetch dynamically imported module。
+      修复后（宿主改写入口 HTML 的引用）本页应显示「全部通过：entry → level1 → level2」。
+    -->
+    <meta charset="utf-8" />
+    <style>
+      body { margin: 0; padding: 16px; font: 13px/1.6 system-ui, "Microsoft YaHei", sans-serif; }
+      h1 { font-size: 15px; margin: 0 0 4px; }
+      p.hint { margin: 0 0 12px; opacity: .75; }
+      pre { padding: 10px; border-radius: 8px; overflow: auto;
+            font: 12px/1.5 ui-monospace, Consolas, monospace;
+            background: rgba(0,0,0,.04); white-space: pre-wrap; }
+      .ok { color: #1a7f37; font-weight: 600; }
+      .bad { color: #c62828; font-weight: 600; }
+    </style>
+    <link rel="icon" href="../favicon.svg" />
+    <!-- 故意用 `../` 前缀：修复前这两条靠 Referer 回退才加载得到 -->
+    <link rel="stylesheet" href="../assets/probe.css" />
+    <script type="module" src="../assets/entry.js"></script>
+  </head>
+  <body>
+    <h1>嵌套 import 回归（验收用）</h1>
+    <p class="hint">
+      三级模块链：<code>entry.js → level1.js → level2.js</code>；入口引用写成 <code>../assets/…</code>。
+      修复前：本页只有标题，控制台报 <code>Failed to fetch dynamically imported module</code>。
+      修复后：下面应出现绿色「全部通过」。
+    </p>
+    <pre id="out">加载中……（如果一直停在这里，说明模块链断了）</pre>
+  </body>
+</html>

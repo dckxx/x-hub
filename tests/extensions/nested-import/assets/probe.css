@@ -1,0 +1,2 @@
+/* 入口 HTML 用 `../assets/probe.css` 引用，修复前同样会丢扩展前缀 */
+#out { border-left: 3px solid #1a7f37; }

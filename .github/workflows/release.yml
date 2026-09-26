@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,11 +20,34 @@ jobs:
           # 段落缺失时回退读 tag annotation（需要 tag 对象在本地）
           fetch-depth: 0
 
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config \
+            libgtk-3-dev \
+            libsecret-1-dev \
+            patchelf
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
+          cache: pnpm
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -33,64 +56,46 @@ jobs:
         uses: swatinem/rust-cache@v2
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
-      - name: Build release binary
-        run: npm run tauri:build -- --no-bundle
+      - name: Build release .deb
+        run: pnpm run tauri:build:deb
 
-      - name: Package win-x64 zip
+      - name: Locate deb artifact
         id: package
-        shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME -replace '^v',''
-          $exe = 'src-tauri/target/release/x-hub.exe'
-          if (-not (Test-Path $exe)) { Write-Error "未找到 $exe" }
-
-          # 标准版：纯 exe，数据默认在用户级目录
-          $zip = "x-hub-$version-win-x64.zip"
-          Compress-Archive -Path $exe -DestinationPath $zip -Force
-          Write-Output "zip_name=$zip" >> $env:GITHUB_OUTPUT
-
-          # 便携版：exe + portable 标志（同级），数据默认在 exe 同目录
-          $portableDir = Join-Path $env:RUNNER_TEMP 'x-hub-portable'
-          if (Test-Path $portableDir) { Remove-Item $portableDir -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
-          Copy-Item $exe (Join-Path $portableDir 'x-hub.exe')
-          New-Item -ItemType File -Force -Path (Join-Path $portableDir 'portable') | Out-Null
-          $portableZip = "x-hub-$version-win-x64-portable.zip"
-          Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath $portableZip -Force
-          Write-Output "portable_zip_name=$portableZip" >> $env:GITHUB_OUTPUT
+          version="${GITHUB_REF_NAME#v}"
+          deb=$(ls src-tauri/target/release/bundle/deb/x-hub_*.deb 2>/dev/null | head -1)
+          if [ -z "$deb" ] || [ ! -f "$deb" ]; then
+            echo "未找到 .deb 产物" >&2
+            find src-tauri/target/release/bundle -type f 2>/dev/null || true
+            exit 1
+          fi
+          echo "deb_name=$deb" >> "$GITHUB_OUTPUT"
+          echo "找到: $deb"
 
       - name: Extract release notes from RELEASE_NOTES.md
-        shell: pwsh
         run: |
-          # GitHub Release 正文 = RELEASE_NOTES.md 的「# vX.Y.Z 发布说明」章节（到下一个一级标题为止）
-          $version = $env:GITHUB_REF_NAME -replace '^v',''
-          $lines = Get-Content RELEASE_NOTES.md
-          $start = -1; $end = $lines.Count
-          for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($start -lt 0 -and $lines[$i] -match ('^#\s*v' + [regex]::Escape($version) + '(\s|$)')) { $start = $i; continue }
-            if ($start -ge 0 -and $lines[$i] -match '^#\s') { $end = $i; break }
-          }
-          if ($start -ge 0) {
-            $lines[$start..($end - 1)] | Out-File -FilePath release_notes.md -Encoding utf8
-            Write-Host "release notes 源: RELEASE_NOTES.md v$version 段落（$($end - $start) 行）"
-          } else {
-            # RELEASE_NOTES.md 缺对应段落时回退 tag annotation（兜底，不要依赖这条路径）
-            Write-Warning "RELEASE_NOTES.md 未找到 v$version 段落，回退为 tag annotation"
-            git tag -l --format='%(contents)' $env:GITHUB_REF_NAME | Out-File -FilePath release_notes.md -Encoding utf8
-          }
+          version="${GITHUB_REF_NAME#v}"
+          # GitHub Release 正文 = RELEASE_NOTES.md 的「# vX.Y.Z 发布说明」章节
+          awk -v ver="$version" '
+            BEGIN { capturing=0 }
+            $0 ~ "^# v"ver"($| )" { capturing=1 }
+            capturing && NR>1 && /^# / { exit }
+            capturing { print }
+          ' RELEASE_NOTES.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "RELEASE_NOTES.md 未找到 v${version} 段落，回退为 tag annotation" >&2
+            git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > release_notes.md
+          fi
 
-      - name: Upload win-x64 zip
+      - name: Upload linux .deb
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          # ⚠️ 参数名是 `name`，不是 `release_name`（写错会被静默忽略，标题退回 tag 名 vX.Y.Z；
-          #    v0.6.0 的 run 报过 "Unexpected input(s) 'release_name'"）
           name: 'x-hub ${{ github.ref_name }}'
           body_path: release_notes.md
           files: |
-            ${{ steps.package.outputs.zip_name }}
-            ${{ steps.package.outputs.portable_zip_name }}
+            ${{ steps.package.outputs.deb_name }}
           draft: true
           prerelease: false

@@ -72,24 +72,48 @@ pub fn launch_program(path: &str, args: Option<&str>) -> Result<(), String> {
     }
 }
 
-/// 以管理员权限启动（触发 UAC 提权确认）：PowerShell Start-Process -Verb RunAs
+/// 以管理员权限启动。
+/// Windows：PowerShell Start-Process -Verb RunAs；Linux：pkexec。
 fn launch_elevated(path: &str, args: Option<&str>) -> Result<(), String> {
-    let has_args = args.map(|a| !a.trim().is_empty()).unwrap_or(false);
-    let script = if has_args {
-        "Start-Process -FilePath $env:XHUB_PATH -ArgumentList $env:XHUB_ARGS -Verb RunAs"
-    } else {
-        "Start-Process -FilePath $env:XHUB_PATH -Verb RunAs"
-    };
-    let mut cmd = std::process::Command::new("powershell");
-    cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
-        .env("XHUB_PATH", path);
-    cmd.no_console_window();
-    if has_args {
-        cmd.env("XHUB_ARGS", args.unwrap_or(""));
+    #[cfg(target_os = "windows")]
+    {
+        let has_args = args.map(|a| !a.trim().is_empty()).unwrap_or(false);
+        let script = if has_args {
+            "Start-Process -FilePath $env:XHUB_PATH -ArgumentList $env:XHUB_ARGS -Verb RunAs"
+        } else {
+            "Start-Process -FilePath $env:XHUB_PATH -Verb RunAs"
+        };
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
+            .env("XHUB_PATH", path);
+        cmd.no_console_window();
+        if has_args {
+            cmd.env("XHUB_ARGS", args.unwrap_or(""));
+        }
+        cmd.spawn()
+            .map(|_| ())
+            .map_err(|e| format!("提权启动失败「{}」: {}", path, e))
     }
-    cmd.spawn()
-        .map(|_| ())
-        .map_err(|e| format!("提权启动失败「{}」: {}", path, e))
+    #[cfg(target_os = "linux")]
+    {
+        let mut cmd = std::process::Command::new("pkexec");
+        cmd.arg(path);
+        if let Some(args) = args {
+            if !args.trim().is_empty() {
+                for arg in split_args(args) {
+                    cmd.arg(arg);
+                }
+            }
+        }
+        cmd.spawn()
+            .map(|_| ())
+            .map_err(|e| format!("提权启动失败「{}」: {}（需要 pkexec）", path, e))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (path, args);
+        Err("当前平台不支持提权启动".into())
+    }
 }
 
 /// 引号感知的参数分割：`--dir "C:\My Apps"` 保持为一个参数

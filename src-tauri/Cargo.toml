@@ -15,7 +15,7 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.6.3", features = [] }
+tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
 # preserve_order：发布时回写扩展 manifest.json 必须保持原键序（bump_manifest_in_dir），
@@ -23,7 +23,7 @@ tauri-build = { version = "2.6.3", features = [] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.11.3", features = ["protocol-asset", "tray-icon", "unstable"] }
+tauri = { version = "2.12", features = ["protocol-asset", "tray-icon", "unstable"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-log = "2"
 tauri-plugin-global-shortcut = "2"
@@ -50,6 +50,17 @@ semver = "1"
 sysinfo = "0.32"
 # 剪贴板 BMP 快照导出转 PNG：只开 bmp/png 两个编解码，避免拖入全家桶
 image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
+
+# Linux / 非 Windows：系统剪贴板读写
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+arboard = "3"
+
+# Linux：悬浮球边缘监视用 XQueryPointer 取光标/左键（与 Windows GetCursorPos/GetAsyncKeyState 对齐）
+[target.'cfg(target_os = "linux")'.dependencies]
+x11-dl = "2.21"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.52"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
@@ -65,11 +76,9 @@ windows-sys = { version = "0.61", features = [
 ] }
 # WebView2 内存级别联动（webview_mem.rs）：与 tauri/wry 锁定的同版本，保证 COM
 # 类型同源可 cast（ICoreWebView2_19::SetMemoryUsageTargetLevel）
-webview2-com = "0.38.2"
+# 上游 feat/linux-support 为 0.38.2；本移植沿用可与 tauri 2.12 对齐的 0.39
+webview2-com = "0.39"
 windows-core = "0.61"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-winreg = "0.52"
 
 [dev-dependencies]
 tempfile = "3"

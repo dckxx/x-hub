@@ -739,6 +739,19 @@ function showToast(msg: string, action?: ToastAction) {
   }, action ? 5000 : 2200)
 }
 
+/** 动作按钮只生效一次：点完立刻清掉，避免连点把周期待办日期无限往回滚 */
+function runToastAction() {
+  const action = toastAction.value
+  if (!action) return
+  toastAction.value = null
+  toastMsg.value = ''
+  if (toastTimer) {
+    clearTimeout(toastTimer)
+    toastTimer = null
+  }
+  action.onClick()
+}
+
 provide('showToast', showToast)
 
 </script>
@@ -1055,7 +1068,7 @@ provide('showToast', showToast)
           v-if="toastAction"
           class="toast-action"
           type="button"
-          @click="toastAction.onClick()"
+          @click="runToastAction"
         >
           {{ toastAction.label }}
         </button>

@@ -78,7 +78,7 @@ const targetLabel = computed(() => {
 
 const targetPlaceholder = computed(() => {
   if (kind.value === 'file') return '选择要链接的文件或文件夹'
-  if (kind.value === 'app') return '如：C:\\Program Files\\...\\code.exe'
+  if (kind.value === 'app') return '如：/usr/bin/code 或 *.desktop'
   return '如：github.com'
 })
 

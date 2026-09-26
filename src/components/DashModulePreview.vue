@@ -523,7 +523,7 @@ const kind = computed(() => {
       </header>
       <div v-if="sudaCustom.configured && sudaCustom.items.length" class="scc-grid">
         <div v-for="r in sudaCustom.items" :key="r.id" class="scc-item">
-          <span class="scc-icon" :style="{ background: sudaAccent(r).soft }">
+          <span class="scc-icon" :style="sudaImg(r) ? {} : { background: sudaAccent(r).soft }">
             <img v-if="sudaImg(r)" :src="sudaImg(r)" class="scc-img" alt="" @error="failedIcons.add(r.id)" />
             <Globe v-else-if="r.kind === 'web'" class="scc-lg" style="color: var(--c-green-ink)" />
             <component

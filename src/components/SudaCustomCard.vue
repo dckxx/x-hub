@@ -84,7 +84,7 @@ function onOpen(r: Resource) {
         :style="itemStyle(r)"
         @click="onOpen(r)"
       >
-        <span class="sc-icon">
+        <span class="sc-icon" :class="{ 'has-img': showImageIcon(r) }">
           <img
             v-if="showImageIcon(r)"
             class="sc-img"
@@ -226,6 +226,11 @@ function onOpen(r: Resource) {
   background: var(--sc-accent-soft);
   overflow: hidden;
   flex: none;
+}
+/* 图片图标不铺强调色底：程序图标四周常带透明留白、圆形图标四角透明，
+ * 铺底会透出一圈色边。与最近使用（RecentBar）同口径：底色只给首字母/内置图标 */
+.sc-icon.has-img {
+  background: transparent;
 }
 .sc-img {
   width: 100%;

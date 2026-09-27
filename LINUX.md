@@ -65,6 +65,51 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
 
 Fedora 对应 `webkit2gtk4.1-devel`，Arch 开发头和运行时打在同一个 `webkit2gtk-4.1` 里。
 
+## glibc 基座：打包要在老系统上编
+
+Linux 二进制是**前向**兼容的（在新系统上跑老系统编的包可以，反过来不行）。在 Ubuntu 24.04
+（glibc 2.39）上编出来的包，装到 Ubuntu 22.04（glibc 2.35）会直接起不来：
+
+```
+/usr/bin/x-hub: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.39' not found
+```
+
+所以**发布用包必须在最老的受支持发行版上编**（当前基线 = Ubuntu 22.04 / glibc 2.35）。
+自查办法：
+
+```bash
+dpkg-deb -x x-hub_*.deb /tmp/chk
+strings /tmp/chk/usr/bin/x-hub | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -3
+# 末行不应高于 2.35（在 22.04 容器里编出来是 2.34）
+```
+
+宿主是 24.04 时，用容器编（`docker` 必需）：
+
+```bash
+docker run --rm -u "$(id -u):$(id -g)" \
+  -e HOME=/tmp -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
+  -e PATH=/opt/cargo/bin:/opt/node/bin:/usr/bin:/bin -e CI=true \
+  -v "$PWD":/src -v "$PWD/.cargo-vol":/cargo -v "$PWD/.target-vol":/target \
+  -w /src x-hub-builder:22.04 \
+  bash -lc 'pnpm install --frozen-lockfile && pnpm run tauri:build:deb'
+```
+
+`x-hub-builder:22.04` 是本机自建镜像（`ubuntu:22.04` + WebKitGTK 4.1 开发包 + Rust + Node 20 + pnpm）。
+两个坑：容器内 apt 源要用 **http**（base 镜像不带 ca-certificates，https 会报证书不可信）；
+装完 Node 要**同一步内** `export PATH` 或全程用绝对路径，否则 `npm` 找不到（exit 127）。
+
+## 已知问题
+
+- **悬浮球贴边（半隐 / 悬停滑出）在 Linux 上未解决，暂时搁置。** Mutter/KWin 不允许窗口
+  半截出屏，会把坐标钳回工作区；更棘手的是这颗窗在 Linux 上的 `outer_size` 与 `inner_size`
+  不一致（实测 `outer` 高 174 或 137、`inner` 恒为 100，差值与位置偏差都是同一个 **37px**），
+  说明视觉球心并不等于 `outer_size` 的中心——现有几何模型（以窗口中心为球心）在这条路上
+  不成立。已落地的防护：目标先钳进工作区、同一目标只搬一次、超时（1.2s）仍未到位就
+  **采纳窗口现位并写回记忆**，因此不会再出现「每 100ms 反复搬窗」的抖动循环，但贴边后
+  球的落点会与预期有偏移。**不改贴边设置即可正常使用**（托盘菜单「悬浮球」里关掉
+  「贴边自动隐藏」，球就停在自由位置不动）。相关诊断日志已降到 `debug!` 级（默认 Info
+  级别不输出）；需要排查时把日志级别调到 Debug 再看 `[悬浮球]` 前缀的行。
+
 ## 太老的发行版
 
 WebKitGTK **4.1** 大约从 Debian 12 / Ubuntu 22.04 / Fedora 37 / 同年份的滚动发行版才有。更老的系统（CentOS 7、Ubuntu 20.04 等）仓库里没有这个 so，也没有可替换的官方 WebView2 安装包。请换受支持的发行版，或在新系统上打 `.deb` 再装过去。

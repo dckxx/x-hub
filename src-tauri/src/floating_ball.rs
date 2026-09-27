@@ -589,7 +589,8 @@ fn posfix_nudge(
         *st = (None, 0);
         return PosFix::Handled;
     }
-    log::info!(
+    // 每跳都可能命中：必须 debug 级（默认 Info 过滤下静默），否则 Linux 上会刷屏
+    log::debug!(
         "[悬浮球] {label}: 窗口=({},{}) 目标=({},{}) 尺寸={:?} 内部={:?} scale={:.3}",
         pos.x,
         pos.y,
@@ -713,7 +714,8 @@ fn adopt_current_center(
     let ncx = pos.x + half;
     let ncy = pos.y + half;
     let work = nearest_work_rect(win);
-    log::warn!(
+    // 采纳只在「目标搬不动」时发生；Linux 上每轮贴边都可能触发 → debug（默认 Info 下静默）
+    log::debug!(
         "[悬浮球] 落位采纳: 窗口=({},{}) 尺寸={:?} 内部={:?} 半边长={} scale={:.3} 工作区={:?} 整屏={:?} 目标=({},{}) 未生效 → 球心改为 ({},{})",
         pos.x,
         pos.y,
@@ -1446,7 +1448,8 @@ fn settle_drag(app: &AppHandle) {
             dy = sdy;
             // 诊断（用户反馈「拖到边上不吸附」时先看这条）：吸附只取决于松手点球心
             // 到工作区边缘的距离是否 < trigger（= DOCK_TRIGGER × scale，物理 px）
-            log::info!(
+            // 每次拖拽松手都会记录（含吸附判定依据）；属诊断信息，debug 级
+            log::debug!(
                 "[悬浮球] 拖拽松手: 球心=({:.0},{:.0}) 工作区=[{:.0},{:.0},{:.0},{:.0}] scale={:.4} \
                  trigger={:.0} 距边 左{:.0}/右{:.0}/上{:.0}/下{:.0} auto_hide={} → 吸附后球心=({:.0},{:.0}) 方向=({},{})",
                 free_cx,

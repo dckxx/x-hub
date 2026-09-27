@@ -1,5 +1,20 @@
 # Linux 安装系统 WebView（WebKitGTK 4.1）
 
+## Ubuntu 测试机一键脚本 / CI 自动包
+
+在 **Ubuntu 24.04** 测试机上可执行仓库内脚本拉代码、装依赖、打 deb、安装并启动：
+
+```bash
+chmod +x scripts/ubuntu-build.sh
+scripts/ubuntu-build.sh --install --run
+```
+
+默认从 `https://github.com/inkchills/x-hub.git` 的 `feat/linux-support` 克隆到 `~/x-hub-build`；更多选项见 `scripts/ubuntu-build.sh --help`。
+
+推送到 **`feat/linux-support`** 会触发 GitHub Actions 工作流 [`.github/workflows/linux-build.yml`](.github/workflows/linux-build.yml)：按 `v{package.json 版本}-linux.{短 SHA}` 打 annotated tag（若不存在），构建 `.deb` 并上传为 **draft + prerelease** 的 GitHub Release（不依赖 `release.yml` 的 tag 推送）。
+
+---
+
 x-hub 在 Linux 上用的是发行版自带的 **WebKitGTK 4.1**（`libwebkit2gtk-4.1.so.0`），不是 Windows 的 WebView2，也没有独立安装包可以点一下就下完。
 
 动态链接器在进程进入 `main` 之前就要加载这个 `.so`。缺库时二进制直接起不来，应用内「自动下载 WebView」走不到任何代码，所以不会做进程内自下。用发行版的包管理器装一次即可。

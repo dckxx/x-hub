@@ -124,7 +124,7 @@ x-hub/
 ├── DESIGN.md                   # 当前设计系统（唯一实现基线，与 style.css 对齐；§8 为 Reka UI 组件规范）
 ├── PRODUCT.md                  # 产品定义（用户/目标/品牌个性/设计原则/无障碍基线）
 ├── CONTEXT.md                  # 领域术语表（易混淆概念精确区分；「引导」节为规划中未实施）
-├── LINUX.md                    # Linux 安装系统 WebView（WebKitGTK 4.1）
+├── LINUX.md                    # Linux 支持：WebKitGTK 4.1 安装 / glibc 构建基座 / 已知问题（悬浮球贴边）
 └── package.json
 ```
 
@@ -313,4 +313,5 @@ pnpm run tauri:test    # Rust 单元测试（`cargo test`；build.rs 已给测�
 - 已决策未实施：**首次使用引导**（快速设置弹窗 + 帮助视图；决策见 `docs/adr/0001-first-run-onboarding.md`，术语预登记于 `CONTEXT.md`「引导」节，实施前代码中无 OnboardingDialog/HelpView/onboarding_done）
 - 方案已定稿未实施：**本地文件搜索**（索引工作区模型，见 `docs/file-search-plan.md`）
 - 方案已定稿未实施：**Agent 底座**（宿主内自研 agent loop，非外部引擎；模型接入走「平台额度 + BYOK」双路，13 个首批工具 + 三档权限模式；选型决策见 `docs/adr/0006-agent-runtime-selection.md`，实施蓝图见 `docs/agent-foundation-plan.md`。实施前代码中无 `src-tauri/src/agent/`、`chat_messages` 无 `turn_id` 列、`role` 仍只有 user/assistant）
+- 已知未解决（已搁置）：**Linux 悬浮球贴边（半隐 / 悬停滑出）**——该窗 `outer_size` 与 `inner_size` 不一致（实测差 37px，与位置偏差同值），「窗口中心即球心」的几何模型不成立。已加防护不再抖，但落点有偏移；接手前先读 `LINUX.md`「已知问题」与约定 42 Linux 补充（那里写了**别再只按 WM 钳制一个方向查**）
 - 可探索方向：拖拽排序动效打磨、键盘导航、前端单元测试、打包发布全流程验证（tauri:build）

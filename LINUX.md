@@ -1,8 +1,11 @@
 # Linux 安装系统 WebView（WebKitGTK 4.1）
 
-## Ubuntu 测试机一键脚本 / CI 自动包
+## 本地 / 容器构建（推荐）
 
-在 **Ubuntu 24.04** 测试机上可执行仓库内脚本拉代码、装依赖、打 deb、安装并启动：
+**发布用包一律在本地或容器里编**，不要在 CI 上编：CI 的 `ubuntu-latest` 通常是 24.04，
+编出来的包 glibc 要求过新（见下面「glibc 基座」一节）。宿主机是 24.04 时用 22.04 容器编即可。
+
+在 **Ubuntu 24.04** 测试机上也可执行仓库内脚本拉代码、装依赖、打 deb、安装并启动：
 
 ```bash
 chmod +x scripts/ubuntu-build.sh
@@ -11,7 +14,15 @@ scripts/ubuntu-build.sh --install --run
 
 默认从 `https://github.com/inkchills/x-hub.git` 的 `feat/linux-support` 克隆到 `~/x-hub-build`；更多选项见 `scripts/ubuntu-build.sh --help`。
 
-推送到 **`feat/linux-support`** 会触发 GitHub Actions 工作流 [`.github/workflows/linux-build.yml`](.github/workflows/linux-build.yml)：按 `v{package.json 版本}-linux.{短 SHA}` 打 annotated tag（若不存在），构建 `.deb` 并上传为 **draft + prerelease** 的 GitHub Release（不依赖 `release.yml` 的 tag 推送）。
+## CI 产物（手动触发）
+
+工作流 [`.github/workflows/linux-build.yml`](.github/workflows/linux-build.yml) **只在手动触发时运行**
+（Actions → 该工作流 → Run workflow，可指定要构建的 ref），推送分支**不会**触发——避免每次推送都重编一遍、
+刷出一堆 draft prerelease，而真正用于验证的包来自上面的本地/容器构建。
+
+手动跑一次的产物：按 `v{package.json 版本}-linux.{短 SHA}` 打 annotated tag（若不存在），构建 `.deb`
+并上传为 **draft + prerelease** 的 GitHub Release（不依赖 `release.yml` 的 tag 推送）。切到 22.04 runner
+之前，这条路径出来的包可能因 glibc 过新而在老系统上不可用。
 
 ---
 

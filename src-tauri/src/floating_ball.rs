@@ -12,6 +12,8 @@
 //! 半截屏外透明窗命中区不稳等老翻车点从根上消除。
 //! 曾用「贴边吸附」（完整贴边停靠），用户反馈从未生效且不需要，已替换。
 //! Windows / Linux：独立透明无边框窗口，与 countdown_window 同模式复用。
+//! Linux 贴边：WM 不允许半截出屏，半隐被钳成贴边全显，悬停不再另滑一格
+//! （否则窗口从光标下抽走，100ms 上下跳；见 `dock_hover_pos`）。
 //!
 //! 几何模型：球态窗口 = BALL_SIZE，菜单态 = MENU_SIZE，均以「球心」（窗口中心）为锚
 //! 原子切换（单次 SetWindowPos）。窗口 resize 时 WebView2 内容重排滞后一帧，旧帧按
@@ -367,8 +369,13 @@ fn nearest_work_rect(win: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)>
 
 /// 分步线性平滑移动窗口（仅位置不改尺寸，透明窗移动无重排开销）
 #[cfg(any(target_os = "windows", target_os = "linux"))]
+fn already_at(a: (i32, i32), b: (i32, i32)) -> bool {
+    (a.0 - b.0).abs() <= POS_TOL && (a.1 - b.1).abs() <= POS_TOL
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn slide_to(win: &tauri::WebviewWindow, from: (i32, i32), to: (i32, i32)) {
-    if from == to {
+    if already_at(from, to) {
         return;
     }
     for i in 1..=SLIDE_STEPS {
@@ -379,6 +386,28 @@ fn slide_to(win: &tauri::WebviewWindow, from: (i32, i32), to: (i32, i32)) {
             std::thread::sleep(std::time::Duration::from_millis(SLIDE_STEP_MS));
         }
     }
+}
+
+/// 只在尚未落到目标、且没对同一格搬过时才滑。悬停路径以前每 100ms 重放 80ms 动画，
+/// 窗口来回抽 = 上下跳。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn slide_once(
+    win: &tauri::WebviewWindow,
+    from: (i32, i32),
+    to: (i32, i32),
+) -> bool {
+    use std::sync::atomic::Ordering;
+    if already_at(from, to) {
+        last_nudge_set(None);
+        return false;
+    }
+    if last_nudge_get() == Some(to) {
+        return false;
+    }
+    last_nudge_set(Some(to));
+    slide_to(win, from, to);
+    LAST_DRAG_SETTLE_MS.store(now_ms(), Ordering::Relaxed);
+    true
 }
 
 /// 按「贴边自动隐藏」语义把球心吸附到工作区边缘（物理 px 口径，边缘监视与拖拽落位共用）：
@@ -501,6 +530,31 @@ fn landable_window_pos(
     }
 }
 
+/// 悬停滑出目标。Linux WM 不允许半截出屏，半隐已经贴边全显——再往里滑会把窗口
+/// 从光标下抽走，下一跳又隐回。所以 Linux 滑出位 = 半隐位（贴边停住、不做悬停动画）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn dock_hover_pos(
+    hidden: (i32, i32),
+    dx: i32,
+    dy: i32,
+    off: i32,
+    w: i32,
+    l: i32,
+    t: i32,
+    r: i32,
+    b: i32,
+) -> (i32, i32) {
+    if cfg!(target_os = "linux") {
+        let _ = (dx, dy, off, w, l, t, r, b);
+        hidden
+    } else {
+        (
+            (hidden.0 + dx * off).clamp(l, (r - w).max(l)),
+            (hidden.1 + dy * off).clamp(t, (b - w).max(t)),
+        )
+    }
+}
+
 /// 最近一次「落位补齐 / 隐回」的目标。WM 钳回后窗口到不了这个点，再搬只会跳动；
 /// 记下目标，下一跳发现仍不在几何上就采纳现位并冷却。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -555,6 +609,10 @@ fn edge_tick(app: &AppHandle) {
             let ncx = cx.clamp(l, r.max(l));
             let ncy = cy.clamp(t, b.max(t));
             let (nx, ny) = landable_window_pos(ncx - half, ncy - half, w, w, l, t, r, b);
+            // 已经在可落点：多半是 WM 把半隐钳回来了，再搬就是和它对打。
+            if already_at((pos.x, pos.y), (nx, ny)) {
+                return;
+            }
             let _ = win.set_position(PhysicalPosition::new(nx, ny));
             {
                 let _guard = config::lock();
@@ -643,15 +701,10 @@ fn edge_tick(app: &AppHandle) {
     // 半隐位 = 记忆球心位 - 半边长，再向屏内多露 PEEK（见常量注释：纯压边只露 24px 弧）
     let peek = (PEEK * scale).round() as i32;
     let hidden_raw = dock_hidden_pos(cx, cy, dx, dy, half as f64, peek);
-    // Linux：半隐原坐标半截出屏，WM 会钳回；先落到可落点，滑出位再从可落点往屏内推，
-    // 两态间距仍是半边长（> POS_TOL），悬停/隐回还能分开。
     let hidden = landable_window_pos(hidden_raw.0, hidden_raw.1, w, w, l, t, r, b);
-    let popped = (
-        (hidden.0 + dx * off).clamp(l, (r - w).max(l)),
-        (hidden.1 + dy * off).clamp(t, (b - w).max(t)),
-    );
-    let at_hidden = (pos.x - hidden.0).abs() <= POS_TOL && (pos.y - hidden.1).abs() <= POS_TOL;
-    let at_popped = (pos.x - popped.0).abs() <= POS_TOL && (pos.y - popped.1).abs() <= POS_TOL;
+    let popped = dock_hover_pos(hidden, dx, dy, off, w, l, t, r, b);
+    let at_hidden = already_at((pos.x, pos.y), hidden);
+    let at_popped = already_at((pos.x, pos.y), popped);
     let mut treat_as_hidden = at_hidden;
     if !at_hidden && !at_popped {
         // 窗口不在停靠几何上 = drag_end 的落位搬窗丢了（异步 IPC 在拖动刚结束的
@@ -667,11 +720,8 @@ fn edge_tick(app: &AppHandle) {
             && py < (pos.y + w).min(b);
         let target = if inside { popped } else { hidden };
         if last_nudge_get() == Some(target) {
-            // 已经搬过这一格，WM 没让窗口停在目标上。再搬只会 100ms 重放动画。
-            // 采纳现位当半隐，本跳继续走悬停判定；不写冷却，否则 800ms 内没法滑出。
             treat_as_hidden = true;
         } else {
-            last_nudge_set(Some(target));
             log::info!(
                 "[悬浮球] 落位补齐: 记忆球心=({:.0},{:.0}) 窗口=({},{}) → 搬到{}位 ({},{})",
                 cx,
@@ -682,25 +732,20 @@ fn edge_tick(app: &AppHandle) {
                 target.0,
                 target.1
             );
-            slide_to(&win, (pos.x, pos.y), target);
-            LAST_DRAG_SETTLE_MS.store(now_ms(), Ordering::Relaxed);
+            slide_once(&win, (pos.x, pos.y), target);
             return;
         }
     } else {
         last_nudge_set(None);
     }
-    // 当前是滑出态还是半隐态由窗口实际位置判定（不采信进程内缓存，
-    // 任何来源的几何漂移——DPI 自愈、菜单展开钳制——都能自纠正）
     let popped_now = !treat_as_hidden && at_popped;
     let Some((px, py)) = cursor_pos() else { return };
     if !popped_now {
-        // 半隐态：光标进入窗口屏内可见部分 → 滑出完整露出
         let inside = px >= pos.x.max(l)
             && px < (pos.x + w).min(r)
             && py >= pos.y.max(t)
             && py < (pos.y + w).min(b);
         if inside {
-            // 高频交互（每次悬停触发）走 debug，防文件日志持续增长
             log::debug!(
                 "[悬浮球] 悬停滑出: 窗口=({},{}) 滑出位=({},{}) 光标=({},{}) 停靠方向=({},{})",
                 pos.x,
@@ -712,18 +757,15 @@ fn edge_tick(app: &AppHandle) {
                 dx,
                 dy
             );
-            slide_to(&win, (pos.x, pos.y), popped);
+            slide_once(&win, (pos.x, pos.y), popped);
         }
     } else {
-        // 滑出态：光标离开滑出矩形 + 防抖边距 → 隐回半隐位
         let outside = px < pos.x - EDGE_MARGIN
             || px >= pos.x + w + EDGE_MARGIN
             || py < pos.y - EDGE_MARGIN
             || py >= pos.y + w + EDGE_MARGIN;
         if outside {
-            last_nudge_set(Some(hidden));
-            slide_to(&win, (pos.x, pos.y), hidden);
-            LAST_DRAG_SETTLE_MS.store(now_ms(), Ordering::Relaxed);
+            slide_once(&win, (pos.x, pos.y), hidden);
         }
     }
 }
@@ -1451,10 +1493,10 @@ mod tests {
         assert_eq!(dock_hidden_pos(0.0, 1040.0, 1, -1, 50.0, 8), (-42, 982));
     }
 
-    /// Linux WM 会把半隐负坐标钳回工作区。钳完之后半隐/滑出仍必须能分开
-    /// （间距 > POS_TOL），否则监视循环会把贴顶当成滑出态，每 100ms 再往上搬。
+    /// 贴顶半隐钳回工作区后：Windows 仍要半隐/滑出分开；Linux 滑出位必须等于半隐位
+    /// （贴边全显、不做悬停滑出），否则窗口从光标下抽走，100ms 上下跳。
     #[test]
-    fn landable_hidden_stays_distinct_from_popped() {
+    fn dock_hover_matches_platform_policy() {
         let half = 50i32;
         let w = 100;
         let (l, t, r, b) = (0, 0, 1920, 1040);
@@ -1462,17 +1504,18 @@ mod tests {
         assert_eq!(hidden_raw, (450, -42));
         let hidden = clamp_window_into_work(hidden_raw.0, hidden_raw.1, w, w, l, t, r, b);
         assert_eq!(hidden, (450, 0));
-        let popped = (
-            (hidden.0).clamp(l, (r - w).max(l)),
-            (hidden.1 + half).clamp(t, (b - w).max(t)),
-        );
-        assert_eq!(popped, (450, 50));
-        assert!(
-            (hidden.1 - popped.1).abs() > POS_TOL,
-            "钳回后半隐/滑出必须能区分: hidden={} popped={}",
-            hidden.1,
-            popped.1
-        );
+        let popped = dock_hover_pos(hidden, 0, 1, half, w, l, t, r, b);
+        if cfg!(target_os = "linux") {
+            assert_eq!(popped, hidden);
+        } else {
+            assert_eq!(popped, (450, 50));
+            assert!(
+                (hidden.1 - popped.1).abs() > POS_TOL,
+                "Windows 钳回后半隐/滑出必须能区分: hidden={} popped={}",
+                hidden.1,
+                popped.1
+            );
+        }
     }
 
     #[test]
@@ -1485,6 +1528,12 @@ mod tests {
             clamp_window_into_work(1862, 982, 100, 100, 0, 0, 1920, 1040),
             (1820, 940)
         );
+    }
+
+    #[test]
+    fn already_at_uses_pos_tolerance() {
+        assert!(already_at((0, 0), (0, 9)));
+        assert!(!already_at((0, 0), (0, 11)));
     }
 
     /// 半隐位（球心压屏边）与滑出位（球心向屏内一个半边长）必须落在两个可区分的

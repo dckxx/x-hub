@@ -462,6 +462,63 @@ fn dock_hidden_pos(cx: f64, cy: f64, dx: i32, dy: i32, half: f64, peek: i32) -> 
     )
 }
 
+/// 整窗落在工作区内的左上角。Linux WM（Mutter/KWin）会拒绝半截出屏的坐标，
+/// 用这个结果当半隐目标，才不会和监视循环对打。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn clamp_window_into_work(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    l: i32,
+    t: i32,
+    r: i32,
+    b: i32,
+) -> (i32, i32) {
+    (
+        x.clamp(l, (r - w).max(l)),
+        y.clamp(t, (b - h).max(t)),
+    )
+}
+
+/// Windows 允许半截出屏，原样返回；Linux 钳到工作区内（可落地的贴边目标）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn landable_window_pos(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    l: i32,
+    t: i32,
+    r: i32,
+    b: i32,
+) -> (i32, i32) {
+    if cfg!(target_os = "linux") {
+        clamp_window_into_work(x, y, w, h, l, t, r, b)
+    } else {
+        let _ = (w, h, l, t, r, b);
+        (x, y)
+    }
+}
+
+/// 最近一次「落位补齐 / 隐回」的目标。WM 钳回后窗口到不了这个点，再搬只会跳动；
+/// 记下目标，下一跳发现仍不在几何上就采纳现位并冷却。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn last_nudge_target() -> &'static std::sync::Mutex<Option<(i32, i32)>> {
+    static V: std::sync::OnceLock<std::sync::Mutex<Option<(i32, i32)>>> = std::sync::OnceLock::new();
+    V.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn last_nudge_get() -> Option<(i32, i32)> {
+    *last_nudge_target().lock().unwrap_or_else(|p| p.into_inner())
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn last_nudge_set(v: Option<(i32, i32)>) {
+    *last_nudge_target().lock().unwrap_or_else(|p| p.into_inner()) = v;
+}
+
 /// 边缘监视单跳：对照「半隐位/滑出位」与系统光标，决定滑出或隐回。
 /// 停靠身份必须「记忆球心」与「窗口实际位置」双方一致才成立——只信记忆会把
 /// 用户刚拖走的球按旧记忆拽回屏边（表现为拖到任意位置都弹回去）。
@@ -497,7 +554,8 @@ fn edge_tick(app: &AppHandle) {
         if cx < l || cx > r || cy < t || cy > b {
             let ncx = cx.clamp(l, r.max(l));
             let ncy = cy.clamp(t, b.max(t));
-            let _ = win.set_position(PhysicalPosition::new(ncx - half, ncy - half));
+            let (nx, ny) = landable_window_pos(ncx - half, ncy - half, w, w, l, t, r, b);
+            let _ = win.set_position(PhysicalPosition::new(nx, ny));
             {
                 let _guard = config::lock();
                 let mut cur = config::load();
@@ -584,13 +642,17 @@ fn edge_tick(app: &AppHandle) {
     let off = half;
     // 半隐位 = 记忆球心位 - 半边长，再向屏内多露 PEEK（见常量注释：纯压边只露 24px 弧）
     let peek = (PEEK * scale).round() as i32;
-    let hidden = dock_hidden_pos(cx, cy, dx, dy, half as f64, peek);
+    let hidden_raw = dock_hidden_pos(cx, cy, dx, dy, half as f64, peek);
+    // Linux：半隐原坐标半截出屏，WM 会钳回；先落到可落点，滑出位再从可落点往屏内推，
+    // 两态间距仍是半边长（> POS_TOL），悬停/隐回还能分开。
+    let hidden = landable_window_pos(hidden_raw.0, hidden_raw.1, w, w, l, t, r, b);
     let popped = (
         (hidden.0 + dx * off).clamp(l, (r - w).max(l)),
         (hidden.1 + dy * off).clamp(t, (b - w).max(t)),
     );
     let at_hidden = (pos.x - hidden.0).abs() <= POS_TOL && (pos.y - hidden.1).abs() <= POS_TOL;
     let at_popped = (pos.x - popped.0).abs() <= POS_TOL && (pos.y - popped.1).abs() <= POS_TOL;
+    let mut treat_as_hidden = at_hidden;
     if !at_hidden && !at_popped {
         // 窗口不在停靠几何上 = drag_end 的落位搬窗丢了（异步 IPC 在拖动刚结束的
         // ~200ms 内被吞/被覆盖，日志实证：补搬一次后纠偏读到的仍是旧位置）。
@@ -604,22 +666,32 @@ fn edge_tick(app: &AppHandle) {
             && py >= pos.y.max(t)
             && py < (pos.y + w).min(b);
         let target = if inside { popped } else { hidden };
-        log::info!(
-            "[悬浮球] 落位补齐: 记忆球心=({:.0},{:.0}) 窗口=({},{}) → 搬到{}位 ({},{})",
-            cx,
-            cy,
-            pos.x,
-            pos.y,
-            if inside { "滑出" } else { "半隐" },
-            target.0,
-            target.1
-        );
-        slide_to(&win, (pos.x, pos.y), target);
-        return;
+        if last_nudge_get() == Some(target) {
+            // 已经搬过这一格，WM 没让窗口停在目标上。再搬只会 100ms 重放动画。
+            // 采纳现位当半隐，本跳继续走悬停判定；不写冷却，否则 800ms 内没法滑出。
+            treat_as_hidden = true;
+        } else {
+            last_nudge_set(Some(target));
+            log::info!(
+                "[悬浮球] 落位补齐: 记忆球心=({:.0},{:.0}) 窗口=({},{}) → 搬到{}位 ({},{})",
+                cx,
+                cy,
+                pos.x,
+                pos.y,
+                if inside { "滑出" } else { "半隐" },
+                target.0,
+                target.1
+            );
+            slide_to(&win, (pos.x, pos.y), target);
+            LAST_DRAG_SETTLE_MS.store(now_ms(), Ordering::Relaxed);
+            return;
+        }
+    } else {
+        last_nudge_set(None);
     }
     // 当前是滑出态还是半隐态由窗口实际位置判定（不采信进程内缓存，
     // 任何来源的几何漂移——DPI 自愈、菜单展开钳制——都能自纠正）
-    let popped_now = !at_hidden && at_popped;
+    let popped_now = !treat_as_hidden && at_popped;
     let Some((px, py)) = cursor_pos() else { return };
     if !popped_now {
         // 半隐态：光标进入窗口屏内可见部分 → 滑出完整露出
@@ -649,7 +721,9 @@ fn edge_tick(app: &AppHandle) {
             || py < pos.y - EDGE_MARGIN
             || py >= pos.y + w + EDGE_MARGIN;
         if outside {
+            last_nudge_set(Some(hidden));
             slide_to(&win, (pos.x, pos.y), hidden);
+            LAST_DRAG_SETTLE_MS.store(now_ms(), Ordering::Relaxed);
         }
     }
 }
@@ -1182,8 +1256,13 @@ fn settle_drag(app: &AppHandle) {
         // 再滑出的观感很怪），由监视循环在光标移开后隐回；其余落半隐停靠位。
         // 半隐位与 edge_tick 同口径（dock_hidden_pos）
         let peek = (PEEK * scale).round() as i32;
-        let (dock_nx, dock_ny) = dock_hidden_pos(cx, cy, dx, dy, half, peek);
         let size_px = (half * 2.0).round() as i32;
+        let (raw_nx, raw_ny) = dock_hidden_pos(cx, cy, dx, dy, half, peek);
+        let (dock_nx, dock_ny) = if let Some((ml, mt, mr, mb)) = wa_rect {
+            landable_window_pos(raw_nx, raw_ny, size_px, size_px, ml, mt, mr, mb)
+        } else {
+            (raw_nx, raw_ny)
+        };
         let mut popped_now = false;
         if let (Some((ml, mt, mr, mb)), true) = (wa_rect, dx != 0 || dy != 0) {
             let (vx0, vy0) = (dock_nx.max(ml), dock_ny.max(mt));
@@ -1370,6 +1449,42 @@ mod tests {
         assert_eq!(dock_hidden_pos(1920.0, 500.0, -1, 0, 50.0, 8), (1862, 450));
         // 角落双侧（贴左 + 贴底）：y 轴向屏内 = 向上收 8
         assert_eq!(dock_hidden_pos(0.0, 1040.0, 1, -1, 50.0, 8), (-42, 982));
+    }
+
+    /// Linux WM 会把半隐负坐标钳回工作区。钳完之后半隐/滑出仍必须能分开
+    /// （间距 > POS_TOL），否则监视循环会把贴顶当成滑出态，每 100ms 再往上搬。
+    #[test]
+    fn landable_hidden_stays_distinct_from_popped() {
+        let half = 50i32;
+        let w = 100;
+        let (l, t, r, b) = (0, 0, 1920, 1040);
+        let hidden_raw = dock_hidden_pos(500.0, 0.0, 0, 1, 50.0, 8);
+        assert_eq!(hidden_raw, (450, -42));
+        let hidden = clamp_window_into_work(hidden_raw.0, hidden_raw.1, w, w, l, t, r, b);
+        assert_eq!(hidden, (450, 0));
+        let popped = (
+            (hidden.0).clamp(l, (r - w).max(l)),
+            (hidden.1 + half).clamp(t, (b - w).max(t)),
+        );
+        assert_eq!(popped, (450, 50));
+        assert!(
+            (hidden.1 - popped.1).abs() > POS_TOL,
+            "钳回后半隐/滑出必须能区分: hidden={} popped={}",
+            hidden.1,
+            popped.1
+        );
+    }
+
+    #[test]
+    fn clamp_window_keeps_fully_on_screen() {
+        assert_eq!(
+            clamp_window_into_work(-42, 450, 100, 100, 0, 0, 1920, 1040),
+            (0, 450)
+        );
+        assert_eq!(
+            clamp_window_into_work(1862, 982, 100, 100, 0, 0, 1920, 1040),
+            (1820, 940)
+        );
     }
 
     /// 半隐位（球心压屏边）与滑出位（球心向屏内一个半边长）必须落在两个可区分的

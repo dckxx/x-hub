@@ -573,6 +573,95 @@ fn last_nudge_set(v: Option<(i32, i32)>) {
     *last_nudge_target().lock().unwrap_or_else(|p| p.into_inner()) = v;
 }
 
+/// 自由位目标 = 记忆球心 − 半边长，再按平台钳进工作区（Linux WM 只接受工作区内坐标）。
+/// 抽成纯函数便于回归：日志实证「记忆球心=(2317,330)、工作区底=343」时，原始目标
+/// y=280 会被 WM 钳成 243，于是监视循环每 800ms 重搬一次（球上下跳）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn free_ball_pos(
+    cx: f64,
+    cy: f64,
+    half: i32,
+    w: i32,
+    l: i32,
+    t: i32,
+    r: i32,
+    b: i32,
+) -> (i32, i32) {
+    landable_window_pos(
+        (cx - half as f64).round() as i32,
+        (cy - half as f64).round() as i32,
+        w,
+        w,
+        l,
+        t,
+        r,
+        b,
+    )
+}
+
+/// 窗口所在显示器的整屏矩形（含任务栏），用于与工作区矩形对照诊断
+/// （工作区 = 整屏扣面板/struts；两者相差悬殊说明是面板占位，整屏就小说明显示器本身小）
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn monitor_rect(win: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
+    let mon = win
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| win.primary_monitor().ok().flatten())?;
+    let p = mon.position();
+    let s = mon.size();
+    Some((
+        p.x,
+        p.y,
+        p.x + s.width as i32,
+        p.y + s.height as i32,
+    ))
+}
+
+/// 记忆位搬不动时采纳窗口现位：把实际球心写回记忆。
+/// Linux WM 会把窗口钳在工作区内，于是「记忆位」可能是个它永不接受的点——记着它
+/// 只会让监视循环按冷却节奏反复 SetWindowPos（日志实证每秒一条「落位补齐」，用户
+/// 看到的就是球上下跳）。窗口位置是系统给的既成事实，记忆向它收敛，循环立即静止。
+/// 末尾清掉 last_nudge 并武装冷却，避免采纳后又立刻被别的分支当成漂移。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn adopt_ball_center(
+    win: &tauri::WebviewWindow,
+    pos: PhysicalPosition<i32>,
+    half: i32,
+    target: (i32, i32),
+    work: (i32, i32, i32, i32),
+) {
+    use std::sync::atomic::Ordering;
+    let ncx = pos.x + half;
+    let ncy = pos.y + half;
+    log::warn!(
+        "[悬浮球] 落位采纳: 窗口=({},{}) 半边长={} 工作区=({},{},{},{}) 整屏={:?} 目标=({},{}) 未生效 → 球心改为 ({},{})",
+        pos.x,
+        pos.y,
+        half,
+        work.0,
+        work.1,
+        work.2,
+        work.3,
+        monitor_rect(win),
+        target.0,
+        target.1,
+        ncx,
+        ncy
+    );
+    {
+        let _guard = config::lock();
+        let mut cur = config::load();
+        cur.floating_ball_x = Some(ncx as f64);
+        cur.floating_ball_y = Some(ncy as f64);
+        if config::save(&cur).is_ok() {
+            memo_ball_set(ncx as f64, ncy as f64);
+        }
+    }
+    last_nudge_set(None);
+    LAST_DRAG_SETTLE_MS.store(now_ms(), Ordering::Relaxed);
+}
+
 /// 边缘监视单跳：对照「半隐位/滑出位」与系统光标，决定滑出或隐回。
 /// 停靠身份必须「记忆球心」与「窗口实际位置」双方一致才成立——只信记忆会把
 /// 用户刚拖走的球按旧记忆拽回屏边（表现为拖到任意位置都弹回去）。
@@ -673,21 +762,32 @@ fn edge_tick(app: &AppHandle) {
     let dock_bottom = (b as f64 - cy).abs() <= DOCK_TOL;
     if !(dock_left || dock_right || dock_top || dock_bottom) {
         // 自由位记忆：窗口被搬丢（落位 IPC 丢失/被后续消息覆盖）时补齐到记忆位，
-        // 记忆不动——球被拖走必经 drag_end 重写记忆，轮询期间记忆不可能过期
-        let mx = (cx - half as f64).round() as i32;
-        let my = (cy - half as f64).round() as i32;
+        // 记忆不动——球被拖走必经 drag_end 重写记忆，轮询期间记忆不可能过期。
+        // Linux：目标先钳进工作区（WM 会把越界坐标直接钳回来，拿它当目标就是每跳
+        // 对打一次——日志实证「记忆球心=(2317,330) 窗口=(2267,243) → 搬到 (2267,280)」
+        // 每秒刷一条，窗口下沿被 WM 钉在工作区底=343，则 280 永远到不了）。
+        let (mx, my) = free_ball_pos(cx, cy, half, w, l, t, r, b);
         if (mx - pos.x).abs() > POS_TOL || (my - pos.y).abs() > POS_TOL {
-            let _ = win.set_position(PhysicalPosition::new(mx, my));
-            LAST_DRAG_SETTLE_MS.store(now_ms(), Ordering::Relaxed);
-            log::info!(
-                "[悬浮球] 落位补齐: 记忆球心=({:.0},{:.0}) 窗口=({},{}) → 搬到 ({},{})",
-                cx,
-                cy,
-                pos.x,
-                pos.y,
-                mx,
-                my
-            );
+            if last_nudge_get() == Some((mx, my)) {
+                // 已经搬过一次、窗口仍不在这——WM 不接受该坐标（或 tao 未生效）。
+                // 采纳现位当新记忆，绝不重复 SetWindowPos（重复 = 球每 800ms 上下跳）
+                adopt_ball_center(&win, pos, half, (mx, my), (l, t, r, b));
+            } else {
+                last_nudge_set(Some((mx, my)));
+                let _ = win.set_position(PhysicalPosition::new(mx, my));
+                LAST_DRAG_SETTLE_MS.store(now_ms(), Ordering::Relaxed);
+                log::info!(
+                    "[悬浮球] 落位补齐: 记忆球心=({:.0},{:.0}) 窗口=({},{}) → 搬到 ({},{})",
+                    cx,
+                    cy,
+                    pos.x,
+                    pos.y,
+                    mx,
+                    my
+                );
+            }
+        } else {
+            last_nudge_set(None);
         }
         return;
     }
@@ -817,6 +917,18 @@ pub fn init(app: &AppHandle) {
         }
         let cfg = config::load();
         AUTO_HIDE.store(cfg.floating_ball_auto_hide, Ordering::Relaxed);
+        // 几何基线一次性落日志：排查「球停在意外位置 / 反复搬窗」时先看这条
+        // （工作区远小于整屏 = 面板 struts 占位；记忆球心落在工作区外 = WM 不接受它）
+        if let Some(win) = app.get_webview_window(LABEL) {
+            log::info!(
+                "[悬浮球] 几何基线: 工作区={:?} 整屏={:?} scale={:.3} 记忆球心=({:?},{:?})",
+                nearest_work_rect(&win),
+                monitor_rect(&win),
+                window_scale(&win),
+                cfg.floating_ball_x,
+                cfg.floating_ball_y
+            );
+        }
         start_edge_watch(app);
         if !cfg.floating_ball_enabled {
             // 停用状态：窗口隐藏常驻，设置启用时直接 show 即可
@@ -1028,9 +1140,17 @@ fn apply_geometry(win: &tauri::WebviewWindow, expanded: bool, scale_override: Op
         if !was_expanded {
             *pre = Some((cx.round() as i32, cy.round() as i32));
         }
-    } else if let Some((px, py)) = pre.take() {
-        nx = px as f64 - new_half;
-        ny = py as f64 - new_half;
+    } else if was_expanded {
+        // 只有「确实刚从展开态收拢」才恢复展开前球心。窗口本来就是球态时，
+        // pre 可能残留自上一次展开（如收起后隐藏、再显示触发本函数）——那时
+        // 按它定位会把球挪到与记忆无关的位置，随后监视循环又照记忆搬回来，
+        // 两者相差半边长（日志实证：窗口反复停在 243 与 280 之间 = 上下跳）。
+        if let Some((px, py)) = pre.take() {
+            nx = px as f64 - new_half;
+            ny = py as f64 - new_half;
+        }
+    } else {
+        *pre = None;
     }
     drop(pre);
 
@@ -1534,6 +1654,21 @@ mod tests {
     fn already_at_uses_pos_tolerance() {
         assert!(already_at((0, 0), (0, 9)));
         assert!(!already_at((0, 0), (0, 11)));
+    }
+
+    /// 自由位目标必须钳进工作区：日志实证「记忆球心=(2317,330)、工作区底=343」时，
+    /// 原始目标 y=280（窗口下沿 380 越界）会被 WM 钳成 243，监视循环于是每 800ms
+    /// 重搬一次 = 球上下跳。Linux 必须直接给出 243（已到位的坐标 → 不再搬）；
+    /// Windows 允许半截出屏，保持原目标。
+    #[test]
+    fn free_pos_is_clamped_into_work_area() {
+        let (x, y) = free_ball_pos(2317.0, 330.0, 50, 100, 0, 0, 2560, 343);
+        assert_eq!(x, 2267);
+        if cfg!(target_os = "linux") {
+            assert_eq!(y, 243);
+        } else {
+            assert_eq!(y, 280);
+        }
     }
 
     /// 半隐位（球心压屏边）与滑出位（球心向屏内一个半边长）必须落在两个可区分的

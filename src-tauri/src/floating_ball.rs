@@ -93,9 +93,20 @@ const SLIDE_STEP_MS: u64 = 16;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 const DRAG_SETTLE_COOLDOWN_MS: u64 = 800;
 
+/// 搬窗后等待「目标生效」的时限（ms）：超过它窗口仍不在目标上，说明 WM 不接受该
+/// 坐标（Mutter/KWin 会把窗口钳回工作区）或 tao 没落实，此时**采纳窗口现位当新记忆**
+/// 并停手。没有这条时限，停靠分支的「落位补齐」会每两跳重滑一次，
+/// 日志实证每秒 6~10 条刷屏、球可见上下跳。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+const NUDGE_ADOPT_MS: u64 = 1200;
+
 /// 最近一次拖拽落位时间戳（ms）；0 = 从未拖拽。见 DRAG_SETTLE_COOLDOWN_MS
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 static LAST_DRAG_SETTLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 最近一次「按目标搬窗」的时刻（ms）：搬过一次、等 NUDGE_ADOPT_MS 仍未到位即采纳现位
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+static LAST_NUDGE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// 拖拽武装时刻（ms；0 = 未武装）：前端 `floating_ball_drag_begin`（位移超阈值、
 /// 移交系统原生拖动时）记录；真正的松手由边缘监视循环检测——左键释放后的第一跳执行
@@ -405,9 +416,23 @@ fn slide_once(
         return false;
     }
     last_nudge_set(Some(to));
+    LAST_NUDGE_MS.store(now_ms(), Ordering::Relaxed);
     slide_to(win, from, to);
     LAST_DRAG_SETTLE_MS.store(now_ms(), Ordering::Relaxed);
     true
+}
+
+/// 上一次实际搬窗的时刻。用于「搬过一次、等一会儿仍不生效就采纳现位」——
+/// 少了这个时限判断，目标永远达不到（WM 钳制）时监视循环会无限重滑（日志实证
+/// 每秒 6~10 条「落位补齐」，用户看到的就是球上下跳）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn last_nudge_ms() -> u64 {
+    LAST_NUDGE_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn set_last_nudge_ms(v: u64) {
+    LAST_NUDGE_MS.store(v, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// 按「贴边自动隐藏」语义把球心吸附到工作区边缘（物理 px 口径，边缘监视与拖拽落位共用）：
@@ -618,31 +643,31 @@ fn monitor_rect(win: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
     ))
 }
 
-/// 记忆位搬不动时采纳窗口现位：把实际球心写回记忆。
-/// Linux WM 会把窗口钳在工作区内，于是「记忆位」可能是个它永不接受的点——记着它
-/// 只会让监视循环按冷却节奏反复 SetWindowPos（日志实证每秒一条「落位补齐」，用户
+/// 目标搬不动时采纳窗口现位：把实际球心写回记忆，并打全几何以便定位根因。
+/// Linux WM 会把窗口钳在工作区内，于是「记忆位/半隐位」可能是个它永不接受的点——
+/// 记着它只会让监视循环按冷却节奏反复搬（日志实证每秒 6~10 条「落位补齐」，用户
 /// 看到的就是球上下跳）。窗口位置是系统给的既成事实，记忆向它收敛，循环立即静止。
 /// 末尾清掉 last_nudge 并武装冷却，避免采纳后又立刻被别的分支当成漂移。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-fn adopt_ball_center(
+fn adopt_current_center(
     win: &tauri::WebviewWindow,
     pos: PhysicalPosition<i32>,
     half: i32,
     target: (i32, i32),
-    work: (i32, i32, i32, i32),
 ) {
     use std::sync::atomic::Ordering;
     let ncx = pos.x + half;
     let ncy = pos.y + half;
+    let work = nearest_work_rect(win);
     log::warn!(
-        "[悬浮球] 落位采纳: 窗口=({},{}) 半边长={} 工作区=({},{},{},{}) 整屏={:?} 目标=({},{}) 未生效 → 球心改为 ({},{})",
+        "[悬浮球] 落位采纳: 窗口=({},{}) 尺寸={:?} 内部={:?} 半边长={} scale={:.3} 工作区={:?} 整屏={:?} 目标=({},{}) 未生效 → 球心改为 ({},{})",
         pos.x,
         pos.y,
+        win.outer_size().ok(),
+        win.inner_size().ok(),
         half,
-        work.0,
-        work.1,
-        work.2,
-        work.3,
+        window_scale(win),
+        work,
         monitor_rect(win),
         target.0,
         target.1,
@@ -769,10 +794,13 @@ fn edge_tick(app: &AppHandle) {
         let (mx, my) = free_ball_pos(cx, cy, half, w, l, t, r, b);
         if (mx - pos.x).abs() > POS_TOL || (my - pos.y).abs() > POS_TOL {
             if last_nudge_get() == Some((mx, my)) {
-                // 已经搬过一次、窗口仍不在这——WM 不接受该坐标（或 tao 未生效）。
-                // 采纳现位当新记忆，绝不重复 SetWindowPos（重复 = 球每 800ms 上下跳）
-                adopt_ball_center(&win, pos, half, (mx, my), (l, t, r, b));
+                // 已经搬过一次同一目标：等过 NUDGE_ADOPT_MS 仍不到位 → 采纳现位
+                // （WM 不接受该坐标，例如工作区外的记忆位），绝不重复 SetWindowPos
+                if now_ms().saturating_sub(last_nudge_ms()) >= NUDGE_ADOPT_MS {
+                    adopt_current_center(&win, pos, half, (mx, my));
+                }
             } else {
+                set_last_nudge_ms(now_ms());
                 last_nudge_set(Some((mx, my)));
                 let _ = win.set_position(PhysicalPosition::new(mx, my));
                 LAST_DRAG_SETTLE_MS.store(now_ms(), Ordering::Relaxed);
@@ -820,14 +848,24 @@ fn edge_tick(app: &AppHandle) {
             && py < (pos.y + w).min(b);
         let target = if inside { popped } else { hidden };
         if last_nudge_get() == Some(target) {
+            // 已经搬过一次同一目标：等 NUDGE_ADOPT_MS 看它是否生效
+            if now_ms().saturating_sub(last_nudge_ms()) >= NUDGE_ADOPT_MS {
+                // 等够了还是没到位 → WM 不接受这个坐标，采纳现位（停手）
+                adopt_current_center(&win, pos, half, target);
+                return;
+            }
+            // 还在生效窗口内：当半隐态处理，本跳不重复搬（否则就是 100ms 抖）
             treat_as_hidden = true;
         } else {
             log::info!(
-                "[悬浮球] 落位补齐: 记忆球心=({:.0},{:.0}) 窗口=({},{}) → 搬到{}位 ({},{})",
+                "[悬浮球] 落位补齐: 记忆球心=({:.0},{:.0}) 窗口=({},{}) 尺寸={} 内部={} scale={:.3} → 搬到{}位 ({},{})",
                 cx,
                 cy,
                 pos.x,
                 pos.y,
+                w,
+                win.inner_size().map(|s| s.width).unwrap_or(0),
+                scale,
                 if inside { "滑出" } else { "半隐" },
                 target.0,
                 target.1

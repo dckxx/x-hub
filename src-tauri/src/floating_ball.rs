@@ -384,6 +384,20 @@ fn already_at(a: (i32, i32), b: (i32, i32)) -> bool {
     (a.0 - b.0).abs() <= POS_TOL && (a.1 - b.1).abs() <= POS_TOL
 }
 
+/// 停靠几何比对：单轴贴边只要求贴边轴到位。
+/// 非贴边轴交给用户放置 / 合成器（Mutter 顶栏 strut、GTK CSD 会改 Y），
+/// 两轴都要求 POS_TOL 时，Linux 上会每 100ms 判「漂移」再搬一次 → 上下跳。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn pos_matches_dock(pos: (i32, i32), target: (i32, i32), dx: i32, dy: i32) -> bool {
+    let x_ok = (pos.0 - target.0).abs() <= POS_TOL;
+    let y_ok = (pos.1 - target.1).abs() <= POS_TOL;
+    match (dx != 0, dy != 0) {
+        (true, false) => x_ok,
+        (false, true) => y_ok,
+        _ => x_ok && y_ok,
+    }
+}
+
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn slide_to(win: &tauri::WebviewWindow, from: (i32, i32), to: (i32, i32)) {
     if already_at(from, to) {
@@ -542,6 +556,32 @@ fn landable_window_pos(
     }
 }
 
+/// 停靠态可落点：Linux 只钳「发生停靠的轴」。
+/// 左右贴边若连 Y 一起钳，靠近顶栏时半隐 Y 被拽到 work_area.top，
+/// 合成器再把窗往下挤，监视循环就在两个 Y 之间跳。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn landable_dock_pos(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    l: i32,
+    t: i32,
+    r: i32,
+    b: i32,
+    dx: i32,
+    dy: i32,
+) -> (i32, i32) {
+    if !cfg!(target_os = "linux") {
+        let _ = (w, h, l, t, r, b);
+        return (x, y);
+    }
+    (
+        if dx != 0 { x.clamp(l, (r - w).max(l)) } else { x },
+        if dy != 0 { y.clamp(t, (b - h).max(t)) } else { y },
+    )
+}
+
 /// 位置纠正（自由位/停靠位补齐）的去重状态：目标是哪一格 + 何时搬的。
 /// **到达时不清空**——否则「WM 把窗口推开」会被判成「还没搬过」而无限重搬。
 /// 只有目标换了（用户真的把球挪到别处）才重新武装；超时未到位即采纳现位。
@@ -571,9 +611,11 @@ fn posfix_nudge(
     half: i32,
     target: (i32, i32),
     label: &str,
+    dx: i32,
+    dy: i32,
 ) -> PosFix {
     use std::sync::atomic::Ordering;
-    if already_at((pos.x, pos.y), target) {
+    if pos_matches_dock((pos.x, pos.y), target, dx, dy) {
         return PosFix::InFlight;
     }
     let now = now_ms();
@@ -775,10 +817,25 @@ fn edge_tick(app: &AppHandle) {
     // 半隐/角落停靠的球心恰在边缘线上（含边界），不会误触发
     if let Some((l, t, r, b)) = nearest_work_rect(&win) {
         let (cx, cy) = (pos.x + half, pos.y + half);
-        if cx < l || cx > r || cy < t || cy > b {
-            let ncx = cx.clamp(l, r.max(l));
-            let ncy = cy.clamp(t, b.max(t));
-            let (nx, ny) = landable_window_pos(ncx - half, ncy - half, w, w, l, t, r, b);
+        // 只把「整球飞出工作区」的轴钳回来。贴边轴上球心本就在边上；
+        // 非贴边轴被顶栏 strut / CSD 挤出几像素不能当飞出，否则左右贴边会上下跳。
+        let overflow_x = cx < l - POS_TOL || cx > r + POS_TOL;
+        let overflow_y = cy < t - POS_TOL || cy > b + POS_TOL;
+        if overflow_x || overflow_y {
+            let ncx = if overflow_x { cx.clamp(l, r.max(l)) } else { cx };
+            let ncy = if overflow_y { cy.clamp(t, b.max(t)) } else { cy };
+            let (nx, ny) = landable_dock_pos(
+                ncx - half,
+                ncy - half,
+                w,
+                w,
+                l,
+                t,
+                r,
+                b,
+                i32::from(overflow_x),
+                i32::from(overflow_y),
+            );
             // 已经在可落点：多半是 WM 把半隐钳回来了，再搬就是和它对打。
             if already_at((pos.x, pos.y), (nx, ny)) {
                 return;
@@ -849,7 +906,7 @@ fn edge_tick(app: &AppHandle) {
         // 每秒刷一条，窗口下沿被 WM 钉在工作区底=343，则 280 永远到不了）。
         let (mx, my) = free_ball_pos(cx, cy, half, w, l, t, r, b);
         // 统一闸门：同一格只搬一次，超时未到位则采纳现位（见 posfix_nudge）
-        let _ = posfix_nudge(&win, pos, half, (mx, my), "落位补齐");
+        let _ = posfix_nudge(&win, pos, half, (mx, my), "落位补齐", 0, 0);
         return;
     }
     let dx = i32::from(dock_left) - i32::from(dock_right);
@@ -862,10 +919,10 @@ fn edge_tick(app: &AppHandle) {
     // 半隐位 = 记忆球心位 - 半边长，再向屏内多露 PEEK（见常量注释：纯压边只露 24px 弧）
     let peek = (PEEK * scale).round() as i32;
     let hidden_raw = dock_hidden_pos(cx, cy, dx, dy, half as f64, peek);
-    let hidden = landable_window_pos(hidden_raw.0, hidden_raw.1, w, w, l, t, r, b);
+    let hidden = landable_dock_pos(hidden_raw.0, hidden_raw.1, w, w, l, t, r, b, dx, dy);
     let popped = dock_hover_pos(hidden, dx, dy, off, w, l, t, r, b);
-    let at_hidden = already_at((pos.x, pos.y), hidden);
-    let at_popped = already_at((pos.x, pos.y), popped);
+    let at_hidden = pos_matches_dock((pos.x, pos.y), hidden, dx, dy);
+    let at_popped = pos_matches_dock((pos.x, pos.y), popped, dx, dy);
     let mut treat_as_hidden = at_hidden;
     if !at_hidden && !at_popped {
         // 窗口不在停靠几何上 = drag_end 的落位搬窗丢了（异步 IPC 在拖动刚结束的
@@ -881,7 +938,7 @@ fn edge_tick(app: &AppHandle) {
             && py < (pos.y + w).min(b);
         let target = if inside { popped } else { hidden };
         let label = if inside { "落位补齐(滑出位)" } else { "落位补齐(半隐位)" };
-        match posfix_nudge(&win, pos, half, target, label) {
+        match posfix_nudge(&win, pos, half, target, label, dx, dy) {
             PosFix::Handled => return,
             // 已在途中 / 已在目标上：当半隐态处理，本跳不重复搬（否则就是 100ms 抖）
             PosFix::InFlight => treat_as_hidden = true,
@@ -1031,13 +1088,9 @@ fn ensure_window(app: &AppHandle) -> tauri::Result<()> {
             .skip_taskbar(true)
             .visible(true)
             .additional_browser_args(crate::ADDITIONAL_BROWSER_ARGS);
-    // 透明窗口在 Windows 上不能同时启用系统阴影（黑边），与便签/倒计时浮窗一致
-    #[cfg(target_os = "windows")]
-    let builder = {
-        let mut builder = builder;
-        builder = builder.shadow(false);
-        builder
-    };
+    // 透明窗口不能同时启用系统阴影：Windows 会画黑边；GTK 阴影会撑大
+    // outer_size（实测 +37px），贴边监视把尺寸差当成位置漂移而跳动。
+    let builder = builder.shadow(false);
     let win = builder.build()?;
 
     // 彻底不进任务栏：tao 的 skip_taskbar 只是一次性 DeleteTab，窗口仍带 WS_EX_APPWINDOW，
@@ -1478,7 +1531,7 @@ fn settle_drag(app: &AppHandle) {
         let size_px = (half * 2.0).round() as i32;
         let (raw_nx, raw_ny) = dock_hidden_pos(cx, cy, dx, dy, half, peek);
         let (dock_nx, dock_ny) = if let Some((ml, mt, mr, mb)) = wa_rect {
-            landable_window_pos(raw_nx, raw_ny, size_px, size_px, ml, mt, mr, mb)
+            landable_dock_pos(raw_nx, raw_ny, size_px, size_px, ml, mt, mr, mb, dx, dy)
         } else {
             (raw_nx, raw_ny)
         };
@@ -1711,6 +1764,19 @@ mod tests {
     fn already_at_uses_pos_tolerance() {
         assert!(already_at((0, 0), (0, 9)));
         assert!(!already_at((0, 0), (0, 11)));
+    }
+
+    /// 左右贴边只认 X：Y 被顶栏挤偏仍算半隐，避免监视循环上下跳。
+    #[test]
+    fn side_dock_ignores_free_axis_drift() {
+        let hidden = dock_hidden_pos(0.0, 40.0, 1, 0, 50.0, 8);
+        assert_eq!(hidden, (-42, -10));
+        let work = (0, 32, 1920, 1040);
+        let landed = landable_dock_pos(hidden.0, hidden.1, 100, 100, work.0, work.1, work.2, work.3, 1, 0);
+        assert_eq!(landed.0, if cfg!(target_os = "linux") { 0 } else { -42 });
+        assert_eq!(landed.1, hidden.1); // 不得把 Y 钳到顶栏
+        assert!(pos_matches_dock((-42, 8), hidden, 1, 0));
+        assert!(!pos_matches_dock((40, -10), hidden, 1, 0));
     }
 
     /// 自由位目标必须钳进工作区：日志实证「记忆球心=(2317,330)、工作区底=343」时，

@@ -27,6 +27,10 @@ impl NoConsoleWindow for Command {
     }
 }
 
+fn looks_like_fs_path(path: &str) -> bool {
+    path.contains('/') || path.contains('\\') || path.starts_with('~')
+}
+
 pub fn launch_program(path: &str, args: Option<&str>) -> Result<(), String> {
     let target = std::path::Path::new(path);
     let mut cmd = if target.is_file() {
@@ -39,6 +43,10 @@ pub fn launch_program(path: &str, args: Option<&str>) -> Result<(), String> {
         // CREATE_NO_WINDOW，Windows 会为子进程新建控制台窗口（闪黑窗）
         c.no_console_window();
         c
+    } else if looks_like_fs_path(path) {
+        // 带路径分隔符却不是文件：不要丢给 cmd / sh——外壳总能 spawn 成功，
+        // 调用方会以为启动成功，CI 在 Linux 上也会误判。
+        return Err(format!("启动程序失败「{}」: 文件不存在", path));
     } else {
         #[cfg(target_os = "windows")]
         let mut c = Command::new("cmd");
@@ -181,13 +189,14 @@ pub fn activate_existing(exe_path: &str) -> bool {
     }
 }
 
-/// 取可执行文件名（按进程名匹配用；输入可以是完整路径）
+/// 取可执行文件名（按进程名匹配用；输入可以是完整路径）。
+/// 同时认 `/` 与 `\`：配置里可能是 Windows 路径，Linux 上 `Path::file_name` 不会切反斜杠。
 fn exe_file_name(path: &str) -> Option<String> {
-    std::path::Path::new(path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(str::to_string)
+    path.rsplit(['/', '\\'])
+        .next()
+        .map(str::trim)
         .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 #[cfg(target_os = "windows")]
@@ -343,17 +352,11 @@ mod tests {
 
     #[test]
     fn launch_nonexistent_program_returns_error() {
-        // Windows 上经 cmd /C 启动不存在路径时 cmd 进程本身可成功 spawn，
-        // 因此只对非 Windows 平台断言失败；Windows 断言不 panic 即可。
-        #[cfg(not(target_os = "windows"))]
-        {
-            let result = launch_program("/nonexistent/path/xyz", None);
-            assert!(result.is_err());
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let _ = launch_program("/nonexistent/path/xyz", None);
-        }
+        // 带路径分隔符且不是文件 → 所有平台都应直接失败（不再丢给 cmd/sh）
+        let result = launch_program("/nonexistent/path/xyz", None);
+        assert!(result.is_err());
+        let result = launch_program(r"C:\nonexistent\app.exe", None);
+        assert!(result.is_err());
     }
 
     #[test]

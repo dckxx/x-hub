@@ -23,15 +23,17 @@ scripts/ubuntu-build.sh --install --run
 
 默认从 `https://github.com/inkchills/x-hub.git` 的 `feat/linux-support` 克隆到 `~/x-hub-build`；更多选项见 `scripts/ubuntu-build.sh --help`。
 
-## CI 产物（手动触发）
+## CI 产物（推送即构建）
 
-工作流 [`.github/workflows/linux-build.yml`](.github/workflows/linux-build.yml) **只在手动触发时运行**
-（Actions → 该工作流 → Run workflow，可指定要构建的 ref），推送分支**不会**触发——避免每次推送都重编一遍、
-刷出一堆 draft prerelease，而真正用于验证的包来自上面的本地/容器构建。
+工作流 [`.github/workflows/linux-build.yml`](.github/workflows/linux-build.yml) 在推送到
+`feat/linux-support` 时运行，也可手动指定 ref。两台 runner 并行：
 
-手动跑一次的产物：按 `v{package.json 版本}-linux.{短 SHA}` 打 annotated tag（若不存在），构建 `.deb`
-并上传为 **prerelease** 的 GitHub Release（`.deb` + `.rpm`，给 `scripts/install-linux.sh` 下载；不依赖 `release.yml` 的 tag 推送）。切到 22.04 runner
-之前，这条路径出来的包可能因 glibc 过新而在老系统上不可用。
+- `linux-deb`：只打 `.deb`
+- `linux-rpm`：只打 `.rpm`（Ubuntu 上的 `rpm`/`rpmbuild`）
+- `publish`：两台都成功后打 `v{version}-linux.{短 SHA}` tag，上传同一个 prerelease
+
+`scripts/install-linux.sh` 按发行版拉对应附件。切到 22.04 runner 之前，这条路径出来的包
+可能因 glibc 过新而在老系统上不可用。正式发版仍以本地/容器构建或 `release.yml` 为准。
 
 ---
 

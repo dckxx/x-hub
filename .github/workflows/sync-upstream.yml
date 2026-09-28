@@ -11,7 +11,6 @@ name: Sync upstream
 # 不 rebase、不 force-push feat/linux-support，避免 linux-build.yml 打出的 tag 指针漂移。
 on:
   schedule:
-    # 09:17 HKT，错开整点
     - cron: '17 1 * * *'
   workflow_dispatch:
     inputs:
@@ -75,7 +74,7 @@ jobs:
             if git merge --ff-only upstream/master; then
               echo "master 已快进到 $(git rev-parse --short master)"
             else
-              echo "master 无法快进（有本地独有提交，多半就是本 workflow），改用 reset + 填回 workflow"
+              echo "master 无法快进，改用 reset + 填回 workflow"
               git reset --hard upstream/master
             fi
           fi
@@ -122,7 +121,7 @@ jobs:
           git diff --name-only --diff-filter=U > /tmp/xhub-sync/conflicts.txt || true
           echo "status=conflict" >> "$GITHUB_OUTPUT"
           echo "conflict_count=$(wc -l < /tmp/xhub-sync/conflicts.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
-          echo "有冲突，保留工作区以推 WIP 分支；${LINUX_BRANCH} 本身不推"
+          echo "有冲突，保留 merge 工作区以推 WIP 分支；${LINUX_BRANCH} 本身不推"
 
       - name: Publish conflict PR and summary
         if: ${{ steps.linux.outputs.status == 'conflict' }}
@@ -145,16 +144,15 @@ jobs:
             echo '```'
             cat /tmp/xhub-sync/conflicts.txt
             echo '```'
+            echo
+            echo "在 PR 里消掉冲突记号后 merge 到 \`${LINUX_BRANCH}\` 即成新基线。"
           } | tee -a "$GITHUB_STEP_SUMMARY" /tmp/xhub-sync/body.md
 
-          git checkout -B "$CONFLICT_BRANCH"
           git add -A
-          if git diff --cached --quiet; then
-            echo "WIP 树清洁，跳过推送"
-          else
-            git commit --no-verify -m "wip(sync): 合入 upstream/master@${up_short} 有冲突，待手修"
-            git push --force-with-lease origin "$CONFLICT_BRANCH"
-          fi
+          git commit --no-verify -m "wip(sync): 合入 upstream/master@${up_short} 有冲突，待手修"
+          git branch -f "$CONFLICT_BRANCH" HEAD
+          git reset --hard "$LINUX_BEFORE"
+          git push --force origin "$CONFLICT_BRANCH"
 
           existing=$(gh pr list --repo "${{ github.repository }}" --base "$LINUX_BRANCH" --head "$CONFLICT_BRANCH" --state open --json number --jq '.[0].number // empty')
           if [ -n "${existing}" ]; then

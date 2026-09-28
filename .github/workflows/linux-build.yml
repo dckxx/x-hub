@@ -69,7 +69,9 @@ jobs:
             pkg-config \
             libgtk-3-dev \
             libsecret-1-dev \
-            patchelf
+            patchelf \
+            rpm \
+            rpm-build
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -89,26 +91,37 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build release .deb
-        run: pnpm run tauri:build:deb
+      - name: Build release .deb and .rpm
+        run: pnpm run tauri:build:linux
 
-      - name: Locate and rename deb artifact
+      - name: Locate and rename linux artifacts
         id: package
         env:
           TAG_NAME: ${{ steps.tag.outputs.tag_name }}
         run: |
-          deb=$(ls src-tauri/target/release/bundle/deb/*.deb 2>/dev/null | head -1)
-          if [ -z "$deb" ] || [ ! -f "$deb" ]; then
+          set -euo pipefail
+          deb=$(ls src-tauri/target/release/bundle/deb/*.deb 2>/dev/null | head -1 || true)
+          rpm=$(ls src-tauri/target/release/bundle/rpm/*.rpm 2>/dev/null | head -1 || true)
+          if [ -z "${deb:-}" ] || [ ! -f "$deb" ]; then
             echo "未找到 .deb 产物" >&2
             find src-tauri/target/release/bundle -type f 2>/dev/null || true
             exit 1
           fi
-          dest="$(dirname "$deb")/${TAG_NAME}_amd64.deb"
-          cp -f "$deb" "$dest"
-          echo "deb_name=$dest" >> "$GITHUB_OUTPUT"
-          echo "找到: $deb → $dest"
+          dest_deb="$(dirname "$deb")/${TAG_NAME}_amd64.deb"
+          cp -f "$deb" "$dest_deb"
+          echo "deb_name=$dest_deb" >> "$GITHUB_OUTPUT"
+          echo "找到 deb: $deb → $dest_deb"
+          if [ -z "${rpm:-}" ] || [ ! -f "$rpm" ]; then
+            echo "未找到 .rpm 产物" >&2
+            find src-tauri/target/release/bundle -type f 2>/dev/null || true
+            exit 1
+          fi
+          dest_rpm="$(dirname "$rpm")/${TAG_NAME}.x86_64.rpm"
+          cp -f "$rpm" "$dest_rpm"
+          echo "rpm_name=$dest_rpm" >> "$GITHUB_OUTPUT"
+          echo "找到 rpm: $rpm → $dest_rpm"
 
-      - name: Publish draft prerelease (.deb)
+      - name: Publish prerelease (deb + rpm)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag_name }}
@@ -119,11 +132,13 @@ jobs:
             - 版本：${{ steps.tag.outputs.version }}
             - 提交：${{ github.sha }}（${{ steps.tag.outputs.shortsha }}）
             - 触发人：@${{ github.actor }}
-            - 产物：Ubuntu `.deb`（draft + prerelease）
+            - 产物：`.deb` / `.rpm`（prerelease，供 install-linux.sh 下载）
 
-            日常验证走本地/容器构建（见 `LINUX.md`，注意 glibc 基座）；正式发版仍以
-            `release.yml` + semver tag 为准；本 release 仅供 Linux 分支验证。
+            安装：`scripts/install-linux.sh`（自动判断 deb/rpm）。
+            日常验证也可走本地/容器构建（见 `LINUX.md`，注意 glibc 基座）；正式发版仍以
+            `release.yml` + semver tag 为准。
           files: |
             ${{ steps.package.outputs.deb_name }}
-          draft: true
+            ${{ steps.package.outputs.rpm_name }}
+          draft: false
           prerelease: true

@@ -5,7 +5,16 @@
 **发布用包一律在本地或容器里编**，不要在 CI 上编：CI 的 `ubuntu-latest` 通常是 24.04，
 编出来的包 glibc 要求过新（见下面「glibc 基座」一节）。宿主机是 24.04 时用 22.04 容器编即可。
 
-在 **Ubuntu 24.04** 测试机上也可执行仓库内脚本拉代码、装依赖、打 deb、安装并启动：
+从已发布的 Linux 预发布包安装（自动判断 deb / rpm、先装 WebKit 等运行时依赖再装包）：
+
+```bash
+chmod +x scripts/install-linux.sh
+scripts/install-linux.sh
+```
+
+读 `/etc/os-release`：Debian 系用 `.deb`，Fedora / RHEL / openSUSE 用 `.rpm`。包来自本仓库 tag 含 `-linux.` 的 GitHub Release。指定某一构建：`scripts/install-linux.sh --tag v0.7.0-linux.<sha>`。Release 仍是 draft 时需带 `GH_TOKEN`。
+
+在 **Ubuntu 24.04** 测试机上从源码拉代码、装依赖、打 deb、安装并启动：
 
 ```bash
 chmod +x scripts/ubuntu-build.sh
@@ -21,7 +30,7 @@ scripts/ubuntu-build.sh --install --run
 刷出一堆 draft prerelease，而真正用于验证的包来自上面的本地/容器构建。
 
 手动跑一次的产物：按 `v{package.json 版本}-linux.{短 SHA}` 打 annotated tag（若不存在），构建 `.deb`
-并上传为 **draft + prerelease** 的 GitHub Release（不依赖 `release.yml` 的 tag 推送）。切到 22.04 runner
+并上传为 **prerelease** 的 GitHub Release（`.deb` + `.rpm`，给 `scripts/install-linux.sh` 下载；不依赖 `release.yml` 的 tag 推送）。切到 22.04 runner
 之前，这条路径出来的包可能因 glibc 过新而在老系统上不可用。
 
 ---

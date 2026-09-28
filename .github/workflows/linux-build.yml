@@ -70,8 +70,7 @@ jobs:
             libgtk-3-dev \
             libsecret-1-dev \
             patchelf \
-            rpm \
-            rpm-build
+            rpm
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4

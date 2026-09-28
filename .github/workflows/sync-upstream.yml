@@ -5,7 +5,8 @@ name: Sync upstream
 #
 # 1) origin/master ← 快进 upstream/master，再把本文件填回去
 # 2) 把 upstream/master merge 进 feat/linux-support；成功即新基线
-# 3) 有冲突：abort，不 force-push，开 issue，Linux 停在上一个可用基线
+# 3) 有冲突：feat/linux-support 不动；把带冲突记号的 WIP 推到
+#    sync/linux-conflict 并对 feat/linux-support 开 PR（fork 关了 Issues）
 #
 # 不 rebase、不 force-push feat/linux-support，避免 linux-build.yml 打出的 tag 指针漂移。
 on:
@@ -26,6 +27,7 @@ on:
 permissions:
   contents: write
   issues: write
+  pull-requests: write
 
 concurrency:
   group: sync-upstream
@@ -37,6 +39,7 @@ jobs:
     env:
       UPSTREAM: https://github.com/dckxx/x-hub.git
       LINUX_BRANCH: feat/linux-support
+      CONFLICT_BRANCH: sync/linux-conflict
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
@@ -108,7 +111,6 @@ jobs:
             exit 0
           fi
 
-          echo "冲突文件列表将写入 /tmp/xhub-sync/conflicts.txt"
           if git merge --no-edit upstream/master; then
             git push origin "$LINUX_BRANCH"
             echo "status=merged" >> "$GITHUB_OUTPUT"
@@ -120,48 +122,48 @@ jobs:
           git diff --name-only --diff-filter=U > /tmp/xhub-sync/conflicts.txt || true
           echo "status=conflict" >> "$GITHUB_OUTPUT"
           echo "conflict_count=$(wc -l < /tmp/xhub-sync/conflicts.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
-          git merge --abort
-          echo "合并冲突，已 abort。${LINUX_BRANCH} 仍停在 ${linux_before}"
+          echo "有冲突，保留工作区以推 WIP 分支；${LINUX_BRANCH} 本身不推"
 
-      - name: Open or refresh conflict issue
+      - name: Publish conflict PR and summary
         if: ${{ steps.linux.outputs.status == 'conflict' }}
         env:
           LINUX_BEFORE: ${{ steps.linux.outputs.linux_before }}
           CONFLICT_COUNT: ${{ steps.linux.outputs.conflict_count }}
         run: |
           set -euo pipefail
-          body_file=$(mktemp)
+          up_short="$(git rev-parse --short upstream/master)"
+          linux_short="${LINUX_BEFORE:0:7}"
+
           {
             echo "## Linux 基线无法自动合入上游 master"
             echo
-            echo "- 上游：\`dckxx/x-hub\` \`$(git rev-parse --short upstream/master)\`"
-            echo "- Linux 基线仍停：\`${LINUX_BRANCH}\` \`${LINUX_BEFORE:0:7}\`"
-            echo "- master **没有** 合入 Linux代码（主仓库暂时放弃 Linux 支持）"
+            echo "- 上游：\`dckxx/x-hub\` \`${up_short}\`"
+            echo "- Linux 基线仍停：\`${LINUX_BRANCH}\` \`${linux_short}\`"
+            echo "- master **没有** 合入 Linux 代码"
             echo "- 冲突文件数：${CONFLICT_COUNT}"
             echo
             echo '```'
             cat /tmp/xhub-sync/conflicts.txt
             echo '```'
-            echo
-            echo "手动处理："
-            echo
-            echo '```bash'
-            echo "git fetch upstream master"
-            echo "git checkout ${LINUX_BRANCH}"
-            echo "git merge upstream/master"
-            echo "# 解决冲突后"
-            echo "git push origin ${LINUX_BRANCH}"
-            echo '```'
-            echo
-            echo "来源：workflow \`sync-upstream.yml\` / run ${{ github.run_id }}"
-          } > "$body_file"
+          } | tee -a "$GITHUB_STEP_SUMMARY" /tmp/xhub-sync/body.md
 
-          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "Linux 基线无法自动合入 in:title" --json number --jq '.[0].number // empty')
-          if [ -n "${existing}" ]; then
-            gh issue comment "$existing" --repo "${{ github.repository }}" --body-file "$body_file"
-            echo "updated issue #${existing}"
+          git checkout -B "$CONFLICT_BRANCH"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "WIP 树清洁，跳过推送"
           else
-            gh issue create --repo "${{ github.repository }}" \
-              --title "Linux 基线无法自动合入上游 master" \
-              --body-file "$body_file"
+            git commit --no-verify -m "wip(sync): 合入 upstream/master@${up_short} 有冲突，待手修"
+            git push --force-with-lease origin "$CONFLICT_BRANCH"
+          fi
+
+          existing=$(gh pr list --repo "${{ github.repository }}" --base "$LINUX_BRANCH" --head "$CONFLICT_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "${existing}" ]; then
+            gh pr comment "$existing" --repo "${{ github.repository }}" --body-file /tmp/xhub-sync/body.md
+            echo "updated PR #${existing}" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            gh pr create --repo "${{ github.repository }}" \
+              --base "$LINUX_BRANCH" \
+              --head "$CONFLICT_BRANCH" \
+              --title "wip(sync): 上游 ${up_short} 与 Linux 基线冲突" \
+              --body-file /tmp/xhub-sync/body.md
           fi

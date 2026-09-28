@@ -92,23 +92,27 @@ jobs:
       - name: Build release .deb
         run: pnpm run tauri:build:deb
 
-      - name: Locate deb artifact
+      - name: Locate and rename deb artifact
         id: package
+        env:
+          TAG_NAME: ${{ steps.tag.outputs.tag_name }}
         run: |
-          deb=$(ls src-tauri/target/release/bundle/deb/x-hub_*.deb 2>/dev/null | head -1)
+          deb=$(ls src-tauri/target/release/bundle/deb/*.deb 2>/dev/null | head -1)
           if [ -z "$deb" ] || [ ! -f "$deb" ]; then
             echo "未找到 .deb 产物" >&2
             find src-tauri/target/release/bundle -type f 2>/dev/null || true
             exit 1
           fi
-          echo "deb_name=$deb" >> "$GITHUB_OUTPUT"
-          echo "找到: $deb"
+          dest="$(dirname "$deb")/${TAG_NAME}_amd64.deb"
+          cp -f "$deb" "$dest"
+          echo "deb_name=$dest" >> "$GITHUB_OUTPUT"
+          echo "找到: $deb → $dest"
 
       - name: Publish draft prerelease (.deb)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag_name }}
-          name: 'x-hub ${{ steps.tag.outputs.tag_name }} (Linux, manual)'
+          name: '${{ steps.tag.outputs.tag_name }} (Linux, manual)'
           body: |
             手动触发的构建（workflow: `linux-build.yml`，`workflow_dispatch`）。
 

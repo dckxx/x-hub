@@ -80,7 +80,7 @@ onMounted(() => {
                 {{ devMode.extensions.length ? `已添加 ${devMode.extensions.length} 个本机源码目录` : '还没有添加本机源码目录' }}（须含 manifest.json）。添加后立即加载、改代码即重载，可先在本机调试；发布需要开发者认证 —— 增删都在扩展中心「我的扩展」标签页
               </span>
             </div>
-            <button class="ghost-btn data-btn" type="button" @click="emit('open-extensions')">
+            <button class="ghost-btn data-btn ext-entry-btn" type="button" @click="emit('open-extensions')">
               <Puzzle :size="14" :stroke-width="2" />
               打开扩展中心
             </button>
@@ -101,5 +101,12 @@ onMounted(() => {
 }
 .dev-hint b {
   color: var(--text-1);
+}
+/* 「打开扩展中心」按钮：左侧长描述会把行内剩余宽度挤到很小，按钮被压缩后
+   图标和文字会折行成两行——锁死单行（不收缩、不换行），保证图标 + 文字一行排布 */
+.ext-entry-btn {
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 </style>

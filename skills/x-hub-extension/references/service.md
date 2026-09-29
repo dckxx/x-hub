@@ -59,6 +59,25 @@ const data = await res.json()   // 也可 res.status / res.headers / res.text()
 
 `runtime.info()` 返回的 `serviceReady` / `proxyPrefix` 可用于探测后端就绪状态；后端未起来时 `service.request` 会失败，界面要给得出人话的提示而不是白屏。
 
+## 授权（service:execute）
+
+service 后端要用户**信任当前版本**（权限「运行本地后端」开关）才会跑，分两个时机：
+
+- **打开扩展时未授权**：宿主直接拦截入口加载——扩展页面**根本不会运行**，宿主自己的错误态带「去授权」按钮。你不需要（也无法）在页面里处理这种情况。
+- **运行中被撤销授权**：页面还活着，但 `service.request` 会 reject `PERMISSION_DENIED: 本地后端未获信任或网络权限已关闭…`。此时界面应展示「本地后端未授权」提示 + **「去授权」按钮**，点击调 `xhub.openPermissions()`（无需权限）让宿主直接打开本扩展的设置弹窗：
+
+```js
+try {
+  await window.xhub.service.request('/api/summary')
+} catch (e) {
+  if (/PERMISSION_DENIED|未获信任/.test(e.message) && typeof window.xhub.openPermissions === 'function') {
+    showAuthHint() // 渲染「去授权」按钮，点击 → window.xhub.openPermissions()
+  }
+}
+```
+
+`typeof … === 'function'` 守卫是给旧宿主的兼容：没有这个桥 API 时按钮不渲染，只留错误文案。
+
 ## 部署注意
 
 部署 service 扩展前，若 x-hub 正在运行并锁定了该扩展的后端文件，`deploy` 会报 **EPERM**——先退出 x-hub 再部署。

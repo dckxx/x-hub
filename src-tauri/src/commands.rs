@@ -235,6 +235,24 @@ pub fn launch_resource(state: State<'_, DbState>, id: i64) -> Result<(), String>
     }
 }
 
+/// 以管理员身份启动速达「程序」资源（触发 UAC 确认）。仅 App 类型支持——
+/// 网页/文件没有「提权运行」的语义。不走 launch_program 的 740 自动提权路径：
+/// 这里是用户显式要求提权，直接 Start-Process -Verb RunAs。
+#[tauri::command]
+pub fn launch_resource_as_admin(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let res = resource::get(&conn, id).map_err(err_str)?;
+    match res.kind {
+        ResourceKind::App => {
+            process::launch_elevated(&res.target, res.args.as_deref())?;
+            let _ = resource::touch(&conn, id);
+            log::info!("以管理员身份启动程序: {} ({})", res.name, res.target);
+            Ok(())
+        }
+        _ => Err("只有「程序」类型的资源支持以管理员身份运行".into()),
+    }
+}
+
 // ---------- 速达小类（ADR 0012）----------
 
 fn validate_subcategory_input(kind: &str, name: &str) -> Result<(), String> {
@@ -474,6 +492,29 @@ pub fn reorder_todo_orders(
     let _ = app.emit("todos-changed", ());
     log::debug!("待办排序更新: {} 条", ids.len());
     Ok(())
+}
+
+/// 跨父拖拽：把子待办改挂到另一个顶级父待办下，并按传入顺序重写目标父下的子项排序。
+/// `ordered_ids` 为目标落点后的完整子项顺序（含被移动项）。
+#[tauri::command]
+pub fn move_todo_child(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    id: i64,
+    new_parent_id: i64,
+    ordered_ids: Vec<i64>,
+) -> Result<Todo, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let t = todo::move_child(&conn, id, new_parent_id, &ordered_ids)?;
+    drop(conn);
+    let _ = app.emit("todos-changed", ());
+    log::info!(
+        "子待办改挂父级: id={} -> parent={} (目标下 {} 条)",
+        id,
+        new_parent_id,
+        ordered_ids.len()
+    );
+    Ok(t)
 }
 
 // ---------- 待办升级：描述 / 置顶 / 周期 / 标签 ----------
@@ -758,12 +799,23 @@ pub async fn detach_sticky(
     if !(1..=2).contains(&slot) {
         return Err("便签槽位取值 1-2".into());
     }
-    // 已存在浮窗：聚焦并直接返回
+    // 已存在浮窗记录：窗口在 → 聚焦；窗口不在（上次创建失败/被异常销毁）→ 原位重建，
+    // 否则记录永远在而窗口永远不在，用户再点「脱离」只会走本分支静默聚焦，卡死到重启
     if let Some(existing) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         detached_sticky::get_by_slot(&conn, slot).map_err(err_str)?
     } {
-        crate::sticky_window::focus(&app, slot);
+        if !crate::sticky_window::focus(&app, slot) {
+            log::warn!("便签浮窗记录存在但窗口缺失，重建自愈: slot={}", slot);
+            crate::sticky_window::create_or_focus(
+                &app,
+                slot,
+                existing.x,
+                existing.y,
+                existing.always_on_top,
+            )
+            .map_err(|e| format!("创建浮窗失败: {}", e))?;
+        }
         return Ok(existing);
     }
 
@@ -776,21 +828,47 @@ pub async fn detach_sticky(
     sticky::upsert(&conn, slot, "").map_err(err_str)?;
     drop(conn);
 
-    let win = crate::sticky_window::create_or_focus(&app, slot, saved.x, saved.y, true)
-        .map_err(|e| format!("创建浮窗失败: {}", e))?;
+    // 创建失败必须回滚（删除浮窗记录 + 恢复原卡内容并广播刷新）：
+    // DB 已写而窗口没建出来，就是「内容从主卡消失 + 再也浮不起来」的根源
+    if let Err(e) = crate::sticky_window::create_or_focus(&app, slot, saved.x, saved.y, true) {
+        log::error!("便签浮窗创建失败，回滚脱离: slot={} err={}", slot, e);
+        let conn = state.0.lock().map_err(|err| err.to_string())?;
+        let _ = detached_sticky::delete_by_slot(&conn, slot);
+        let _ = sticky::upsert(&conn, slot, &content);
+        drop(conn);
+        let _ = app.emit("stickies-changed", ());
+        return Err(format!("创建浮窗失败: {}", e));
+    }
     log::info!("便签脱离浮窗: slot={} 内容 {} 字", slot, content.chars().count());
-    drop(win);
 
     Ok(saved)
 }
 
-/// 再次点击脱离 icon 时聚焦已有浮窗（无浮窗则返回 false）
+/// 再次点击脱离 icon 时聚焦已有浮窗；窗口缺失但记录在 → 原位重建自愈；
+/// 记录也不在 → 返回 false（前端据此走脱离分支）
 #[tauri::command]
-pub async fn focus_detached_sticky(app: tauri::AppHandle, slot: i64) -> Result<bool, String> {
+pub async fn focus_detached_sticky(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    slot: i64,
+) -> Result<bool, String> {
     if !(1..=2).contains(&slot) {
         return Err("便签槽位取值 1-2".into());
     }
-    Ok(crate::sticky_window::focus(&app, slot))
+    if crate::sticky_window::focus(&app, slot) {
+        return Ok(true);
+    }
+    let existing = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        detached_sticky::get_by_slot(&conn, slot).map_err(err_str)?
+    };
+    let Some(existing) = existing else {
+        return Ok(false);
+    };
+    log::warn!("便签浮窗窗口缺失，重建自愈: slot={}", slot);
+    crate::sticky_window::create_or_focus(&app, slot, existing.x, existing.y, existing.always_on_top)
+        .map_err(|e| format!("创建浮窗失败: {}", e))?;
+    Ok(true)
 }
 
 /// 浮窗内容随输入保存（防抖由前端处理）
@@ -875,7 +953,9 @@ pub async fn restore_detached_sticky(
     Ok(target_slot)
 }
 
-/// 删除浮窗便签（浮窗数据彻底删除）
+/// 删除浮窗便签（浮窗数据彻底删除）。
+/// 空内容关闭浮窗也走这里：必须广播 stickies-changed，否则主窗口 state.detached
+/// 留下幻影记录，便签卡的「脱离」按钮停在「已脱离」，再点只走聚焦分支永远浮不起来
 #[tauri::command]
 pub async fn delete_detached_sticky(
     app: tauri::AppHandle,
@@ -891,6 +971,7 @@ pub async fn delete_detached_sticky(
 
     crate::sticky_window::destroy(&app, slot);
     log::info!("删除浮窗便签: slot={}", slot);
+    let _ = app.emit("stickies-changed", ());
     Ok(())
 }
 
@@ -1269,21 +1350,14 @@ pub struct NoteTagRow {
 pub struct AppInfo {
     /// 当前应用版本号（运行时读取打包版本，与 tauri.conf.json 一致）
     pub version: String,
-    /// 完整版本历史 markdown（内置，零网络）
-    pub changelog: String,
-    /// 最新一段版本说明（「What's New」弹窗用）
-    pub latest_section: String,
 }
 
-/// 返回应用版本 + 内置更新日志（版本历史），供「关于」页展示
+/// 返回应用版本号，供「关于」页与扩展市场的最低版本判断使用。
+/// 版本历史不再内置：客户端「关于」页直接跳转 GitHub Releases。
 #[tauri::command]
 pub fn get_app_info(app: tauri::AppHandle) -> Result<AppInfo, String> {
     let version = app.package_info().version.to_string();
-    Ok(AppInfo {
-        version,
-        changelog: crate::about::RELEASE_NOTES.to_string(),
-        latest_section: crate::about::latest_section(),
-    })
+    Ok(AppInfo { version })
 }
 
 // ---------- 配置 ----------
@@ -1359,6 +1433,44 @@ pub fn get_global_shortcut() -> Result<String, String> {
 
 #[tauri::command]
 pub fn set_global_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    set_configured_shortcut(app, value, ConfiguredShortcut::Main)
+}
+
+/// 可自定义快捷键在配置里的落点（set_*_shortcut 命令共用同一套改绑/持久化流程）
+enum ConfiguredShortcut {
+    Main,
+    Clipboard,
+    Search,
+    Chat,
+}
+
+impl ConfiguredShortcut {
+    fn field<'a>(&self, cfg: &'a mut crate::config::AppConfig) -> &'a mut String {
+        match self {
+            ConfiguredShortcut::Main => &mut cfg.global_shortcut,
+            ConfiguredShortcut::Clipboard => &mut cfg.clipboard_shortcut,
+            ConfiguredShortcut::Search => &mut cfg.search_shortcut,
+            ConfiguredShortcut::Chat => &mut cfg.chat_shortcut,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            ConfiguredShortcut::Main => "主窗口",
+            ConfiguredShortcut::Clipboard => "剪贴板",
+            ConfiguredShortcut::Search => "搜索",
+            ConfiguredShortcut::Chat => "AI 对话",
+        }
+    }
+}
+
+/// 更新某个可自定义全局快捷键：改绑（冲突预检/反注册/注册/回滚）+ 配置持久化。
+/// 同一物理按键组合仅换写法（CommandOrControl→Ctrl）时直接改存储字符串，不重新注册。
+fn set_configured_shortcut(
+    app: tauri::AppHandle,
+    value: String,
+    which: ConfiguredShortcut,
+) -> Result<String, String> {
     let _guard = crate::config::lock();
     let shortcut = value.trim();
     if shortcut.is_empty() {
@@ -1366,40 +1478,41 @@ pub fn set_global_shortcut(app: tauri::AppHandle, value: String) -> Result<Strin
     }
 
     let mut config = crate::config::load();
-    let previous = config.global_shortcut.clone();
+    let previous = config_field(&config, &which);
     if previous == shortcut {
-        return Ok(config.global_shortcut);
+        return Ok(previous);
     }
-
-    // 同一物理按键组合仅换了写法（如 Windows 上 CommandOrControl→Ctrl），
-    // 无需重新注册，直接更新存储的字符串
     if crate::shortcut::same_hotkey(&previous, shortcut) {
-        config.global_shortcut = shortcut.to_string();
+        *which.field(&mut config) = shortcut.to_string();
         crate::config::save(&config)?;
-        return Ok(config.global_shortcut);
+        return Ok(shortcut.to_string());
     }
-
-    if crate::shortcut::is_shortcut_registered(&app, shortcut) {
-        return Err("快捷键冲突".into());
-    }
-
-    if let Err(e) = crate::shortcut::unregister_toggle_shortcut(&app, &previous) {
-        if !crate::shortcut::is_conflict_error(&e) {
-            return Err(e);
-        }
-        return Err("快捷键冲突".into());
-    }
-
-    if let Err(e) = crate::shortcut::register_toggle_shortcut(&app, shortcut) {
-        let mapped = crate::shortcut::format_shortcut_error(&e);
-        if !mapped.eq(&e) {
-            let _ = crate::shortcut::register_toggle_shortcut(&app, &previous);
-        }
-        return Err(mapped);
-    }
-    config.global_shortcut = shortcut.to_string();
+    crate::shortcut::rebind_shortcut(&app, &previous, shortcut)?;
+    *which.field(&mut config) = shortcut.to_string();
     crate::config::save(&config)?;
-    Ok(config.global_shortcut)
+    log::info!("[快捷键] {}快捷键已改为 {}", which.label(), shortcut);
+    Ok(shortcut.to_string())
+}
+
+fn config_field(cfg: &crate::config::AppConfig, which: &ConfiguredShortcut) -> String {
+    match which {
+        ConfiguredShortcut::Main => cfg.global_shortcut.clone(),
+        ConfiguredShortcut::Clipboard => cfg.clipboard_shortcut.clone(),
+        ConfiguredShortcut::Search => cfg.search_shortcut.clone(),
+        ConfiguredShortcut::Chat => cfg.chat_shortcut.clone(),
+    }
+}
+
+/// 更新全局搜索呼出快捷键
+#[tauri::command]
+pub fn set_search_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    set_configured_shortcut(app, value, ConfiguredShortcut::Search)
+}
+
+/// 更新 AI 对话呼出快捷键
+#[tauri::command]
+pub fn set_chat_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    set_configured_shortcut(app, value, ConfiguredShortcut::Chat)
 }
 
 // ---------- 开机自启动 ----------
@@ -3434,41 +3547,7 @@ pub fn clipboard_get_info(state: State<'_, DbState>) -> Result<ClipboardInfo, St
 /// 更新剪贴板全局快捷键（注册/反注册与配置持久化）
 #[tauri::command]
 pub fn set_clipboard_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
-    let _guard = crate::config::lock();
-    let shortcut = value.trim();
-    if shortcut.is_empty() {
-        return Err("快捷键不能为空".into());
-    }
-
-    let mut config = crate::config::load();
-    let previous = config.clipboard_shortcut.clone();
-    if previous == shortcut {
-        return Ok(config.clipboard_shortcut);
-    }
-    if crate::shortcut::same_hotkey(&previous, shortcut) {
-        config.clipboard_shortcut = shortcut.to_string();
-        crate::config::save(&config)?;
-        return Ok(config.clipboard_shortcut);
-    }
-    if crate::shortcut::is_shortcut_registered(&app, shortcut) {
-        return Err("快捷键冲突".into());
-    }
-    if let Err(e) = crate::shortcut::unregister_toggle_shortcut(&app, &previous) {
-        if !crate::shortcut::is_conflict_error(&e) {
-            return Err(e);
-        }
-        return Err("快捷键冲突".into());
-    }
-    if let Err(e) = crate::shortcut::register_toggle_shortcut(&app, shortcut) {
-        let mapped = crate::shortcut::format_shortcut_error(&e);
-        if !mapped.eq(&e) {
-            let _ = crate::shortcut::register_toggle_shortcut(&app, &previous);
-        }
-        return Err(mapped);
-    }
-    config.clipboard_shortcut = shortcut.to_string();
-    crate::config::save(&config)?;
-    Ok(config.clipboard_shortcut)
+    set_configured_shortcut(app, value, ConfiguredShortcut::Clipboard)
 }
 
 /// 更新剪贴板保留策略（条数上限 / 保留天数），保存后立即执行一次清理

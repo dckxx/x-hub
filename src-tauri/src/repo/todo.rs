@@ -506,6 +506,52 @@ pub fn reorder(conn: &Connection, ids: &[i64]) -> Result<()> {
     tx.commit()
 }
 
+/// 把子待办改挂到另一个**顶级**父待办下（跨父拖拽），并重写目标父下的子项顺序。
+/// `ordered_ids` 为目标父落点后的完整子项顺序（含被移动项）。
+/// 仅支持一层：新父必须是顶级（`parent_id IS NULL`），挡住「子待办挂到子待办下」。
+/// 源父剩余子项各自 `sort_order` 相对顺序不变，无需回写。
+pub fn move_child(
+    conn: &Connection,
+    id: i64,
+    new_parent_id: i64,
+    ordered_ids: &[i64],
+) -> Result<Todo, String> {
+    let child = get(conn, id).map_err(|e| e.to_string())?;
+    let Some(old_parent) = child.parent_id else {
+        return Err(format!("INVALID_STATE: 待办 {id} 不是子待办，无法改挂父级"));
+    };
+    let parent = get(conn, new_parent_id)
+        .map_err(|_| format!("NOT_FOUND: 目标父待办 {new_parent_id} 不存在"))?;
+    if parent.parent_id.is_some() {
+        return Err(format!(
+            "INVALID_STATE: 目标 {new_parent_id} 不是顶级待办，子待办仅支持一层"
+        ));
+    }
+    if old_parent == new_parent_id {
+        // 同父：只重排，不写 parent_id（与顶层拖拽同一语义，也不额外推进版本）
+        reorder(conn, ordered_ids).map_err(|e| e.to_string())?;
+        return get(conn, id).map_err(|e| e.to_string());
+    }
+    let ts = now();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE todos SET parent_id = ?1, updated_at = ?2, version = version + 1 WHERE id = ?3",
+        params![new_parent_id, ts, id],
+    )
+    .map_err(|e| e.to_string())?;
+    // 限定 `parent_id = 目标父`：ordered_ids 只应含目标父下的子项（含刚改挂进来的 id），
+    // 万一前端送来过期的 id（并发下该子项已被移走）也不至于写到别人名下
+    for (i, oid) in ordered_ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE todos SET sort_order = ?1, updated_at = ?2 WHERE id = ?3 AND parent_id = ?4",
+            params![(i + 1) as i64, ts, oid, new_parent_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    get(conn, id).map_err(|e| e.to_string())
+}
+
 pub fn search(conn: &Connection, keyword: &str) -> Result<Vec<Todo>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {COLS} FROM todos
@@ -1097,5 +1143,96 @@ mod tests {
         assert!(err.starts_with("CONFLICT"), "{err}");
         let ok = complete_recurring_with_version(&conn, t.id, due, Some(cur)).unwrap();
         assert_eq!(ok.due_at, Some(ts(2026, 9, 22, 9, 0)));
+    }
+
+    // ---------- 跨父拖拽：子待办改挂父级 ----------
+
+    #[test]
+    fn move_child_reparents_and_orders_target() {
+        let conn = setup();
+        let p1 = create(&conn, "父一", None, None).unwrap();
+        let p2 = create(&conn, "父二", None, None).unwrap();
+        let a = create(&conn, "子A", Some(p1.id), None).unwrap();
+        let b = create(&conn, "子B", Some(p2.id), None).unwrap();
+
+        let moved = move_child(&conn, a.id, p2.id, &[a.id, b.id]).unwrap();
+        assert_eq!(moved.parent_id, Some(p2.id));
+        assert_eq!(moved.sort_order, Some(1));
+        assert_eq!(get(&conn, b.id).unwrap().sort_order, Some(2));
+        // 源父下不再挂着被移走的子项（源父已无子项）
+        assert!(children_ids(&conn, p1.id).unwrap().is_empty());
+        // 改挂推进版本链
+        assert_eq!(moved.version, a.version + 1);
+    }
+
+    #[test]
+    fn move_child_ignores_foreign_ids_in_order() {
+        let conn = setup();
+        let p1 = create(&conn, "父一", None, None).unwrap();
+        let p2 = create(&conn, "父二", None, None).unwrap();
+        let p3 = create(&conn, "父三", None, None).unwrap();
+        let a = create(&conn, "子A", Some(p1.id), None).unwrap();
+        let b = create(&conn, "子B", Some(p2.id), None).unwrap();
+        let c = create(&conn, "子C", Some(p3.id), None).unwrap();
+        // 给 c 一个显式排序位，验证跨父落点不会波及不属于目标父的条目
+        reorder(&conn, &[c.id]).unwrap();
+        let c_before = get(&conn, c.id).unwrap();
+
+        let moved = move_child(&conn, a.id, p2.id, &[a.id, b.id, c.id]).unwrap();
+        assert_eq!(moved.parent_id, Some(p2.id));
+        assert_eq!(moved.sort_order, Some(1));
+        assert_eq!(get(&conn, b.id).unwrap().sort_order, Some(2));
+        // 外来 id：父级与排序位都不动
+        let c_after = get(&conn, c.id).unwrap();
+        assert_eq!(c_after.parent_id, Some(p3.id));
+        assert_eq!(c_after.sort_order, c_before.sort_order);
+    }
+
+    #[test]
+    fn move_child_same_parent_only_reorders() {
+        let conn = setup();
+        let p = create(&conn, "父", None, None).unwrap();
+        let a = create(&conn, "子A", Some(p.id), None).unwrap();
+        let b = create(&conn, "子B", Some(p.id), None).unwrap();
+
+        let moved = move_child(&conn, a.id, p.id, &[b.id, a.id]).unwrap();
+        assert_eq!(moved.parent_id, Some(p.id));
+        assert_eq!(get(&conn, b.id).unwrap().sort_order, Some(1));
+        assert_eq!(moved.sort_order, Some(2));
+        // 同父重排不额外推进版本
+        assert_eq!(moved.version, a.version);
+    }
+
+    #[test]
+    fn move_child_rejects_missing_target_parent() {
+        let conn = setup();
+        let p = create(&conn, "父", None, None).unwrap();
+        let k = create(&conn, "子", Some(p.id), None).unwrap();
+        let err = move_child(&conn, k.id, 99999, &[k.id]).unwrap_err();
+        assert!(err.starts_with("NOT_FOUND"), "{err}");
+        // 失败不改挂
+        assert_eq!(get(&conn, k.id).unwrap().parent_id, Some(p.id));
+    }
+
+    #[test]
+    fn move_child_rejects_two_level_nesting() {
+        let conn = setup();
+        let p = create(&conn, "父", None, None).unwrap();
+        let k1 = create(&conn, "子一", Some(p.id), None).unwrap();
+        let k2 = create(&conn, "子二", Some(p.id), None).unwrap();
+        // 目标必须是顶级：挂到另一个子待办下应被拒
+        let err = move_child(&conn, k2.id, k1.id, &[k2.id]).unwrap_err();
+        assert!(err.starts_with("INVALID_STATE"), "{err}");
+        assert_eq!(get(&conn, k2.id).unwrap().parent_id, Some(p.id));
+    }
+
+    #[test]
+    fn move_child_rejects_top_level_source() {
+        let conn = setup();
+        let p = create(&conn, "父", None, None).unwrap();
+        let top = create(&conn, "顶级待办", None, None).unwrap();
+        let err = move_child(&conn, top.id, p.id, &[top.id]).unwrap_err();
+        assert!(err.starts_with("INVALID_STATE"), "{err}");
+        assert_eq!(get(&conn, top.id).unwrap().parent_id, None);
     }
 }

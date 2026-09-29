@@ -50,7 +50,8 @@ async function moveBallButton(index: number, delta: number) {
   await store.setFloatingBallButtons(arr)
 }
 
-// ---- 快捷键录入：全局 / 剪贴板共用一套录制逻辑（见 composables/useShortcutRecorder.ts） ----
+// ---- 快捷键录入：4 个可自定义快捷键（主窗/剪贴板/搜索/AI 对话）共用一套录制逻辑
+//（见 composables/useShortcutRecorder.ts） ----
 const {
   value: shortcut,
   error: shortcutError,
@@ -84,10 +85,44 @@ const {
   showToast,
 })
 
+const {
+  value: searchShortcut,
+  error: searchError,
+  listening: searchListening,
+  inputRef: searchInputRef,
+  commit: commitSearchShortcut,
+  startListening: startListenSearchShortcut,
+  onBlur: onSearchShortcutBlur,
+  onKeydown: onSearchShortcutKeydown,
+} = useShortcutRecorder({
+  initial: normalizeShortcutDisplay(store.state.config.search_shortcut ?? 'Ctrl+K'),
+  label: '搜索快捷键',
+  save: (v) => store.setSearchShortcut(v),
+  showToast,
+})
+
+const {
+  value: chatShortcut,
+  error: chatError,
+  listening: chatListening,
+  inputRef: chatInputRef,
+  commit: commitChatShortcut,
+  startListening: startListenChatShortcut,
+  onBlur: onChatShortcutBlur,
+  onKeydown: onChatShortcutKeydown,
+} = useShortcutRecorder({
+  initial: normalizeShortcutDisplay(store.state.config.chat_shortcut ?? 'Ctrl+Shift+K'),
+  label: 'AI 对话快捷键',
+  save: (v) => store.setChatShortcut(v),
+  showToast,
+})
+
 // inputRef 仅在模板 ref 绑定中使用（把 DOM 输入框连到 recorder 内部，点击「录入」自动聚焦），
 // vue-tsc 不把模板 ref 视为「读取」，这里显式求值一次以通过 noUnusedLocals
 void shortcutInputRef
 void clipInputRef
+void searchInputRef
+void chatInputRef
 
 // ---- 右下角通知驻留时长（秒；后端每条通知都带当前值下发，改完立即生效） ----
 const noticeSeconds = ref(5)
@@ -173,6 +208,10 @@ onMounted(async () => {
   clipShortcut.value = normalizeShortcutDisplay(store.state.config.clipboard_shortcut ?? 'Ctrl+`')
 
   clipSavedShortcut.value = clipShortcut.value
+
+  searchShortcut.value = normalizeShortcutDisplay(store.state.config.search_shortcut ?? 'Ctrl+K')
+
+  chatShortcut.value = normalizeShortcutDisplay(store.state.config.chat_shortcut ?? 'Ctrl+Shift+K')
 
   noticeSeconds.value = Math.round((store.state.config.notice_duration_ms ?? 5000) / 1000)
 
@@ -391,5 +430,61 @@ onMounted(async () => {
             </div>
           </div>
           <p v-if="clipError" class="shortcut-error">{{ clipError }}</p>
+
+          <div class="setting-row shortcut-row">
+            <div class="setting-info">
+              <span class="setting-name">搜索呼出快捷键</span>
+              <span class="setting-desc">任何应用中一键唤起全局搜索；弹窗内的快捷键提示也会随之更新</span>
+            </div>
+            <div class="shortcut-edit">
+              <div class="shortcut-input-wrap">
+                <Keyboard :size="14" :stroke-width="2" class="shortcut-icon" />
+                <input
+                  ref="searchInputRef"
+                  v-model="searchShortcut"
+                  class="shortcut-input"
+                  type="text"
+                  spellcheck="false"
+                  :readonly="searchListening"
+                  placeholder="Ctrl+K"
+                  @keydown="onSearchShortcutKeydown"
+                  @keydown.enter="commitSearchShortcut"
+                  @blur="onSearchShortcutBlur"
+                />
+                <button class="shortcut-record-btn" type="button" @click="startListenSearchShortcut">
+                  {{ searchListening ? '按下组合键…' : '录入' }}
+                </button>
+              </div>
+            </div>
+          </div>
+          <p v-if="searchError" class="shortcut-error">{{ searchError }}</p>
+
+          <div class="setting-row shortcut-row">
+            <div class="setting-info">
+              <span class="setting-name">AI 对话呼出快捷键</span>
+              <span class="setting-desc">任何应用中一键唤起 AI 对话（形态由「AI 助手」里的开关决定）</span>
+            </div>
+            <div class="shortcut-edit">
+              <div class="shortcut-input-wrap">
+                <Keyboard :size="14" :stroke-width="2" class="shortcut-icon" />
+                <input
+                  ref="chatInputRef"
+                  v-model="chatShortcut"
+                  class="shortcut-input"
+                  type="text"
+                  spellcheck="false"
+                  :readonly="chatListening"
+                  placeholder="Ctrl+Shift+K"
+                  @keydown="onChatShortcutKeydown"
+                  @keydown.enter="commitChatShortcut"
+                  @blur="onChatShortcutBlur"
+                />
+                <button class="shortcut-record-btn" type="button" @click="startListenChatShortcut">
+                  {{ chatListening ? '按下组合键…' : '录入' }}
+                </button>
+              </div>
+            </div>
+          </div>
+          <p v-if="chatError" class="shortcut-error">{{ chatError }}</p>
         </section>
 </template>

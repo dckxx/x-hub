@@ -190,7 +190,7 @@ onMounted(() => {
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">以独立窗口打开 AI 对话</span>
-              <span class="setting-desc">开启后对话变为可缩放、可置顶的独立小窗：标题栏按钮、Ctrl+Shift+K 与悬浮球「AI 对话」入口都唤起它，主窗内嵌抽屉随之停用（两种形态互斥）</span>
+              <span class="setting-desc">开启后对话变为可缩放、可置顶的独立小窗：标题栏按钮、AI 对话呼出快捷键（设置 → 快捷键）与悬浮球「AI 对话」入口都唤起它，主窗内嵌抽屉随之停用（两种形态互斥）</span>
             </div>
             <button
               class="toggle"

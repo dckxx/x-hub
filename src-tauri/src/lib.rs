@@ -1,4 +1,3 @@
-mod about;
 mod account;
 mod api_spec;
 mod autostart;
@@ -193,6 +192,27 @@ fn restore_window_state(app: &tauri::App) {
         if ws.always_on_top {
             let _ = window.set_always_on_top(true);
         }
+        // 小屏适配：屏幕（按窗口当前所在显示器，取不到回退主显示器）容不下
+        // 默认 1400×900 时直接最大化启动——否则窗口下半部分掉到屏幕外，没有任何
+        // 入口能把窗口拖回来。物理像素先按 DPI 缩放折算成逻辑像素再比较；
+        // 比较基准取「默认尺寸与记忆尺寸的较大者」，记忆尺寸更小时也按默认判。
+        let want_w = ws.width.max(1400.0);
+        let want_h = ws.height.max(900.0);
+        if let Ok(Some(monitor)) = window.current_monitor().or_else(|_| window.primary_monitor()) {
+            let scale = monitor.scale_factor();
+            let logical_w = monitor.size().width as f64 / scale;
+            let logical_h = monitor.size().height as f64 / scale;
+            if logical_w < want_w || logical_h < want_h {
+                log::info!(
+                    "屏幕逻辑分辨率 {:.0}x{:.0} 小于窗口 {:.0}x{:.0}，启动即最大化",
+                    logical_w,
+                    logical_h,
+                    want_w,
+                    want_h
+                );
+                let _ = window.maximize();
+            }
+        }
         log::info!(
             "恢复窗口状态: {}x{} @ ({:?},{:?}) 置顶={}",
             ws.width,
@@ -208,6 +228,11 @@ fn restore_window_state(app: &tauri::App) {
 fn persist_window_state(app: &tauri::AppHandle) {
     if let Some(window) = main_window(app) {
         if window.is_minimized().unwrap_or(false) {
+            return;
+        }
+        // 最大化态不覆盖记忆的常规几何：保存的是放大后的整屏尺寸，下次启动
+        // 会以「非最大化 + 超大窗口」恢复，反而把窗口撑出屏幕
+        if window.is_maximized().unwrap_or(false) {
             return;
         }
         if let Ok(pos) = window.outer_position() {
@@ -530,6 +555,21 @@ pub fn run() {
                 crate::clipboard::toggle_overlay(&app_handle);
             });
 
+            // 搜索快捷键事件：唤起主窗（对话框由主窗前端收到同名事件后打开）
+            let app_handle = app.handle().clone();
+            app.listen("search-shortcut", move |_| {
+                crate::tray::show_window(&app_handle);
+            });
+
+            // AI 对话快捷键事件：抽屉形态先唤起主窗（面板在主窗里）；
+            // 独立窗口形态不弹主窗，由主窗前端收到事件后直接唤起对话小窗
+            let app_handle = app.handle().clone();
+            app.listen("chat-shortcut", move |_| {
+                if !crate::chat_window::mode_enabled() {
+                    crate::tray::show_window(&app_handle);
+                }
+            });
+
             // 静默检查更新：启动 5s 后一次，此后按配置间隔（默认 4h）循环。
             // 受 auto_update_enabled 开关控制；检查失败静默（updater 内部记日志）。
             {
@@ -559,6 +599,7 @@ pub fn run() {
             commands::delete_resource,
             commands::reorder_resources,
             commands::launch_resource,
+            commands::launch_resource_as_admin,
             commands::list_installed_browsers,
             commands::open_url_with_browser,
             commands::create_note,
@@ -572,6 +613,7 @@ pub fn run() {
             commands::delete_todo,
             commands::schedule_todo,
             commands::reorder_todo_orders,
+            commands::move_todo_child,
             commands::set_todo_description,
             commands::set_todo_pinned,
             commands::set_todo_repeat,
@@ -617,6 +659,8 @@ pub fn run() {
             commands::set_always_on_top_config,
             commands::get_global_shortcut,
             commands::set_global_shortcut,
+            commands::set_search_shortcut,
+            commands::set_chat_shortcut,
             commands::get_run_at_startup,
             commands::set_run_at_startup,
             commands::get_startup_hidden,
@@ -763,6 +807,7 @@ pub fn run() {
             updater::download_update,
             updater::get_update_status,
             updater::skip_update_version,
+            updater::snooze_update,
             process::open_external,
             xhub_api::xhub_call,
             commands::check_connectivity,

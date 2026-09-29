@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { inject, onMounted, ref } from 'vue'
-import { marked } from 'marked'
-import { ChevronDown, RefreshCw } from 'lucide-vue-next'
+import { ExternalLink, RefreshCw } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 
@@ -10,9 +9,19 @@ const showToast = inject<(msg: string) => void>('showToast', () => {})
 
 const version = ref('')
 const loading = ref(true)
-const changelogHtml = ref('')
-// 版本历史折叠：默认收起，避免列表过长占满设置页
-const changelogExpanded = ref(false)
+
+// 版本历史的唯一线上出处：GitHub Releases（客户端内不再内置历史列表）
+const RELEASES_URL = 'https://github.com/dckxx/x-hub/releases'
+
+function openReleases() {
+  if (isTauri()) {
+    void tauriApi.openExternal(RELEASES_URL).catch(() => {
+      showToast('打开浏览器失败')
+    })
+  } else {
+    window.open(RELEASES_URL, '_blank', 'noopener')
+  }
+}
 
 // ---- 应用更新：仅保留「检查更新」按钮；发现新版本由全局弹窗（UpdateCheckDialog）接管 ----
 const checking = ref(false)
@@ -44,7 +53,6 @@ onMounted(async () => {
   try {
     const info = await tauriApi.getAppInfo()
     version.value = info.version
-    changelogHtml.value = marked.parse(info.changelog, { async: false }) as string
   } catch {
     version.value = ''
   } finally {
@@ -110,25 +118,15 @@ function onToggleAutoUpdate() {
       </a>
     </div>
 
-    <div class="about-changelog">
-      <button
-        class="about-changelog-head"
-        type="button"
-        :aria-expanded="changelogExpanded"
-        @click="changelogExpanded = !changelogExpanded"
-      >
-        <h4 class="about-changelog-title">版本历史</h4>
-        <ChevronDown
-          :size="14"
-          :stroke-width="2"
-          class="about-changelog-chevron"
-          :class="{ open: changelogExpanded }"
-        />
-      </button>
-      <div v-show="changelogExpanded">
-        <div v-if="loading" class="about-changelog-empty">加载中…</div>
-        <div v-else class="md-body" v-html="changelogHtml"></div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-name">版本历史</span>
+        <span class="setting-desc">各版本更新说明托管在 GitHub Releases，点按即可查看</span>
       </div>
+      <button class="ghost-btn about-releases" type="button" @click="openReleases">
+        <ExternalLink :size="13" :stroke-width="2" />
+        GitHub Releases
+      </button>
     </div>
   </div>
 </template>
@@ -233,115 +231,10 @@ function onToggleAutoUpdate() {
   text-decoration: none;
 }
 
-.about-changelog {
-  margin-top: var(--space-4);
-  padding-top: var(--space-4);
-  border-top: 1px solid var(--border-soft);
-}
-.about-changelog-head {
-  display: flex;
+.about-releases {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  padding: 0;
-  margin-bottom: var(--space-3);
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  color: inherit;
-}
-.about-changelog-title {
-  margin: 0;
-  font-size: 0.8125rem;
-  font-weight: 700;
-  color: var(--text-2);
-}
-.about-changelog-chevron {
-  color: var(--text-3);
-  transition: transform 0.18s ease-out;
-}
-.about-changelog-chevron.open {
-  transform: rotate(180deg);
-}
-.about-changelog-empty {
-  font-size: 0.8125rem;
-  color: var(--text-3);
-}
-
-/* 只读静态 Markdown 渲染（复用 marked，样式对齐速记预览） */
-.md-body {
-  font-size: 0.8125rem;
-  line-height: 1.7;
-  color: var(--text-2);
-}
-.md-body :deep(h1) {
-  font-size: 1.125rem;
-  font-weight: 700;
-  color: var(--text-1);
-  margin: 16px 0 10px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border-soft);
-}
-.md-body :deep(h1:first-child) {
-  margin-top: 0;
-}
-.md-body :deep(h2) {
-  font-size: 0.9375rem;
-  font-weight: 700;
-  color: var(--text-1);
-  margin: 16px 0 8px;
-}
-.md-body :deep(h3) {
-  font-size: 0.84375rem;
-  font-weight: 700;
-  color: var(--text-1);
-  margin: 12px 0 6px;
-}
-.md-body :deep(p) {
-  margin: 6px 0;
-}
-.md-body :deep(ul),
-.md-body :deep(ol) {
-  padding-left: 20px;
-  margin: 6px 0;
-}
-.md-body :deep(ol) {
-  list-style: decimal;
-}
-.md-body :deep(ol > li) {
-  display: list-item;
-}
-.md-body :deep(li) {
-  margin: 3px 0;
-}
-.md-body :deep(code) {
-  background: var(--bg-card);
-  border: 1px solid var(--border-soft);
-  border-radius: 5px;
-  padding: 1px 6px;
-  font-size: 0.75rem;
-  font-family: 'FiraCode', Consolas, monospace;
-}
-.md-body :deep(pre) {
-  background: var(--bg-card);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
-  padding: 12px;
-  overflow-x: auto;
-  margin: 8px 0;
-}
-.md-body :deep(pre code) {
-  background: transparent;
-  border: none;
-  padding: 0;
-}
-.md-body :deep(a) {
-  color: var(--brand-500);
-}
-.md-body :deep(hr) {
-  border: none;
-  border-top: 1px solid var(--border-soft);
-  margin: 14px 0;
+  gap: 6px;
+  text-decoration: none;
 }
 </style>

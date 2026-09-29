@@ -50,6 +50,8 @@ semver = "1"
 sysinfo = "0.32"
 # 剪贴板 BMP 快照导出转 PNG：只开 bmp/png 两个编解码，避免拖入全家桶
 image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.52"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
@@ -67,9 +69,6 @@ windows-sys = { version = "0.61", features = [
 # 类型同源可 cast（ICoreWebView2_19::SetMemoryUsageTargetLevel）
 webview2-com = "0.38.2"
 windows-core = "0.61"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-winreg = "0.52"
 
 [dev-dependencies]
 tempfile = "3"

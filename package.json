@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.7.0",
   "type": "module",
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
     "test:security": "node --test tests/security.test.mjs",
     "dev": "vite",
@@ -14,6 +15,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "tauri:build:deb": "tauri build --bundles deb",
+    "tauri:build:rpm": "tauri build --bundles rpm",
     "tauri:test": "pwsh -NoProfile -File scripts/cargo-test.ps1"
   },
   "dependencies": {

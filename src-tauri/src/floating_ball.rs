@@ -933,6 +933,7 @@ pub fn floating_ball_save_settings(
     buttons: Vec<String>,
     idle_spin: bool,
 ) -> Result<(), String> {
+    let auto_hide = config::floating_ball_auto_hide_for(auto_hide, cfg!(target_os = "linux"));
     // 去重保序 + 截断上限
     let mut seen = std::collections::HashSet::new();
     let buttons: Vec<String> = buttons

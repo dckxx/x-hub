@@ -250,11 +250,10 @@ pub struct AppConfig {
     /// 桌面悬浮球总开关（ADR 0004，默认开启）：主窗口隐藏时在桌面显示悬浮球
     #[serde(default = "default_true")]
     pub floating_ball_enabled: bool,
-    /// 悬浮球贴边自动隐藏：拖到屏幕边缘附近松手 → 球心落在屏边，只露出半个球体；
-    /// 悬停时球体完整滑出。取代旧「贴边吸附」（用户反馈吸附从未生效，改为本交互）。
+    /// 悬浮球贴边自动隐藏：Windows 拖到屏幕边缘附近松手 → 半隐；Linux 暂不支持，固定关闭。
     /// alias：v0.5.2 及更早字段名为 floating_ball_snap，用户显式关闭过的偏好经别名
     /// 自动迁移（同 theme→theme_mode 先例），否则升级后被丢弃回落 default_true
-    #[serde(default = "default_true", alias = "floating_ball_snap")]
+    #[serde(default = "default_floating_ball_auto_hide", alias = "floating_ball_snap")]
     pub floating_ball_auto_hide: bool,
     /// 与主窗口同时显示：默认 false = 球仅在主窗隐藏/最小化时出现；
     /// 开启后球常驻桌面，主窗显示也不隐藏（sync_with_main 读此字段联动）
@@ -315,6 +314,18 @@ fn default_chat_window_height() -> f64 {
 
 fn default_true() -> bool {
     true
+}
+
+fn floating_ball_auto_hide_default_for(is_linux: bool) -> bool {
+    floating_ball_auto_hide_for(true, is_linux)
+}
+
+pub(crate) fn floating_ball_auto_hide_for(requested: bool, is_linux: bool) -> bool {
+    requested && !is_linux
+}
+
+fn default_floating_ball_auto_hide() -> bool {
+    floating_ball_auto_hide_default_for(cfg!(target_os = "linux"))
 }
 
 fn default_wallpaper_veil() -> f64 {
@@ -448,7 +459,7 @@ impl Default for AppConfig {
             update_interval_hours: default_update_interval_hours(),
             skipped_update_version: String::new(),
             floating_ball_enabled: true,
-            floating_ball_auto_hide: true,
+            floating_ball_auto_hide: default_floating_ball_auto_hide(),
             floating_ball_with_main: false,
             floating_ball_buttons: default_floating_ball_buttons(),
             floating_ball_x: None,
@@ -523,6 +534,11 @@ fn normalize(config: &mut AppConfig) -> bool {
         changed = true;
     }
     if migrate_legacy_endpoints(config) {
+        changed = true;
+    }
+    let auto_hide = floating_ball_auto_hide_for(config.floating_ball_auto_hide, cfg!(target_os = "linux"));
+    if config.floating_ball_auto_hide != auto_hide {
+        config.floating_ball_auto_hide = auto_hide;
         changed = true;
     }
     changed
@@ -663,6 +679,17 @@ mod tests {
         assert_eq!(c.global_shortcut, crate::shortcut::DEFAULT_TOGGLE_SHORTCUT);
         assert_eq!(c.dashboard_mid_content, "countdown");
         assert_eq!(c.note_editor_mode, "wysiwyg");
+        assert_eq!(c.floating_ball_auto_hide, !cfg!(target_os = "linux"));
+        assert!(!floating_ball_auto_hide_default_for(true));
+        assert!(floating_ball_auto_hide_default_for(false));
+    }
+
+    #[test]
+    fn floating_ball_auto_hide_is_disabled_only_for_linux() {
+        assert!(!floating_ball_auto_hide_for(true, true));
+        assert!(!floating_ball_auto_hide_for(false, true));
+        assert!(floating_ball_auto_hide_for(true, false));
+        assert!(!floating_ball_auto_hide_for(false, false));
     }
 
     #[test]
@@ -683,6 +710,7 @@ mod tests {
         config.window.width = 1280.0;
         config.window.x = Some(100.0);
         config.window.always_on_top = true;
+        config.floating_ball_auto_hide = true;
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("app.json");
@@ -696,6 +724,10 @@ mod tests {
         assert_eq!(loaded.window.width, 1280.0);
         assert_eq!(loaded.window.x, Some(100.0));
         assert!(loaded.window.always_on_top);
+        assert_eq!(
+            loaded.floating_ball_auto_hide,
+            !cfg!(target_os = "linux")
+        );
     }
 
     #[test]

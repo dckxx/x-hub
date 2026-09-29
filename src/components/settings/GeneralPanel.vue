@@ -13,6 +13,9 @@ import { FLOATING_BALL_BUTTONS, FLOATING_BALL_MAX_BUTTONS } from '../../composab
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
+const isLinux =
+  typeof navigator !== 'undefined' &&
+  /Linux/i.test(`${navigator.userAgent} ${navigator.platform}`)
 
 // ---- 桌面悬浮球（ADR 0004）：启用 / 贴边自动隐藏 / 与主窗同显 / 静止转动 / 环形按钮增删排序 ----
 const ballButtons = computed(() => store.state.config.floating_ball_buttons ?? [])
@@ -274,7 +277,7 @@ onMounted(async () => {
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">桌面悬浮球</span>
-              <span class="setting-desc">主窗口隐藏/最小化时在桌面显示悬浮球（可开启下方「与主窗口同时显示」常驻）：单击展开环形快捷菜单，双击显示主窗口，右键快捷菜单，可拖拽，贴边自动隐藏一半</span>
+              <span class="setting-desc">主窗口隐藏/最小化时在桌面显示悬浮球（可开启下方「与主窗口同时显示」常驻）：单击展开环形快捷菜单，双击显示主窗口，右键快捷菜单，可拖拽{{ isLinux ? '' : '，贴边自动隐藏一半' }}</span>
             </div>
             <button
               class="toggle"
@@ -288,7 +291,7 @@ onMounted(async () => {
             </button>
           </div>
 
-          <div class="setting-row">
+          <div v-if="!isLinux" class="setting-row">
             <div class="setting-info">
               <span class="setting-name">悬浮球贴边自动隐藏</span>
               <span class="setting-desc">拖到屏幕边缘附近松手时自动半隐：球体贴边只露出一半，鼠标悬停时完整滑出，移开再隐回</span>

@@ -72,8 +72,10 @@ pub fn launch_program(path: &str, args: Option<&str>) -> Result<(), String> {
     }
 }
 
-/// 以管理员权限启动（触发 UAC 提权确认）：PowerShell Start-Process -Verb RunAs
-fn launch_elevated(path: &str, args: Option<&str>) -> Result<(), String> {
+/// 以管理员权限启动（触发 UAC 提权确认）：PowerShell Start-Process -Verb RunAs。
+/// 两条入口：launch_program 撞错误 740（程序清单要求提权）时的自动兜底，
+/// 与 launch_resource_as_admin（速达右键「以管理员身份运行」）的用户显式提权。
+pub(crate) fn launch_elevated(path: &str, args: Option<&str>) -> Result<(), String> {
     let has_args = args.map(|a| !a.trim().is_empty()).unwrap_or(false);
     let script = if has_args {
         "Start-Process -FilePath $env:XHUB_PATH -ArgumentList $env:XHUB_ARGS -Verb RunAs"

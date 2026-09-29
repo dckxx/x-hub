@@ -49,6 +49,42 @@ export function fmtHM(ts: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+/**
+ * 解析后端时间字符串为本地 Date。
+ * completed_at 是 SQLite strftime 存的 UTC 字符串（无时区后缀，如 2026-09-27 05:34:01.229），
+ * new Date 直读会按本地时区错读，必须补 Z 解析。解析失败返回 null。
+ */
+export function parseServerDate(s: string | null): Date | null {
+  if (!s) return null
+  const d = new Date(s.includes('T') ? s : `${s.replace(' ', 'T')}Z`)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/**
+ * 已完成行的「完成时间」徽标文案。
+ * 相对口径：今天/昨天 带时刻；同年 M月D日 带时刻；跨年补年份。解析失败返回 null（行内隐藏）。
+ */
+export function doneAtLabel(
+  completedAt: string | null,
+  now: Date,
+): { text: string; full: string } | null {
+  const d = parseServerDate(completedAt)
+  if (!d) return null
+  const day = startOfDay(d)
+  const today0 = startOfDay(now)
+  const diff = Math.round((today0.getTime() - day.getTime()) / 86_400_000)
+  const hm = ` ${fmtHM(d.getTime())}`
+  const text =
+    diff === 0
+      ? `今天${hm}`
+      : diff === 1
+        ? `昨天${hm}`
+        : d.getFullYear() === now.getFullYear()
+          ? `${fmtDay(d)}${hm}`
+          : `${d.getFullYear()}年${fmtDay(d)}${hm}`
+  return { text, full: `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日${hm}` }
+}
+
 export function groupOf(t: { due_at: number | null }, today: Date): number {
   if (t.due_at == null) return 3
   const d = startOfDay(new Date(t.due_at))
@@ -72,6 +108,24 @@ export function compareByOrder(
   if (ao != null && bo != null) return ao - bo
   if (ao == null && bo == null) return b.created_at.localeCompare(a.created_at)
   return ao == null ? -1 : 1
+}
+
+/**
+ * 子待办排序（方向与顶级待办刻意的相反）：
+ * 手动拖过的（sort_order 非空）按 sort_order 升序，未排序的按创建时间**正序**——
+ * 先加的在上、新增的子待办追加到末尾，符合「子任务是往下追加的清单」直觉。
+ * 「已手动排序」与「未排序」混排时（补值失败等异常路径）未排序的排在其后，
+ * 新增子待办同样落在末尾，不会插到已排好的顺序中间。
+ */
+export function compareChildOrder(
+  a: { sort_order: number | null; created_at: string },
+  b: { sort_order: number | null; created_at: string },
+): number {
+  const ao = a.sort_order
+  const bo = b.sort_order
+  if (ao != null && bo != null) return ao - bo
+  if (ao == null && bo == null) return a.created_at.localeCompare(b.created_at)
+  return ao == null ? 1 : -1
 }
 
 /**

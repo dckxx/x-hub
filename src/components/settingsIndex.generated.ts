@@ -55,6 +55,8 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   { section: 'ball', title: '环形菜单按钮' },
   { section: 'shortcut', title: '全局快捷键' },
   { section: 'shortcut', title: '剪贴板呼出快捷键' },
+  { section: 'shortcut', title: '搜索呼出快捷键' },
+  { section: 'shortcut', title: 'AI 对话呼出快捷键' },
   { section: 'skills', title: '检测到的助手目录' },
   { section: 'workbench', title: '自定义布局' },
   { section: 'workbench', title: '倒计时到点提示音' },

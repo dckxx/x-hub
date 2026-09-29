@@ -150,6 +150,12 @@ pub struct AppConfig {
     pub chat_window_pinned: bool,
     /// 剪贴板历史全局呼出快捷键（默认 Ctrl+Alt+V，可配置）
     pub clipboard_shortcut: String,
+    /// 全局搜索呼出快捷键（默认 Ctrl+K，可配置，全局注册）
+    #[serde(default = "default_search_shortcut")]
+    pub search_shortcut: String,
+    /// AI 对话呼出快捷键（默认 Ctrl+Shift+K，可配置，全局注册）
+    #[serde(default = "default_chat_shortcut")]
+    pub chat_shortcut: String,
     /// 剪贴板历史最大条数（含置顶；置顶豁免自动清理但计入上限）
     pub clipboard_max_items: i64,
     /// 非置顶记录的保留天数
@@ -203,6 +209,10 @@ pub struct AppConfig {
     /// 扩展「默认打开方式」映射：extId → view / window / drawer（未设置时默认 view）
     #[serde(default)]
     pub extension_open_modes: std::collections::HashMap<String, String>,
+    /// 扩展「链接打开方式」映射：extId → inapp（应用内浏览器，默认）/ browser（系统默认浏览器）。
+    /// 门控 runtime.openExternal：扩展页里的外链按此分流
+    #[serde(default)]
+    pub extension_link_modes: std::collections::HashMap<String, String>,
     /// ⚠️ **已废弃、不再被读取**（v0.6.1）：市场清单地址的唯一真相源是内置常量
     /// [`market_registry_url`]——从 v0.6.1 起客户端**不再直连对象存储**，清单/包/截图一律走
     /// 平台服务端接口（`x-hub-server` 的 `src/modules/market`，服务端再代理 COS）。
@@ -247,6 +257,9 @@ pub struct AppConfig {
     /// 用户「跳过此版本」记录的版本号（空 = 未跳过）；check 命中时若与清单版本一致则不再提示
     #[serde(default)]
     pub skipped_update_version: String,
+    /// 「稍后再提示」暂停到点（epoch 毫秒，0 = 未暂停）：到期前自动检查不弹更新弹窗
+    #[serde(default)]
+    pub update_snooze_until_ms: i64,
     /// 桌面悬浮球总开关（ADR 0004，默认开启）：主窗口隐藏时在桌面显示悬浮球
     #[serde(default = "default_true")]
     pub floating_ball_enabled: bool,
@@ -285,6 +298,16 @@ fn default_paste_method() -> String {
 /// 速达网页默认打开方式：内嵌面板（ADR 0011 2026-09-25 拍板：默认落点 = 面板，可设置）
 fn default_suda_web_open_mode() -> String {
     "panel".to_string()
+}
+
+/// 全局搜索呼出快捷键默认值（与 shortcut.rs 的 DEFAULT_SEARCH_SHORTCUT 同源）
+fn default_search_shortcut() -> String {
+    crate::shortcut::DEFAULT_SEARCH_SHORTCUT.to_string()
+}
+
+/// AI 对话呼出快捷键默认值（与 shortcut.rs 的 DEFAULT_CHAT_SHORTCUT 同源）
+fn default_chat_shortcut() -> String {
+    crate::shortcut::DEFAULT_CHAT_SHORTCUT.to_string()
 }
 
 /// 通知驻留时长默认 5 秒
@@ -427,6 +450,8 @@ impl Default for AppConfig {
             chat_window_y: None,
             chat_window_pinned: false,
             clipboard_shortcut: crate::shortcut::DEFAULT_CLIPBOARD_SHORTCUT.to_string(),
+            search_shortcut: crate::shortcut::DEFAULT_SEARCH_SHORTCUT.to_string(),
+            chat_shortcut: crate::shortcut::DEFAULT_CHAT_SHORTCUT.to_string(),
             clipboard_max_items: 500,
             clipboard_ttl_days: 7,
             clipboard_paused: false,
@@ -445,6 +470,7 @@ impl Default for AppConfig {
             runtime_strategy: "auto".to_string(),
             sidebar_extensions: Vec::new(),
             extension_open_modes: std::collections::HashMap::new(),
+            extension_link_modes: std::collections::HashMap::new(),
             // 废弃字段（不再被读取）：市场清单地址真相源是 config::market_registry_url()
             market_endpoint: String::new(),
             dev_mode_enabled: false, // 已废弃字段：仅为兼容旧 app.json 保留，不再读取
@@ -458,6 +484,7 @@ impl Default for AppConfig {
             auto_update_enabled: true,
             update_interval_hours: default_update_interval_hours(),
             skipped_update_version: String::new(),
+            update_snooze_until_ms: 0,
             floating_ball_enabled: true,
             floating_ball_auto_hide: default_floating_ball_auto_hide(),
             floating_ball_with_main: false,
@@ -610,6 +637,8 @@ const BACKEND_MANAGED_FIELDS: &[&str] = &[
     "skill_roots",
     // 「跳过此版本」：只经 skip_update_version 变更
     "skipped_update_version",
+    // 「稍后再提示」暂停到期时间：只经 snooze_update 变更
+    "update_snooze_until_ms",
     // 已废弃的两个端点字段（v0.6.1）：真相源是内置常量，只由 migrate_legacy_endpoints 归一
     "market_endpoint",
     "update_endpoint",
@@ -642,6 +671,10 @@ pub fn merge_disk_authoritative(merged: &mut AppConfig, disk: &AppConfig) {
     merged.update_endpoint = disk.update_endpoint.clone();
     merged.skill_roots = disk.skill_roots.clone();
     merged.skipped_update_version = disk.skipped_update_version.clone();
+    // 「稍后再提示」到期时间由 snooze_update 命令独占写盘，前端快照里只有启动时的旧值；
+    // 不合并的话，暂停窗口内保存任意设置（save_config 整份快照落盘）都会把它冲回旧值，
+    // 「稍后再提示」被悄悄取消、更新弹窗下一轮自动检查又弹出来
+    merged.update_snooze_until_ms = disk.update_snooze_until_ms;
 }
 
 pub fn save(config: &AppConfig) -> Result<(), String> {
@@ -857,6 +890,7 @@ mod tests {
             dev_mode_enabled: true,
             skill_roots: vec!["E:\\skills-custom".to_string()],
             skipped_update_version: "9.9.9".to_string(),
+            update_snooze_until_ms: 1_893_456_000_000,
             ..AppConfig::default()
         }
     }
@@ -924,6 +958,7 @@ mod tests {
         assert_eq!(merged.dev_mode_enabled, disk.dev_mode_enabled);
         assert_eq!(merged.skill_roots, disk.skill_roots);
         assert_eq!(merged.skipped_update_version, disk.skipped_update_version);
+        assert_eq!(merged.update_snooze_until_ms, disk.update_snooze_until_ms);
     }
 
     /// 清单漏登就是这条红：任何登记在案的名字都必须是 `AppConfig` 真实存在的字段，

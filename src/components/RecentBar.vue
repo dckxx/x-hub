@@ -231,7 +231,6 @@ async function onOpen(r: Resource) {
   height: 42px;
   border-radius: 12px;
   object-fit: contain;
-  background: var(--bg-card);
 }
 .rb-name {
   max-width: 100%;

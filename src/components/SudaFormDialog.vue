@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
-import { FolderOpen, ImagePlus, Link } from 'lucide-vue-next'
+import { FolderOpen, ImageDown, ImagePlus, Link } from 'lucide-vue-next'
 import { isTauri, tauriApi, type Resource } from '../api/tauri'
 import { categorize } from '../utils/categories'
-import AppSelect from './AppSelect.vue'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { useStore } from '../stores/workbench'
-import { deriveFaviconUrl, joinWebTarget, splitWebTarget, type WebScheme } from '../utils/web'
+import { deriveFaviconUrl, normalizeWebUrl } from '../utils/web'
 
 const store = useStore()
 
@@ -43,11 +42,6 @@ const emit = defineEmits<{
 const kind = ref<'app' | 'web' | 'file'>('app')
 const name = ref('')
 const target = ref('')
-const webScheme = ref<WebScheme>('https')
-const WEB_SCHEME_OPTIONS: { value: WebScheme; label: string }[] = [
-  { value: 'http', label: 'http://' },
-  { value: 'https', label: 'https://' },
-]
 const args = ref('')
 const icon = ref('')
 /** 小类名；null = 编辑时「未归类」/ 新建时跟随默认小类（后端自动归入） */
@@ -79,7 +73,7 @@ const targetLabel = computed(() => {
 const targetPlaceholder = computed(() => {
   if (kind.value === 'file') return '选择要链接的文件或文件夹'
   if (kind.value === 'app') return '如：C:\\Program Files\\...\\code.exe'
-  return '如：github.com'
+  return '如：github.com 或 https://github.com'
 })
 
 const iconPlaceholder = computed(() => {
@@ -95,13 +89,7 @@ watch(
     if (props.editing) {
       kind.value = props.editing.kind === 'file' ? 'file' : props.editing.kind
       name.value = props.editing.name
-      if (props.editing.kind === 'web') {
-        const split = splitWebTarget(props.editing.target)
-        webScheme.value = split.scheme
-        target.value = split.value
-      } else {
-        target.value = props.editing.target
-      }
+      target.value = props.editing.target
       args.value = props.editing.args ?? ''
       icon.value = props.editing.icon ?? ''
       category.value = props.editing.category ?? null
@@ -114,17 +102,13 @@ watch(
       icon.value = ''
       category.value = defaultCategoryFor('app')
       isDir.value = false
-      webScheme.value = 'https'
       if (props.prefill) {
         kind.value = props.prefill.kind ?? 'app'
         name.value = props.prefill.name ?? ''
+        target.value = props.prefill.target ?? ''
         if (kind.value === 'web') {
-          const split = splitWebTarget(props.prefill.target ?? '')
-          webScheme.value = split.scheme
-          target.value = split.value
-          icon.value = props.prefill.icon ?? deriveFaviconUrl(joinWebTarget(split.scheme, split.value)) ?? ''
+          icon.value = props.prefill.icon ?? deriveFaviconUrl(normalizeWebUrl(target.value)) ?? ''
         } else {
-          target.value = props.prefill.target ?? ''
           icon.value = props.prefill.icon ?? ''
         }
         category.value = props.prefill.category ?? defaultCategoryFor(kind.value)
@@ -172,11 +156,7 @@ async function pickTarget() {
     return
   }
   if (kind.value === 'web') {
-    const normalized = joinWebTarget(webScheme.value, target.value)
-    target.value = splitWebTarget(normalized).value
-    if (!icon.value.trim()) {
-      icon.value = deriveFaviconUrl(normalized) ?? ''
-    }
+    normalizeWebTarget()
   }
 }
 
@@ -212,7 +192,7 @@ function submit() {
     return
   }
   if (kind.value === 'web') {
-    trimmedTarget = joinWebTarget(webScheme.value, trimmedTarget)
+    trimmedTarget = normalizeWebUrl(trimmedTarget)
   }
   emit('submit', {
     id: props.editing?.id,
@@ -228,12 +208,9 @@ function submit() {
 }
 
 function normalizeWebTarget() {
-  if (kind.value !== 'web') return
-  const split = splitWebTarget(target.value)
-  webScheme.value = split.scheme
-  target.value = split.value
-  const normalized = joinWebTarget(split.scheme, split.value)
-  if (!icon.value.trim()) icon.value = deriveFaviconUrl(normalized) ?? ''
+  if (kind.value !== 'web' || !target.value.trim()) return
+  target.value = normalizeWebUrl(target.value)
+  if (!icon.value.trim()) icon.value = deriveFaviconUrl(target.value) ?? ''
 }
 
 function onKindChange(nextKind: 'app' | 'web' | 'file') {
@@ -244,9 +221,8 @@ function onKindChange(nextKind: 'app' | 'web' | 'file') {
 }
 
 function onIconInputBlur() {
-  if (kind.value === 'web') {
-    const normalized = joinWebTarget(webScheme.value, target.value)
-    if (!icon.value.trim()) icon.value = deriveFaviconUrl(normalized) ?? ''
+  if (kind.value === 'web' && target.value.trim() && !icon.value.trim()) {
+    icon.value = deriveFaviconUrl(normalizeWebUrl(target.value)) ?? ''
   }
 }
 
@@ -310,29 +286,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
           <!-- 目标 -->
           <label class="field-label">{{ targetLabel }}</label>
-          <div v-if="kind === 'web'" class="web-input-row">
-            <AppSelect
-              class="scheme-select"
-              :model-value="webScheme"
-              :options="WEB_SCHEME_OPTIONS"
-              aria-label="网址协议"
-              @update:model-value="webScheme = $event as WebScheme"
-            />
-            <div class="input-with-btn web-target-wrap">
-              <input
-                v-model="target"
-                class="field-input web-target-input"
-                type="text"
-                :placeholder="targetPlaceholder"
-                @keydown="onKeydown"
-                @blur="normalizeWebTarget"
-              />
-              <button class="input-btn" title="自动抓取图标" @click="pickTarget">
-                <FolderOpen :size="15" :stroke-width="1.8" />
-              </button>
-            </div>
-          </div>
-          <div v-else class="input-with-btn">
+          <div class="input-with-btn">
             <input
               v-model="target"
               class="field-input"
@@ -340,13 +294,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               :readonly="kind === 'file'"
               :placeholder="targetPlaceholder"
               @keydown="onKeydown"
+              @blur="normalizeWebTarget"
             />
             <button
               class="input-btn"
-              title="选择"
+              :title="kind === 'web' ? '自动抓取图标' : '选择'"
               @click="pickTarget"
             >
-              <FolderOpen :size="15" :stroke-width="1.8" />
+              <ImageDown v-if="kind === 'web'" :size="15" :stroke-width="1.8" />
+              <FolderOpen v-else :size="15" :stroke-width="1.8" />
             </button>
           </div>
 
@@ -499,26 +455,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .input-with-btn .field-input {
   padding-right: 40px;
-}
-.web-input-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-/* AppSelect 根是 fragment，父级 scoped class 落不到触发器上，用 :deep() 穿透（DESIGN.md §5）。
-   高度不覆盖：AppSelect 默认 min-height 38px 与本行输入框同高。 */
-.web-input-row :deep(.scheme-select) {
-  flex-shrink: 0;
-  width: 92px;
-}
-.web-target-wrap {
-  flex: 1;
-}
-.web-target-wrap .input-btn {
-  right: 6px;
-}
-.web-target-input {
-  padding-right: 44px;
 }
 .input-btn {
   position: absolute;

@@ -7,10 +7,12 @@
 3. **npm script 用 `deploy`**，不要叫 `install`（npm 生命周期钩子会误触发）。
 4. **service 端口**：读 `process.env.PORT`，只监听 `127.0.0.1`；`/healthz` 是健康检查路径。
 5. **前端调后端**：走 `window.xhub.service.request`，不直接 fetch 端口。
-6. **桥 API 现状**以 `runtime.info().capabilities` 为准。已实现：`runtime(info/open/callExtension)`、`storage.*`、`config.*`、`sharedStorage.*`、**`data.*` 读写全套**、`fs.saveText/saveFile/saveAs`、`service.request`、`theme.get`、`events.on/emit`、`openExternal`、`expose`。未实现：`clipboard.*`、`net.*`、`system.*`、`ui.*`、`fs.readText/writeText/readDir/exists`。
-6b. **开外链一律用 `window.xhub.openExternal(url)`**：宿主用 Tauri/wry 承载扩展 iframe，wry 在宿主未注册新窗口处理器时对 WebView2 的 `NewWindowRequested` 直接 `SetHandled(true)` 拒绝——`target="_blank"` 和 `window.open()` 在宿主里**静默失效**（点了没反应）。更坑的是浏览器直开预览时它们"看起来正常"，所以这个坑只在宿主内才暴露。只放行 `http(s)://`。宿主速达的「应用内打开」（内嵌面板 / 独立浏览器窗）是 web 资源专属功能，**未对扩展开放**——扩展开外链只有系统浏览器这一条路，日后若开放会在能力表与 `runtime.info().capabilities` 里出现，别猜方法名硬调。
+6. **桥 API 现状**以 `runtime.info().capabilities` 为准。已实现：`runtime(info/open/callExtension/openPermissions)`、`storage.*`、`config.*`、`sharedStorage.*`、**`data.*` 读写全套**、`fs.saveText/saveFile/saveAs`、`service.request`、`theme.get`、`events.on/emit`、`openExternal`、`expose`。未实现：`clipboard.*`、`net.*`、`system.*`、`ui.*`、`fs.readText/writeText/readDir/exists`。
+6b. **开外链一律用 `window.xhub.openExternal(url)`**：宿主用 Tauri/wry 承载扩展 iframe，wry 在宿主未注册新窗口处理器时对 WebView2 的 `NewWindowRequested` 直接 `SetHandled(true)` 拒绝——`target="_blank"` 和 `window.open()` 在宿主里**静默失效**（点了没反应）。更坑的是浏览器直开预览时它们"看起来正常"，所以这个坑只在宿主内才暴露。只放行 `http(s)://`。
+    - **打开位置由用户决定，不由扩展决定**：用户可在扩展详情弹窗给每个扩展配「链接打开方式」——默认**应用内置浏览器窗口**，也可切「浏览器」（系统默认浏览器）。扩展代码只管调 `openExternal`，两种模式都覆盖，别自己写「用哪个浏览器打开」的逻辑。
+    - **普通 `<a href="http(s)://…">` 链接宿主会自动接管**（桥在捕获阶段拦截点击 → `openExternal`），直接写链接就能用，不必自己绑 click。反过来：**别在 http(s) 外链的 `<a>` 上绑自己的点击逻辑**（确认弹窗、统计等）——宿主接管会吞掉这些处理器（`stopPropagation`）；确需自定义点击行为，用按钮 + `openExternal`，别用 `<a href=http…>`。
 6c. **module 多形态：URL query 的形态要自己落到 DOM 属性上**。宿主写 `data-xhub-variant` + 广播事件，但 `?xhub-variant=dual` 只在首帧有值；纯 CSS 分支（`:root[data-xhub-variant="dual"]`）要生效，得在读到 query 后 `document.documentElement.setAttribute('data-xhub-variant', v)`——否则浏览器预览里形态分支永远不触发。
-7. **权限声明**：读宿主数据要 `data:read`、写数据要 `data:write`、存文件到下载目录要 `fs`、广播事件要 `events`、跨扩展共享存储要 `shared-storage`、**用 `openExternal` 开外链要 `open-url`**；没声明就调用会被拒（`PERMISSION_DENIED`）——`openExternal` 被拒时宿主会弹提示，但链接**打不开**，别等用户反馈才发现漏声明。
+7. **权限声明**：读宿主数据要 `data:read`、写数据要 `data:write`、存文件到下载目录要 `fs`、广播事件要 `events`、跨扩展共享存储要 `shared-storage`、**用 `openExternal` 开外链要 `open-url`**；没声明就调用会被拒（`PERMISSION_DENIED`）——`openExternal` 被拒时宿主会弹提示，但链接**打不开**，别等用户反馈才发现漏声明。service 扩展的 `service.request` 在用户撤销授权后也会运行时拒 `PERMISSION_DENIED`——界面给「去授权」按钮调 `xhub.openPermissions()`（详见 `service.md`）。
 8. **页面底用 `var(--xhub-page-bg, transparent)`**（无壁纸=宿主页面背景，有壁纸=transparent）；内容表面用 `var(--xhub-surface)`；**切勿用 `--xhub-bg-page` 铺底**（壁纸态会盖住壁纸，透底态是白底白字）；更细的壁纸态适配用 `data-xhub-wallpaper` / `data-xhub-wallpaper-clear` / `data-xhub-immersive`。
 9. **部署 service 扩展前**：若 x-hub 正在运行并锁定了该扩展的后端文件，`deploy` 会报 EPERM——先退出 x-hub 再部署。
 10. **字段名大小写**：`openIn`、`minSize`、`dependsOn`、`backend.engine.minVersion` 是驼峰，写错会解析失败。

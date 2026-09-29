@@ -137,7 +137,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         <div ref="cardRef" class="modal-card md-card" role="dialog" aria-label="扩展详情" aria-modal="true">
           <div class="md-head">
             <div class="md-title">
-              <span class="md-icon" :style="{ background: accentOf(m!.name).soft }">
+              <span class="md-icon" :style="m!.icon && !iconFailed ? {} : { background: accentOf(m!.name).soft }">
                 <img
                   v-if="m!.icon && !iconFailed"
                   :src="m!.icon"

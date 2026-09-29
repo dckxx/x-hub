@@ -1925,7 +1925,8 @@ pub struct DroppedAppInfo {
     pub icon: Option<String>,
 }
 
-/// 解析拖入的文件信息：.exe 直接读取，.lnk 快捷方式解析其目标路径；均尝试提取程序图标
+/// 解析拖入的文件信息。
+/// Windows：.exe / .lnk；Linux：可执行文件 / .desktop。
 #[tauri::command]
 pub fn parse_dropped_path(path: String) -> Result<DroppedAppInfo, String> {
     let p = std::path::Path::new(&path);
@@ -1934,32 +1935,139 @@ pub fn parse_dropped_path(path: String) -> Result<DroppedAppInfo, String> {
         .and_then(|e| e.to_str())
         .map(|s| s.to_lowercase())
         .unwrap_or_default();
-    let (name, target, icon) = match ext.as_str() {
-        "exe" => {
-            let name = p
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("本地应用")
-                .to_string();
-            let target = path.clone();
-            let icon = extract_app_icon(&target);
-            (name, target, icon)
+
+    #[cfg(target_os = "windows")]
+    {
+        let (name, target, icon) = match ext.as_str() {
+            "exe" => {
+                let name = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("本地应用")
+                    .to_string();
+                let target = path.clone();
+                let icon = extract_app_icon(&target);
+                (name, target, icon)
+            }
+            "lnk" => {
+                let name = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("快捷方式")
+                    .to_string();
+                let (target, icon) = resolve_lnk_target_and_icon(&path)?;
+                (name, target, icon)
+            }
+            _ => {
+                log::warn!("拖入文件不支持: {}", path);
+                return Err("仅支持 .exe 文件或 .lnk 快捷方式".into());
+            }
+        };
+        log::info!(
+            "拖入解析成功: {} -> {} (图标: {})",
+            name,
+            target,
+            if icon.is_some() { "有" } else { "无" }
+        );
+        return Ok(DroppedAppInfo {
+            name,
+            target,
+            icon,
+        });
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if ext == "desktop" {
+            let info = parse_desktop_file(&path)?;
+            log::info!(
+                "拖入解析成功: {} -> {} (图标: {})",
+                info.name,
+                info.target,
+                if info.icon.is_some() { "有" } else { "无" }
+            );
+            return Ok(info);
         }
-        "lnk" => {
-            let name = p
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("快捷方式")
-                .to_string();
-            let (target, icon) = resolve_lnk_target_and_icon(&path)?;
-            (name, target, icon)
+        // 无扩展名或任意可执行文件
+        let meta = std::fs::metadata(&path).map_err(|e| format!("无法读取文件: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
+                return Err("仅支持可执行文件或 .desktop 快捷方式".into());
+            }
         }
-        _ => {
-            log::warn!("拖入文件不支持: {}", path);
-            return Err("仅支持 .exe 文件或 .lnk 快捷方式".into());
+        #[cfg(not(unix))]
+        {
+            if !meta.is_file() {
+                return Err("仅支持可执行文件或 .desktop 快捷方式".into());
+            }
         }
+        let name = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("本地应用")
+            .to_string();
+        let icon = extract_app_icon(&path);
+        log::info!(
+            "拖入解析成功: {} -> {} (图标: {})",
+            name,
+            path,
+            if icon.is_some() { "有" } else { "无" }
+        );
+        Ok(DroppedAppInfo {
+            name,
+            target: path,
+            icon,
+        })
+    }
+}
+
+/// 解析 .desktop：取 Name= / Exec= / Icon=
+#[cfg(not(target_os = "windows"))]
+fn parse_desktop_file(path: &str) -> Result<DroppedAppInfo, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| format!("读取 .desktop 失败: {e}"))?;
+    let mut name = String::new();
+    let mut exec = String::new();
+    let mut icon_name = String::new();
+    let mut in_desktop_entry = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_desktop_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_desktop_entry || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(v) = line.strip_prefix("Name=") {
+            if name.is_empty() && !v.contains('[') {
+                name = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("Exec=") {
+            if exec.is_empty() {
+                exec = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("Icon=") {
+            if icon_name.is_empty() {
+                icon_name = v.trim().to_string();
+            }
+        }
+    }
+    if name.is_empty() {
+        name = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("本地应用")
+            .to_string();
+    }
+    let target = desktop_exec_to_target(&exec)
+        .ok_or_else(|| "无法解析 .desktop 的 Exec 字段".to_string())?;
+    let icon = if icon_name.is_empty() {
+        extract_app_icon(&target)
+    } else {
+        resolve_linux_icon(&icon_name).or_else(|| extract_app_icon(&target))
     };
-    log::info!("拖入解析成功: {} -> {} (图标: {})", name, target, if icon.is_some() { "有" } else { "无" });
     Ok(DroppedAppInfo {
         name,
         target,
@@ -1967,7 +2075,108 @@ pub fn parse_dropped_path(path: String) -> Result<DroppedAppInfo, String> {
     })
 }
 
+/// Exec= 字段 → 可执行路径（去掉 %u/%f 等占位与参数）
+#[cfg(not(target_os = "windows"))]
+fn desktop_exec_to_target(exec: &str) -> Option<String> {
+    let trimmed = exec.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let first = if let Some(rest) = trimmed.strip_prefix('"') {
+        let end = rest.find('"')?;
+        &rest[..end]
+    } else {
+        trimmed.split_whitespace().next()?
+    };
+    // 去掉字段码
+    let first = first
+        .trim_end_matches("%u")
+        .trim_end_matches("%U")
+        .trim_end_matches("%f")
+        .trim_end_matches("%F")
+        .trim_end_matches("%i")
+        .trim_end_matches("%c")
+        .trim_end_matches("%k")
+        .trim();
+    if first.is_empty() {
+        return None;
+    }
+    let p = std::path::Path::new(first);
+    if p.is_absolute() {
+        return Some(first.to_string());
+    }
+    // 在 PATH 中查找
+    let path_env = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_env) {
+        let cand = dir.join(first);
+        if cand.is_file() {
+            return Some(cand.to_string_lossy().into_owned());
+        }
+    }
+    Some(first.to_string())
+}
+
+/// 按 Icon= 名称或路径解析图标文件，复制进 icons 缓存
+#[cfg(not(target_os = "windows"))]
+fn resolve_linux_icon(icon: &str) -> Option<String> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let src = if std::path::Path::new(icon).is_file() {
+        std::path::PathBuf::from(icon)
+    } else {
+        // 常见 hicolor / pixmaps 路径
+        let names = [
+            format!("{icon}.png"),
+            format!("{icon}.svg"),
+            format!("{icon}.xpm"),
+        ];
+        let bases = [
+            "/usr/share/pixmaps",
+            "/usr/share/icons/hicolor/48x48/apps",
+            "/usr/share/icons/hicolor/64x64/apps",
+            "/usr/share/icons/hicolor/128x128/apps",
+            "/usr/share/icons/hicolor/scalable/apps",
+        ];
+        let mut found = None;
+        for base in bases {
+            for n in &names {
+                let p = std::path::Path::new(base).join(n);
+                if p.is_file() {
+                    found = Some(p);
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        found?
+    };
+
+    // svg/xpm 前端未必能直接显示，仅复制 png；其它格式也尝试复制
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if ext != "png" && ext != "jpg" && ext != "jpeg" && ext != "webp" {
+        return None;
+    }
+
+    let dir = crate::paths::data_root().join("icons");
+    std::fs::create_dir_all(&dir).ok()?;
+    let mut hasher = DefaultHasher::new();
+    icon.hash(&mut hasher);
+    let out = dir.join(format!("{:016x}.png", hasher.finish()));
+    if !out.exists() {
+        std::fs::copy(&src, &out).ok()?;
+    }
+    Some(out.to_string_lossy().into_owned())
+}
+
 /// 创建隐藏窗口的 powershell 命令：避免 GUI 应用调用时弹出黑色控制台窗口
+#[cfg(target_os = "windows")]
 fn powershell() -> std::process::Command {
     use crate::process::NoConsoleWindow;
     let mut cmd = std::process::Command::new("powershell");
@@ -1978,6 +2187,7 @@ fn powershell() -> std::process::Command {
 /// 单次 PowerShell 进程内解析 .lnk 目标并提取图标
 /// （原两段式需要先后启动两次 PowerShell，合并为一次调用可省约一半耗时）
 /// 图标仍按「目标路径」命名缓存，与 .exe 导入共用缓存键
+#[cfg(target_os = "windows")]
 fn resolve_lnk_target_and_icon(lnk_path: &str) -> Result<(String, Option<String>), String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -2037,8 +2247,8 @@ fn resolve_lnk_target_and_icon(lnk_path: &str) -> Result<(String, Option<String>
     Ok((target, icon))
 }
 
-/// 提取程序图标（System.Drawing.ExtractAssociatedIcon），保存 PNG 到 app_data_dir/icons/
-/// 提取失败或无图标时返回 None（前端回退到名称首字母）
+/// 提取程序图标，保存 PNG 到 app_data_dir/icons/
+/// Windows：System.Drawing；Linux：无关联图标时返回 None（前端回退首字母）
 fn extract_app_icon(source: &str) -> Option<String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -2056,25 +2266,37 @@ fn extract_app_icon(source: &str) -> Option<String> {
         return Some(output_path.to_string_lossy().into_owned());
     }
 
-    let script = "Add-Type -AssemblyName System.Drawing; $i=[System.Drawing.Icon]::ExtractAssociatedIcon($env:XHUB_SRC); if($i -ne $null){$i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'}";
-    let output = match powershell()
-        .args(["-NoProfile", "-Command", script])
-        .env("XHUB_SRC", source)
-        .env("XHUB_OUT", output_path.to_str().unwrap_or(""))
-        .output()
+    #[cfg(target_os = "windows")]
     {
-        Ok(o) => o,
-        Err(e) => {
-            log::warn!("图标提取失败（PowerShell 无法执行）: {} -> {}", source, e);
-            return None;
-        }
-    };
+        let script = "Add-Type -AssemblyName System.Drawing; $i=[System.Drawing.Icon]::ExtractAssociatedIcon($env:XHUB_SRC); if($i -ne $null){$i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'}";
+        let output = match powershell()
+            .args(["-NoProfile", "-Command", script])
+            .env("XHUB_SRC", source)
+            .env("XHUB_OUT", output_path.to_str().unwrap_or(""))
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("图标提取失败（PowerShell 无法执行）: {} -> {}", source, e);
+                return None;
+            }
+        };
 
-    if String::from_utf8_lossy(&output.stdout).contains("OK") {
-        Some(output_path.to_string_lossy().into_owned())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        log::warn!("图标提取失败（程序无图标或提取出错）: {} -> {}", source, stderr.trim());
+        if String::from_utf8_lossy(&output.stdout).contains("OK") {
+            Some(output_path.to_string_lossy().into_owned())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::warn!(
+                "图标提取失败（程序无图标或提取出错）: {} -> {}",
+                source,
+                stderr.trim()
+            );
+            None
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (source, output_path);
         None
     }
 }
@@ -2108,23 +2330,30 @@ pub fn import_icon_file(source: String) -> Result<Option<String>, String> {
     }
 
     if ext == "ico" {
-        let script = "Add-Type -AssemblyName System.Drawing; $i=New-Object System.Drawing.Icon($env:XHUB_SRC); $i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'";
-        let output = powershell()
-            .args(["-NoProfile", "-Command", script])
-            .env("XHUB_SRC", &source)
-            .env("XHUB_OUT", output_path.to_str().unwrap_or(""))
-            .output()
-            .map_err(|e| {
-                log::error!("图标转换失败（PowerShell 无法执行）: {}", e);
-                format!("图标转换失败: {}", e)
-            })?;
-        if String::from_utf8_lossy(&output.stdout).contains("OK") {
-            log::info!("图标导入成功: {} -> {}", source, output_path.display());
-            Ok(Some(output_path.to_string_lossy().into_owned()))
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log::error!("图标转换失败: {} -> {}", source, stderr.trim());
-            Err("图标转换失败".into())
+        #[cfg(target_os = "windows")]
+        {
+            let script = "Add-Type -AssemblyName System.Drawing; $i=New-Object System.Drawing.Icon($env:XHUB_SRC); $i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'";
+            let output = powershell()
+                .args(["-NoProfile", "-Command", script])
+                .env("XHUB_SRC", &source)
+                .env("XHUB_OUT", output_path.to_str().unwrap_or(""))
+                .output()
+                .map_err(|e| {
+                    log::error!("图标转换失败（PowerShell 无法执行）: {}", e);
+                    format!("图标转换失败: {}", e)
+                })?;
+            if String::from_utf8_lossy(&output.stdout).contains("OK") {
+                log::info!("图标导入成功: {} -> {}", source, output_path.display());
+                Ok(Some(output_path.to_string_lossy().into_owned()))
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                log::error!("图标转换失败: {} -> {}", source, stderr.trim());
+                Err("图标转换失败".into())
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err("Linux 上请使用 png/jpg/webp 图标（不支持 .ico 转换）".into())
         }
     } else {
         match std::fs::copy(&source, &output_path) {
@@ -2283,8 +2512,8 @@ pub struct InstalledAppInfo {
     pub icon: Option<String>,
 }
 
-/// 扫描本机已安装应用（注册表卸载项 + 用户/公共开始菜单快捷方式），
-/// 去重、过滤系统噪音后批量提取程序图标（icons/<hash>.png，与拖拽导入共用缓存键）。
+/// 扫描本机已安装应用。
+/// Windows：注册表卸载项 + 开始菜单；Linux：`*.desktop`（applications 目录）。
 /// 必须 async：扫描 + 图标提取耗时数秒，同步命令会卡死主线程冻结 UI。
 #[tauri::command]
 pub async fn scan_installed_apps() -> Result<Vec<InstalledAppInfo>, String> {
@@ -2303,6 +2532,7 @@ pub async fn scan_installed_apps() -> Result<Vec<InstalledAppInfo>, String> {
 /// 单次 PowerShell 扫描注册表卸载项 + 开始菜单快捷方式，
 /// 输出 APP=<json> 行（name/target），Rust 侧解析并二次去重、按名称排序、限量。
 /// 命名/路径等取值一律在 PS 内 Trim + 环境变量展开，中文经 UTF-8 输出。
+#[cfg(target_os = "windows")]
 fn scan_app_candidates() -> Result<Vec<(String, String)>, String> {
     let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
@@ -2435,9 +2665,82 @@ foreach ($a in $out) {
     Ok(apps)
 }
 
-/// 批量提取程序图标：单次 PowerShell 提取所有未缓存目标图标到临时目录，
-/// 再按 DefaultHasher(target) 重命名为正式缓存键（与 extract_app_icon 共用缓存，
-/// 已缓存的目标直接复用，重复扫描零开销）。
+/// Linux：扫描 applications 目录中的 .desktop（跳过 NoDisplay/Hidden）
+#[cfg(not(target_os = "windows"))]
+fn scan_app_candidates() -> Result<Vec<(String, String)>, String> {
+    let mut dirs = vec![
+        std::path::PathBuf::from("/usr/share/applications"),
+        std::path::PathBuf::from("/usr/local/share/applications"),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".local/share/applications"));
+    }
+    let mut apps: Vec<(String, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                continue;
+            }
+            let Ok(info) = parse_desktop_file(&path.to_string_lossy()) else {
+                continue;
+            };
+            // 再读一遍过滤 NoDisplay/Hidden（parse_desktop_file 未检查）
+            if desktop_is_hidden(&path) {
+                continue;
+            }
+            if !seen.insert(info.target.to_lowercase()) {
+                continue;
+            }
+            apps.push((info.name, info.target));
+        }
+    }
+    apps.sort_by(|a, b| {
+        a.0.to_lowercase()
+            .cmp(&b.0.to_lowercase())
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    const MAX_APPS: usize = 500;
+    if apps.len() > MAX_APPS {
+        apps.truncate(MAX_APPS);
+    }
+    log::info!("扫描已安装应用: 共 {} 个", apps.len());
+    Ok(apps)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn desktop_is_hidden(path: &std::path::Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return true;
+    };
+    let mut in_entry = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_entry {
+            continue;
+        }
+        if line.eq_ignore_ascii_case("NoDisplay=true") || line.eq_ignore_ascii_case("Hidden=true")
+        {
+            return true;
+        }
+        if line.eq_ignore_ascii_case("Type=Link") || line.eq_ignore_ascii_case("Type=Directory") {
+            return true;
+        }
+    }
+    false
+}
+
+/// 批量提取程序图标。
+/// Windows：PowerShell 批量 ExtractAssociatedIcon；
+/// Linux：按图标主题路径解析（无则 None，前端回退首字母）。
 fn batch_extract_icons(
     apps: &[(String, String)],
 ) -> Result<Vec<Option<String>>, String> {
@@ -2465,6 +2768,38 @@ fn batch_extract_icons(
         return Ok(result);
     }
 
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 尝试用 basename 当 Icon 名解析
+        for &i in &missing {
+            let target = &apps[i].1;
+            let icon_key = std::path::Path::new(target)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(target);
+            if let Some(path) = resolve_linux_icon(icon_key) {
+                // 再按 target hash 复制一份，统一缓存键
+                let mut hasher = DefaultHasher::new();
+                target.hash(&mut hasher);
+                let final_path = icons_dir.join(format!("{:016x}.png", hasher.finish()));
+                if !final_path.exists() {
+                    let _ = std::fs::copy(&path, &final_path);
+                }
+                if final_path.exists() {
+                    result[i] = Some(final_path.to_string_lossy().into_owned());
+                }
+            }
+        }
+        log::info!(
+            "应用图标提取完成: {} 个（缺 {} 个）",
+            apps.len(),
+            result.iter().filter(|x| x.is_none()).count()
+        );
+        return Ok(result);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
     let tmp_dir = icons_dir.join(".scan_tmp");
     std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
     let list_path = tmp_dir.join("list.txt");
@@ -2529,6 +2864,7 @@ Get-Content -LiteralPath $listFile -Encoding UTF8 | ForEach-Object {
     let _ = std::fs::remove_dir_all(&tmp_dir);
     log::info!("应用图标提取完成: {} 个（缺 {} 个）", apps.len(), missing.len());
     Ok(result)
+    }
 }
 
 // ---------- 运行状态检测 ----------

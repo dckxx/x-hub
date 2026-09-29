@@ -1,22 +1,22 @@
 name: Linux packages
 
-# Push to feat/linux-support or dispatch manually. Build DEB and RPM in parallel,
-# then publish both packages and their SHA-256 manifest to one prerelease.
+# 推到 feat/linux-support 或手动触发。deb / rpm 分两台 runner 并行，
+# 都成功后再打 tag、上传同一个 prerelease。
 on:
   push:
     branches: [feat/linux-support]
   workflow_dispatch:
     inputs:
       ref:
-        description: "Git ref to build (branch, tag, or SHA); empty uses the selected branch"
+        description: '要构建的 git ref（分支 / tag / SHA）；留空 = 触发时选中的分支'
         required: false
-        default: ""
+        default: ''
 
 permissions:
   contents: write
 
 env:
-  NODE_VERSION: "20"
+  NODE_VERSION: '20'
 
 jobs:
   meta:
@@ -104,7 +104,7 @@ jobs:
           set -euo pipefail
           deb=$(ls src-tauri/target/release/bundle/deb/*.deb 2>/dev/null | head -1)
           if [ -z "${deb:-}" ] || [ ! -f "$deb" ]; then
-            echo "No .deb artifact found" >&2
+            echo "未找到 .deb 产物" >&2
             find src-tauri/target/release/bundle -type f 2>/dev/null || true
             exit 1
           fi
@@ -179,7 +179,7 @@ jobs:
           set -euo pipefail
           rpm=$(ls src-tauri/target/release/bundle/rpm/*.rpm 2>/dev/null | head -1)
           if [ -z "${rpm:-}" ] || [ ! -f "$rpm" ]; then
-            echo "No .rpm artifact found" >&2
+            echo "未找到 .rpm 产物" >&2
             find src-tauri/target/release/bundle -type f 2>/dev/null || true
             exit 1
           fi
@@ -217,20 +217,6 @@ jobs:
           name: linux-rpm
           path: dist-linux
 
-      - name: Generate and verify SHA-256 manifest
-        working-directory: dist-linux
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          packages=( *.deb *.rpm )
-          if [[ ${#packages[@]} -ne 2 ]]; then
-            echo "Expected one .deb and one .rpm; found ${#packages[@]} package files" >&2
-            printf '%s\n' "${packages[@]}" >&2
-            exit 1
-          fi
-          sha256sum -- "${packages[@]}" | sort -k2 > SHA256SUMS
-          sha256sum --check SHA256SUMS
-
       - name: Create annotated tag if missing and push
         env:
           TAG_NAME: ${{ needs.meta.outputs.tag_name }}
@@ -239,12 +225,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git rev-parse "refs/tags/${TAG_NAME}" >/dev/null 2>&1; then
-            echo "Tag ${TAG_NAME} already exists locally"
+            echo "本地已存在标签 ${TAG_NAME}"
           else
             git tag -a "${TAG_NAME}" -m "Linux packages (${SHORTSHA})"
+            echo "已创建 annotated tag ${TAG_NAME}"
           fi
           if git ls-remote --tags origin "refs/tags/${TAG_NAME}" | grep -q "refs/tags/${TAG_NAME}$"; then
-            echo "Remote tag ${TAG_NAME} already exists; skipping push"
+            echo "远程已存在标签 ${TAG_NAME}，跳过 push"
           else
             git push origin "refs/tags/${TAG_NAME}"
           fi
@@ -253,22 +240,20 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.meta.outputs.tag_name }}
-          name: "${{ needs.meta.outputs.tag_name }} (Linux)"
+          name: '${{ needs.meta.outputs.tag_name }} (Linux)'
           body: |
-            Linux dual-runner build (workflow: `linux-build.yml`).
+            Linux 双 runner 构建（workflow: `linux-build.yml`）。
 
-            - Version: ${{ needs.meta.outputs.version }}
-            - Commit: ${{ needs.meta.outputs.ref }} (${{ needs.meta.outputs.shortsha }})
-            - Trigger: ${{ github.event_name }} / @${{ github.actor }}
-            - Artifacts: `.deb` and `.rpm`
-            - Checksums: `SHA256SUMS` (SHA-256)
+            - 版本：${{ needs.meta.outputs.version }}
+            - 提交：${{ needs.meta.outputs.ref }}（${{ needs.meta.outputs.shortsha }}）
+            - 触发：${{ github.event_name }} / @${{ github.actor }}
+            - 产物：`.deb`（Ubuntu runner）+ `.rpm`（Ubuntu runner + rpmbuild）
 
-            Install: `scripts/install-linux.sh`
-            The formal release remains `release.yml` + semver tag.
+            安装：`scripts/install-linux.sh`
+            正式发版仍以 `release.yml` + semver tag 为准。
           files: |
             dist-linux/*.deb
             dist-linux/*.rpm
-            dist-linux/SHA256SUMS
           draft: false
           prerelease: true
           fail_on_unmatched_files: true

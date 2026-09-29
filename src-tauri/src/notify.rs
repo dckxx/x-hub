@@ -338,6 +338,12 @@ fn hide_window(win: &WebviewWindow) {
     let _ = win.hide();
 }
 
+#[cfg(not(target_os = "windows"))]
+fn hide_window(win: &WebviewWindow) {
+    crate::webview_mem::on_hidden(win.app_handle(), win.label());
+    let _ = win.hide();
+}
+
 // ---------- 非 Windows 兜底：用 Tauri 显示器逻辑（无工作区，仅整屏右下） ----------
 
 #[cfg(not(target_os = "windows"))]

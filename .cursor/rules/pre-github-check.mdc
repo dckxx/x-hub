@@ -1,0 +1,32 @@
+---
+description: 提交/推送 GitHub 前必须对照 AGENTS.md 与 PR 准则自检
+alwaysApply: true
+---
+
+# 提交 GitHub 前自检
+
+在 `git commit`、`git push`、开 PR / 更新 PR **之前**，必须先完成下列检查；未通过不得提交或推送。
+
+## 必读文档
+
+1. **`AGENTS.md`**（约定与铁律）：改动是否触及相关约定（浮窗生命周期、悬浮球几何口径、设置页索引、主窗句柄、平台依赖等），文案/命令/配置是否与文档一致。
+2. **`CONTRIBUTING.md`**：分支策略、本地验证命令、PR 目标与描述要求。
+3. **`.github/PULL_REQUEST_TEMPLATE.md`**：PR 正文按模板写清动机、改动、验证勾选。
+
+## 验证（与 PR 模板对齐）
+
+推送前至少在本地确认：
+
+- [ ] `pnpm run build` 通过
+- [ ] `cargo check --manifest-path src-tauri/Cargo.toml` 通过
+- [ ] 相关行为已在本地确认（含本次改动的实机路径）
+
+## 自检产出
+
+向用户汇报推送结果前，用几句话说明：对照了哪些约定、验证跑了什么、若有平台限制（如「仅测过 Ubuntu deb」）必须写进 commit / PR 描述。
+
+## 反例
+
+- ❌ 修完代码直接 `git push`，未读 AGENTS / 未跑 build·check
+- ❌ PR 只有一句「fix」或空描述，无验证勾选
+- ❌ 改了设置项却未跑 `pnpm run gen:settings-index`（见 AGENTS 约定 49）

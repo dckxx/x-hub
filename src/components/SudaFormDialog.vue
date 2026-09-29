@@ -72,8 +72,13 @@ const targetLabel = computed(() => {
 
 const targetPlaceholder = computed(() => {
   if (kind.value === 'file') return '选择要链接的文件或文件夹'
+<<<<<<< HEAD
+  if (kind.value === 'app') return '如：/usr/bin/code 或 *.desktop'
+  return '如：github.com'
+=======
   if (kind.value === 'app') return '如：C:\\Program Files\\...\\code.exe'
   return '如：github.com 或 https://github.com'
+>>>>>>> upstream/master
 })
 
 const iconPlaceholder = computed(() => {

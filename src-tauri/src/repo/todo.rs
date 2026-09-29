@@ -434,6 +434,13 @@ fn undo_recurring_inner(
         // 已滚动到结束时 repeat_mode 已置回 once，规则信息不再存在，无法回滚
         return Err(format!("NOT_RECURRING: 待办 {id} 已结束周期，无法撤销本轮"));
     }
+    // 累计完成次数为 0 = 从未「完成本轮」，再往回滚会越过初始 due_at（每日规则
+    // 的 previous_occurrence 总会算出昨天）。只能按已完成次数撤销，不能无限回退。
+    if t.repeat_done_count <= 0 {
+        return Err(format!(
+            "NOTHING_TO_UNDO: 待办 {id} 没有可撤销的完成记录（已回到初始日期）"
+        ));
+    }
     let Some(due) = t.due_at else {
         return Err(format!("INVALID_STATE: 周期待办 {id} 缺少截止时刻，无法回滚"));
     };
@@ -1095,6 +1102,26 @@ mod tests {
         let back = undo_recurring(&conn, t.id).unwrap();
         assert_eq!(back.due_at, Some(due));
         assert_eq!(back.repeat_done_count, 0);
+    }
+
+    #[test]
+    fn undo_recurring_rejects_when_count_zero() {
+        let conn = setup();
+        let due = ts(2026, 9, 21, 9, 0);
+        let t = recurring(&conn, "喝 8 杯水", due);
+        assert_eq!(t.repeat_done_count, 0);
+        // 从未完成本轮：不能凭规则硬算出「昨天」把初始 due 再往回推
+        let err = undo_recurring(&conn, t.id).unwrap_err();
+        assert!(err.starts_with("NOTHING_TO_UNDO"), "{err}");
+        assert_eq!(get(&conn, t.id).unwrap().due_at, Some(due));
+
+        complete_recurring(&conn, t.id, due).unwrap();
+        undo_recurring(&conn, t.id).unwrap();
+        // 撤回到初始后再次撤销同样拒绝
+        let err2 = undo_recurring(&conn, t.id).unwrap_err();
+        assert!(err2.starts_with("NOTHING_TO_UNDO"), "{err2}");
+        assert_eq!(get(&conn, t.id).unwrap().due_at, Some(due));
+        assert_eq!(get(&conn, t.id).unwrap().repeat_done_count, 0);
     }
 
     #[test]

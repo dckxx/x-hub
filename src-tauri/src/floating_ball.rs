@@ -11,7 +11,9 @@
 //! 全程移动窗口位置、不依赖 WebView 指针事件/CSS——原生拖拽模态循环吞事件、
 //! 半截屏外透明窗命中区不稳等老翻车点从根上消除。
 //! 曾用「贴边吸附」（完整贴边停靠），用户反馈从未生效且不需要，已替换。
-//! Windows-only：独立透明无边框窗口，与 countdown_window 同模式复用。
+//! Windows / Linux：独立透明无边框窗口，与 countdown_window 同模式复用。
+//! Linux 贴边：WM 不允许半截出屏，半隐被钳成贴边全显，悬停不再另滑一格
+//! （否则窗口从光标下抽走，100ms 上下跳；见 `dock_hover_pos`）。
 //!
 //! 几何模型：球态窗口 = BALL_SIZE，菜单态 = MENU_SIZE，均以「球心」（窗口中心）为锚
 //! 原子切换（单次 SetWindowPos）。窗口 resize 时 WebView2 内容重排滞后一帧，旧帧按
@@ -75,25 +77,36 @@ pub const MAX_BUTTONS: usize = 8;
 
 /// 以下三个常量是「边缘监视循环」（tiez-clipboard 同款思路）的时序参数
 /// 轮询间隔：100ms 足够跟手（悬停露出感知 ≈0.1s），CPU 成本可忽略
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const EDGE_POLL_MS: u64 = 100;
 /// 已滑出后光标离开窗矩形多少物理 px 内不隐回（边界防抖）
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const EDGE_MARGIN: i32 = 12;
 /// 滑出/隐回的动画帧数与帧距（5×16ms ≈ 80ms 平滑滑动，tiez 是瞬移，这里体验更好一点）
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const SLIDE_STEPS: i32 = 5;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const SLIDE_STEP_MS: u64 = 16;
 /// 拖拽落位后的监视冷却（ms）：落位搬窗是异步 IPC 到主线程，写配置却是
 /// 立即完成的——监视循环在这个间隙会读到「窗口旧位置 + 新记忆」而误判，
 /// 把刚吸附的球当成位置漂移。冷却期内整跳跳过，窗口落定后监视再接管
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const DRAG_SETTLE_COOLDOWN_MS: u64 = 800;
 
+/// 搬窗后等待「目标生效」的时限（ms）：超过它窗口仍不在目标上，说明 WM 不接受该
+/// 坐标（Mutter/KWin 会把窗口钳回工作区）或 tao 没落实，此时**采纳窗口现位当新记忆**
+/// 并停手。没有这条时限，停靠分支的「落位补齐」会每两跳重滑一次，
+/// 日志实证每秒 6~10 条刷屏、球可见上下跳。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+const NUDGE_ADOPT_MS: u64 = 1200;
+
 /// 最近一次拖拽落位时间戳（ms）；0 = 从未拖拽。见 DRAG_SETTLE_COOLDOWN_MS
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 static LAST_DRAG_SETTLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 最近一次悬停动画的搬窗时刻（ms），用于「同一目标不重复播动画」判断
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+static LAST_NUDGE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// 拖拽武装时刻（ms；0 = 未武装）：前端 `floating_ball_drag_begin`（位移超阈值、
 /// 移交系统原生拖动时）记录；真正的松手由边缘监视循环检测——左键释放后的第一跳执行
@@ -103,37 +116,37 @@ static LAST_DRAG_SETTLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 /// 球弹回屏幕中间」。**附带 TTL + cancel**：`floating_ball_drag_cancel`（startDragging
 /// 启动失败）清零；武装超 TTL 未消费视为残留自动失效——否则拖拽武装后窗口被隐藏等
 /// 异常链路下，用户下一次无关的左键单击松开会被当成拖拽落位（「带外绝不移动」被破坏）
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 static DRAG_ARMED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// 拖拽武装有效期：按住左键拖动超过该时长视为异常残留（正常拖拽几秒内结束），
 /// 落位标志自动作废，防无关单击被误消费
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const DRAG_ARMED_TTL_MS: u64 = 30_000;
 
 /// 记忆球心进程内缓存：edge_tick 100ms 一跳，不能每跳读配置文件（同 AUTO_HIDE 缓存的
 /// 理由——常态「贴边停靠/自由位驻留」下每跳 config::load() = 每秒 10 次读盘 + JSON
 /// 解析的永久后台 IO）。None = 未初始化（首跳回落读盘填充）。它是配置盘上值的镜像，
 /// **只在写盘成功时更新**；写点：unpop_to_inside / 救球 / settle_drag
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn memo_ball() -> &'static std::sync::Mutex<Option<(f64, f64)>> {
     static MEMO: std::sync::OnceLock<std::sync::Mutex<Option<(f64, f64)>>> =
         std::sync::OnceLock::new();
     MEMO.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn memo_ball_get() -> Option<(f64, f64)> {
     *memo_ball().lock().unwrap_or_else(|p| p.into_inner())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn memo_ball_set(x: f64, y: f64) {
     *memo_ball().lock().unwrap_or_else(|p| p.into_inner()) = Some((x, y));
 }
 
 /// 当前系统时间（ms）
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -144,18 +157,18 @@ fn now_ms() -> u64 {
 /// 展开前的窗口位置（物理 px）：收起时恢复，靠边挪位后球能回到原吸附点。
 /// 用全局 Mutex 而非 thread_local：拖拽/展开命令是 async（跑在tokio线程池），
 /// 主线程的 sync_with_main 也会收拢几何，跨线程共享必须用带锁的静态。
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 static PRE_EXPAND_POS: std::sync::Mutex<Option<(i32, i32)>> = std::sync::Mutex::new(None);
 
 /// 主窗是否处于最小化（与「隐藏到托盘」一样属于视觉不可见 → 球显示）。
 /// MAIN_WINDOW_VISIBLE 状态位只覆盖托盘/快捷键的显式 show/hide，点标题栏最小化
 /// 不经过那条链——由主窗 Resized 事件检测最小化变化后经 set_main_minimized 更新。
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 static MAIN_MINIMIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// 主窗最小化状态变化入口（lib.rs 主窗事件钩子调用）：更新状态并联动球显隐
 pub fn set_main_minimized(app: &AppHandle, minimized: bool) {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         use std::sync::atomic::Ordering;
         if MAIN_MINIMIZED.swap(minimized, Ordering::SeqCst) == minimized {
@@ -163,7 +176,7 @@ pub fn set_main_minimized(app: &AppHandle, minimized: bool) {
         }
         sync_with_main(app);
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let _ = (app, minimized);
     }
@@ -200,7 +213,7 @@ pub struct FloatingBallState {
 }
 
 /// 停靠判定：存储球心（物理 px）距所在显示器工作区边缘在 DOCK_TOL 内 → 该侧停靠
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn dock_state(win: &tauri::WebviewWindow, cx: Option<f64>, cy: Option<f64>) -> DockState {
     let (Some(cx), Some(cy)) = (cx, cy) else {
         return DockState::default();
@@ -229,7 +242,7 @@ fn dock_state(win: &tauri::WebviewWindow, cx: Option<f64>, cy: Option<f64>) -> D
 
 /// 贴边自动隐藏开关缓存：监视循环 100ms 一跳，不能每跳读配置文件；
 /// init / floating_ball_save_settings 负责写入
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 static AUTO_HIDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 // 不再维护「当前是否滑出态」的进程内布尔缓存：它一旦与窗口实际位置分叉（DPI 自愈、
@@ -245,6 +258,77 @@ fn cursor_pos() -> Option<(i32, i32)> {
     (unsafe { GetCursorPos(&mut pt) } != 0).then_some((pt.x, pt.y))
 }
 
+/// Linux：X11 连接（边缘监视 100ms 一跳，不能每跳 `XOpenDisplay` / 起 xdotool）。
+#[cfg(target_os = "linux")]
+struct LinuxX11 {
+    xlib: x11_dl::xlib::Xlib,
+    dpy: *mut x11_dl::xlib::Display,
+    root: x11_dl::xlib::Window,
+}
+
+#[cfg(target_os = "linux")]
+unsafe impl Send for LinuxX11 {}
+#[cfg(target_os = "linux")]
+unsafe impl Sync for LinuxX11 {}
+
+#[cfg(target_os = "linux")]
+fn linux_x11() -> Option<&'static std::sync::Mutex<LinuxX11>> {
+    use std::sync::{Mutex, OnceLock};
+    static STATE: OnceLock<Option<Mutex<LinuxX11>>> = OnceLock::new();
+    STATE
+        .get_or_init(|| {
+            let xlib = x11_dl::xlib::Xlib::open().ok()?;
+            unsafe {
+                // 监视线程与其它路径可能并发调 Xlib
+                (xlib.XInitThreads)();
+                let dpy = (xlib.XOpenDisplay)(std::ptr::null());
+                if dpy.is_null() {
+                    return None;
+                }
+                let root = (xlib.XDefaultRootWindow)(dpy);
+                Some(Mutex::new(LinuxX11 { xlib, dpy, root }))
+            }
+        })
+        .as_ref()
+}
+
+/// Linux：XQueryPointer 一次取光标 + 按键掩码（失败 = 无 DISPLAY / 纯 Wayland）
+#[cfg(target_os = "linux")]
+fn x11_pointer() -> Option<(i32, i32, u32)> {
+    let state = linux_x11()?;
+    let g = state.lock().unwrap_or_else(|p| p.into_inner());
+    unsafe {
+        let mut root_ret: x11_dl::xlib::Window = 0;
+        let mut child: x11_dl::xlib::Window = 0;
+        let mut rx = 0i32;
+        let mut ry = 0i32;
+        let mut wx = 0i32;
+        let mut wy = 0i32;
+        let mut mask = 0u32;
+        let ok = (g.xlib.XQueryPointer)(
+            g.dpy,
+            g.root,
+            &mut root_ret,
+            &mut child,
+            &mut rx,
+            &mut ry,
+            &mut wx,
+            &mut wy,
+            &mut mask,
+        );
+        if ok == 0 {
+            return None;
+        }
+        Some((rx, ry, mask))
+    }
+}
+
+/// Linux：XQueryPointer 取光标（X11 / XWayland；纯 Wayland 无 DISPLAY 时失败，贴边降级）
+#[cfg(target_os = "linux")]
+fn cursor_pos() -> Option<(i32, i32)> {
+    x11_pointer().map(|(x, y, _)| (x, y))
+}
+
 /// 左键是否按下（原生拖拽循环 / 按住操作中：禁止移动窗口抢位）
 #[cfg(target_os = "windows")]
 fn lmb_down() -> bool {
@@ -253,11 +337,24 @@ fn lmb_down() -> bool {
     unsafe { (GetAsyncKeyState(0x01) as u16 & 0x8000) != 0 }
 }
 
+/// Linux：必须查真实按键态，**绝不能**用 `DRAG_ARMED` 冒充。
+/// 旧实现把 armed 当成按下 → `edge_tick` 在 `if lmb_down() { return }` 永远提前返回，
+/// `DRAG_ARMED_MS.swap(0)` / `settle_drag` 永不执行 → 拖到边松手不吸附、不半隐。
+#[cfg(target_os = "linux")]
+fn lmb_down() -> bool {
+    match x11_pointer() {
+        Some((_, _, mask)) => (mask & x11_dl::xlib::Button1Mask) != 0,
+        // 无 X11：没法等松手。返回 false 让 settle 有机会跑（可能略偏早），
+        // 也比「永远不 settle、贴边全废」好——纯 Wayland 场景的降级。
+        None => false,
+    }
+}
+
 /// 窗口所在显示器工作区矩形（l, t, r, b）物理 px——底部按工作区判定，不被任务栏吃掉。
 /// `current_monitor()` 对**完全离屏**的窗口返回 None（手速快把球整个甩出屏外的
 /// 死锁源：drag_end 与监视循环都拿不到矩形 → 不钳制不救球），此时退化为
 /// 「中心离窗口中心最近」的显示器
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn nearest_work_rect(win: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
     if let Some(mon) = win.current_monitor().ok().flatten() {
         let wa = mon.work_area();
@@ -282,9 +379,28 @@ fn nearest_work_rect(win: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)>
 }
 
 /// 分步线性平滑移动窗口（仅位置不改尺寸，透明窗移动无重排开销）
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn already_at(a: (i32, i32), b: (i32, i32)) -> bool {
+    (a.0 - b.0).abs() <= POS_TOL && (a.1 - b.1).abs() <= POS_TOL
+}
+
+/// 停靠几何比对：单轴贴边只要求贴边轴到位。
+/// 非贴边轴交给用户放置 / 合成器（Mutter 顶栏 strut、GTK CSD 会改 Y），
+/// 两轴都要求 POS_TOL 时，Linux 上会每 100ms 判「漂移」再搬一次 → 上下跳。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn pos_matches_dock(pos: (i32, i32), target: (i32, i32), dx: i32, dy: i32) -> bool {
+    let x_ok = (pos.0 - target.0).abs() <= POS_TOL;
+    let y_ok = (pos.1 - target.1).abs() <= POS_TOL;
+    match (dx != 0, dy != 0) {
+        (true, false) => x_ok,
+        (false, true) => y_ok,
+        _ => x_ok && y_ok,
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn slide_to(win: &tauri::WebviewWindow, from: (i32, i32), to: (i32, i32)) {
-    if from == to {
+    if already_at(from, to) {
         return;
     }
     for i in 1..=SLIDE_STEPS {
@@ -297,11 +413,34 @@ fn slide_to(win: &tauri::WebviewWindow, from: (i32, i32), to: (i32, i32)) {
     }
 }
 
+/// 只在尚未落到目标、且没对同一格搬过时才滑。悬停路径以前每 100ms 重放 80ms 动画，
+/// 窗口来回抽 = 上下跳。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn slide_once(
+    win: &tauri::WebviewWindow,
+    from: (i32, i32),
+    to: (i32, i32),
+) -> bool {
+    use std::sync::atomic::Ordering;
+    if already_at(from, to) {
+        last_nudge_set(None);
+        return false;
+    }
+    if last_nudge_get() == Some(to) {
+        return false;
+    }
+    last_nudge_set(Some(to));
+    LAST_NUDGE_MS.store(now_ms(), Ordering::Relaxed);
+    slide_to(win, from, to);
+    LAST_DRAG_SETTLE_MS.store(now_ms(), Ordering::Relaxed);
+    true
+}
+
 /// 按「贴边自动隐藏」语义把球心吸附到工作区边缘（物理 px 口径，边缘监视与拖拽落位共用）：
 /// 两轴独立判定，角上可双侧停靠。返回吸附后的球心与方向
 /// （dx/dy：+1 = 贴左/上边，-1 = 贴右/下边，0 = 该轴未停靠）。
 /// `auto_hide=false` 时不吸附，只回传原值与零方向。
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[allow(clippy::too_many_arguments)]
 fn dock_snap(
     cx: f64,
@@ -343,7 +482,7 @@ fn dock_snap(
 
 /// 关闭贴边自动隐藏时：停靠中的球从半隐位拉回完全屏内，并同步记忆球心
 /// （否则关了开关球反而卡在屏边缺一半）
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn unpop_to_inside(app: &AppHandle) {
     let Some(win) = app.get_webview_window(LABEL) else { return };
     if !win.is_visible().unwrap_or(false) || is_expanded(&win) {
@@ -370,7 +509,7 @@ fn unpop_to_inside(app: &AppHandle) {
 
 /// 半隐停靠位的窗口左上角（物理 px）：记忆球心位 - 半边长，再向屏内多露 peek。
 /// edge_tick 与 drag_end 必须共用本函数（约定 42：两处口径分叉会互相判成「位置漂移」）
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn dock_hidden_pos(cx: f64, cy: f64, dx: i32, dy: i32, half: f64, peek: i32) -> (i32, i32) {
     (
         (cx - half).round() as i32 + dx * peek,
@@ -378,10 +517,278 @@ fn dock_hidden_pos(cx: f64, cy: f64, dx: i32, dy: i32, half: f64, peek: i32) -> 
     )
 }
 
+/// 整窗落在工作区内的左上角。Linux WM（Mutter/KWin）会拒绝半截出屏的坐标，
+/// 用这个结果当半隐目标，才不会和监视循环对打。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn clamp_window_into_work(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    l: i32,
+    t: i32,
+    r: i32,
+    b: i32,
+) -> (i32, i32) {
+    (
+        x.clamp(l, (r - w).max(l)),
+        y.clamp(t, (b - h).max(t)),
+    )
+}
+
+/// Windows 允许半截出屏，原样返回；Linux 钳到工作区内（可落地的贴边目标）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn landable_window_pos(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    l: i32,
+    t: i32,
+    r: i32,
+    b: i32,
+) -> (i32, i32) {
+    if cfg!(target_os = "linux") {
+        clamp_window_into_work(x, y, w, h, l, t, r, b)
+    } else {
+        let _ = (w, h, l, t, r, b);
+        (x, y)
+    }
+}
+
+/// 停靠态可落点：Linux 只钳「发生停靠的轴」。
+/// 左右贴边若连 Y 一起钳，靠近顶栏时半隐 Y 被拽到 work_area.top，
+/// 合成器再把窗往下挤，监视循环就在两个 Y 之间跳。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn landable_dock_pos(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    l: i32,
+    t: i32,
+    r: i32,
+    b: i32,
+    dx: i32,
+    dy: i32,
+) -> (i32, i32) {
+    if !cfg!(target_os = "linux") {
+        let _ = (w, h, l, t, r, b);
+        return (x, y);
+    }
+    (
+        if dx != 0 { x.clamp(l, (r - w).max(l)) } else { x },
+        if dy != 0 { y.clamp(t, (b - h).max(t)) } else { y },
+    )
+}
+
+/// 位置纠正（自由位/停靠位补齐）的去重状态：目标是哪一格 + 何时搬的。
+/// **到达时不清空**——否则「WM 把窗口推开」会被判成「还没搬过」而无限重搬。
+/// 只有目标换了（用户真的把球挪到别处）才重新武装；超时未到位即采纳现位。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn posfix_state() -> &'static std::sync::Mutex<(Option<(i32, i32)>, u64)> {
+    static V: std::sync::OnceLock<std::sync::Mutex<(Option<(i32, i32)>, u64)>> =
+        std::sync::OnceLock::new();
+    V.get_or_init(|| std::sync::Mutex::new((None, 0)))
+}
+
+/// 位置纠正的结果：决定调用方是「搬了/采纳了要收手」还是「本次不管」
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+enum PosFix {
+    /// 刚按目标搬了窗（或超时采纳了现位）→ 本跳收手
+    Handled,
+    /// 已在途中 / 已在目标上 → 本跳不搬，按当前位置继续判定
+    InFlight,
+}
+
+/// 位置纠正的统一闸门：同一格目标只尝试一次；超过 `NUDGE_ADOPT_MS` 仍未到位就
+/// 采纳窗口现位（WM 不接受该坐标，例如半隐位越出工作区被钳回）并停手。
+/// **这是「球上下跳」的根治点**：没有它，监测循环会按冷却节奏反复 SetWindowPos。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn posfix_nudge(
+    win: &tauri::WebviewWindow,
+    pos: PhysicalPosition<i32>,
+    half: i32,
+    target: (i32, i32),
+    label: &str,
+    dx: i32,
+    dy: i32,
+) -> PosFix {
+    use std::sync::atomic::Ordering;
+    if pos_matches_dock((pos.x, pos.y), target, dx, dy) {
+        return PosFix::InFlight;
+    }
+    let now = now_ms();
+    let mut st = posfix_state().lock().unwrap_or_else(|e| e.into_inner());
+    let (prev_target, prev_ms) = *st;
+    if prev_target == Some(target) {
+        if now.saturating_sub(prev_ms) < NUDGE_ADOPT_MS {
+            // 搬过、还在生效窗口内：不重复搬（重复 = 每 100ms 抖一次）
+            return PosFix::InFlight;
+        }
+        // 等够了还是没到位 → 采纳现位，记忆向现实收敛
+        adopt_current_center(win, pos, half, target);
+        *st = (None, 0);
+        return PosFix::Handled;
+    }
+    // 每跳都可能命中：必须 debug 级（默认 Info 过滤下静默），否则 Linux 上会刷屏
+    log::debug!(
+        "[悬浮球] {label}: 窗口=({},{}) 目标=({},{}) 尺寸={:?} 内部={:?} scale={:.3}",
+        pos.x,
+        pos.y,
+        target.0,
+        target.1,
+        win.outer_size().ok(),
+        win.inner_size().ok(),
+        window_scale(win),
+    );
+    *st = (Some(target), now);
+    drop(st);
+    LAST_DRAG_SETTLE_MS.store(now, Ordering::Relaxed);
+    slide_to(win, (pos.x, pos.y), target);
+    PosFix::Handled
+}
+
+/// 悬停滑出目标。Linux WM 不允许半截出屏，半隐已经贴边全显——再往里滑会把窗口
+/// 从光标下抽走，下一跳又隐回。所以 Linux 滑出位 = 半隐位（贴边停住、不做悬停动画）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn dock_hover_pos(
+    hidden: (i32, i32),
+    dx: i32,
+    dy: i32,
+    off: i32,
+    w: i32,
+    l: i32,
+    t: i32,
+    r: i32,
+    b: i32,
+) -> (i32, i32) {
+    if cfg!(target_os = "linux") {
+        let _ = (dx, dy, off, w, l, t, r, b);
+        hidden
+    } else {
+        (
+            (hidden.0 + dx * off).clamp(l, (r - w).max(l)),
+            (hidden.1 + dy * off).clamp(t, (b - w).max(t)),
+        )
+    }
+}
+
+/// 最近一次「落位补齐 / 隐回」的目标。WM 钳回后窗口到不了这个点，再搬只会跳动；
+/// 记下目标，下一跳发现仍不在几何上就采纳现位并冷却。
+/// **只服务悬停动画（`slide_once`）**：到达即清空，让下一次悬停能重新播动画。
+/// 位置纠正（自由位/停靠位补齐）不走这里——那里到达后清空会让「WM 推开 → 标记已清
+/// → 再搬」形成无限循环（实测每秒 6~10 条「落位补齐」，球可见上下跳）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn last_nudge_target() -> &'static std::sync::Mutex<Option<(i32, i32)>> {
+    static V: std::sync::OnceLock<std::sync::Mutex<Option<(i32, i32)>>> = std::sync::OnceLock::new();
+    V.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn last_nudge_get() -> Option<(i32, i32)> {
+    *last_nudge_target().lock().unwrap_or_else(|p| p.into_inner())
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn last_nudge_set(v: Option<(i32, i32)>) {
+    *last_nudge_target().lock().unwrap_or_else(|p| p.into_inner()) = v;
+}
+
+/// 自由位目标 = 记忆球心 − 半边长，再按平台钳进工作区（Linux WM 只接受工作区内坐标）。
+/// 抽成纯函数便于回归：日志实证「记忆球心=(2317,330)、工作区底=343」时，原始目标
+/// y=280 会被 WM 钳成 243，于是监视循环每 800ms 重搬一次（球上下跳）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn free_ball_pos(
+    cx: f64,
+    cy: f64,
+    half: i32,
+    w: i32,
+    l: i32,
+    t: i32,
+    r: i32,
+    b: i32,
+) -> (i32, i32) {
+    landable_window_pos(
+        (cx - half as f64).round() as i32,
+        (cy - half as f64).round() as i32,
+        w,
+        w,
+        l,
+        t,
+        r,
+        b,
+    )
+}
+
+/// 窗口所在显示器的整屏矩形（含任务栏），用于与工作区矩形对照诊断
+/// （工作区 = 整屏扣面板/struts；两者相差悬殊说明是面板占位，整屏就小说明显示器本身小）
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn monitor_rect(win: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
+    let mon = win
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| win.primary_monitor().ok().flatten())?;
+    let p = mon.position();
+    let s = mon.size();
+    Some((
+        p.x,
+        p.y,
+        p.x + s.width as i32,
+        p.y + s.height as i32,
+    ))
+}
+
+/// 目标搬不动时采纳窗口现位：把实际球心写回记忆，并打全几何以便定位根因。
+/// Linux WM 会把窗口钳在工作区内，于是「记忆位/半隐位」可能是个它永不接受的点——
+/// 记着它只会让监视循环按冷却节奏反复搬（日志实证每秒 6~10 条「落位补齐」，用户
+/// 看到的就是球上下跳）。窗口位置是系统给的既成事实，记忆向它收敛，循环立即静止。
+/// 末尾清掉 last_nudge 并武装冷却，避免采纳后又立刻被别的分支当成漂移。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn adopt_current_center(
+    win: &tauri::WebviewWindow,
+    pos: PhysicalPosition<i32>,
+    half: i32,
+    target: (i32, i32),
+) {
+    use std::sync::atomic::Ordering;
+    let ncx = pos.x + half;
+    let ncy = pos.y + half;
+    let work = nearest_work_rect(win);
+    // 采纳只在「目标搬不动」时发生；Linux 上每轮贴边都可能触发 → debug（默认 Info 下静默）
+    log::debug!(
+        "[悬浮球] 落位采纳: 窗口=({},{}) 尺寸={:?} 内部={:?} 半边长={} scale={:.3} 工作区={:?} 整屏={:?} 目标=({},{}) 未生效 → 球心改为 ({},{})",
+        pos.x,
+        pos.y,
+        win.outer_size().ok(),
+        win.inner_size().ok(),
+        half,
+        window_scale(win),
+        work,
+        monitor_rect(win),
+        target.0,
+        target.1,
+        ncx,
+        ncy
+    );
+    {
+        let _guard = config::lock();
+        let mut cur = config::load();
+        cur.floating_ball_x = Some(ncx as f64);
+        cur.floating_ball_y = Some(ncy as f64);
+        if config::save(&cur).is_ok() {
+            memo_ball_set(ncx as f64, ncy as f64);
+        }
+    }
+    last_nudge_set(None);
+    LAST_DRAG_SETTLE_MS.store(now_ms(), Ordering::Relaxed);
+}
+
 /// 边缘监视单跳：对照「半隐位/滑出位」与系统光标，决定滑出或隐回。
 /// 停靠身份必须「记忆球心」与「窗口实际位置」双方一致才成立——只信记忆会把
 /// 用户刚拖走的球按旧记忆拽回屏边（表现为拖到任意位置都弹回去）。
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn edge_tick(app: &AppHandle) {
     use std::sync::atomic::Ordering;
     let Some(win) = app.get_webview_window(LABEL) else { return };
@@ -410,10 +817,30 @@ fn edge_tick(app: &AppHandle) {
     // 半隐/角落停靠的球心恰在边缘线上（含边界），不会误触发
     if let Some((l, t, r, b)) = nearest_work_rect(&win) {
         let (cx, cy) = (pos.x + half, pos.y + half);
-        if cx < l || cx > r || cy < t || cy > b {
-            let ncx = cx.clamp(l, r.max(l));
-            let ncy = cy.clamp(t, b.max(t));
-            let _ = win.set_position(PhysicalPosition::new(ncx - half, ncy - half));
+        // 只把「整球飞出工作区」的轴钳回来。贴边轴上球心本就在边上；
+        // 非贴边轴被顶栏 strut / CSD 挤出几像素不能当飞出，否则左右贴边会上下跳。
+        let overflow_x = cx < l - POS_TOL || cx > r + POS_TOL;
+        let overflow_y = cy < t - POS_TOL || cy > b + POS_TOL;
+        if overflow_x || overflow_y {
+            let ncx = if overflow_x { cx.clamp(l, r.max(l)) } else { cx };
+            let ncy = if overflow_y { cy.clamp(t, b.max(t)) } else { cy };
+            let (nx, ny) = landable_dock_pos(
+                ncx - half,
+                ncy - half,
+                w,
+                w,
+                l,
+                t,
+                r,
+                b,
+                i32::from(overflow_x),
+                i32::from(overflow_y),
+            );
+            // 已经在可落点：多半是 WM 把半隐钳回来了，再搬就是和它对打。
+            if already_at((pos.x, pos.y), (nx, ny)) {
+                return;
+            }
+            let _ = win.set_position(PhysicalPosition::new(nx, ny));
             {
                 let _guard = config::lock();
                 let mut cur = config::load();
@@ -473,22 +900,13 @@ fn edge_tick(app: &AppHandle) {
     let dock_bottom = (b as f64 - cy).abs() <= DOCK_TOL;
     if !(dock_left || dock_right || dock_top || dock_bottom) {
         // 自由位记忆：窗口被搬丢（落位 IPC 丢失/被后续消息覆盖）时补齐到记忆位，
-        // 记忆不动——球被拖走必经 drag_end 重写记忆，轮询期间记忆不可能过期
-        let mx = (cx - half as f64).round() as i32;
-        let my = (cy - half as f64).round() as i32;
-        if (mx - pos.x).abs() > POS_TOL || (my - pos.y).abs() > POS_TOL {
-            let _ = win.set_position(PhysicalPosition::new(mx, my));
-            LAST_DRAG_SETTLE_MS.store(now_ms(), Ordering::Relaxed);
-            log::info!(
-                "[悬浮球] 落位补齐: 记忆球心=({:.0},{:.0}) 窗口=({},{}) → 搬到 ({},{})",
-                cx,
-                cy,
-                pos.x,
-                pos.y,
-                mx,
-                my
-            );
-        }
+        // 记忆不动——球被拖走必经 drag_end 重写记忆，轮询期间记忆不可能过期。
+        // Linux：目标先钳进工作区（WM 会把越界坐标直接钳回来，拿它当目标就是每跳
+        // 对打一次——日志实证「记忆球心=(2317,330) 窗口=(2267,243) → 搬到 (2267,280)」
+        // 每秒刷一条，窗口下沿被 WM 钉在工作区底=343，则 280 永远到不了）。
+        let (mx, my) = free_ball_pos(cx, cy, half, w, l, t, r, b);
+        // 统一闸门：同一格只搬一次，超时未到位则采纳现位（见 posfix_nudge）
+        let _ = posfix_nudge(&win, pos, half, (mx, my), "落位补齐", 0, 0);
         return;
     }
     let dx = i32::from(dock_left) - i32::from(dock_right);
@@ -500,13 +918,12 @@ fn edge_tick(app: &AppHandle) {
     let off = half;
     // 半隐位 = 记忆球心位 - 半边长，再向屏内多露 PEEK（见常量注释：纯压边只露 24px 弧）
     let peek = (PEEK * scale).round() as i32;
-    let hidden = dock_hidden_pos(cx, cy, dx, dy, half as f64, peek);
-    let popped = (
-        (hidden.0 + dx * off).clamp(l, (r - w).max(l)),
-        (hidden.1 + dy * off).clamp(t, (b - w).max(t)),
-    );
-    let at_hidden = (pos.x - hidden.0).abs() <= POS_TOL && (pos.y - hidden.1).abs() <= POS_TOL;
-    let at_popped = (pos.x - popped.0).abs() <= POS_TOL && (pos.y - popped.1).abs() <= POS_TOL;
+    let hidden_raw = dock_hidden_pos(cx, cy, dx, dy, half as f64, peek);
+    let hidden = landable_dock_pos(hidden_raw.0, hidden_raw.1, w, w, l, t, r, b, dx, dy);
+    let popped = dock_hover_pos(hidden, dx, dy, off, w, l, t, r, b);
+    let at_hidden = pos_matches_dock((pos.x, pos.y), hidden, dx, dy);
+    let at_popped = pos_matches_dock((pos.x, pos.y), popped, dx, dy);
+    let mut treat_as_hidden = at_hidden;
     if !at_hidden && !at_popped {
         // 窗口不在停靠几何上 = drag_end 的落位搬窗丢了（异步 IPC 在拖动刚结束的
         // ~200ms 内被吞/被覆盖，日志实证：补搬一次后纠偏读到的仍是旧位置）。
@@ -520,31 +937,24 @@ fn edge_tick(app: &AppHandle) {
             && py >= pos.y.max(t)
             && py < (pos.y + w).min(b);
         let target = if inside { popped } else { hidden };
-        log::info!(
-            "[悬浮球] 落位补齐: 记忆球心=({:.0},{:.0}) 窗口=({},{}) → 搬到{}位 ({},{})",
-            cx,
-            cy,
-            pos.x,
-            pos.y,
-            if inside { "滑出" } else { "半隐" },
-            target.0,
-            target.1
-        );
-        slide_to(&win, (pos.x, pos.y), target);
-        return;
+        let label = if inside { "落位补齐(滑出位)" } else { "落位补齐(半隐位)" };
+        match posfix_nudge(&win, pos, half, target, label, dx, dy) {
+            PosFix::Handled => return,
+            // 已在途中 / 已在目标上：当半隐态处理，本跳不重复搬（否则就是 100ms 抖）
+            PosFix::InFlight => treat_as_hidden = true,
+        }
+    } else {
+        // 到位则清空悬停动画去重标记（下一次悬停要能重新播动画）
+        last_nudge_set(None);
     }
-    // 当前是滑出态还是半隐态由窗口实际位置判定（不采信进程内缓存，
-    // 任何来源的几何漂移——DPI 自愈、菜单展开钳制——都能自纠正）
-    let popped_now = !at_hidden && at_popped;
+    let popped_now = !treat_as_hidden && at_popped;
     let Some((px, py)) = cursor_pos() else { return };
     if !popped_now {
-        // 半隐态：光标进入窗口屏内可见部分 → 滑出完整露出
         let inside = px >= pos.x.max(l)
             && px < (pos.x + w).min(r)
             && py >= pos.y.max(t)
             && py < (pos.y + w).min(b);
         if inside {
-            // 高频交互（每次悬停触发）走 debug，防文件日志持续增长
             log::debug!(
                 "[悬浮球] 悬停滑出: 窗口=({},{}) 滑出位=({},{}) 光标=({},{}) 停靠方向=({},{})",
                 pos.x,
@@ -556,22 +966,21 @@ fn edge_tick(app: &AppHandle) {
                 dx,
                 dy
             );
-            slide_to(&win, (pos.x, pos.y), popped);
+            slide_once(&win, (pos.x, pos.y), popped);
         }
     } else {
-        // 滑出态：光标离开滑出矩形 + 防抖边距 → 隐回半隐位
         let outside = px < pos.x - EDGE_MARGIN
             || px >= pos.x + w + EDGE_MARGIN
             || py < pos.y - EDGE_MARGIN
             || py >= pos.y + w + EDGE_MARGIN;
         if outside {
-            slide_to(&win, (pos.x, pos.y), hidden);
+            slide_once(&win, (pos.x, pos.y), hidden);
         }
     }
 }
 
 /// 启动边缘监视线程（进程内仅一次；开关由 AUTO_HIDE 原子量控制，循环常驻空转成本可忽略）
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub fn start_edge_watch(app: &AppHandle) {
     static STARTED: std::sync::Once = std::sync::Once::new();
     let handle = app.clone();
@@ -583,18 +992,18 @@ pub fn start_edge_watch(app: &AppHandle) {
     });
 }
 
-/// 窗口实时 DPI 缩放系数：直接查 GetDpiForWindow，不用 tao 缓存的 scale_factor。
-/// 缓存过期场景：悬浮球隐藏期间系统缩放变化、窗口错过 WM_DPICHANGED（见模块注释
-/// 「DPI 自愈」）——此时缓存 scale 停在旧值，而 WebView2 光栅化用窗口实时 DPI，
-/// 两侧换算必须同源才不会裁切。取不到 HWND/失败时回退 tao 缓存（非 Windows 编译
-/// 走不到此分支，窗口 API 的调用点都在 #[cfg(target_os = "windows")] 内）。
-#[cfg(target_os = "windows")]
+/// 窗口实时 DPI 缩放系数。
+/// Windows：GetDpiForWindow（与 WebView2 同源）；Linux：tao 的 scale_factor。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn window_scale(win: &tauri::WebviewWindow) -> f64 {
-    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-    if let Ok(hwnd) = win.hwnd() {
-        let dpi = unsafe { GetDpiForWindow(hwnd.0) };
-        if dpi > 0 {
-            return dpi as f64 / 96.0;
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+        if let Ok(hwnd) = win.hwnd() {
+            let dpi = unsafe { GetDpiForWindow(hwnd.0) };
+            if dpi > 0 {
+                return dpi as f64 / 96.0;
+            }
         }
     }
     win.scale_factor().unwrap_or(1.0)
@@ -608,7 +1017,7 @@ fn window_scale(win: &tauri::WebviewWindow) -> f64 {
 /// 见 clipboard.rs::init_overlay_window 与 lib.rs 启动注释的同款坑）。
 /// 必须在 autostart-hidden 的 tray::hide_window 之后调用，显隐联动才正确。
 pub fn init(app: &AppHandle) {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         use std::sync::atomic::Ordering;
         if let Err(e) = ensure_window(app) {
@@ -617,6 +1026,22 @@ pub fn init(app: &AppHandle) {
         }
         let cfg = config::load();
         AUTO_HIDE.store(cfg.floating_ball_auto_hide, Ordering::Relaxed);
+        // 几何基线一次性落日志：排查「球停在意外位置 / 反复搬窗」时先看这条
+        // （工作区远小于整屏 = 面板 struts 占位；记忆球心落在工作区外 = WM 不接受它）
+        if let Some(win) = app.get_webview_window(LABEL) {
+            log::info!(
+                "[悬浮球] 几何基线(build={}): 工作区={:?} 整屏={:?} scale={:.3} 窗口尺寸={:?} 内部={:?} 位置={:?} 记忆球心=({:?},{:?})",
+                option_env!("XHUB_BUILD_TAG").unwrap_or("unknown"),
+                nearest_work_rect(&win),
+                monitor_rect(&win),
+                window_scale(&win),
+                win.outer_size().ok(),
+                win.inner_size().ok(),
+                win.outer_position().ok(),
+                cfg.floating_ball_x,
+                cfg.floating_ball_y
+            );
+        }
         start_edge_watch(app);
         if !cfg.floating_ball_enabled {
             // 停用状态：窗口隐藏常驻，设置启用时直接 show 即可
@@ -627,17 +1052,18 @@ pub fn init(app: &AppHandle) {
         }
         sync_with_main(app);
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let _ = app;
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn ensure_window(app: &AppHandle) -> tauri::Result<()> {
     if app.get_webview_window(LABEL).is_some() {
         return Ok(());
     }
+    #[cfg(target_os = "windows")]
     let mut builder =
         // 轻量入口 ball.html（P2）：只渲染球体，不加载完整 SPA（内存优化，见 src/light/ball.ts）
         tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::App("ball.html".into()))
@@ -650,8 +1076,21 @@ fn ensure_window(app: &AppHandle) -> tauri::Result<()> {
             .skip_taskbar(true)
             .visible(true)
             .additional_browser_args(crate::ADDITIONAL_BROWSER_ARGS);
-    // 透明窗口在 Windows 上不能同时启用系统阴影（黑边），与便签/倒计时浮窗一致
-    builder = builder.shadow(false);
+    #[cfg(not(target_os = "windows"))]
+    let builder =
+        tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::App("ball.html".into()))
+            .title("悬浮球")
+            .inner_size(BALL_SIZE, BALL_SIZE)
+            .resizable(false)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(true)
+            .additional_browser_args(crate::ADDITIONAL_BROWSER_ARGS);
+    // 透明窗口不能同时启用系统阴影：Windows 会画黑边；GTK 阴影会撑大
+    // outer_size（实测 +37px），贴边监视把尺寸差当成位置漂移而跳动。
+    let builder = builder.shadow(false);
     let win = builder.build()?;
 
     // 彻底不进任务栏：tao 的 skip_taskbar 只是一次性 DeleteTab，窗口仍带 WS_EX_APPWINDOW，
@@ -692,7 +1131,7 @@ fn ensure_window(app: &AppHandle) -> tauri::Result<()> {
 /// 与吸附同语义）。球态窗口位置 = 球心 - 半边长。
 /// 注意：floating_ball_x/y 存球心坐标（旧版本存的是窗口左上角，升级后首次
 /// 位置会偏移一次，拖动一下即按新语义记忆）。
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn place_initial(app: &AppHandle, win: &tauri::WebviewWindow) {
     let scale = window_scale(win);
     let half = (BALL_SIZE * scale / 2.0).round() as i32;
@@ -721,7 +1160,7 @@ fn place_initial(app: &AppHandle, win: &tauri::WebviewWindow) {
 /// 与主窗口显隐联动：主窗显示且未开「同显」→ 球隐藏；其余情况 → 球显示。
 /// 主窗的所有 show/hide 都走 tray::show_window / hide_window，统一钩到这里。
 pub fn sync_with_main(app: &AppHandle) {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         let cfg = config::load();
         if !cfg.floating_ball_enabled {
@@ -750,7 +1189,7 @@ pub fn sync_with_main(app: &AppHandle) {
             crate::webview_mem::on_hidden(app, LABEL);
         }
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let _ = app;
     }
@@ -759,7 +1198,7 @@ pub fn sync_with_main(app: &AppHandle) {
 // ---------- 几何管理 ----------
 
 /// 当前是否处于菜单展开态（按窗口实际尺寸判断，免维护额外状态）
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn is_expanded(win: &tauri::WebviewWindow) -> bool {
     let scale = window_scale(win);
     win.outer_size()
@@ -780,7 +1219,7 @@ fn is_expanded(win: &tauri::WebviewWindow) -> bool {
 /// window_scale 算出的目标物理尺寸依然偏小 → WebView2 按真实光栅 DPI 渲染，
 /// 视口 < 逻辑尺寸，菜单按钮外圈被窗口边缘裁掉。此时以「视口实测」为唯一真相，
 /// 前端 checkViewportSync 失配时携带 clientWidth 调 floating_ball_reapply 自愈。
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn apply_geometry(win: &tauri::WebviewWindow, expanded: bool, scale_override: Option<f64>) {
     let Ok(pos) = win.outer_position() else { return };
     let scale = scale_override.unwrap_or_else(|| window_scale(win));
@@ -810,9 +1249,17 @@ fn apply_geometry(win: &tauri::WebviewWindow, expanded: bool, scale_override: Op
         if !was_expanded {
             *pre = Some((cx.round() as i32, cy.round() as i32));
         }
-    } else if let Some((px, py)) = pre.take() {
-        nx = px as f64 - new_half;
-        ny = py as f64 - new_half;
+    } else if was_expanded {
+        // 只有「确实刚从展开态收拢」才恢复展开前球心。窗口本来就是球态时，
+        // pre 可能残留自上一次展开（如收起后隐藏、再显示触发本函数）——那时
+        // 按它定位会把球挪到与记忆无关的位置，随后监视循环又照记忆搬回来，
+        // 两者相差半边长（日志实证：窗口反复停在 243 与 280 之间 = 上下跳）。
+        if let Some((px, py)) = pre.take() {
+            nx = px as f64 - new_half;
+            ny = py as f64 - new_half;
+        }
+    } else {
+        *pre = None;
     }
     drop(pre);
 
@@ -852,31 +1299,34 @@ fn apply_geometry(win: &tauri::WebviewWindow, expanded: bool, scale_override: Op
             );
         }
     }
-    if let Ok(hwnd) = win.hwnd() {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
-        };
-        unsafe {
-            SetWindowPos(
-                hwnd.0,
-                std::ptr::null_mut(),
-                nx.round() as i32,
-                ny.round() as i32,
-                new_size as i32,
-                new_size as i32,
-                SWP_NOZORDER | SWP_NOACTIVATE,
-            );
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(hwnd) = win.hwnd() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+            };
+            unsafe {
+                SetWindowPos(
+                    hwnd.0,
+                    std::ptr::null_mut(),
+                    nx.round() as i32,
+                    ny.round() as i32,
+                    new_size as i32,
+                    new_size as i32,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+            return;
         }
-    } else {
-        let _ = win.set_size(PhysicalSize::new(new_size as u32, new_size as u32));
-        let _ = win.set_position(PhysicalPosition::new(nx.round() as i32, ny.round() as i32));
     }
+    let _ = win.set_size(PhysicalSize::new(new_size as u32, new_size as u32));
+    let _ = win.set_position(PhysicalPosition::new(nx.round() as i32, ny.round() as i32));
 }
 
 /// 设置变更后的应用：启用则确保窗口存在并联动显隐；停用只隐藏、不销毁窗口。
 /// 窗口由启动 init 预创建后常驻——运行时 destroy/rebuild WebView2 与悬浮球窗口
 /// 操作交错会卡死整窗（见 init 注释），与 clipboard 浮层「预创建隐藏常驻」同款约束
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn apply_enabled(app: &AppHandle, enabled: bool) {
     if enabled {
         // 正常路径窗口启动时已预创建；此处 ensure 仅兜底极少见的缺失场景
@@ -898,12 +1348,12 @@ fn apply_enabled(app: &AppHandle, enabled: bool) {
 #[tauri::command]
 pub fn floating_ball_get_state(app: tauri::AppHandle) -> FloatingBallState {
     let cfg = config::load();
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     let dock = app
         .get_webview_window(LABEL)
         .map(|w| dock_state(&w, cfg.floating_ball_x, cfg.floating_ball_y))
         .unwrap_or_default();
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     let dock = {
         let _ = &app;
         DockState::default()
@@ -953,7 +1403,7 @@ pub fn floating_ball_save_settings(
         config::save(&cfg)?;
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         use std::sync::atomic::Ordering;
         AUTO_HIDE.store(auto_hide, Ordering::Relaxed);
@@ -963,17 +1413,17 @@ pub fn floating_ball_save_settings(
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     apply_enabled(&app, enabled);
 
     // 通知球窗口重拉状态（按钮集/自动隐藏/停靠边一并刷新）
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     if enabled {
         use tauri::Emitter;
         let _ = app.emit_to(LABEL, "floating-ball-config-changed", ());
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     let _ = (&app, auto_hide);
 
     log::info!(
@@ -990,7 +1440,7 @@ pub fn floating_ball_save_settings(
 /// startDragging 的 promise 在拖动开始时就 resolve，不能当结束信号（见 DRAG_ARMED_MS 注释）。
 #[tauri::command]
 pub fn floating_ball_drag_begin() {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     DRAG_ARMED_MS.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -998,14 +1448,14 @@ pub fn floating_ball_drag_begin() {
 /// 防止残留标志把用户下一次无关的左键单击松开当成拖拽落位（「带外绝不移动」）
 #[tauri::command]
 pub fn floating_ball_drag_cancel() {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     DRAG_ARMED_MS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// 拖拽落位（松手后由 edge_tick 在监视线程调用，此时窗口位置已稳定）：
 /// 球心钳在工作区内 + 可选贴边自动隐藏（球心落到屏边、半隐，见模块注释）+ 记忆球心到配置。
 /// 拖拽只发生在球态，窗口位置 = 球心 - 球态半边长。
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn settle_drag(app: &AppHandle) {
     use tauri::Emitter;
     use std::sync::atomic::Ordering;
@@ -1052,7 +1502,8 @@ fn settle_drag(app: &AppHandle) {
             dy = sdy;
             // 诊断（用户反馈「拖到边上不吸附」时先看这条）：吸附只取决于松手点球心
             // 到工作区边缘的距离是否 < trigger（= DOCK_TRIGGER × scale，物理 px）
-            log::info!(
+            // 每次拖拽松手都会记录（含吸附判定依据）；属诊断信息，debug 级
+            log::debug!(
                 "[悬浮球] 拖拽松手: 球心=({:.0},{:.0}) 工作区=[{:.0},{:.0},{:.0},{:.0}] scale={:.4} \
                  trigger={:.0} 距边 左{:.0}/右{:.0}/上{:.0}/下{:.0} auto_hide={} → 吸附后球心=({:.0},{:.0}) 方向=({},{})",
                 free_cx,
@@ -1078,8 +1529,13 @@ fn settle_drag(app: &AppHandle) {
         // 再滑出的观感很怪），由监视循环在光标移开后隐回；其余落半隐停靠位。
         // 半隐位与 edge_tick 同口径（dock_hidden_pos）
         let peek = (PEEK * scale).round() as i32;
-        let (dock_nx, dock_ny) = dock_hidden_pos(cx, cy, dx, dy, half, peek);
         let size_px = (half * 2.0).round() as i32;
+        let (raw_nx, raw_ny) = dock_hidden_pos(cx, cy, dx, dy, half, peek);
+        let (dock_nx, dock_ny) = if let Some((ml, mt, mr, mb)) = wa_rect {
+            landable_dock_pos(raw_nx, raw_ny, size_px, size_px, ml, mt, mr, mb, dx, dy)
+        } else {
+            (raw_nx, raw_ny)
+        };
         let mut popped_now = false;
         if let (Some((ml, mt, mr, mb)), true) = (wa_rect, dx != 0 || dy != 0) {
             let (vx0, vy0) = (dock_nx.max(ml), dock_ny.max(mt));
@@ -1136,11 +1592,11 @@ fn settle_drag(app: &AppHandle) {
 /// async 与 drag_end 同理（窗口操作离开主线程）。
 #[tauri::command]
 pub async fn floating_ball_expand(app: AppHandle, expanded: bool) {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     if let Some(win) = app.get_webview_window(LABEL) {
         apply_geometry(&win, expanded, None);
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     let _ = (app, expanded);
 }
 
@@ -1183,7 +1639,7 @@ pub fn floating_ball_context_menu(app: AppHandle) -> Result<(), String> {
 /// async 与 expand 同理（窗口操作离开主线程）。
 #[tauri::command]
 pub async fn floating_ball_reapply(app: AppHandle, viewport_w: f64) {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     if let Some(win) = app.get_webview_window(LABEL) {
         let override_scale = win.outer_size().ok().and_then(|sz| {
             let s = sz.width as f64 / viewport_w;
@@ -1192,11 +1648,11 @@ pub async fn floating_ball_reapply(app: AppHandle, viewport_w: f64) {
         });
         apply_geometry(&win, is_expanded(&win), override_scale);
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     let _ = (app, viewport_w);
 }
 
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
 mod tests {
     use super::*;
 
@@ -1266,6 +1722,77 @@ mod tests {
         assert_eq!(dock_hidden_pos(1920.0, 500.0, -1, 0, 50.0, 8), (1862, 450));
         // 角落双侧（贴左 + 贴底）：y 轴向屏内 = 向上收 8
         assert_eq!(dock_hidden_pos(0.0, 1040.0, 1, -1, 50.0, 8), (-42, 982));
+    }
+
+    /// 贴顶半隐钳回工作区后：Windows 仍要半隐/滑出分开；Linux 滑出位必须等于半隐位
+    /// （贴边全显、不做悬停滑出），否则窗口从光标下抽走，100ms 上下跳。
+    #[test]
+    fn dock_hover_matches_platform_policy() {
+        let half = 50i32;
+        let w = 100;
+        let (l, t, r, b) = (0, 0, 1920, 1040);
+        let hidden_raw = dock_hidden_pos(500.0, 0.0, 0, 1, 50.0, 8);
+        assert_eq!(hidden_raw, (450, -42));
+        let hidden = clamp_window_into_work(hidden_raw.0, hidden_raw.1, w, w, l, t, r, b);
+        assert_eq!(hidden, (450, 0));
+        let popped = dock_hover_pos(hidden, 0, 1, half, w, l, t, r, b);
+        if cfg!(target_os = "linux") {
+            assert_eq!(popped, hidden);
+        } else {
+            assert_eq!(popped, (450, 50));
+            assert!(
+                (hidden.1 - popped.1).abs() > POS_TOL,
+                "Windows 钳回后半隐/滑出必须能区分: hidden={} popped={}",
+                hidden.1,
+                popped.1
+            );
+        }
+    }
+
+    #[test]
+    fn clamp_window_keeps_fully_on_screen() {
+        assert_eq!(
+            clamp_window_into_work(-42, 450, 100, 100, 0, 0, 1920, 1040),
+            (0, 450)
+        );
+        assert_eq!(
+            clamp_window_into_work(1862, 982, 100, 100, 0, 0, 1920, 1040),
+            (1820, 940)
+        );
+    }
+
+    #[test]
+    fn already_at_uses_pos_tolerance() {
+        assert!(already_at((0, 0), (0, 9)));
+        assert!(!already_at((0, 0), (0, 11)));
+    }
+
+    /// 左右贴边只认 X：Y 被顶栏挤偏仍算半隐，避免监视循环上下跳。
+    #[test]
+    fn side_dock_ignores_free_axis_drift() {
+        let hidden = dock_hidden_pos(0.0, 40.0, 1, 0, 50.0, 8);
+        assert_eq!(hidden, (-42, -10));
+        let work = (0, 32, 1920, 1040);
+        let landed = landable_dock_pos(hidden.0, hidden.1, 100, 100, work.0, work.1, work.2, work.3, 1, 0);
+        assert_eq!(landed.0, if cfg!(target_os = "linux") { 0 } else { -42 });
+        assert_eq!(landed.1, hidden.1); // 不得把 Y 钳到顶栏
+        assert!(pos_matches_dock((-42, 8), hidden, 1, 0));
+        assert!(!pos_matches_dock((40, -10), hidden, 1, 0));
+    }
+
+    /// 自由位目标必须钳进工作区：日志实证「记忆球心=(2317,330)、工作区底=343」时，
+    /// 原始目标 y=280（窗口下沿 380 越界）会被 WM 钳成 243，监视循环于是每 800ms
+    /// 重搬一次 = 球上下跳。Linux 必须直接给出 243（已到位的坐标 → 不再搬）；
+    /// Windows 允许半截出屏，保持原目标。
+    #[test]
+    fn free_pos_is_clamped_into_work_area() {
+        let (x, y) = free_ball_pos(2317.0, 330.0, 50, 100, 0, 0, 2560, 343);
+        assert_eq!(x, 2267);
+        if cfg!(target_os = "linux") {
+            assert_eq!(y, 243);
+        } else {
+            assert_eq!(y, 280);
+        }
     }
 
     /// 半隐位（球心压屏边）与滑出位（球心向屏内一个半边长）必须落在两个可区分的

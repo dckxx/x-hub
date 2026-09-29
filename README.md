@@ -58,7 +58,7 @@
 **自研升级链路**：从 `releases/update.json` 升级清单拉取**新版本信息**（Ed25519 分离签名验签，内嵌公钥验签通过才信任）→ semver 版本比较 + **跳级保护**（`minimumUpgradable` 下限）→ **自动静默检查**（启动 5s 后 + 默认每 4 小时，可在 About 关闭）；发现新版本弹出**全局更新弹窗**（版本号 / 说明 / 体积 / 便携版标记），支持**跳过此版本**（记录到配置）/**立即更新**（流式下载 + 实时进度条 + sha256 完整性校验）/ 就绪后**立即重启**；重启时解包并两步 rename **自替换**，失败自动回滚、下次启动重试；About「检查更新」可手动触发。更新包分发在腾讯云 COS，支持标准版 / 便携版分别取包。
 
 ### 💾 数据存储与便携
-所有数据默认本地存储，支持三种形态灵活切换：**标准版**数据默认在 `%APPDATA%\x-hub`，可在设置中「更改数据存储路径」迁移到任意目录（迁移后重启生效）；**便携版**只需在 exe 同目录放一个空文件 `portable`，数据即固定跟随 `exe\data` 子目录，整个文件夹拷到 U 盘即可随身携带；**数据备份/恢复**打包为 `x-hub-backup-时间戳.zip` 单个压缩包，便于归档与迁移。
+所有数据默认本地存储，支持三种形态灵活切换：**标准版**数据默认在 `~/.config/x-hub`（Linux）或 `%APPDATA%\x-hub`（Windows），可在设置中「更改数据存储路径」迁移到任意目录（迁移后重启生效）；**便携版**只需在可执行文件同目录放一个空文件 `portable`，数据即固定跟随 `可执行文件目录/data` 子目录，整个文件夹拷到 U 盘即可随身携带；**数据备份/恢复**打包为 `x-hub-backup-时间戳.zip` 单个压缩包，便于归档与迁移。
 
 ## ⌨️ 快捷键
 
@@ -86,18 +86,28 @@
 ### 环境要求
 
 - Node.js 18+
+- pnpm 9+（[pnpm.io](https://pnpm.io/)）
 - Rust 1.77.2+（[rustup](https://rustup.rs/)）
-- Windows：WebView2（Win10/11 自带）
+- Ubuntu / Debian：Tauri 系统依赖（`libwebkit2gtk-4.1-dev` 等，见 [Tauri 前置条件](https://v2.tauri.app/start/prerequisites/)）
+- 其它发行版、或运行时报缺 `libwebkit2gtk-4.1.so.0`：见 [Linux 安装 WebView](LINUX.md)
 
 ### 安装与运行
 
 ```bash
-npm install
+pnpm install
 
-npm run dev           # Vite 浏览器预览 (http://localhost:1420)
-npm run tauri:dev     # Tauri 桌面开发窗口
-npm run build         # vue-tsc 类型检查 + vite build
-npm run tauri:build   # 构建桌面安装包（产物在 src-tauri/target/release/bundle/）
+pnpm run dev           # Vite 浏览器预览 (http://localhost:1420)
+pnpm run tauri:dev     # Tauri 桌面开发窗口
+pnpm run build         # vue-tsc 类型检查 + vite build
+pnpm run tauri:build     # 构建并打包 .deb（产物在 src-tauri/target/release/bundle/deb/）
+pnpm run tauri:build:deb # 仅打 deb 包（同上）
+```
+
+安装并打开：
+
+```bash
+sudo apt install ./src-tauri/target/release/bundle/deb/x-hub_*.deb
+x-hub   # 或从应用菜单搜索「x-hub」
 ```
 
 ## 📂 目录结构
@@ -133,7 +143,7 @@ src-tauri/
 
 ## 🔒 数据与隐私
 
-数据统一存放在「数据根」目录下（标准版默认为 `%APPDATA%\x-hub`，可经设置改到任意目录；便携版为 `exe\data`）：
+数据统一存放在「数据根」目录下（标准版默认为 `~/.config/x-hub`，可经设置改到任意目录；便携版为 `可执行文件目录/data`）：
 
 - **数据库**：`数据根\app.db`（SQLite，resources/notes/todos/stickies/snippets/tags/countdowns/chat_sessions/chat_messages）
 - **图标**：`数据根\icons\`（拖拽导入/扫描安装应用时自动提取的程序图标）

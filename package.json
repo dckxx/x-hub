@@ -17,7 +17,8 @@
     "tauri:build": "tauri build",
     "tauri:build:deb": "tauri build --bundles deb",
     "tauri:build:rpm": "tauri build --bundles rpm",
-    "tauri:test": "pwsh -NoProfile -File scripts/cargo-test.ps1"
+    "tauri:build:linux": "tauri build --bundles deb,rpm",
+    "tauri:test": "cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
     "@internationalized/date": "^3.12.3",

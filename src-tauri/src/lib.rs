@@ -344,7 +344,10 @@ pub fn run() {
             crate::ext_protocol::handle(ctx.app_handle(), request)
         })
         .setup(|app| {
-            log::info!("========== x-hub 启动 ==========");
+            log::info!(
+                "========== x-hub 启动 ========== build={}",
+                option_env!("XHUB_BUILD_TAG").unwrap_or("unknown")
+            );
 
             // 资产协议作用域：**只**放行必要的子目录（图标 / 壁纸 / 剪贴板图片 / 扩展），
             // 绝不放行整个数据根，也绝不写回 tauri.conf 的 `$APPDATA/**`。

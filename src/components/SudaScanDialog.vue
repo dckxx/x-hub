@@ -201,7 +201,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 :disabled="isExisting(a)"
                 @change="toggleApp(a)"
               />
-              <span class="scan-icon" :style="{ background: accentOf(a.name).soft }">
+              <span class="scan-icon" :style="showImg(a) ? {} : { background: accentOf(a.name).soft }">
                 <img
                   v-if="showImg(a)"
                   class="scan-img"

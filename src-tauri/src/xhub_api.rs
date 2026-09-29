@@ -71,6 +71,12 @@ pub(crate) static CAPABILITIES: &[Capability] = &[
         handler: CapabilityHandler::Sync(runtime_call_extension),
     },
     Capability {
+        namespace: "runtime",
+        method: "openPermissions",
+        permission: None,
+        handler: CapabilityHandler::Sync(runtime_open_permissions),
+    },
+    Capability {
         namespace: "storage",
         method: "get",
         permission: None,
@@ -628,9 +634,21 @@ async fn dispatch(
 
 // ---------- runtime ----------
 
-fn runtime_open_external(_app: &tauri::AppHandle, _state: &DbState, _ext_id: &str, args: Value) -> Result<Value, String> {
+fn runtime_open_external(app: &tauri::AppHandle, _state: &DbState, ext_id: &str, args: Value) -> Result<Value, String> {
     let url = args.get("url").and_then(Value::as_str).ok_or("INVALID_ARGUMENT: 缺少 URL")?;
-    crate::process::open_external(url.to_string())?;
+    // 链接打开方式（扩展详情弹窗「链接打开方式」可配）：browser = 系统默认浏览器；
+    // 其余/未配置 = inapp，走应用内置浏览器窗口（suda 浏览器池，ADR 0011）
+    let config = crate::config::load();
+    let mode = config
+        .extension_link_modes
+        .get(ext_id)
+        .map(String::as_str)
+        .unwrap_or("inapp");
+    if mode == "browser" {
+        crate::process::open_external(url.to_string())?;
+    } else {
+        crate::suda_browser::suda_browser_open_url(app.clone(), url.to_string())?;
+    }
     Ok(Value::Null)
 }
 
@@ -658,6 +676,21 @@ fn runtime_call_extension(
         ));
     }
     Ok(Value::Null)
+}
+
+/// runtime.openPermissions：请求宿主打开本扩展的设置/授权弹窗（无需权限——
+/// 只能打开自己的设置，不暴露任何数据）。实现为广播 `open-extension-settings`
+/// 事件，主窗 index.vue 收到后切到扩展中心并打开该扩展的设置弹窗。
+/// 典型用途：service 后端未授权（PERMISSION_DENIED）时扩展页给「去授权」跳转。
+fn runtime_open_permissions(
+    _app: &tauri::AppHandle,
+    _state: &DbState,
+    ext_id: &str,
+    _args: Value,
+) -> Result<Value, String> {
+    // 需要发事件而非纯回值：设置弹窗挂在主窗前端的扩展中心里
+    let _ = _app.emit("open-extension-settings", ext_id.to_string());
+    Ok(json!({ "opened": true }))
 }
 
 /// runtime.info：扩展身份 + service 就绪态 + 代理前缀 + 宿主能力清单。
@@ -2233,6 +2266,12 @@ mod tests {
             .find(|c| c.namespace == "runtime" && c.method == "info")
             .expect("runtime.info 必须在能力表中");
         assert_eq!(info.permission, None);
+        // openPermissions：打开自己的设置/授权弹窗，同样无需权限（只能开自己的，不暴露数据）
+        let perms = CAPABILITIES
+            .iter()
+            .find(|c| c.namespace == "runtime" && c.method == "openPermissions")
+            .expect("runtime.openPermissions 必须在能力表中");
+        assert_eq!(perms.permission, None);
     }
 
     #[test]

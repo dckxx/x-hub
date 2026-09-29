@@ -254,6 +254,9 @@ pub struct ExtensionEntry {
     pub module_variants: Vec<ModuleVariant>,
     /// 工作台模块选项（manifest.moduleOptions 原样透传；module 卡片表头默认显隐用）
     pub module_options: ModuleOptions,
+    /// 安装时间（目录创建时间，RFC3339；前端「已安装」列表按此排序，最后安装的在最下面）。
+    /// 取文件系统元数据，对本客户端装之前就存在的扩展同样有效；取不到时为 None
+    pub installed_at: Option<String>,
 }
 
 fn runtime_str(r: &ExtensionRuntime) -> &'static str {
@@ -353,6 +356,14 @@ pub fn read_manifest(dir: &Path) -> Result<ExtensionManifest, String> {
     serde_json::from_str(&content).map_err(|e| format!("manifest 解析失败：{e}"))
 }
 
+/// 目录创建时间（RFC3339）＝安装时间的最佳代理。Windows NTFS 支持创建时间；
+/// 市场更新经 tmp 目录换名落位，创建时间反映最近一次落盘——排序用途足够
+fn dir_created_at(dir: &Path) -> Option<String> {
+    let created = std::fs::metadata(dir).ok()?.created().ok()?;
+    let dt: chrono::DateTime<chrono::Utc> = created.into();
+    Some(dt.to_rfc3339())
+}
+
 /// 加载单个扩展目录为注册表项（永不 panic，损坏时返回 invalid 项）。
 /// `source` 区分「已装扩展」（扩展根）与「开发扩展」（「我的扩展」直挂的源码目录）。
 fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
@@ -361,6 +372,7 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
     // 也与喂给 Node 的脚本路径同源——两处口径不一致就会出现「扩展在跑但发布按钮不见了」。
     let dir = &crate::paths::simplify_existing(dir);
     let dir_str = dir.to_string_lossy().into_owned();
+    let installed_at = dir_created_at(dir);
     let fallback_name = dir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -389,6 +401,7 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
         actions: Vec::new(),
         module_variants: Vec::new(),
         module_options: ModuleOptions::default(),
+        installed_at: installed_at.clone(),
     };
 
     let manifest = match read_manifest(dir) {
@@ -440,6 +453,7 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
         actions: manifest.actions,
         module_variants: manifest.module_variants,
         module_options: manifest.module_options,
+        installed_at,
     }
 }
 
@@ -838,6 +852,10 @@ pub(crate) const XHUB_BRIDGE_SCRIPT: &str = r#"
     runtime:{
       info:function(){return call('runtime','info',{});},
       open:function(surface){window.parent.postMessage({__xhub:true,type:'open',surface:surface||'view'},'*');return Promise.resolve();},
+      // 请求宿主打开本扩展的设置/授权弹窗（runtime.openPermissions 能力，无需权限）。
+      // 典型用途：service 后端未授权时，扩展页展示提示并给「去授权」跳转
+      // （见 references/bridge-api.md）。
+      openPermissions:function(){return call('runtime','openPermissions',{});},
       callExtension:function(targetId,method,payload){
         return new Promise(function(resolve,reject){
           var id=++seq;pending[id]={resolve:resolve,reject:reject};
@@ -975,6 +993,18 @@ pub(crate) const XHUB_BRIDGE_SCRIPT: &str = r#"
       exposed[method]=handler;
     }
   };
+  // 接管页面里的普通外链 <a href="http(s)://…">：点击改为走 openExternal，
+  // 使其同样遵循用户配置的「链接打开方式」（应用内浏览器/系统浏览器）。
+  // capture 阶段注册并阻断传播——扩展自己绑的 click 处理（如 hotsearch bindOpen）
+  // 会再开一次造成双开；锚点/相对路径/非 http(s) 协议不拦，交还扩展页面自身导航。
+  document.addEventListener('click',function(e){
+    var t=e.target;var a=t&&t.closest?t.closest('a[href]'):null;
+    if(!a)return;
+    var href=a.getAttribute('href')||'';
+    if(!/^https?:\/\//i.test(href))return;
+    e.preventDefault();e.stopPropagation();
+    try{window.xhub.openExternal(href);}catch(err){}
+  },true);
   // 加载即拉取一次主题，确保首帧就与宿主一致
   call('theme','get',{}).then(applyTheme).catch(function(){});
 })();
@@ -1321,6 +1351,17 @@ mod tests {
                 cap.method
             );
         }
+    }
+
+    #[test]
+    fn bridge_script_intercepts_external_anchors() {
+        // 普通外链 <a href="http(s)://…"> 必须走 openExternal（遵循「链接打开方式」设置）：
+        // capture 阶段接管 + preventDefault/stopPropagation（阻断扩展自身处理器，防双开）；
+        // 正则须是单反斜杠的 \/ 转义（桥是 r#""# 原始字符串，双反斜杠会写坏正则炸掉整个桥）
+        assert!(XHUB_BRIDGE_SCRIPT.contains("addEventListener('click'"));
+        assert!(XHUB_BRIDGE_SCRIPT.contains("e.preventDefault();e.stopPropagation();"));
+        assert!(XHUB_BRIDGE_SCRIPT.contains("/^https?:\\/\\//i.test(href)"));
+        assert!(XHUB_BRIDGE_SCRIPT.contains("window.xhub.openExternal(href)"));
     }
 
     #[test]

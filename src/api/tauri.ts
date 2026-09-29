@@ -285,6 +285,10 @@ export interface AppConfig {
   chat_window_pinned: boolean
   /** 剪贴板历史全局呼出快捷键 */
   clipboard_shortcut: string
+  /** 全局搜索呼出快捷键（默认 Ctrl+K） */
+  search_shortcut: string
+  /** AI 对话呼出快捷键（默认 Ctrl+Shift+K） */
+  chat_shortcut: string
   /** 剪贴板历史最大条数（含置顶） */
   clipboard_max_items: number
   /** 非置顶记录保留天数 */
@@ -321,6 +325,8 @@ export interface AppConfig {
   sidebar_extensions: string[]
   /** 扩展「默认打开方式」映射：extId → view / window / drawer（未设置时侧栏点击默认 view） */
   extension_open_modes: Record<string, string>
+  /** 扩展「链接打开方式」映射：extId → inapp（应用内浏览器，默认）/ browser（系统浏览器） */
+  extension_link_modes: Record<string, string>
   /** 开机自启动（登录 Windows 时自动驻留托盘） */
   run_at_startup: boolean
   /** 自动升级总开关（默认开启） */
@@ -329,6 +335,8 @@ export interface AppConfig {
   update_interval_hours: number
   /** 用户「跳过此版本」记录的版本号（空 = 未跳过） */
   skipped_update_version: string
+  /** 「稍后再提示」暂停到点（epoch 毫秒，0 = 未暂停） */
+  update_snooze_until_ms: number
   /** 桌面悬浮球总开关（ADR 0004，默认开启）：主窗口隐藏时在桌面显示悬浮球 */
   floating_ball_enabled: boolean
   /** 悬浮球贴边自动隐藏（拖到屏幕边缘附近松手 → 半隐只露一半，悬停完整露出） */
@@ -346,8 +354,6 @@ export interface AppConfig {
 
 export interface AppInfo {
   version: string
-  changelog: string
-  latest_section: string
 }
 
 /** AI 对话独立窗口状态（Rust chat_window::chat_window_get_state） */
@@ -433,6 +439,8 @@ export interface ExtensionEntry {
   module_variants: ExtensionModuleVariant[]
   /** 工作台模块选项（manifest.moduleOptions；module 卡片表头默认显隐） */
   module_options: ExtensionModuleOptions
+  /** 安装时间（目录创建时间，RFC3339；「已安装」列表按此排序，最后安装的在最下面） */
+  installed_at: string | null
 }
 
 /** 工作台模块选项（后端 extension.rs::ModuleOptions） */
@@ -906,6 +914,7 @@ export const tauriApi = {
   deleteResource: (id: number) => invoke<void>('delete_resource', { id }),
   reorderResources: (ids: number[]) => invoke<void>('reorder_resources', { ids }),
   launchResource: (id: number) => invoke<void>('launch_resource', { id }),
+  launchResourceAsAdmin: (id: number) => invoke<void>('launch_resource_as_admin', { id }),
   listInstalledBrowsers: () => invoke<InstalledBrowser[]>('list_installed_browsers'),
   openUrlWithBrowser: (id: number, browserExe: string) =>
     invoke<void>('open_url_with_browser', { id, browserExe }),
@@ -974,6 +983,9 @@ export const tauriApi = {
     invoke<Todo>('schedule_todo', { id, dueAt, remindAt }),
   /** 待办拖拽排序：按传入顺序写入手动排序位（前端按分组计算完整顺序） */
   reorderTodoOrders: (ids: number[]) => invoke<void>('reorder_todo_orders', { ids }),
+  /** 跨父拖拽：子待办改挂到另一个顶级父待办，并重写目标父下子项顺序 */
+  moveTodoChild: (id: number, newParentId: number, orderedIds: number[]) =>
+    invoke<Todo>('move_todo_child', { id, newParentId, orderedIds }),
   /** 设置待办描述（轻量 Markdown） */
   setTodoDescription: (id: number, description: string) =>
     invoke<Todo>('set_todo_description', { id, description }),
@@ -1059,6 +1071,8 @@ export const tauriApi = {
     invoke<void>('set_always_on_top_config', { value }),
   getGlobalShortcut: () => invoke<string>('get_global_shortcut'),
   setGlobalShortcut: (value: string) => invoke<string>('set_global_shortcut', { value }),
+  setSearchShortcut: (value: string) => invoke<string>('set_search_shortcut', { value }),
+  setChatShortcut: (value: string) => invoke<string>('set_chat_shortcut', { value }),
   getRunAtStartup: () =>
     invoke<AutostartStatus>('get_run_at_startup'),
   setRunAtStartup: (enabled: boolean) => invoke<void>('set_run_at_startup', { enabled }),
@@ -1217,6 +1231,7 @@ export const tauriApi = {
   setClipboardPasteMethod: (method: string) => invoke<string>('set_clipboard_paste_method', { method }),
   clipboardGetInfo: () => invoke<ClipboardInfo>('clipboard_get_info'),
   setClipboardShortcut: (value: string) => invoke<string>('set_clipboard_shortcut', { value }),
+  snoozeUpdate: () => invoke<void>('snooze_update'),
   setClipboardRetention: (maxItems: number, ttlDays: number) =>
     invoke<void>('set_clipboard_retention', { maxItems, ttlDays }),
   // ---- 在线服务 ----

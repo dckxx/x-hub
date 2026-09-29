@@ -44,6 +44,16 @@ function close() {
   visible.value = false
 }
 
+/** 稍后再提示：30 分钟内自动检查不再弹窗（后端到点会补检一次） */
+async function onSnooze() {
+  try {
+    await tauriApi.snoozeUpdate()
+  } catch {
+    // 记录失败也照常关闭：最坏退化为下一轮周期检查（默认 4h）再提示
+  }
+  close()
+}
+
 async function onUpdateNow() {
   if (!info.value || busy.value || phase.value !== 'available') return
   busy.value = true
@@ -127,7 +137,7 @@ onBeforeUnmount(() => unlisteners.forEach((u) => u()))
             <div v-if="error" class="ud-error">{{ error }}</div>
             <footer class="ud-footer">
               <button class="ghost-btn" type="button" @click="onSkipVersion">跳过此版本</button>
-              <button class="ghost-btn" type="button" @click="close">取消</button>
+              <button class="ghost-btn" type="button" @click="onSnooze">稍后再提示</button>
               <button class="pill-btn" type="button" :disabled="busy" @click="onUpdateNow">
                 <Download :size="14" :stroke-width="2" />
                 立即更新
@@ -181,7 +191,7 @@ onBeforeUnmount(() => unlisteners.forEach((u) => u()))
   z-index: 200;
 }
 .ud-card {
-  width: 460px;
+  width: 560px;
   max-width: calc(100vw - 48px);
   display: flex;
   flex-direction: column;
@@ -229,7 +239,8 @@ onBeforeUnmount(() => unlisteners.forEach((u) => u()))
   color: var(--text-2);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 180px;
+  /* 完整展示版本说明：空间不够时区域内上下滚动，不截断文字 */
+  max-height: min(44vh, 420px);
   overflow-y: auto;
   padding: 10px 12px;
   background: var(--frost-surface);

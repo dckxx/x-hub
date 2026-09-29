@@ -78,10 +78,10 @@ function close() {
       <span class="title-text">X-Hub</span>
     </div>
     <div class="window-controls">
-      <button class="tool-btn" title="全局搜索 (Ctrl+K)" @click="$emit('search')">
+      <button class="tool-btn" :title="`全局搜索 (${store.state.config.search_shortcut || 'Ctrl+K'}，可在设置中自定义)`" @click="$emit('search')">
         <Search :size="15" :stroke-width="1.8" />
       </button>
-      <button class="tool-btn" title="AI 对话 (Ctrl+Shift+K)" @click="$emit('chat')">
+      <button class="tool-btn" data-chat-opener :title="`AI 对话 (${store.state.config.chat_shortcut || 'Ctrl+Shift+K'}，可在设置中自定义)`" @click="$emit('chat')">
         <MessageSquare :size="15" :stroke-width="1.8" />
       </button>
       <div class="tool-divider"></div>

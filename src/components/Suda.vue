@@ -324,9 +324,22 @@ async function onOpenInWindow(r: Resource) {
   }
 }
 
+/** 以管理员身份运行（UAC 确认）：仅「程序」资源有提权语义 */
+async function onOpenAsAdmin(r: Resource) {
+  try {
+    await store.launchResourceAsAdmin(r.id)
+  } catch (e) {
+    showToast(`无法以管理员身份运行「${r.name}」：${String(e)}`)
+  }
+}
+
 async function onResourceContext(e: MouseEvent, r: Resource) {
   e.preventDefault()
   const items: ContextMenuItem[] = [{ label: '打开', onClick: () => onOpen(r) }]
+  const isApp = r.kind === 'app'
+  if (isApp) {
+    items.push({ label: '以管理员身份运行', onClick: () => void onOpenAsAdmin(r) })
+  }
   let isWeb = false
   if (r.kind === 'web') {
     isWeb = true
@@ -788,7 +801,6 @@ function cardAccentStyle(r: Resource) {
   height: 46px;
   border-radius: 14px;
   object-fit: contain;
-  background: var(--bg-card);
 }
 .suda-name {
   display: inline-flex;

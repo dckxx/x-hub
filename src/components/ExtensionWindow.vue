@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { useExtensionFrame } from '../composables/useExtensionFrame'
+import {
+  isUnauthorizedMessage,
+  requestOpenExtensionSettings,
+  useExtensionFrame,
+} from '../composables/useExtensionFrame'
 import { useTheme } from '../composables/useTheme'
 
 // 独立扩展窗口也要应用宿主主题：否则根元素无 data-theme/--accent，
@@ -53,6 +57,9 @@ const { frameRef, loading, error } = useExtensionFrame(
 )
 // frameRef 仅用于模板 ref 绑定（vue-tsc 不把模板 ref 计为读取，此处显式保留引用通过 noUnusedLocals）
 void frameRef
+
+// service 后端未授权时宿主拦截入口加载：错误态给「去授权」（广播全局事件，主窗接手弹设置）
+const unauthorized = computed(() => isUnauthorizedMessage(error.value))
 </script>
 
 <template>
@@ -62,6 +69,9 @@ void frameRef
     </div>
     <div v-else-if="error" class="ew-state">
       <p class="ew-error">{{ error }}</p>
+      <button v-if="unauthorized" class="ghost-btn" type="button" @click="requestOpenExtensionSettings(extId)">
+        去授权
+      </button>
     </div>
     <iframe
       v-show="!loading && !error"

@@ -10,6 +10,10 @@ import { deriveFaviconUrl, normalizeWebUrl } from '../utils/web'
 
 const store = useStore()
 
+const isLinux =
+  typeof navigator !== 'undefined' &&
+  /Linux/i.test(`${navigator.userAgent} ${navigator.platform}`)
+
 const props = defineProps<{
   visible: boolean
   editing: Resource | null
@@ -72,13 +76,10 @@ const targetLabel = computed(() => {
 
 const targetPlaceholder = computed(() => {
   if (kind.value === 'file') return '选择要链接的文件或文件夹'
-<<<<<<< HEAD
-  if (kind.value === 'app') return '如：/usr/bin/code 或 *.desktop'
-  return '如：github.com'
-=======
-  if (kind.value === 'app') return '如：C:\\Program Files\\...\\code.exe'
+  if (kind.value === 'app') {
+    return isLinux ? '如：/usr/bin/code 或 *.desktop' : '如：C:\\Program Files\\...\\code.exe'
+  }
   return '如：github.com 或 https://github.com'
->>>>>>> upstream/master
 })
 
 const iconPlaceholder = computed(() => {

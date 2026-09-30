@@ -3,7 +3,7 @@
 # 默认拉 inkchills/x-hub 上带 -linux. 的 GitHub Release（预发布即可，不必是 draft）。
 set -euo pipefail
 
-REPO="${REPO:-inkchills/x-hub}"
+REPO="${REPO:-dckxx/x-hub}"
 TAG="${TAG:-}"
 PKG="${PKG:-}"
 SKIP_DEPS=false
@@ -13,7 +13,7 @@ usage() {
   cat <<'EOF'
 用法: scripts/install-linux.sh [选项]
 
-  --repo owner/name   GitHub 仓库（默认 inkchills/x-hub）
+  --repo owner/name   GitHub 仓库（默认 dckxx/x-hub）
   --tag TAG           指定 Release tag（默认取最新的 v*-linux.*）
   --pkg deb|rpm       强制包格式（默认读 /etc/os-release）
   --skip-deps         不装系统运行时依赖

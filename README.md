@@ -90,6 +90,7 @@
 - Rust 1.77.2+（[rustup](https://rustup.rs/)）
 - Ubuntu / Debian：Tauri 系统依赖（`libwebkit2gtk-4.1-dev` 等，见 [Tauri 前置条件](https://v2.tauri.app/start/prerequisites/)）
 - 其它发行版、或运行时报缺 `libwebkit2gtk-4.1.so.0`：见 [Linux 安装 WebView](LINUX.md)
+- **Linux（Ubuntu 24.04 / Fedora 44 已验证）一键部署、发行版支持范围与差异说明**：见 [Linux 部署文档](LINUX-DEPLOY.md)
 
 ### 安装与运行
 

@@ -123,7 +123,8 @@ x-hub/
 ├── DESIGN.md                   # 当前设计系统（唯一实现基线，与 style.css 对齐；§8 为 Reka UI 组件规范）
 ├── PRODUCT.md                  # 产品定义（用户/目标/品牌个性/设计原则/无障碍基线）
 ├── CONTEXT.md                  # 领域术语表（易混淆概念精确区分；「引导」节为规划中未实施）
-├── LINUX.md                    # Linux 支持：WebKitGTK 4.1 安装 / glibc 构建基座 / 已知问题（悬浮球贴边）
+├── LINUX.md                    # Linux 支持原理：WebKitGTK 4.1 安装 / glibc 构建基座 / 已知问题（悬浮球贴边）
+├── LINUX-DEPLOY.md             # Linux 部署文档：支持范围（Ubuntu 24.04 / Fedora 44 实测）/ install-linux.sh 用法 / 数据与日志位置 / Linux 版差异（贴边禁用、无 Linux 更新包等）
 └── package.json
 ```
 
@@ -312,5 +313,5 @@ pnpm run tauri:test    # Rust 单元测试（`cargo test`；build.rs 已给测�
 - 已决策未实施：**首次使用引导**（快速设置弹窗 + 帮助视图；决策见 `docs/adr/0001-first-run-onboarding.md`，术语预登记于 `CONTEXT.md`「引导」节，实施前代码中无 OnboardingDialog/HelpView/onboarding_done）
 - 方案已定稿未实施：**本地文件搜索**（索引工作区模型，见 `docs/file-search-plan.md`）
 - 方案已定稿未实施：**Agent 底座**（宿主内自研 agent loop，非外部引擎；模型接入走「平台额度 + BYOK」双路，13 个首批工具 + 三档权限模式；选型决策见 `docs/adr/0006-agent-runtime-selection.md`，实施蓝图见 `docs/agent-foundation-plan.md`。实施前代码中无 `src-tauri/src/agent/`、`chat_messages` 无 `turn_id` 列、`role` 仍只有 user/assistant）
-- 未根治：**Linux 悬浮球贴边落点偏移**——`outer_size` 与 `inner_size` 不一致（实测差约 37px），视觉球心 ≠ `outer` 中心。左右贴边的上下跳动已按停靠轴处理（`landable_dock_pos` / `pos_matches_dock`，见约定 42 Linux 补充）；半隐视觉与 Windows 仍不完全一致。接手前读 `LINUX.md`「已知问题」，不要只靠再加 WM clamp
+- 已禁用（非待修）：**Linux 悬浮球贴边自动隐藏**——该窗 `outer_size` 与 `inner_size` 不一致（实测差约 37px），视觉球心 ≠ `outer` 中心，叠加合成器把半截出屏窗口钳回工作区导致位置抖动，故 Linux 上**配置层面强制关闭**（`config::floating_ball_auto_hide_for`，设置页不渲染该开关），球只自由摆放。想恢复先读 `LINUX.md`「已知问题」与 `LINUX-DEPLOY.md` 6.1，不要只靠再加 WM clamp
 - 可探索方向：拖拽排序动效打磨、键盘导航、前端单元测试、打包发布全流程验证（tauri:build）

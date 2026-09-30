@@ -1,5 +1,9 @@
 # Linux 安装系统 WebView（WebKitGTK 4.1）
 
+> 只想把 x-hub 装到 Linux 上（支持哪些发行版、一键脚本怎么用、装完在哪看数据与日志、
+> Linux 版有哪些差异）请看 [Linux 部署文档](LINUX-DEPLOY.md)；本文讲的是 WebView 依赖、
+> 构建基座与已知问题的**原理**。
+
 ## 本地 / 容器构建（推荐）
 
 **发布用包一律在本地或容器里编**，不要在 CI 上编：CI 的 `ubuntu-latest` 通常是 24.04，
@@ -122,10 +126,11 @@ docker run --rm -u "$(id -u):$(id -g)" \
 
 ## 已知问题
 
-- **悬浮球贴边落点在 Linux 上仍可能有偏移**（该窗 `outer_size` 与 `inner_size` 不一致，
-  实测差值约 **37px**，视觉球心不等于 `outer` 中心）。左右贴边时的**上下跳动**已按轴
-  处理：只钳/比对停靠轴，非贴边轴交给合成器，不再和顶栏 strut 对打。半隐视觉与
-  Windows 仍不完全一致；若不想贴边，关掉「贴边自动隐藏」即可。诊断日志为 `debug!`。
+- **悬浮球贴边自动隐藏在 Linux 上已禁用（配置层面强制关闭）**：该窗 `outer_size` 与
+  `inner_size` 不一致（实测差值约 **37px**，视觉球心不等于 `outer` 中心），叠加 Mutter/KWin
+  会把半截出屏的窗口钳回工作区，贴边落点偏移 + 位置抖动无解。因此设置页不渲染该开关，
+  `app.json` 里的值在读取/保存/启动加载三处一律归一为关（`config::floating_ball_auto_hide_for`），
+  Linux 上球只能自由摆放。诊断日志为 `debug!`；部署侧说明见 [LINUX-DEPLOY.md](LINUX-DEPLOY.md) 6.1。
 
 ## 太老的发行版
 

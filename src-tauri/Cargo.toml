@@ -70,6 +70,15 @@ windows-core = "0.61"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
+# 防火墙规则改走 COM（service.rs::firewall_com，INetFwPolicy2）：不再 spawn netsh.exe——
+# 开机自启/关机退出时控制台子系统未就绪，netsh 会以 0xC0000142 弹系统错误框
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_NetworkManagement_WindowsFirewall",
+] }
 
 [dev-dependencies]
 tempfile = "3"

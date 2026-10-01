@@ -79,23 +79,32 @@ pub fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let config = crate::config::load();
-    // 注册默认快捷键，注册失败仅记录日志不阻塞启动
-    if let Err(e) = register_toggle_shortcut(&handle, &config.global_shortcut) {
+    // 注册默认快捷键，注册失败仅记录日志不阻塞启动。
+    // 各键可在设置里单独「禁用」（config.*_shortcut_enabled = false）：禁用即不注册但保留键值。
+    if !config.global_shortcut_enabled {
+        log::info!("[快捷键] 主窗口快捷键已禁用，跳过注册");
+    } else if let Err(e) = register_toggle_shortcut(&handle, &config.global_shortcut) {
         log::warn!("[快捷键] 注册主窗口快捷键失败: {}", e);
     } else {
         log::info!("[快捷键] 已注册主窗口快捷键: {}", config.global_shortcut);
     }
-    if let Err(e) = register_toggle_shortcut(&handle, &config.clipboard_shortcut) {
+    if !config.clipboard_shortcut_enabled {
+        log::info!("[快捷键] 剪贴板快捷键已禁用，跳过注册");
+    } else if let Err(e) = register_toggle_shortcut(&handle, &config.clipboard_shortcut) {
         log::warn!("[快捷键] 注册剪贴板快捷键失败: {}", e);
     } else {
         log::info!("[快捷键] 已注册剪贴板快捷键: {}", config.clipboard_shortcut);
     }
-    if let Err(e) = register_toggle_shortcut(&handle, &config.search_shortcut) {
+    if !config.search_shortcut_enabled {
+        log::info!("[快捷键] 搜索快捷键已禁用，跳过注册");
+    } else if let Err(e) = register_toggle_shortcut(&handle, &config.search_shortcut) {
         log::warn!("[快捷键] 注册搜索快捷键失败: {}", e);
     } else {
         log::info!("[快捷键] 已注册搜索快捷键: {}", config.search_shortcut);
     }
-    if let Err(e) = register_toggle_shortcut(&handle, &config.chat_shortcut) {
+    if !config.chat_shortcut_enabled {
+        log::info!("[快捷键] AI 对话快捷键已禁用，跳过注册");
+    } else if let Err(e) = register_toggle_shortcut(&handle, &config.chat_shortcut) {
         log::warn!("[快捷键] 注册 AI 对话快捷键失败: {}", e);
     } else {
         log::info!("[快捷键] 已注册 AI 对话快捷键: {}", config.chat_shortcut);

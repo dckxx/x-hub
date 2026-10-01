@@ -953,6 +953,11 @@ html[data-theme='dark'][data-wallpaper-clear='1'] .le-root {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 0 4px rgba(0, 0, 0, 0.3);
 }
 /* 卡片图标不加白色柔光（白晕呈粉笔边）；黑晕由下方白墨形态的统一规则承担 */
+/* 商标文字（左上角 X-Hub）不吃铬件描边光晕：四向 1px 光晕落在 700 字重的短文本上，
+   看上去就是商标外面「一圈白」（用户反馈去掉）；仅商标，侧栏文字标签维持原样 */
+html[data-wallpaper='1'] .title-bar .title-text {
+  text-shadow: none;
+}
 /* ===== 实验：壁纸 + 真实透底（data-wallpaper-clear）→ 全量白墨形态 =====
    文字/图标统一转白色系、光晕统一换黑色描边，浅色表面令牌同步翻转为深玻璃
    （白字在输入框/菜单/弹窗等近白表面上必须有着落）；需在上方规则之后声明以赢得同权重级联 */
@@ -1083,6 +1088,37 @@ html[data-wallpaper-clear='1'] .cc-badge.daily {
 html[data-wallpaper-clear='1'] .cc-badge.interval {
   background: color-mix(in srgb, var(--c-green) 32%, rgba(16, 18, 28, 0.62));
   color: #a7f3c9;
+}
+/* 待办悬浮操作条：透底白墨态下 --bg-card-solid 只剩 ~0.2 alpha（近乎透明），而图标是白的，
+   长标题换行后小条浮在白字上 → 白图标叠白字完全看不清。固定深烟玻璃实底（同 .toast/.cc-badge 口径），
+   白图标在实底上稳定可读；边框压一档低透明白避免白框 */
+html[data-wallpaper-clear='1'] .todo-actions {
+  background: rgba(20, 21, 32, 0.92);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+/* 速达卡片左上角的类型/小类标签：透底白墨态下卡片近乎透明（--bg-card-solid ~0.2 alpha），
+   10px 彩色小字直接压在壁纸上对比度不足。迭代记录：① 深玻璃胶囊底——丑、撞图标，撤；
+   ② 四向 1px 黑描边——糊成暗块，撤；③ .card 透底态的深色柔光晕会经继承糊在 10px 彩字
+   笔画上（「文字后面一坨粗色」），显式 text-shadow:none，要纯文字；④ 蓝紫粉三色在
+   蓝紫调壁纸（最常见的渐变壁纸色系）上色相直接撞车——蓝溶进蓝底、紫溶进紫底（用户实测
+   只有绿看得清，绿与壁纸互补）。终版口径：每个大类一个颜色，且全部避开蓝-紫-粉区间——
+   琥珀/绿/橙三个暖-冷互补色，任意常见壁纸上都不与背景撞色相；标签常显示小类名，颜色是
+   区分大类的唯一信号。长名重叠由 Suda.vue 的 max-width + 省略号解决 */
+html[data-wallpaper-clear='1'] .suda-kind {
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: none;
+}
+html[data-wallpaper-clear='1'] .suda-kind.app {
+  color: #fbbf24;
+}
+html[data-wallpaper-clear='1'] .suda-kind.web {
+  color: #4ade80;
+}
+/* 文件 = 亮青：橙两版（浅 #fb923c 亮区发虚、深 #f97316 被否要亮色）后换。
+   候选淘汰：亮黄撞琥珀（应用）、亮粉/亮紫撞壁纸主体色；亮青与早前失败的湖蓝
+   #60a5fa 的差别在亮度高一大截（深蓝紫底上靠明度差立住）且色相偏绿远离壁纸紫蓝 */
+html[data-wallpaper-clear='1'] .suda-kind.file {
+  color: #22d3ee;
 }
 /* 玻璃拟态：常驻表面用烘焙渐变（--frost-surface）实现伪毛玻璃；仅弹层/下拉/菜单等瞬态表面保留真 blur */
 .modal-card,

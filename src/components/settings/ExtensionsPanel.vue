@@ -36,6 +36,19 @@ function onRuntimeStrategyChange(value: string) {
   })
 }
 
+/** 扩展中心「已安装 / 我的扩展」列表的点击行为：打开详情（默认）或直接打开 */
+const ROW_CLICK_OPTIONS = [
+  { value: 'detail', label: '打开详情' },
+  { value: 'open', label: '直接打开' },
+] as const
+
+function onRowClickModeChange(value: string) {
+  void store.setExtensionRowClick(value as 'detail' | 'open').then(
+    () => showToast(value === 'open' ? '已改为：点击扩展行直接打开' : '已改为：点击扩展行打开详情'),
+    () => showToast('保存失败，请重试'),
+  )
+}
+
 /** 全局自动信任 service 扩展：开启后新装/更新的 service 扩展不再弹「去授权」 */
 function onToggleAutoTrust() {
   const next = !store.state.config.service_auto_trust
@@ -78,6 +91,20 @@ onMounted(() => {
               :options="RUNTIME_STRATEGY_OPTIONS"
               aria-label="service 运行时策略"
               @update:model-value="onRuntimeStrategyChange"
+            />
+          </div>
+
+          <!-- 列表点击行为：两种用户习惯（点行打开 vs 点行看详情），做成可配 -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">点击扩展行时</span>
+              <span class="setting-desc">扩展中心「已安装 / 我的扩展」里单击某一行的行为：打开详情，或直接打开扩展（改为「直接打开」后，列表右侧会出现 ⋯ 按钮用于查看详情）</span>
+            </div>
+            <AppSelect
+              :model-value="store.state.config.extension_row_click || 'detail'"
+              :options="ROW_CLICK_OPTIONS"
+              aria-label="点击扩展行时"
+              @update:model-value="onRowClickModeChange"
             />
           </div>
 

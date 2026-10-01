@@ -13,6 +13,7 @@ mod countdown_window;
 mod db;
 mod extension;
 mod ext_protocol;
+mod favicon;
 mod floating_ball;
 mod float_window;
 pub mod market;
@@ -789,6 +790,7 @@ pub fn run() {
             commands::set_global_shortcut,
             commands::set_search_shortcut,
             commands::set_chat_shortcut,
+            commands::set_shortcut_enabled,
             commands::get_run_at_startup,
             commands::set_run_at_startup,
             commands::get_startup_hidden,
@@ -806,6 +808,10 @@ pub fn run() {
             commands::import_note_image,
             commands::inspect_path,
             commands::scan_installed_apps,
+            commands::scan_desktop,
+            commands::delete_desktop_shortcuts,
+            commands::scan_browser_bookmarks,
+            commands::fetch_favicons,
             commands::get_running_processes,
             commands::list_tags,
             commands::create_tag,

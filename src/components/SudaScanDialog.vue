@@ -1,16 +1,37 @@
+<script lang="ts">
+/** 弹窗的三种扫描来源：已安装应用 / 桌面 / 浏览器书签 */
+export type ScanMode = 'apps' | 'desktop' | 'bookmarks'
+
+/** 统一的扫描结果项（folder 仅在桌面模式出现，导入时归入 file 大类） */
+export interface ScanItem {
+  name: string
+  target: string
+  icon: string | null
+  kind: 'app' | 'web' | 'file' | 'folder'
+  /** 书签来源文件夹（按 folder 分组展示） */
+  folder?: string
+  /** 导入时归入的速达小类名（书签按文件夹归类时填；null = 默认归类/未归类） */
+  category?: string | null
+  /** 桌面快捷方式原始路径（仅 .lnk/.url 有），供「导入后清理桌面快捷方式」用 */
+  source?: string | null
+}
+</script>
+
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
-import { Check, Loader2, Search } from 'lucide-vue-next'
-import { isTauri, tauriApi, type InstalledAppInfo } from '../api/tauri'
+import { AlertTriangle, Check, ChevronRight, Loader2, Minus, Search } from 'lucide-vue-next'
+import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
 
-const props = defineProps<{ visible: boolean }>()
+const props = withDefaults(defineProps<{ visible: boolean; mode?: ScanMode }>(), {
+  mode: 'apps',
+})
 
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'imported', apps: InstalledAppInfo[]): void
+  (e: 'imported', items: ScanItem[], cleanShortcuts: boolean): void
 }>()
 
 const store = useStore()
@@ -21,35 +42,360 @@ useFocusTrap(toRef(props, 'visible'), cardRef, searchRef)
 
 const loading = ref(false)
 const error = ref('')
-const apps = ref<InstalledAppInfo[]>([])
+const items = ref<ScanItem[]>([])
 const checked = ref<Set<string>>(new Set())
 const keyword = ref('')
 const brokenIcons = ref<Set<string>>(new Set())
+/** 桌面模式：导入后是否顺手清理桌面上的 .lnk/.url（只清快捷方式，绝不动文件/文件夹/exe） */
+const cleanShortcuts = ref(false)
+/** 书签模式：是否按浏览器文件夹设置速达小类（默认开，浏览器里已分好的目录直接沿用） */
+const groupByFolder = ref(true)
+/** 文件夹 → 小类的手动覆盖（key=文件夹完整路径，原始输入；空 = 归默认小类）。
+ *  未覆盖的走 folderToCategory 自动映射；同名覆盖可把多个文件夹合并进同一个小类 */
+const categoryOverrides = ref<Map<string, string>>(new Map())
+/** 书签树浏览：各文件夹的展开状态（存完整路径；默认只展开第一层，大书签库先看结构再逐级挑） */
+const expandedFolders = ref<Set<string>>(new Set())
 
-const keyOf = (a: InstalledAppInfo) => a.target.toLowerCase()
+const keyOf = (a: { target: string }) => a.target.toLowerCase()
 
-// 已在速达中的应用（按目标路径判重）→ 列表中禁用勾选
+/** 后端小类名的长度上限（commands::validate_subcategory_input） */
+const SUBCATEGORY_NAME_MAX = 20
+
+/** 书签文件夹路径切分（trim + 去空段），folderToCategory / 文件夹树 / 默认展开三处共用 */
+function folderSegments(folder: string | undefined | null): string[] {
+  if (!folder) return []
+  return folder.split('/').map((s) => s.trim()).filter(Boolean)
+}
+
+/** 书签文件夹 → 速达小类名：剥掉浏览器根名（书签栏/其他书签/移动端），余下路径用 / 连接——
+ *  浏览器里已分好的目录直接沿用（「书签栏/前端」→「前端」、「书签栏/开发/前端」→「开发/前端」）；
+ *  根下直挂的书签返回 null（走默认小类/未归类）；全路径超 20 字符时退化为末级文件夹名，仍超才硬截断 */
+function folderToCategory(folder: string | undefined | null): string | null {
+  const segs = folderSegments(folder)
+  if (segs.length <= 1) return null
+  const full = segs.slice(1).join('/')
+  if (full.length <= SUBCATEGORY_NAME_MAX) return full
+  const leaf = segs[segs.length - 1]
+  if (leaf.length <= SUBCATEGORY_NAME_MAX) return leaf
+  return leaf.slice(0, SUBCATEGORY_NAME_MAX)
+}
+
+/** 文件夹最终归入的小类：手动覆盖优先（trim；空 = 明确归默认小类），否则自动映射 */
+function effectiveCategory(folder: string | undefined | null): string | null {
+  if (!folder) return null
+  const ov = categoryOverrides.value.get(folder)
+  if (ov === undefined) return folderToCategory(folder)
+  const t = ov.trim()
+  return t === '' ? null : t.slice(0, SUBCATEGORY_NAME_MAX)
+}
+
+/** 编辑文件夹的小类映射（存原始输入不即时 trim，避免输入中途空格被绑定值吃掉） */
+function onCatInput(path: string, e: Event) {
+  const v = (e.target as HTMLInputElement).value
+  categoryOverrides.value = new Map(categoryOverrides.value).set(path, v)
+}
+
+const CONF = {
+  apps: {
+    title: '扫描已安装应用',
+    sub: '勾选要加入速达的应用，未勾选的将忽略',
+    placeholder: '搜索应用名称…',
+    loading: '正在扫描已安装应用…',
+    loadingHint: '首次扫描需提取程序图标，可能稍慢',
+    empty: '未扫描到可导入的应用',
+    confirm: '添加选中',
+    aria: '扫描已安装应用',
+  },
+  desktop: {
+    title: '扫描桌面',
+    sub: '只扫用户桌面这一层，不递归',
+    placeholder: '搜索桌面项…',
+    loading: '正在扫描桌面…',
+    loadingHint: '正在解析快捷方式并提取图标，可能稍慢',
+    empty: '桌面上没有可导入的项目',
+    confirm: '加入速达',
+    aria: '扫描桌面',
+  },
+  bookmarks: {
+    title: '导入浏览器书签',
+    sub: 'Chrome / Edge / Brave / Chromium 书签；点文件夹勾选整组，点行展开逐级挑选，也可搜索',
+    placeholder: '搜索书签…',
+    loading: '正在读取浏览器书签…',
+    loadingHint: '正在解析各浏览器配置目录',
+    empty: '没有读取到浏览器书签',
+    confirm: '导入选中',
+    aria: '导入浏览器书签',
+  },
+} as const
+
+const conf = computed(() => CONF[props.mode])
+
+// 已在速达中的目标（按目标路径判重，跨大类）→ 列表中禁用勾选
 const existingTargets = computed(() => {
   const s = new Set<string>()
   for (const r of store.state.resources) {
-    if (r.kind === 'app' && r.target) s.add(r.target.toLowerCase())
+    if (r.target) s.add(r.target.toLowerCase())
   }
   return s
 })
 
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
-  if (!kw) return apps.value
-  return apps.value.filter((a) => a.name.toLowerCase().includes(kw))
+  if (!kw) return items.value
+  return items.value.filter((a) => a.name.toLowerCase().includes(kw))
+})
+
+const KIND_ORDER: ScanItem['kind'][] = ['app', 'web', 'file', 'folder']
+const KIND_LABEL: Record<ScanItem['kind'], string> = {
+  app: '应用',
+  web: '网页',
+  file: '文件',
+  folder: '文件夹',
+}
+
+// 分组展示：应用模式单组；桌面模式按类别分组；书签模式按来源文件夹分组
+const groups = computed(() => {
+  const list = filtered.value
+  if (props.mode === 'desktop') {
+    return KIND_ORDER.map((k) => ({
+      key: `kind-${k}`,
+      label: KIND_LABEL[k],
+      items: list.filter((a) => a.kind === k),
+    })).filter((g) => g.items.length > 0)
+  }
+  if (props.mode === 'bookmarks') {
+    const map = new Map<string, ScanItem[]>()
+    for (const a of list) {
+      const f = a.folder ?? '未分类'
+      const arr = map.get(f)
+      if (arr) arr.push(a)
+      else map.set(f, [a])
+    }
+    return [...map.entries()].map(([folder, items]) => ({
+      key: `folder-${folder}`,
+      label: folder,
+      items,
+    }))
+  }
+  return [{ key: 'all', label: '', items: list }]
+})
+
+// ---- 书签文件夹树（大书签库逐条滚不现实：按真实目录层级折叠浏览，文件夹勾选框整组选入）----
+interface BookmarkNode {
+  /** 完整路径（= folder 口径，如「书签栏/前端」） */
+  path: string
+  name: string
+  depth: number
+  children: BookmarkNode[]
+  /** 直挂书签 */
+  items: ScanItem[]
+  /** 子树书签总数（含直挂） */
+  total: number
+}
+
+function buildTree(list: ScanItem[]): BookmarkNode[] {
+  const roots: BookmarkNode[] = []
+  const byPath = new Map<string, BookmarkNode>()
+  for (const it of list) {
+    const segs = folderSegments(it.folder)
+    if (segs.length === 0) segs.push('未分类')
+    let path = ''
+    let parent: BookmarkNode | null = null
+    for (let d = 0; d < segs.length; d++) {
+      path = d === 0 ? segs[0] : `${path}/${segs[d]}`
+      let node = byPath.get(path)
+      if (!node) {
+        node = { path, name: segs[d], depth: d, children: [], items: [], total: 0 }
+        byPath.set(path, node)
+        if (parent) parent.children.push(node)
+        else roots.push(node)
+      }
+      parent = node
+    }
+    parent!.items.push(it)
+  }
+  const calcTotal = (n: BookmarkNode): number => {
+    n.total = n.items.length
+    for (const c of n.children) n.total += calcTotal(c)
+    return n.total
+  }
+  roots.forEach(calcTotal)
+  return roots
+}
+
+const bookmarkTree = computed<BookmarkNode[]>(() => buildTree(items.value))
+
+/** 文件夹子树内的全部书签（直挂 + 各级子目录） */
+function subtreeItems(n: BookmarkNode): ScanItem[] {
+  const out = [...n.items]
+  const walk = (nodes: BookmarkNode[]) => {
+    for (const c of nodes) {
+      out.push(...c.items)
+      walk(c.children)
+    }
+  }
+  walk(n.children)
+  return out
+}
+
+/** 每个文件夹节点的勾选统计：一次遍历算全树并按 path 存表——模板里三态框每行要查 3 次
+ *  （类名/title/图标），逐行现算子树是 O(n²)，大书签库每勾一次卡一帧 */
+const folderStats = computed(() => {
+  const stats = new Map<string, { sel: number; selChecked: number }>()
+  const walk = (n: BookmarkNode): { sel: number; selChecked: number } => {
+    let sel = 0
+    let selChecked = 0
+    for (const it of n.items) {
+      if (existingTargets.value.has(keyOf(it))) continue
+      sel++
+      if (checked.value.has(keyOf(it))) selChecked++
+    }
+    for (const c of n.children) {
+      const s = walk(c)
+      sel += s.sel
+      selChecked += s.selChecked
+    }
+    stats.set(n.path, { sel, selChecked })
+    return { sel, selChecked }
+  }
+  bookmarkTree.value.forEach(walk)
+  return stats
+})
+
+/** 文件夹勾选三态：all 全勾 / part 部分 / none 全不勾（已在速达中的条目不可勾，不参与判定） */
+function folderCheckState(n: BookmarkNode): 'all' | 'part' | 'none' {
+  const s = folderStats.value.get(n.path)
+  if (!s || s.sel === 0 || s.selChecked === 0) return 'none'
+  return s.selChecked === s.sel ? 'all' : 'part'
+}
+
+/** 文件夹子树里还有无可勾选条目（全都在速达里 → 文件夹行整体置灰） */
+function hasSelectable(n: BookmarkNode): boolean {
+  return (folderStats.value.get(n.path)?.sel ?? 0) > 0
+}
+
+/** 点文件夹勾选框：未全勾 → 勾整棵子树；已全勾 → 清空整棵子树 */
+function toggleFolderCheck(n: BookmarkNode) {
+  const sel = subtreeItems(n).filter((it) => !existingTargets.value.has(keyOf(it)))
+  if (sel.length === 0) return
+  const checkAll = folderCheckState(n) !== 'all'
+  const next = new Set(checked.value)
+  for (const it of sel) {
+    if (checkAll) next.add(keyOf(it))
+    else next.delete(keyOf(it))
+  }
+  checked.value = next
+}
+
+function toggleExpand(path: string) {
+  const next = new Set(expandedFolders.value)
+  if (next.has(path)) next.delete(path)
+  else next.add(path)
+  expandedFolders.value = next
+}
+
+function setExpandAll(open: boolean) {
+  if (!open) {
+    expandedFolders.value = new Set()
+    return
+  }
+  const all = new Set<string>()
+  const walk = (nodes: BookmarkNode[]) => {
+    for (const n of nodes) {
+      if (n.children.length > 0) {
+        all.add(n.path)
+        walk(n.children)
+      }
+    }
+  }
+  walk(bookmarkTree.value)
+  expandedFolders.value = all
+}
+
+/** 文件夹行的数量标注：有子目录显示子树总数，纯书签文件夹显示直挂数（明细放 title） */
+function folderCountText(n: BookmarkNode): string {
+  return n.children.length > 0 ? `共 ${n.total}` : `${n.items.length}`
+}
+
+/** 统一的列表行模型：树浏览时 folder/item 交替，扁平分组时 group/item */
+type ListRow =
+  | { type: 'group'; key: string; label: string; count: number; cat: string | null }
+  | { type: 'folder'; key: string; node: BookmarkNode }
+  | { type: 'item'; key: string; item: ScanItem; indent: number }
+
+const rows = computed<ListRow[]>(() => {
+  // 书签 + 无搜索词：可折叠文件夹树（子文件夹在前、直挂书签在后，与浏览器书签管理器一致）
+  if (props.mode === 'bookmarks' && !keyword.value.trim()) {
+    const out: ListRow[] = []
+    const walk = (nodes: BookmarkNode[]) => {
+      for (const n of nodes) {
+        out.push({ type: 'folder', key: `folder:${n.path}`, node: n })
+        if (expandedFolders.value.has(n.path)) {
+          walk(n.children)
+          for (const it of n.items) {
+            out.push({ type: 'item', key: it.target, item: it, indent: n.depth + 1 })
+          }
+        }
+      }
+    }
+    walk(bookmarkTree.value)
+    return out
+  }
+  // 其余：扁平分组（应用/桌面模式 + 书签搜索结果，搜索时跨文件夹的命中平铺最好认）
+  const catPreview = props.mode === 'bookmarks' && groupByFolder.value
+  return groups.value.flatMap((g) => {
+    const head: ListRow[] = g.label
+      ? [
+          {
+            type: 'group',
+            key: g.key,
+            label: g.label,
+            count: g.items.length,
+            cat: catPreview ? effectiveCategory(g.label) : null,
+          },
+        ]
+      : []
+    return [
+      ...head,
+      ...g.items.map<ListRow>((it) => ({ type: 'item', key: it.target, item: it, indent: 0 })),
+    ]
+  })
+})
+
+// 桌面模式：顶部统计各类别数量
+const stats = computed(() => {
+  const c: Record<ScanItem['kind'], number> = { app: 0, web: 0, file: 0, folder: 0 }
+  for (const a of items.value) c[a.kind]++
+  return c
 })
 
 const selectedCount = computed(() => {
   let n = 0
-  for (const a of apps.value) {
+  for (const a of items.value) {
     const k = keyOf(a)
     if (checked.value.has(k) && !existingTargets.value.has(k)) n++
   }
   return n
+})
+
+/** 已勾选且可清理的桌面快捷方式数量（决定「清理桌面快捷方式」是否可选） */
+const selectedShortcuts = computed(() =>
+  items.value.filter(
+    (a) => checked.value.has(keyOf(a)) && !existingTargets.value.has(keyOf(a)) && !!a.source,
+  ).length,
+)
+
+/** 书签模式：勾选项按文件夹归类时，需要新建的速达小类数量（已存在的不计；含手动改名的覆盖） */
+const newCategoryCount = computed(() => {
+  if (props.mode !== 'bookmarks' || !groupByFolder.value) return 0
+  const existing = new Set(store.subcategoriesOf('web').map((s) => s.name))
+  const wanted = new Set<string>()
+  for (const a of items.value) {
+    if (!checked.value.has(keyOf(a)) || existingTargets.value.has(keyOf(a))) continue
+    const c = effectiveCategory(a.folder)
+    if (c && !existing.has(c)) wanted.add(c)
+  }
+  return wanted.size
 })
 
 const allVisibleChecked = computed(() => {
@@ -65,16 +411,63 @@ watch(
   },
 )
 
+async function runScan(mode: ScanMode): Promise<ScanItem[]> {
+  if (mode === 'desktop') {
+    const list = await tauriApi.scanDesktop()
+    return list.map((d) => ({ ...d, kind: d.kind }))
+  }
+  if (mode === 'bookmarks') {
+    const list = await tauriApi.scanBrowserBookmarks()
+    return list.map((b) => ({
+      name: b.name,
+      target: b.target,
+      icon: null,
+      kind: 'web' as const,
+      folder: b.folder,
+    }))
+  }
+  const apps = await tauriApi.scanInstalledApps()
+  return apps.map((a) => ({ ...a, kind: 'app' as const }))
+}
+
+/** 默认勾选规则：桌面模式下文件/文件夹噪音大，默认不勾；书签超过 100 条也默认不勾
+ *  （大书签库「全选再挑」一次误点就导入上千条，改为按文件夹整组挑更安全，要全选仍有工具栏按钮）；其余全勾 */
+function defaultChecked(list: ScanItem[]): Set<string> {
+  const s = new Set<string>()
+  if (props.mode === 'bookmarks' && list.length > 100) return s
+  for (const it of list) {
+    if (props.mode === 'desktop' && (it.kind === 'file' || it.kind === 'folder')) continue
+    s.add(keyOf(it))
+  }
+  return s
+}
+
+/** 书签树初始展开：只展开第一层（浏览器根），让大书签库先呈现结构总览，按需逐级展开 */
+function defaultExpanded(list: ScanItem[]): Set<string> {
+  const s = new Set<string>()
+  for (const it of list) {
+    const segs = folderSegments(it.folder)
+    if (segs.length > 0) s.add(segs[0])
+  }
+  return s
+}
+
 async function startScan() {
   if (!isTauri()) return
   loading.value = true
   error.value = ''
-  apps.value = []
+  items.value = []
   checked.value = new Set()
   keyword.value = ''
   brokenIcons.value = new Set()
+  cleanShortcuts.value = false
+  groupByFolder.value = true
+  categoryOverrides.value = new Map()
   try {
-    apps.value = await tauriApi.scanInstalledApps()
+    const list = await runScan(props.mode)
+    items.value = list
+    checked.value = defaultChecked(list)
+    expandedFolders.value = defaultExpanded(list)
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -84,19 +477,19 @@ async function startScan() {
   }
 }
 
-function isExisting(a: InstalledAppInfo) {
+function isExisting(a: ScanItem) {
   return existingTargets.value.has(keyOf(a))
 }
 
-function showImg(a: InstalledAppInfo) {
+function showImg(a: ScanItem) {
   return !!a.icon && !brokenIcons.value.has(keyOf(a))
 }
 
-function onImgError(a: InstalledAppInfo) {
+function onImgError(a: ScanItem) {
   brokenIcons.value.add(keyOf(a))
 }
 
-function toggleApp(a: InstalledAppInfo) {
+function toggleItem(a: ScanItem) {
   if (isExisting(a)) return
   const k = keyOf(a)
   const next = new Set(checked.value)
@@ -118,12 +511,19 @@ function toggleAll() {
 }
 
 function confirm() {
-  const selected = apps.value.filter((a) => {
+  const selected = items.value.filter((a) => {
     const k = keyOf(a)
     return checked.value.has(k) && !existingTargets.value.has(k)
   })
   if (selected.length === 0) return
-  emit('imported', selected)
+  // 书签按文件夹归类时把小类名随条目带回（Suda.vue 负责补建缺失的小类再落库）；
+  // 小类取「手动覆盖 ?? 自动映射」，覆盖可改名/合并/清空（清空 = 归默认小类）
+  const withCategory = selected.map((a) => ({
+    ...a,
+    category:
+      props.mode === 'bookmarks' && groupByFolder.value ? effectiveCategory(a.folder) : null,
+  }))
+  emit('imported', withCategory, props.mode === 'desktop' && cleanShortcuts.value)
   emit('close')
 }
 
@@ -143,16 +543,55 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           ref="cardRef"
           class="modal-card scan-card"
           role="dialog"
-          aria-label="扫描已安装应用"
+          :aria-label="conf.aria"
           aria-modal="true"
         >
           <header class="scan-head">
-            <h2 class="dialog-title">扫描已安装应用</h2>
-            <p class="scan-sub">勾选要加入速达的应用，未勾选的将忽略</p>
+            <h2 class="dialog-title">{{ conf.title }}</h2>
+            <p class="scan-sub">{{ conf.sub }}</p>
           </header>
 
+          <!-- 桌面模式：统计 + 醒目提醒（避免误以为「加入=复制」后去删桌面原文件） -->
+          <template v-if="mode === 'desktop' && !loading && !error && items.length > 0">
+            <p class="scan-stats">
+              桌面共 {{ items.length }} 项：应用 {{ stats.app }} · 网页 {{ stats.web }} · 文件
+              {{ stats.file }} · 文件夹 {{ stats.folder }}
+            </p>
+            <p class="scan-warn">
+              <AlertTriangle :size="14" :stroke-width="2.2" aria-hidden="true" />
+              <span>
+                加入速达只会记下一条快捷方式，<b>不会复制、也不会删除</b>桌面上的原文件。桌面上的东西请按你自己的需要处理。
+              </span>
+            </p>
+            <label class="scan-clean" :class="{ disabled: selectedShortcuts === 0 }">
+              <input
+                type="checkbox"
+                :checked="cleanShortcuts"
+                :disabled="selectedShortcuts === 0"
+                @change="cleanShortcuts = !cleanShortcuts"
+              />
+              <span>
+                导入后<b>清理桌面快捷方式</b>（删掉这 {{ selectedShortcuts }} 个 .lnk / .url；文件 / 文件夹 / exe <b>不动</b>）
+              </span>
+            </label>
+          </template>
+
+          <!-- 书签模式：按浏览器文件夹设置速达小类（浏览器里已分好的目录直接沿用） -->
+          <template v-if="mode === 'bookmarks' && !loading && !error && items.length > 0">
+            <label class="scan-clean">
+              <input
+                type="checkbox"
+                :checked="groupByFolder"
+                @change="groupByFolder = !groupByFolder"
+              />
+              <span>
+                按<b>浏览器文件夹</b>设置速达小类（如「书签栏/前端」→ 小类「前端」；各文件夹的小类可在列表中直接修改，留空归默认，改同名即合并；缺的小类自动创建<template v-if="newCategoryCount > 0">，本次将新建 {{ newCategoryCount }} 个</template>）
+              </span>
+            </label>
+          </template>
+
           <!-- 搜索 + 全选 -->
-          <div v-if="!loading && apps.length > 0" class="scan-toolbar">
+          <div v-if="!loading && items.length > 0" class="scan-toolbar">
             <div class="scan-search-wrap">
               <Search :size="14" :stroke-width="2" class="scan-search-icon" aria-hidden="true" />
               <input
@@ -160,10 +599,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 v-model="keyword"
                 class="field-input scan-search"
                 type="text"
-                placeholder="搜索应用名称…"
+                :placeholder="conf.placeholder"
                 @keydown="onKeydown"
               />
             </div>
+            <template v-if="mode === 'bookmarks' && !keyword.trim()">
+              <button class="ghost-btn scan-select-all" @click="setExpandAll(false)">
+                收起全部
+              </button>
+              <button class="ghost-btn scan-select-all" @click="setExpandAll(true)">
+                展开全部
+              </button>
+            </template>
             <button class="ghost-btn scan-select-all" @click="toggleAll">
               {{ allVisibleChecked ? '全不选' : '全选' }}
             </button>
@@ -172,8 +619,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           <!-- 扫描中 -->
           <div v-if="loading" class="scan-state">
             <Loader2 :size="26" :stroke-width="1.5" class="spin" />
-            <p>正在扫描已安装应用…</p>
-            <span>首次扫描需提取程序图标，可能稍慢</span>
+            <p>{{ conf.loading }}</p>
+            <span>{{ conf.loadingHint }}</span>
           </div>
 
           <!-- 错误 -->
@@ -182,55 +629,131 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           </div>
 
           <!-- 空结果 -->
-          <div v-else-if="apps.length === 0" class="scan-state">
-            <p>未扫描到可导入的应用</p>
+          <div v-else-if="items.length === 0" class="scan-state">
+            <p>{{ conf.empty }}</p>
           </div>
 
-          <!-- 列表 -->
+          <!-- 列表：书签无搜索词时为可折叠文件夹树（大库按文件夹整组挑），其余为扁平分组 -->
           <div v-else class="scan-list">
-            <label
-              v-for="a in filtered"
-              :key="a.target"
-              class="scan-row"
-              :class="{ disabled: isExisting(a), selected: checked.has(keyOf(a)) }"
-            >
-              <input
-                type="checkbox"
-                class="scan-checkbox"
-                :checked="checked.has(keyOf(a))"
-                :disabled="isExisting(a)"
-                @change="toggleApp(a)"
-              />
-              <span class="scan-icon" :style="showImg(a) ? {} : { background: accentOf(a.name).soft }">
-                <img
-                  v-if="showImg(a)"
-                  class="scan-img"
-                  :src="iconSrc(a.icon!)"
-                  alt=""
-                  @error="onImgError(a)"
+            <template v-for="row in rows" :key="row.key">
+              <!-- 扁平分组头（应用/桌面 + 书签搜索结果） -->
+              <p v-if="row.type === 'group'" class="scan-group">
+                {{ row.label }}（{{ row.count }}）<span v-if="row.cat" class="scan-group-cat"
+                  >→ 小类「{{ row.cat }}」</span
+                >
+              </p>
+              <!-- 文件夹行：点行展开/收起，勾选框三态整组选入 -->
+              <div
+                v-else-if="row.type === 'folder'"
+                class="scan-folder"
+                :class="{ disabled: !hasSelectable(row.node) }"
+                :style="{ paddingLeft: 10 + row.node.depth * 16 + 'px' }"
+                :title="row.node.path"
+                role="button"
+                tabindex="0"
+                @click="toggleExpand(row.node.path)"
+                @keydown.enter.prevent="toggleExpand(row.node.path)"
+                @keydown.space.prevent="toggleExpand(row.node.path)"
+              >
+                <ChevronRight
+                  :size="14"
+                  :stroke-width="2.2"
+                  class="scan-chev"
+                  :class="{ open: expandedFolders.has(row.node.path) }"
+                  aria-hidden="true"
                 />
-                <span v-else class="scan-letter" :style="{ color: accentOf(a.name).text }">
-                  {{ a.name.charAt(0).toUpperCase() }}
+                <span
+                  class="scan-tri"
+                  :class="folderCheckState(row.node)"
+                  :title="
+                    folderCheckState(row.node) === 'all' ? '取消整组（含子目录）' : '勾选整组（含子目录）'
+                  "
+                  @click.stop="toggleFolderCheck(row.node)"
+                >
+                  <Check v-if="folderCheckState(row.node) === 'all'" :size="12" :stroke-width="3" />
+                  <Minus
+                    v-else-if="folderCheckState(row.node) === 'part'"
+                    :size="12"
+                    :stroke-width="3"
+                  />
                 </span>
-              </span>
-              <span class="scan-info">
-                <span class="scan-name" :title="a.name">{{ a.name }}</span>
-                <span class="scan-target" :title="a.target">{{ a.target }}</span>
-              </span>
-              <span v-if="isExisting(a)" class="scan-added">已添加</span>
-              <span v-else class="scan-check" :class="{ on: checked.has(keyOf(a)) }">
-                <Check v-if="checked.has(keyOf(a))" :size="13" :stroke-width="3" />
-              </span>
-            </label>
+                <span class="scan-folder-name">{{ row.node.name }}</span>
+                <!-- 小类映射：默认自动推导，可直接改（留空=归默认小类，改同名=合并多个文件夹） -->
+                <span v-if="groupByFolder" class="scan-cat-wrap" @click.stop>
+                  <span class="scan-cat-label">小类</span>
+                  <input
+                    class="scan-cat-input"
+                    type="text"
+                    maxlength="20"
+                    :value="
+                      categoryOverrides.get(row.node.path) ??
+                      folderToCategory(row.node.path) ??
+                      ''
+                    "
+                    placeholder="默认"
+                    title="导入时归入的速达小类，可修改；留空 = 按默认小类归档；多个文件夹改成同名会合并进同一个小类"
+                    @keydown.stop
+                    @input="onCatInput(row.node.path, $event)"
+                  />
+                </span>
+                <span
+                  class="scan-folder-count"
+                  :title="`直挂 ${row.node.items.length} · 子目录共 ${row.node.total}`"
+                  >{{ folderCountText(row.node) }}</span
+                >
+              </div>
+              <!-- 书签行（树内按层级缩进） -->
+              <label
+                v-else
+                class="scan-row"
+                :class="{ disabled: isExisting(row.item), selected: checked.has(keyOf(row.item)) }"
+                :style="row.indent > 0 ? { paddingLeft: 10 + row.indent * 16 + 'px' } : undefined"
+              >
+                <input
+                  type="checkbox"
+                  class="scan-checkbox"
+                  :checked="checked.has(keyOf(row.item))"
+                  :disabled="isExisting(row.item)"
+                  @change="toggleItem(row.item)"
+                />
+                <span
+                  class="scan-icon"
+                  :style="showImg(row.item) ? {} : { background: accentOf(row.item.name).soft }"
+                >
+                  <img
+                    v-if="showImg(row.item)"
+                    class="scan-img"
+                    :src="iconSrc(row.item.icon!)"
+                    alt=""
+                    @error="onImgError(row.item)"
+                  />
+                  <span
+                    v-else
+                    class="scan-letter"
+                    :style="{ color: accentOf(row.item.name).text }"
+                  >
+                    {{ row.item.name.charAt(0).toUpperCase() }}
+                  </span>
+                </span>
+                <span class="scan-info">
+                  <span class="scan-name" :title="row.item.name">{{ row.item.name }}</span>
+                  <span class="scan-target" :title="row.item.target">{{ row.item.target }}</span>
+                </span>
+                <span v-if="isExisting(row.item)" class="scan-added">已添加</span>
+                <span v-else class="scan-check" :class="{ on: checked.has(keyOf(row.item)) }">
+                  <Check v-if="checked.has(keyOf(row.item))" :size="13" :stroke-width="3" />
+                </span>
+              </label>
+            </template>
           </div>
 
           <!-- 底部操作 -->
-          <footer v-if="!loading && apps.length > 0" class="scan-footer">
+          <footer v-if="!loading && items.length > 0" class="scan-footer">
             <span class="scan-count">已选 {{ selectedCount }} 项</span>
             <div class="scan-actions">
               <button class="ghost-btn btn" @click="emit('close')">取消</button>
               <button class="pill-btn btn" :disabled="selectedCount === 0" @click="confirm">
-                添加选中（{{ selectedCount }}）
+                {{ conf.confirm }}（{{ selectedCount }}）
               </button>
             </div>
           </footer>
@@ -257,6 +780,62 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   margin-top: 2px;
   font-size: 0.75rem;
   color: var(--text-3);
+}
+.scan-stats {
+  margin-top: 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.scan-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--c-orange-soft);
+  border: 1px solid var(--c-orange);
+  color: var(--text-1);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.scan-warn svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--c-orange);
+}
+.scan-warn b {
+  font-weight: 700;
+}
+.scan-clean {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 0 2px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+}
+.scan-clean input {
+  margin-top: 2px;
+  flex-shrink: 0;
+  accent-color: var(--brand-500);
+  cursor: pointer;
+}
+.scan-clean b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.scan-clean.disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.scan-clean.disabled input {
+  cursor: default;
 }
 .scan-toolbar {
   display: flex;
@@ -291,6 +870,126 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
   padding: 4px;
+}
+.scan-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 2px 0;
+  padding: 6px 10px 4px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-3);
+  background: var(--bg-card-solid);
+  letter-spacing: 0.02em;
+}
+/* 书签分组头：映射到的速达小类名预览（品牌色弱化，不与分组名抢视觉） */
+.scan-group-cat {
+  margin-left: 6px;
+  font-weight: 500;
+  color: var(--brand-500);
+}
+/* 文件夹行的小类映射输入：可改（留空=归默认小类，同名=合并），品牌色呼应预览语义 */
+.scan-cat-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.scan-cat-label {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.scan-cat-input {
+  width: 106px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--brand-500);
+  font-size: 0.75rem;
+  font-weight: 500;
+  transition: border-color 0.15s;
+}
+.scan-cat-input:focus {
+  outline: none;
+  border-color: var(--brand-500);
+}
+.scan-cat-input::placeholder {
+  color: var(--text-4);
+  font-weight: 400;
+}
+/* 文件夹树行（书签模式）：chevron + 三态勾选框 + 名称 + 小类预览 + 子树计数 */
+.scan-folder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  margin: 2px 0;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.scan-folder:hover {
+  background: var(--bg-card-soft);
+}
+.scan-folder.disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.scan-folder.disabled:hover {
+  background: transparent;
+}
+.scan-chev {
+  flex-shrink: 0;
+  color: var(--text-3);
+  transition: transform 0.15s;
+}
+.scan-chev.open {
+  transform: rotate(90deg);
+}
+/* 三态勾选框（原生 checkbox 表达不了半选态，自绘）：all=品牌色实底勾 / part=品牌色描边横杠 / none=空 */
+.scan-tri {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-card-solid);
+  color: var(--text-on-accent);
+  transition: background 0.15s, border-color 0.15s;
+  cursor: pointer;
+}
+.scan-tri.all {
+  background: var(--brand-500);
+  border-color: var(--brand-500);
+}
+.scan-tri.part {
+  border-color: var(--brand-500);
+  color: var(--brand-500);
+}
+.scan-folder.disabled .scan-tri {
+  cursor: default;
+}
+.scan-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scan-folder-count {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--text-3);
 }
 .scan-row {
   display: flex;

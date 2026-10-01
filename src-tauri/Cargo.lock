@@ -99,6 +99,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "webview2-com",
+ "windows 0.61.3",
  "windows-core 0.61.2",
  "windows-sys 0.61.2",
  "winreg 0.52.0",

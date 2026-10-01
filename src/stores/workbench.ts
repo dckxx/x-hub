@@ -115,6 +115,10 @@ const state = reactive<StoreState>({
     clipboard_shortcut: IS_MAC_PREVIEW ? 'CommandOrControl+Alt+V' : 'Ctrl+`',
     search_shortcut: DEFAULT_SEARCH_SHORTCUT,
     chat_shortcut: DEFAULT_CHAT_SHORTCUT,
+    global_shortcut_enabled: true,
+    clipboard_shortcut_enabled: true,
+    search_shortcut_enabled: true,
+    chat_shortcut_enabled: true,
     clipboard_max_items: 500,
     clipboard_ttl_days: 7,
     clipboard_paused: false,
@@ -135,6 +139,7 @@ const state = reactive<StoreState>({
     sidebar_extensions: [],
     extension_open_modes: {},
     extension_link_modes: {},
+    extension_row_click: 'detail',
     run_at_startup: false,
     auto_update_enabled: true,
     update_interval_hours: 4,
@@ -1128,6 +1133,30 @@ export function useStore() {
     return saved
   }
 
+  /** 启用/禁用某个全局快捷键：禁用 = 后端注销热键但保留键值（重开即恢复），失败回滚内存状态 */
+  async function setShortcutEnabled(
+    kind: 'main' | 'clipboard' | 'search' | 'chat',
+    enabled: boolean,
+  ) {
+    const key = (
+      {
+        main: 'global_shortcut_enabled',
+        clipboard: 'clipboard_shortcut_enabled',
+        search: 'search_shortcut_enabled',
+        chat: 'chat_shortcut_enabled',
+      } as const
+    )[kind]
+    const prev = state.config[key]
+    state.config[key] = enabled
+    if (!isTauri()) return
+    try {
+      await tauriApi.setShortcutEnabled(kind, enabled)
+    } catch (e) {
+      state.config[key] = prev
+      throw e
+    }
+  }
+
   /** 主页面「中上区块」显示内容：token/notes/todo/resources/countdown */
   async function setDashboardMidContent(value: string) {
     state.config.dashboard_mid_content = value
@@ -1289,6 +1318,13 @@ export function useStore() {
     state.config.extension_link_modes = { ...modes, [id]: mode }
     if (!isTauri()) return
     void tauriApi.saveConfig(state.config)
+  }
+
+  /** 扩展中心列表点击行为：detail（默认，点行看详情）/ open（点行直接打开、右侧 ⋯ 看详情） */
+  async function setExtensionRowClick(value: 'detail' | 'open') {
+    state.config.extension_row_click = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
   }
 
   // ---- 开机自启动 ----
@@ -1638,6 +1674,7 @@ export function useStore() {
     setGlobalShortcut,
     setSearchShortcut,
     setChatShortcut,
+    setShortcutEnabled,
     setDashboardMidContent,
     setDashboardLayout,
     setCountdownSound,
@@ -1657,6 +1694,7 @@ export function useStore() {
     setSidebarExtensionBulk,
     setExtensionOpenMode,
     setExtensionLinkMode,
+    setExtensionRowClick,
     setRunAtStartup,
     setFloatingBallEnabled,
     setFloatingBallAutoHide,

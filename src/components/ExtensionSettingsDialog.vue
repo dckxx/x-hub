@@ -587,8 +587,15 @@ async function confirmUninstall() {
   font-size: 0.8125rem;
   color: var(--text-1);
 }
+/* 打开方式 / 链接打开方式：标签在左、分段控件贴右，与「在左侧栏固定此扩展」那行对齐；
+   dt 不锁 72px（「链接打开方式」六字会折行），改 nowrap 自适应 */
 .es-openmode-row {
   align-items: center;
+  justify-content: space-between;
+}
+.es-openmode-row dt {
+  width: auto;
+  white-space: nowrap;
 }
 .es-seg {
   display: inline-flex;

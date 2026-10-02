@@ -94,6 +94,11 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      # Rust 单测（config/process/repo 等回归）在打 deb 前跑：构建通过≠测试通过，
+      # 本分支的 Windows CI（ci.yml）不覆盖，测试机上手动 cargo test 不可持续
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
       - name: Build .deb
         run: pnpm run tauri:build:deb
 

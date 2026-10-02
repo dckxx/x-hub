@@ -36,6 +36,28 @@ function onRuntimeStrategyChange(value: string) {
   })
 }
 
+/** 扩展中心「已安装 / 我的扩展」列表的点击行为：打开详情（默认）或直接打开 */
+const ROW_CLICK_OPTIONS = [
+  { value: 'detail', label: '打开详情' },
+  { value: 'open', label: '直接打开' },
+] as const
+
+function onRowClickModeChange(value: string) {
+  void store.setExtensionRowClick(value as 'detail' | 'open').then(
+    () => showToast(value === 'open' ? '已改为：点击扩展行直接打开' : '已改为：点击扩展行打开详情'),
+    () => showToast('保存失败，请重试'),
+  )
+}
+
+/** 全局自动信任 service 扩展：开启后新装/更新的 service 扩展不再弹「去授权」 */
+function onToggleAutoTrust() {
+  const next = !store.state.config.service_auto_trust
+  void store.setServiceAutoTrust(next).then(
+    () => showToast(next ? '已开启自动信任：新装或更新的 service 扩展可直接运行' : '已关闭自动信任，之后按单个扩展逐个确认'),
+    () => showToast('保存失败，请重试'),
+  )
+}
+
 // ---- 我的扩展（只为显示已添加几个目录；增删都在扩展中心） ----
 const devMode = ref<DevModeStatus>({ enabled: true, extensions: [] })
 
@@ -70,6 +92,42 @@ onMounted(() => {
               aria-label="service 运行时策略"
               @update:model-value="onRuntimeStrategyChange"
             />
+          </div>
+
+          <!-- 列表点击行为：两种用户习惯（点行打开 vs 点行看详情），做成可配 -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">点击扩展行时</span>
+              <span class="setting-desc">扩展中心「已安装 / 我的扩展」里单击某一行的行为：打开详情，或直接打开扩展（改为「直接打开」后，列表右侧会出现 ⋯ 按钮用于查看详情）</span>
+            </div>
+            <AppSelect
+              :model-value="store.state.config.extension_row_click || 'detail'"
+              :options="ROW_CLICK_OPTIONS"
+              aria-label="点击扩展行时"
+              @update:model-value="onRowClickModeChange"
+            />
+          </div>
+
+          <!-- 统一授权：免掉「每个新装 service 扩展都要去授权一次」的重复动作。
+               安全语义：本地后端不受沙箱隔离，描述里必须把代价说清；单独关掉某扩展后端仍优先于本开关 -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">自动信任 service 扩展</span>
+              <span class="setting-desc">
+                开启后新装或更新版本的 service 扩展无需逐个「去授权」即可运行本地后端。⚠️ 本地后端可读取你有权限访问的文件并联网、不受系统沙箱隔离，请仅在你信任扩展来源时开启；单独关掉某扩展「运行本地后端」的选择始终优先于本开关
+              </span>
+            </div>
+            <button
+              class="toggle"
+              role="switch"
+              type="button"
+              :aria-checked="store.state.config.service_auto_trust"
+              aria-label="自动信任 service 扩展"
+              :class="{ on: store.state.config.service_auto_trust }"
+              @click="onToggleAutoTrust"
+            >
+              <span class="toggle-knob"></span>
+            </button>
           </div>
 
           <!-- 我的扩展的入口指路：目录增删都在扩展中心，这里只留一句话 + 一键跳过去 -->

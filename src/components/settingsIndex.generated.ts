@@ -28,6 +28,8 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   { section: 'data', title: '数据备份' },
   { section: 'data', title: '数据恢复' },
   { section: 'extensions', title: 'service 运行时策略' },
+  { section: 'extensions', title: '点击扩展行时' },
+  { section: 'extensions', title: '自动信任 service 扩展' },
   { section: 'extensions', title: '我的扩展' },
   { section: 'ai', title: '以独立窗口打开 AI 对话' },
   { section: 'ai', title: 'AI 对话面板透明度' },

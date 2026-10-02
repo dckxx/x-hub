@@ -1241,12 +1241,30 @@ pub fn permission_granted(app: &tauri::AppHandle, ext_id: &str, perm: &str) -> b
     if perm == "service:execute" {
         let version = crate::ext_protocol::resolve_ext_dir(app, ext_id).ok()
             .and_then(|dir| read_manifest(&dir).ok()).map(|m| m.version);
-        return service_version_trusted(&overrides, version.as_deref());
+        return service_execute_granted(
+            &overrides,
+            version.as_deref(),
+            crate::config::load().service_auto_trust,
+        );
     }
     overrides
         .get(perm)
         .and_then(|v| v.as_bool())
         .unwrap_or(true)
+}
+
+/// `service:execute` 是否放行（纯函数，供单测）：
+/// 显式拒绝 > 全局自动信任（`AppConfig.service_auto_trust`，设置 → 扩展）> 逐版本显式信任。
+/// 自动信任只在用户**没有单独关掉**该扩展后端时生效——否则全局开关会覆盖用户的明确选择。
+fn service_execute_granted(
+    overrides: &Map<String, Value>,
+    version: Option<&str>,
+    auto_trust: bool,
+) -> bool {
+    if overrides.get("service:execute").and_then(Value::as_bool) == Some(false) {
+        return false;
+    }
+    auto_trust || service_version_trusted(overrides, version)
 }
 
 fn service_version_trusted(overrides: &Map<String, Value>, version: Option<&str>) -> bool {
@@ -1323,6 +1341,25 @@ mod tests {
         assert!(!service_version_trusted(&permissions, Some("1.0.1")));
         permissions.insert("service:execute".into(), Value::Bool(false));
         assert!(!service_version_trusted(&permissions, Some("1.0.0")));
+    }
+
+    #[test]
+    fn service_auto_trust_grants_untrusted_but_never_overrides_explicit_deny() {
+        // 自动信任关（默认）：维持逐版本显式信任的老口径
+        assert!(!service_execute_granted(&Map::new(), Some("1.0.0"), false));
+        // 自动信任开：新装/未授权/更新版本一律放行
+        assert!(service_execute_granted(&Map::new(), Some("1.0.0"), true));
+        assert!(service_execute_granted(&Map::new(), None, true));
+        // 显式拒绝优先：用户单独关掉该扩展后端时，全局开关不得越过
+        let mut denied = Map::new();
+        denied.insert("service:execute".into(), Value::Bool(false));
+        assert!(!service_execute_granted(&denied, Some("1.0.0"), true));
+        // 版本过期但自动信任开 → 仍放行（这正是「更新后不再逐个去授权」的语义）
+        let mut stale = Map::new();
+        stale.insert("service:execute".into(), Value::Bool(true));
+        stale.insert("service:version".into(), Value::String("0.9.0".into()));
+        assert!(!service_execute_granted(&stale, Some("1.0.0"), false));
+        assert!(service_execute_granted(&stale, Some("1.0.0"), true));
     }
 
     fn write_manifest(root: &Path, id: &str, manifest: serde_json::Value) {

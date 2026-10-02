@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.7.2"
+version = "0.7.4"
 description = "本地个人效率工作台"
 authors = ["you"]
 license = ""
@@ -78,6 +78,15 @@ windows-sys = { version = "0.61", features = [
 # 类型同源可 cast（ICoreWebView2_19::SetMemoryUsageTargetLevel）
 # 上游 feat/linux-support 为 0.38.2；本移植沿用可与 tauri 2.12 对齐的 0.39
 webview2-com = "0.39"
+# 防火墙规则改走 COM（service.rs::firewall_com，INetFwPolicy2）：不再 spawn netsh.exe——
+# 开机自启/关机退出时控制台子系统未就绪，netsh 会以 0xC0000142 弹系统错误框
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_NetworkManagement_WindowsFirewall",
+] }
 windows-core = "0.61"
 
 [dev-dependencies]

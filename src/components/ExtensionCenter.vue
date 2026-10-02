@@ -1,8 +1,16 @@
+<script lang="ts">
+// jumpSettings 的消费水位（已处理到的 nonce）。必须放模块级，不能是 setup 内的 let：
+// 本组件挂在 v-else-if 下，离开扩展中心即卸载、回来即重挂载，实例级变量每次归零后会把
+// 宿主遗留的旧跳转请求（index.vue 的 extensionSettingsJump 消费后从不清回 null）当成
+// 新请求重新消费——表现为「每次回到扩展中心都重弹一次该扩展的设置弹窗」。
+let handledJumpNonce = -1
+</script>
+
 <script setup lang="ts">
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
-import { FolderCog, FolderOpen, PackageOpen, Play, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { FolderCog, FolderOpen, MoreVertical, PackageOpen, Play, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import {
   isTauri,
   tauriApi,
@@ -16,6 +24,7 @@ import {
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
 import { loadExtensionModules } from '../composables/useDashboardLayout'
 import { useAdaptivePolling } from '../composables/useAdaptivePolling'
+import { useStore } from '../stores/workbench'
 import ExtensionSettingsDialog from './ExtensionSettingsDialog.vue'
 import MarketDetailDialog from './MarketDetailDialog.vue'
 import ExtensionPublishDialog from './ExtensionPublishDialog.vue'
@@ -33,14 +42,16 @@ const emit = defineEmits<{
   openSkills: []
 }>()
 
+const store = useStore()
+/** 列表点击行为（设置 → 扩展）：true = 点行直接打开（右侧改 ⋯ 看详情），false = 点行看详情（默认） */
+const rowClickOpens = computed(() => (store.state.config.extension_row_click ?? 'detail') === 'open')
+
 // 外部请求打开某扩展的设置/授权弹窗（扩展页 xhub.openPermissions「去授权」跳转）。
 // 本组件可能尚未挂载或列表未加载完：按 nonce 去重，列表就绪前留待 watch(extensions) 补开
 const props = defineProps<{
   /** { 扩展 id, 递增序号 }：nonce 变化即一次新请求；null = 无待处理请求 */
   jumpSettings?: { id: string; nonce: number } | null
 }>()
-
-let handledJumpNonce = -1
 
 function tryOpenJumpedSettings() {
   const j = props.jumpSettings
@@ -74,10 +85,14 @@ function withRowGuard(e: ExtensionEntry, action: () => void) {
   action()
 }
 
-/** 「已安装」行点击：默认打开**扩展详情**（信息 / 权限 / 打开方式 / 卸载），
- *  直接打开扩展走右侧 ▶ 按钮 */
+/** 「已安装」行点击：按设置里的点击行为——默认打开**扩展详情**（信息 / 权限 / 打开方式 / 卸载）；
+ *  设为「直接打开」时点行即打开扩展，详情改走右侧 ⋯ 按钮 */
 function onRowClick(e: ExtensionEntry) {
   withRowGuard(e, () => {
+    if (rowClickOpens.value) {
+      emit('open', e)
+      return
+    }
     settingsExt.value = e
   })
 }
@@ -85,6 +100,13 @@ function onRowClick(e: ExtensionEntry) {
 /** 「已安装」行 ▶ 按钮：直接打开扩展（按该扩展设置里的「打开方式」） */
 function openInstalledExtension(e: ExtensionEntry) {
   withRowGuard(e, () => emit('open', e))
+}
+
+/** 「已安装」行 ⋯ 按钮（点击行为 = 直接打开时出现）：打开扩展详情 */
+function openInstalledDetail(e: ExtensionEntry) {
+  withRowGuard(e, () => {
+    settingsExt.value = e
+  })
 }
 
 const extensions = ref<ExtensionEntry[]>([])
@@ -105,7 +127,7 @@ const visibleCount = computed(() => installedExtensions.value.filter((e) => !e.i
 /** 标签页下的一句话说明：让用户不问「这一页是干嘛的」 */
 const subtitle = computed(() => {
   if (tab.value === 'installed') {
-    return visibleCount.value ? `已安装 ${visibleCount.value} 个扩展` : '管理已安装的扩展：点开使用，右侧可更新或卸载'
+    return visibleCount.value ? `已安装 ${visibleCount.value} 个扩展` : '管理已安装的扩展：点行打开详情或直接打开（见设置），右侧可更新或卸载'
   }
   if (tab.value === 'market') return '发现并安装新扩展'
   return devMode.value.extensions.length
@@ -376,7 +398,9 @@ function onDevRowClick(d: DevExtensionInfo) {
     showToast('该目录尚未加载：请确认 manifest.json 合法且未与已装扩展同 id')
     return
   }
-  onMore(e)
+  // 按设置里的点击行为：默认打开详情；设为「直接打开」时点行即跑扩展、详情走右侧 ⋯
+  if (rowClickOpens.value) openDevExtension(e)
+  else onMore(e)
 }
 
 /** 「打开扩展」按钮：与已装标签页点行同口径（emit open，按该扩展的「打开方式」打开） */
@@ -801,6 +825,7 @@ function onMore(e: ExtensionEntry) {
               <FolderOpen :size="16" :stroke-width="2" aria-hidden="true" />
             </button>
             <button
+              v-if="!rowClickOpens"
               class="ec-more"
               type="button"
               :aria-label="`打开 ${e.name}`"
@@ -809,6 +834,17 @@ function onMore(e: ExtensionEntry) {
               @click.stop="openInstalledExtension(e)"
             >
               <Play :size="16" :stroke-width="2" aria-hidden="true" />
+            </button>
+            <button
+              v-else
+              class="ec-more"
+              type="button"
+              :aria-label="`查看 ${e.name} 详情`"
+              :data-tip="`查看 ${e.name} 详情`"
+              :title="`查看 ${e.name} 详情（信息 / 权限 / 打开方式 / 卸载）`"
+              @click.stop="openInstalledDetail(e)"
+            >
+              <MoreVertical :size="16" :stroke-width="2" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -823,7 +859,7 @@ function onMore(e: ExtensionEntry) {
         </p>
         <p class="ec-hint-line">
           这类扩展<b>不复制进「已安装」</b>，也不参与市场更新与卸载；移除目录即撤销，磁盘上的源码不动。
-          点扩展行打开<b>详情</b>（信息 / 权限 / 打开方式），右侧 <b>▶</b> 直接打开扩展。
+          点扩展行按设置里的<b>「点击扩展行时」</b>打开：默认打开<b>详情</b>（信息 / 权限 / 打开方式），或直接打开扩展。
         </p>
         <p class="ec-hint-line">
           想<b>快速开发自己的扩展</b>？先去「<b>设置 → 扩展 → Skills</b>」安装<b>扩展开发 Skill</b>，让 AI 助手陪你从零把它做出来。
@@ -895,7 +931,7 @@ function onMore(e: ExtensionEntry) {
               <FolderOpen :size="16" :stroke-width="2" aria-hidden="true" />
             </button>
             <button
-              v-if="devEntryFor(d)"
+              v-if="devEntryFor(d) && !rowClickOpens"
               class="ec-more"
               type="button"
               :aria-label="`打开 ${d.name || d.id}`"
@@ -904,6 +940,17 @@ function onMore(e: ExtensionEntry) {
               @click.stop="openDevExtension(devEntryFor(d)!)"
             >
               <Play :size="16" :stroke-width="2" aria-hidden="true" />
+            </button>
+            <button
+              v-else-if="devEntryFor(d)"
+              class="ec-more"
+              type="button"
+              :aria-label="`查看 ${d.name || d.id} 详情`"
+              :data-tip="`查看 ${d.name || d.id} 详情`"
+              :title="`查看 ${d.name || d.id} 详情（信息 / 权限 / 打开方式）`"
+              @click.stop="onMore(devEntryFor(d)!)"
+            >
+              <MoreVertical :size="16" :stroke-width="2" aria-hidden="true" />
             </button>
             <button
               v-if="d.conflict"

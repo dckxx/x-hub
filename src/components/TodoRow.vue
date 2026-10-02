@@ -605,16 +605,6 @@ function hideTip() {
             <CalendarDays v-else :size="10" :stroke-width="2" />
             {{ badge.text }}
           </button>
-          <button
-            v-else-if="canSchedule"
-            class="todo-badge-add"
-            type="button"
-            title="设置截止日期/提醒"
-            @click="onBadgeClick"
-          >
-            <CalendarDays :size="10" :stroke-width="2" />
-            <span>日期</span>
-          </button>
           <span v-if="remindOn && todo.remind_at != null" class="todo-badge remind" title="到点弹提醒">
             <Bell :size="10" :stroke-width="2" />
             提醒 {{ fmtHM(todo.remind_at) }}
@@ -638,45 +628,7 @@ function hideTip() {
           </span>
         </div>
 
-        <!-- 父级操作按钮：跟在标题/徽标后面（不挂在整行最右），有子待办时不会沉到整块底部 -->
-        <!-- 折叠/展开子待办：默认展开；折叠态图标常驻可见，否则找不到展开入口 -->
-        <button
-          v-if="!isSub && kids.length"
-          class="todo-collapser"
-          :class="{ collapsed }"
-          type="button"
-          :title="collapsed ? '展开子待办' : '折叠子待办'"
-          :aria-label="collapsed ? '展开子待办' : '折叠子待办'"
-          :aria-expanded="!collapsed"
-          @click="toggleCollapse"
-        >
-          <ChevronRight v-if="collapsed" :size="12" :stroke-width="2.2" />
-          <ChevronDown v-else :size="12" :stroke-width="2.2" />
-        </button>
-        <button
-          v-if="!isSub"
-          class="todo-subadd"
-          type="button"
-          :title="addingSub ? '收起' : '添加子待办'"
-          :aria-label="addingSub ? '收起子待办输入' : '添加子待办'"
-          @mousedown.prevent
-          @click="toggleSubAdd"
-        >
-          <X v-if="addingSub" :size="12" :stroke-width="2.4" />
-          <Plus v-else :size="12" :stroke-width="2.4" />
-        </button>
-        <button
-          v-if="!isSub"
-          class="todo-del"
-          type="button"
-          :title="kids.length ? '删除（级联删除子待办）' : '删除'"
-          :aria-label="kids.length ? '删除（级联删除子待办）' : '删除'"
-          @click="removeTodo(todo)"
-        >
-          <Trash2 :size="12" :stroke-width="2" />
-        </button>
-
-        <!-- 已完成行：完成时间徽标挂在行尾（margin-left:auto 靠右，hover 按钮在它左侧出现不挤动它） -->
+        <!-- 已完成行：完成时间徽标挂在行尾（margin-left:auto 靠右；hover 操作条浮盖其上，不挤动布局） -->
         <span
           v-if="doneAt"
           class="todo-done-at"
@@ -685,6 +637,56 @@ function hideTip() {
           <Check :size="10" :stroke-width="2.4" />
           {{ doneAt.text }}
         </span>
+
+        <!-- 悬浮操作条：绝对定位在标题行右上（不参与换行），显隐只切 opacity——
+             按钮此前 display:none→flex 在文档流里参与换行，hover 时把徽标/标题挤换行、
+             行高变化又反过来改变 hover 命中，数据多时鼠标滑过整列连续跳动 -->
+        <div class="todo-actions" :class="{ collapsed }">
+          <!-- 折叠/展开子待办：默认展开；折叠态整条常驻可见，否则找不到展开入口 -->
+          <button
+            v-if="!isSub && kids.length"
+            class="todo-collapser"
+            type="button"
+            :title="collapsed ? '展开子待办' : '折叠子待办'"
+            :aria-label="collapsed ? '展开子待办' : '折叠子待办'"
+            :aria-expanded="!collapsed"
+            @click="toggleCollapse"
+          >
+            <ChevronRight v-if="collapsed" :size="12" :stroke-width="2.2" />
+            <ChevronDown v-else :size="12" :stroke-width="2.2" />
+          </button>
+          <button
+            v-if="!todo.done && !badge && canSchedule"
+            class="todo-badge-add"
+            type="button"
+            title="设置截止日期/提醒"
+            @click="onBadgeClick"
+          >
+            <CalendarDays :size="10" :stroke-width="2" />
+            <span>日期</span>
+          </button>
+          <button
+            v-if="!isSub"
+            class="todo-subadd"
+            type="button"
+            :title="addingSub ? '收起' : '添加子待办'"
+            :aria-label="addingSub ? '收起子待办输入' : '添加子待办'"
+            @mousedown.prevent
+            @click="toggleSubAdd"
+          >
+            <X v-if="addingSub" :size="12" :stroke-width="2.4" />
+            <Plus v-else :size="12" :stroke-width="2.4" />
+          </button>
+          <button
+            class="todo-del"
+            type="button"
+            :title="isSub ? '删除子待办' : kids.length ? '删除（级联删除子待办）' : '删除'"
+            :aria-label="isSub ? '删除子待办' : kids.length ? '删除（级联删除子待办）' : '删除'"
+            @click="removeTodo(todo)"
+          >
+            <Trash2 :size="12" :stroke-width="2" />
+          </button>
+        </div>
       </div>
 
       <!-- 折叠时隐藏子待办列表；addingSub 打开时输入行必须可见（toggleSubAdd 已先展开，此处兜底）；
@@ -731,17 +733,6 @@ function hideTip() {
       </div>
     </div>
 
-    <!-- 子待办的删除按钮仍挂行尾（父级按钮已移入标题行内） -->
-    <button
-      v-if="isSub"
-      class="todo-del"
-      type="button"
-      title="删除"
-      aria-label="删除子待办"
-      @click="removeTodo(todo)"
-    >
-      <Trash2 :size="12" :stroke-width="2" />
-    </button>
   </div>
 
   <Teleport to="body">
@@ -869,8 +860,10 @@ function hideTip() {
   flex: 1;
   min-width: 0;
 }
-/* 标题 + 徽标同一 flex 行：徽标尾随标题末尾，放不下时整组换行到下一行 */
+/* 标题 + 徽标同一 flex 行：徽标尾随标题末尾，放不下时整组换行到下一行；
+   同时是悬浮操作条（.todo-actions）的定位锚点 */
 .todo-line {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1070,7 +1063,7 @@ function hideTip() {
   filter: none;
 }
 .todo-badge-add {
-  display: none;
+  display: inline-flex;
   align-items: center;
   gap: 3px;
   border: none;
@@ -1085,11 +1078,8 @@ function hideTip() {
   transition: background 0.18s, color 0.18s;
   font-family: inherit;
 }
-/* hover 才占位渲染：避免隐形徽标在标题较长时挤出一行幻影空行 */
-.todo-row:hover .todo-badge-add,
-.todo-row:focus-within .todo-badge-add {
-  display: inline-flex;
-}
+/* 常驻渲染在悬浮操作条内（整条 opacity 控制显隐），不再随 hover 占位渲染——
+   那会在标题较长时挤出幻影空行/挤动布局 */
 .todo-badge-add:hover {
   background: var(--bg-card-soft);
   color: var(--brand-500);
@@ -1197,26 +1187,49 @@ function hideTip() {
 .todo-sub-input::placeholder {
   color: var(--text-4);
 }
-/* 双类提升特异性：压过后声明的 .todo-del 默认隐藏（display:none） */
-.todo-del.todo-sub-cancel {
-  position: static;
-  display: flex; /* 输入行内常驻，不随 hover 显隐 */
+/* ---- 悬浮操作条：绝对定位在标题行右上，显隐只切 opacity/pointer-events。
+   此前按钮 display:none→flex 参与文档流换行，hover 时把徽标/标题挤换行、行高
+   变化又反过来改变 hover 命中——数据多时鼠标滑过整列连续跳动。移出文档流后
+   显隐零布局影响；代价是出现时浮盖行尾内容，故给实底小条兜住可读性 */
+.todo-actions {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 3px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-item);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease-out;
+}
+.todo-row:hover .todo-actions,
+.todo-row:focus-within .todo-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* 折叠子待办时常驻显示（不随 hover 隐藏）：重新展开的入口必须随时可见 */
+.todo-actions.collapsed {
+  opacity: 1;
+  pointer-events: auto;
 }
 
-/* ---- 行内操作按钮：父级跟在标题/徽标后，子级删除仍挂行尾 ---- */
-/* 默认不渲染（display:none 才不占布局）：隐形占位在标题换行到按钮位置时会
-   挤出整行空白，与日期徽标同规则——hover / 键盘聚焦行时才渲染 */
+/* ---- 操作条内的按钮：常驻渲染，显隐交给容器 opacity ---- */
 .todo-collapser,
 .todo-subadd,
 .todo-del {
   flex-shrink: 0;
-  align-self: center;
   width: 22px;
   height: 22px;
   border: none;
   background: transparent;
   border-radius: var(--radius-sm);
-  display: none;
+  display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
@@ -1231,26 +1244,13 @@ function hideTip() {
 .todo-del {
   color: var(--text-3);
 }
-.todo-row:hover .todo-collapser,
-.todo-row:hover .todo-subadd,
-.todo-row:hover .todo-del,
-.todo-row:focus-within .todo-collapser,
-.todo-row:focus-within .todo-subadd,
-.todo-row:focus-within .todo-del {
-  display: flex;
-}
-/* 折叠态常驻显示（不随 hover 隐藏）：重新展开的入口必须随时可见 */
-.todo-collapser.collapsed {
-  display: flex;
-}
-/* 拖拽期间锁定按钮渲染：hover 引发的行高变化会干扰落点指示线。
+/* 拖拽期间锁定操作条显隐：hover 引发的按钮浮现会干扰落点指示线。
+   !important 压过 scoped 下特异性更高的 hover/collapsed 规则（:global 编译后不带 data-v）。
    注意：选择器必须整体包进一个 :global() ——「:global(前缀) 后代」写法会被
-   Tailwind4/lightningcss 管线吃掉后代部分，编译成 body 本体 display:none（整页消失） */
-:global(body.todo-row-dragging .todo-badge-add),
-:global(body.todo-row-dragging .todo-collapser),
-:global(body.todo-row-dragging .todo-subadd),
-:global(body.todo-row-dragging .todo-del) {
-  display: none;
+   Tailwind4/lightningcss 管线吃掉后代部分，编译成 body 本体（整页消失） */
+:global(body.todo-row-dragging .todo-actions) {
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 .todo-collapser:hover {
   background: var(--brand-50);

@@ -243,7 +243,13 @@ async function confirmUninstall() {
 
             <section class="es-block">
               <h3 class="es-block-title">权限</h3>
-              <p v-if="ext.runtime === 'service'" class="es-empty">本地后端可读取你有权限访问的文件并联网，未受系统沙箱隔离。仅在信任作者与当前版本时开启；更新版本后需重新授权。关闭网络权限也会停止后端。</p>
+              <p v-if="ext.runtime === 'service'" class="es-empty">
+                本地后端可读取你有权限访问的文件并联网，未受系统沙箱隔离。仅在信任作者与当前版本时开启；关闭网络权限也会停止后端。
+                <template v-if="store.state.config.service_auto_trust">
+                  已开启「自动信任 service 扩展」（设置 → 扩展）：新装或更新后无需逐个确认即可运行后端；在此处单独关闭可拒绝该扩展的后端，且优先于全局开关。
+                </template>
+                <template v-else>更新版本后需重新授权。</template>
+              </p>
               <div v-if="Object.keys(perms).length" class="es-perm-list">
                 <div v-for="p in Object.keys(perms)" :key="p" class="es-perm-row" :title="p">
                   <span class="es-perm-name">{{ permissionLabel(p) }}</span>
@@ -581,8 +587,15 @@ async function confirmUninstall() {
   font-size: 0.8125rem;
   color: var(--text-1);
 }
+/* 打开方式 / 链接打开方式：标签在左、分段控件贴右，与「在左侧栏固定此扩展」那行对齐；
+   dt 不锁 72px（「链接打开方式」六字会折行），改 nowrap 自适应 */
 .es-openmode-row {
   align-items: center;
+  justify-content: space-between;
+}
+.es-openmode-row dt {
+  width: auto;
+  white-space: nowrap;
 }
 .es-seg {
   display: inline-flex;

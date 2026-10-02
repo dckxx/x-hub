@@ -10,10 +10,11 @@ export interface DueBadge {
   text: string
 }
 
-/** 待办分组序号：0 逾期 → 1 今天 → 2 有日期 → 3 无日期 */
-export const GROUP_COUNT = 4
+/** 待办分组序号（卡片/浮窗/编辑器预览共用）：0 置顶 → 1 逾期 → 2 今天 → 3 有日期 → 4 无日期 */
+export const GROUP_COUNT = 5
 
 export const GROUP_META: ReadonlyArray<{ label: string }> = [
+  { label: '置顶' },
   { label: '逾期' },
   { label: '今天' },
   { label: '有日期' },
@@ -85,12 +86,18 @@ export function doneAtLabel(
   return { text, full: `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日${hm}` }
 }
 
-export function groupOf(t: { due_at: number | null }, today: Date): number {
-  if (t.due_at == null) return 3
+export function groupOf(
+  t: { pinned?: boolean; due_at: number | null },
+  today: Date,
+): number {
+  // 置顶与日期无关：固定进最顶部「置顶」组（与待办视图 viewGroupOf 同语义）。
+  // 若不独立成组，新增待办按「新的在最上」落进同组会排到置顶条目上面。
+  if (t.pinned) return 0
+  if (t.due_at == null) return 4
   const d = startOfDay(new Date(t.due_at))
-  if (d.getTime() < startOfDay(today).getTime()) return 0
-  if (isoKey(d) === isoKey(today)) return 1
-  return 2
+  if (d.getTime() < startOfDay(today).getTime()) return 1
+  if (isoKey(d) === isoKey(today)) return 2
+  return 3
 }
 
 /**
@@ -108,6 +115,20 @@ export function compareByOrder(
   if (ao != null && bo != null) return ao - bo
   if (ao == null && bo == null) return b.created_at.localeCompare(a.created_at)
   return ao == null ? -1 : 1
+}
+
+/**
+ * 平铺列表（待办浮窗等不分组的宿主）排序：置顶条目浮到最前，其余按 compareByOrder。
+ * 置顶条目与新增待办共用一个列表时，若不把置顶提前，新建条目会按创建时间倒序盖到它上面。
+ */
+export function comparePinnedFirst(
+  a: { pinned?: boolean; sort_order: number | null; created_at: string },
+  b: { pinned?: boolean; sort_order: number | null; created_at: string },
+): number {
+  const ap = a.pinned === true
+  const bp = b.pinned === true
+  if (ap !== bp) return ap ? -1 : 1
+  return compareByOrder(a, b)
 }
 
 /**
@@ -177,7 +198,7 @@ export function calendarGrid(cursor: Date, today: Date): Array<{ key: string; da
 
 /**
  * 待办视图分组序号：0 置顶 → 1 逾期 → 2 今天 → 3 本周 → 4 本月 → 5 以后 → 6 无日期。
- * 与卡片用的 4 组（GROUP_META）不同：视图有「置顶」区与更细的时间切分，
+ * 与卡片用的 5 组（GROUP_META）不同：视图有「置顶」区与更细的时间切分，
  * 卡片保持轻量，不跟着改。
  */
 export const VIEW_GROUP_COUNT = 7

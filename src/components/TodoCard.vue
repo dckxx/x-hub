@@ -48,7 +48,8 @@ const input = ref('')
 const highlight = ref<number | null>(null)
 let highlightTimer: ReturnType<typeof setTimeout> | null = null
 
-// ---- 列表派生：待办按 逾期 → 今天 → 有日期 → 无日期 分组，组内按创建时间倒序 ----
+// ---- 列表派生：待办按 置顶 → 逾期 → 今天 → 有日期 → 无日期 分组（置顶独立成组，
+// 新增待办只会落进日期组、不会盖到置顶条目上面），组内按手动排序/创建时间倒序 ----
 interface TodoGroup {
   label: string
   items: Todo[]
@@ -719,6 +720,10 @@ watch(
   font-weight: 600;
   color: var(--text-3);
   letter-spacing: 0.02em;
+}
+/* 置顶组头品牌色（与待办视图 .tv-group-h.pinned 同语言） */
+.todo-group[data-group='置顶'] .glabel {
+  color: var(--brand-500);
 }
 .todo-group-head .gline {
   flex: 1;

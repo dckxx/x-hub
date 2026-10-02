@@ -465,6 +465,7 @@ const kind = computed(() => {
           <div v-for="t in g.items" :key="t.id" class="todo-row">
             <span class="todo-check"></span>
             <span class="todo-pri" :style="{ background: priBg(t.priority) }"></span>
+            <Pin v-if="t.pinned" class="pb-pin" />
             <span class="todo-label">{{ t.title }}</span>
             <span v-if="t.badge" class="todo-badge" :class="t.badge.kind">
               <component :is="BADGE_ICON[t.badge.kind]" class="ic-xs" />{{ t.badge.text }}

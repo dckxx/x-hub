@@ -189,7 +189,10 @@ pub fn launch_resource(state: State<'_, DbState>, id: i64) -> Result<(), String>
     let res = resource::get(&conn, id).map_err(err_str)?;
     match res.kind {
         ResourceKind::App => {
-            // 程序已在运行 → 只把已有窗口调度到前台，不再拉起第二个实例。
+            // 程序已在运行且有可见（含最小化）窗口 → 只把已有窗口调度到前台，不再拉起第二个
+            // 实例。窗口全隐藏（托盘挂后台，如微信/WorkBuddy）时 activate_existing 返回 false，
+            // 照常启动 exe——应用自带的单实例逻辑会把主窗正规唤起（外部 SW_SHOW 隐藏窗只会
+            // 得到点不动/不重绘的空壳，实测记录见 process.rs）。
             // 带参数的资源仍按原样启动：参数往往就是「这次要打开的东西」（如 --incognito、
             // 要打开的文件夹），忽略它会丢语义。
             let no_args = res.args.as_deref().map(|a| a.trim().is_empty()).unwrap_or(true);
@@ -1462,6 +1465,25 @@ impl ConfiguredShortcut {
             ConfiguredShortcut::Chat => "AI 对话",
         }
     }
+
+    /// 该快捷键当前是否处于启用状态（禁用 = 不注册但保留键值）
+    fn enabled(&self, cfg: &crate::config::AppConfig) -> bool {
+        match self {
+            ConfiguredShortcut::Main => cfg.global_shortcut_enabled,
+            ConfiguredShortcut::Clipboard => cfg.clipboard_shortcut_enabled,
+            ConfiguredShortcut::Search => cfg.search_shortcut_enabled,
+            ConfiguredShortcut::Chat => cfg.chat_shortcut_enabled,
+        }
+    }
+
+    fn set_enabled(&self, cfg: &mut crate::config::AppConfig, value: bool) {
+        match self {
+            ConfiguredShortcut::Main => cfg.global_shortcut_enabled = value,
+            ConfiguredShortcut::Clipboard => cfg.clipboard_shortcut_enabled = value,
+            ConfiguredShortcut::Search => cfg.search_shortcut_enabled = value,
+            ConfiguredShortcut::Chat => cfg.chat_shortcut_enabled = value,
+        }
+    }
 }
 
 /// 更新某个可自定义全局快捷键：改绑（冲突预检/反注册/注册/回滚）+ 配置持久化。
@@ -1481,6 +1503,14 @@ fn set_configured_shortcut(
     let previous = config_field(&config, &which);
     if previous == shortcut {
         return Ok(previous);
+    }
+    // 该快捷键处于「禁用」状态（config.*_shortcut_enabled = false）时只改存储值、不注册，
+    // 否则禁用后一改键就又把热键注册上了，开关形同虚设（重新启用时按新值注册）
+    if !which.enabled(&config) {
+        *which.field(&mut config) = shortcut.to_string();
+        crate::config::save(&config)?;
+        log::info!("[快捷键] {}快捷键（当前已禁用）已改为 {}", which.label(), shortcut);
+        return Ok(shortcut.to_string());
     }
     if crate::shortcut::same_hotkey(&previous, shortcut) {
         *which.field(&mut config) = shortcut.to_string();
@@ -1513,6 +1543,47 @@ pub fn set_search_shortcut(app: tauri::AppHandle, value: String) -> Result<Strin
 #[tauri::command]
 pub fn set_chat_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
     set_configured_shortcut(app, value, ConfiguredShortcut::Chat)
+}
+
+/// 启用/禁用某个可自定义全局快捷键：禁用 = 注销该热键但保留键值；启用 = 按当前键值重新注册。
+/// 与 set_*_shortcut 分开：这里只切开关，不动键值本身。
+#[tauri::command]
+pub fn set_shortcut_enabled(
+    app: tauri::AppHandle,
+    kind: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let which = match kind.as_str() {
+        "main" => ConfiguredShortcut::Main,
+        "clipboard" => ConfiguredShortcut::Clipboard,
+        "search" => ConfiguredShortcut::Search,
+        "chat" => ConfiguredShortcut::Chat,
+        _ => return Err("未知的快捷键类型".into()),
+    };
+    let _guard = crate::config::lock();
+    let mut config = crate::config::load();
+    let value = config_field(&config, &which);
+    if enabled {
+        if value.trim().is_empty() {
+            return Err("尚未设置快捷键".into());
+        }
+        // 只在实际未注册时注册（已注册则幂等跳过，避免「已注册」冲突）
+        if !crate::shortcut::is_shortcut_registered(&app, &value) {
+            crate::shortcut::register_toggle_shortcut(&app, &value)
+                .map_err(|e| crate::shortcut::format_shortcut_error(&e))?;
+        }
+    } else if crate::shortcut::is_shortcut_registered(&app, &value) {
+        // 未注册时忽略：可能当初注册就被别的程序占用而失败过
+        let _ = crate::shortcut::unregister_toggle_shortcut(&app, &value);
+    }
+    which.set_enabled(&mut config, enabled);
+    crate::config::save(&config)?;
+    log::info!(
+        "[快捷键] {}快捷键已{}",
+        which.label(),
+        if enabled { "启用" } else { "禁用" }
+    );
+    Ok(())
 }
 
 // ---------- 开机自启动 ----------
@@ -2512,8 +2583,8 @@ pub struct InstalledAppInfo {
     pub icon: Option<String>,
 }
 
-/// 扫描本机已安装应用。
-/// Windows：注册表卸载项 + 开始菜单；Linux：`*.desktop`（applications 目录）。
+/// 扫描本机已安装应用（Windows：用户/公共开始菜单快捷方式；Linux：`*.desktop`），
+/// 去重、过滤系统噪音后批量提取程序图标（icons/<hash>.png，与拖拽导入共用缓存键）。
 /// 必须 async：扫描 + 图标提取耗时数秒，同步命令会卡死主线程冻结 UI。
 #[tauri::command]
 pub async fn scan_installed_apps() -> Result<Vec<InstalledAppInfo>, String> {
@@ -2529,9 +2600,12 @@ pub async fn scan_installed_apps() -> Result<Vec<InstalledAppInfo>, String> {
         .collect())
 }
 
-/// 单次 PowerShell 扫描注册表卸载项 + 开始菜单快捷方式，
+/// 单次 PowerShell 扫描开始菜单快捷方式（用户 + 公共），
 /// 输出 APP=<json> 行（name/target），Rust 侧解析并二次去重、按名称排序、限量。
-/// 命名/路径等取值一律在 PS 内 Trim + 环境变量展开，中文经 UTF-8 输出。
+/// 命名/路径等取值一律在 PS 内 Trim，中文经 UTF-8 输出。
+///
+/// 已不再扫注册表卸载项（2026-09-30 按需求去掉）：卸载项常把 DisplayIcon 指向
+/// 卸载器/维护程序，图标与名称噪音大。只保留开始菜单 `.lnk`（用户真正点得到的东西）。
 #[cfg(target_os = "windows")]
 fn scan_app_candidates() -> Result<Vec<(String, String)>, String> {
     let script = r#"
@@ -2553,46 +2627,6 @@ function Add-App([string]$name, [string]$target) {
   if ($seen.ContainsKey($key)) { return }
   $seen[$key] = $true
   [void]$out.Add(@{ name = $name; target = $target })
-}
-
-# ---- 注册表卸载项（HKLM 32/64 + HKCU）----
-$regRoots = @(
-  'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-  'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
-  'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
-)
-foreach ($root in $regRoots) {
-  Get-ItemProperty $root | ForEach-Object {
-    $dn = $_.DisplayName
-    if (-not $dn) { return }
-    $dn = ([string]$dn).Trim()
-    # 过滤系统组件/运行时/更新类噪音
-    if ($dn -match '^(KB\d+|Update for|Security Update|Hotfix|Microsoft Update Health|Microsoft Edge (Update|WebView)|Microsoft Windows|Windows (SDK|Driver|Update|PowerShell|Terminal|Web Experience|Package Manager|App Runtime|App Certification|Kits)|Microsoft Visual C\+\+|Microsoft \.NET|\.NET (Runtime|Host)|Windows App Runtime|Microsoft Office (ClickToRun|Microsoft 365 Apps for enterprise))') { return }
-    if ($dn -match '(卸载|Uninstall|Update|Updater)$') { return }
-    $target = ''
-    # DisplayIcon 常直接指向主 exe（可能带 ,0 序号或 %环境变量%）
-    if ($_.DisplayIcon) {
-      $di = (([string]$_.DisplayIcon) -split ',')[0].Trim()
-      if ($di) {
-        try { $di = $ExecutionContext.InvokeCommand.ExpandString($di) } catch {}
-        if ($di -and (Test-Path -LiteralPath $di)) { $target = $di }
-      }
-    }
-    # 无 DisplayIcon 时从安装目录挑一个主 exe
-    if (-not $target -and $_.InstallLocation) {
-      $loc = ([string]$_.InstallLocation).Trim()
-      try { $loc = $ExecutionContext.InvokeCommand.ExpandString($loc) } catch {}
-      if ($loc -and (Test-Path -LiteralPath $loc)) {
-        $exe = Get-ChildItem -LiteralPath $loc -Filter *.exe -File -Recurse -Depth 1 -ErrorAction SilentlyContinue |
-          Where-Object { $_.FullName -notmatch '(unins\d*\.exe|uninstall(\.exe|_?[\w-]*\.exe)?|update(\.exe|r\.exe)?)$' } |
-          Select-Object -First 1
-        if ($exe) { $target = $exe.FullName }
-      }
-    }
-    if (-not $target) { return }
-    if ($target -match '\\Windows\\(System32|SysWOW64|servicing|WinSxS)\\' -or $target -match '(unins\d*\.exe|uninstall(\.exe|_?[\w-]*\.exe)?)$') { return }
-    Add-App $dn $target
-  }
 }
 
 # ---- 开始菜单快捷方式（用户 + 公共）----
@@ -2865,6 +2899,389 @@ Get-Content -LiteralPath $listFile -Encoding UTF8 | ForEach-Object {
     log::info!("应用图标提取完成: {} 个（缺 {} 个）", apps.len(), missing.len());
     Ok(result)
     }
+}
+
+// ---------- 扫描桌面 ----------
+
+#[derive(serde::Serialize)]
+pub struct DesktopEntry {
+    pub name: String,
+    pub target: String,
+    pub icon: Option<String>,
+    /// 展示用分类：`app` | `web` | `file` | `folder`（导入速达时 folder 归入 file 大类）
+    pub kind: String,
+    /// 桌面上的快捷方式原始路径（仅 `.lnk`/`.url` 有；供「导入后清理桌面快捷方式」使用）
+    pub source: Option<String>,
+}
+
+/// 扫描【用户桌面】一层（不递归，只 `%USERPROFILE%\Desktop`，不含公共桌面）：
+/// - `.lnk` 解析目标 → 按目标分类为 应用 / 网页 / 文件 / 文件夹（解析不到目标的 UWP 等跳过）
+/// - `.url` 解析 URL → 网页
+/// - `.exe/.bat/.cmd` → 应用
+/// - 文件夹 → 文件夹；其它文件 → 文件
+/// 图标沿用 batch_extract_icons 批量缓存（与拖拽导入、已安装应用扫描共用 icons/<hash>.png）。
+/// 必须 async：解析快捷方式 + 提取图标耗时数秒，同步命令会冻结 UI。
+#[tauri::command]
+pub async fn scan_desktop() -> Result<Vec<DesktopEntry>, String> {
+    let candidates = scan_desktop_candidates()?;
+    if candidates.is_empty() {
+        return Ok(vec![]);
+    }
+    // 网页（URL）没有可提取的图标资源，跳过图标提取（前端回退到名称首字母）
+    let icon_pairs: Vec<(String, String)> = candidates
+        .iter()
+        .filter(|(_, _, kind, _)| kind != "web")
+        .map(|(name, target, _, _)| (name.clone(), target.clone()))
+        .collect();
+    let icons = batch_extract_icons(&icon_pairs)?;
+    let mut icon_iter = icons.into_iter();
+    let entries = candidates
+        .into_iter()
+        .map(|(name, target, kind, source)| {
+            let icon = if kind == "web" {
+                None
+            } else {
+                icon_iter.next().flatten()
+            };
+            DesktopEntry {
+                name,
+                target,
+                icon,
+                kind,
+                source,
+            }
+        })
+        .collect();
+    Ok(entries)
+}
+
+/// 单次 PowerShell 枚举用户桌面一层并分类，输出 DESK=<json> 行（name/target/kind/src），
+/// Rust 侧解析、二次去重、排序、限量。名称/路径取值一律在 PS 内 Trim，中文经 UTF-8 输出。
+/// `src` = 该条目对应的桌面快捷方式原始路径（仅 `.lnk`/`.url` 非空），供「导入后清理」用。
+fn scan_desktop_candidates() -> Result<Vec<(String, String, String, Option<String>)>, String> {
+    let script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$sh = New-Object -ComObject WScript.Shell
+$desktop = [Environment]::GetFolderPath('Desktop')
+if (-not (Test-Path -LiteralPath $desktop)) { return }
+$seen = @{}
+$out = New-Object System.Collections.ArrayList
+
+function Add-Entry([string]$name, [string]$target, [string]$kind, [string]$src) {
+  if (-not $target) { return }
+  $target = $target.Trim()
+  $name = ([string]$name).Trim()
+  if (-not $name) { $name = [System.IO.Path]::GetFileNameWithoutExtension($target) }
+  if (-not $name) { return }
+  $key = $target.ToLower()
+  if ($seen.ContainsKey($key)) { return }
+  $seen[$key] = $true
+  if ($null -eq $src) { $src = '' }
+  [void]$out.Add(@{ name = $name; target = $target; kind = $kind; src = $src })
+}
+
+Get-ChildItem -LiteralPath $desktop | ForEach-Object {
+  $item = $_
+  $full = $item.FullName
+  if ($item.PSIsContainer) {
+    Add-Entry $item.Name $full 'folder' ''
+    return
+  }
+  $ext = [System.IO.Path]::GetExtension($item.Name).ToLower()
+  switch ($ext) {
+    '.lnk' {
+      $t = ''
+      try { $t = $sh.CreateShortcut($full).TargetPath } catch { $t = '' }
+      if (-not $t) { return }   # UWP / 失效快捷方式：没有可启动的路径目标，跳过
+      if ($t -match '^https?://') { Add-Entry $item.BaseName $t 'web' $full }
+      elseif (Test-Path -LiteralPath $t) {
+        if ((Get-Item -LiteralPath $t).PSIsContainer) { Add-Entry $item.BaseName $t 'folder' $full }
+        elseif ($t -match '\.(exe|bat|cmd|msi)$') { Add-Entry $item.BaseName $t 'app' $full }
+        else { Add-Entry $item.BaseName $t 'file' $full }
+      }
+      else { return }           # 目标已不存在：不导出一个死链
+    }
+    '.url' {
+      $line = Get-Content -LiteralPath $full -TotalCount 20 |
+        Where-Object { $_ -match '^URL=' } | Select-Object -First 1
+      if ($line) {
+        $u = (($line -replace '^URL=', '')).Trim()
+        if ($u) { Add-Entry $item.BaseName $u 'web' $full }
+      }
+    }
+    '.exe' { Add-Entry $item.BaseName $full 'app' '' }
+    '.bat' { Add-Entry $item.BaseName $full 'app' '' }
+    '.cmd' { Add-Entry $item.BaseName $full 'app' '' }
+    default { Add-Entry $item.BaseName $full 'file' '' }
+  }
+}
+
+foreach ($e in $out) { Write-Output ('DESK=' + ($e | ConvertTo-Json -Compress)) }
+"#;
+    let output = powershell()
+        .args(["-NoProfile", "-Command", script])
+        .output()
+        .map_err(|e| format!("扫描桌面失败（PowerShell 执行错误）: {}", e))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        log::debug!("扫描桌面 PowerShell stderr: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in stdout.lines() {
+        let Some(json) = line.strip_prefix("DESK=") else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+            continue;
+        };
+        let (Some(name), Some(target)) = (
+            v.get("name").and_then(|x| x.as_str()),
+            v.get("target").and_then(|x| x.as_str()),
+        ) else {
+            continue;
+        };
+        let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("file");
+        let kind = match kind {
+            "app" | "web" | "file" | "folder" => kind,
+            _ => "file",
+        };
+        let source = v
+            .get("src")
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let (name, target) = (name.trim(), target.trim());
+        if name.is_empty() || target.is_empty() {
+            continue;
+        }
+        if !seen.insert(target.to_lowercase()) {
+            continue;
+        }
+        entries.push((name.to_string(), target.to_string(), kind.to_string(), source));
+    }
+    // 分类展示顺序：应用 → 网页 → 文件 → 文件夹，同类别内按名称排序
+    let kind_rank = |k: &str| match k {
+        "app" => 0,
+        "web" => 1,
+        "file" => 2,
+        _ => 3,
+    };
+    entries.sort_by(|a, b| {
+        kind_rank(&a.2)
+            .cmp(&kind_rank(&b.2))
+            .then_with(|| {
+                a.0.to_lowercase()
+                    .cmp(&b.0.to_lowercase())
+                    .then_with(|| a.1.cmp(&b.1))
+            })
+    });
+    const MAX_DESKTOP: usize = 500;
+    if entries.len() > MAX_DESKTOP {
+        entries.truncate(MAX_DESKTOP);
+    }
+    log::info!("扫描桌面: 共 {} 项", entries.len());
+    Ok(entries)
+}
+
+/// 删除桌面上的快捷方式（仅 `.lnk`/`.url`），供「扫描桌面 → 导入后清理」使用。
+/// 安全护栏（缺一不可）：①扩展名必须是 `.lnk`/`.url` ②必须是普通文件 ③必须是**用户桌面**
+/// 的直接子项。绝不删除文件夹、`.exe` 及其它文件；不在护栏杆内的路径静默跳过。
+#[tauri::command]
+pub fn delete_desktop_shortcuts(paths: Vec<String>) -> Result<usize, String> {
+    let Some(desktop) = dirs::desktop_dir() else {
+        return Err("找不到桌面目录".into());
+    };
+    let desktop = desktop.canonicalize().unwrap_or(desktop);
+    let mut removed = 0usize;
+    for raw in paths {
+        let path = std::path::Path::new(&raw);
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+        if ext != "lnk" && ext != "url" {
+            log::warn!("跳过清理（非快捷方式）: {}", raw);
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let parent = path
+            .parent()
+            .map(|d| d.canonicalize().unwrap_or_else(|_| d.to_path_buf()));
+        if parent.as_deref() != Some(desktop.as_path()) {
+            log::warn!("跳过清理（不在用户桌面）: {}", raw);
+            continue;
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => removed += 1,
+            Err(e) => log::warn!("清理桌面快捷方式失败: {} -> {}", raw, e),
+        }
+    }
+    log::info!("清理桌面快捷方式: {} 个", removed);
+    Ok(removed)
+}
+
+// ---------- 扫描浏览器书签 ----------
+
+#[derive(serde::Serialize)]
+pub struct BrowserBookmark {
+    pub name: String,
+    pub target: String,
+    /// 书签所在文件夹（用 `/` 连接层级；顶层书签栏内为空 → 「书签栏」等根名）
+    pub folder: String,
+    /// 来源浏览器名（Chrome / Edge / Brave / Chromium）
+    pub browser: String,
+}
+
+/// 读取 Chromium 系浏览器书签（Chrome / Edge / Brave / Chromium）。
+/// 纯文件读取（不跑 PowerShell、不读历史），遍历各浏览器 User Data 下所有配置目录的
+/// `Bookmarks` JSON，递归 roots 收集 `type=url` 节点，按 URL 去重。
+/// Firefox 的 places.sqlite 属二期，不在此列。
+#[tauri::command]
+pub fn scan_browser_bookmarks() -> Result<Vec<BrowserBookmark>, String> {
+    const MAX_BOOKMARKS: usize = 2000;
+    let Some(local) = dirs::data_local_dir() else {
+        return Ok(vec![]);
+    };
+    // (展示名, User Data 相对路径)；均为 Chromium 系，Bookmarks 结构一致
+    let vendors: [(&str, &str); 4] = [
+        ("Chrome", r"Google\Chrome\User Data"),
+        ("Edge", r"Microsoft\Edge\User Data"),
+        ("Brave", r"BraveSoftware\Brave-Browser\User Data"),
+        ("Chromium", r"Chromium\User Data"),
+    ];
+
+    let mut found: Vec<BrowserBookmark> = Vec::new();
+    for (browser, rel) in vendors {
+        let user_data = local.join(rel);
+        if !user_data.is_dir() {
+            continue;
+        }
+        let Ok(profiles) = std::fs::read_dir(&user_data) else {
+            continue;
+        };
+        for profile in profiles.flatten() {
+            let path = profile.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let bookmarks = path.join("Bookmarks");
+            if !bookmarks.is_file() {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&bookmarks) else {
+                continue;
+            };
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+                log::warn!("浏览器书签解析失败: {}", bookmarks.display());
+                continue;
+            };
+            let Some(roots) = json.get("roots").and_then(|r| r.as_object()) else {
+                continue;
+            };
+            for (key, node) in roots {
+                // 根节点自身有 name（本地化，如「书签栏」）；没有则按 key 兜底
+                let root_name = node
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| match key.as_str() {
+                        "bookmark_bar" => "书签栏".to_string(),
+                        "other" => "其他书签".to_string(),
+                        "synced" => "移动端".to_string(),
+                        _ => key.to_string(),
+                    });
+                collect_bookmark_children(node, &root_name, browser, &mut found);
+            }
+        }
+    }
+
+    // 按 URL 去重（同一书签可能同时存在于多个浏览器的配置文件）
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    found.retain(|b| seen.insert(b.target.to_lowercase()));
+    found.sort_by(|a, b| {
+        a.browser
+            .cmp(&b.browser)
+            .then_with(|| a.folder.cmp(&b.folder))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    if found.len() > MAX_BOOKMARKS {
+        found.truncate(MAX_BOOKMARKS);
+    }
+    log::info!("扫描浏览器书签: 共 {} 条", found.len());
+    Ok(found)
+}
+
+/// 递归收集 Chromium 书签节点：`type=url` 收下，`type=folder` 带前缀继续下钻。
+fn collect_bookmark_children(
+    node: &serde_json::Value,
+    prefix: &str,
+    browser: &str,
+    out: &mut Vec<BrowserBookmark>,
+) {
+    let Some(children) = node.get("children").and_then(|c| c.as_array()) else {
+        return;
+    };
+    for child in children {
+        let ty = child.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let name = child
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .trim();
+        match ty {
+            "url" => {
+                let url = child
+                    .get("url")
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("")
+                    .trim();
+                if name.is_empty() || url.is_empty() || url.starts_with("javascript:") {
+                    continue;
+                }
+                out.push(BrowserBookmark {
+                    name: name.to_string(),
+                    target: url.to_string(),
+                    folder: if prefix.is_empty() {
+                        "未分类".to_string()
+                    } else {
+                        prefix.to_string()
+                    },
+                    browser: browser.to_string(),
+                });
+            }
+            "folder" => {
+                if name.is_empty() {
+                    continue;
+                }
+                let sub = if prefix.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{}/{}", prefix, name)
+                };
+                collect_bookmark_children(child, &sub, browser, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 批量抓取网页图标（favicon）：书签/网页资源导入后自动补齐站点图标（见 favicon.rs）。
+/// 返回「原样 target → 图标绝对路径」映射（抓不到为 None）；同域名只抓一次，永不整体报错。
+#[tauri::command]
+pub async fn fetch_favicons(
+    targets: Vec<String>,
+) -> Result<std::collections::HashMap<String, Option<String>>, String> {
+    Ok(crate::favicon::fetch_favicons(targets).await)
 }
 
 // ---------- 运行状态检测 ----------
@@ -3786,5 +4203,51 @@ mod tests {
             crate::chat::PLATFORM_ENTRY_NAME
         );
         assert_eq!(default_session_model_name(&[]), "");
+    }
+
+    // ---- 浏览器书签解析（Chromium Bookmarks JSON）----
+
+    /// 书签树递归：只收 type=url（跳过 javascript: 与空名/空 URL），文件夹拼成 `A/B` 前缀
+    #[test]
+    fn bookmark_tree_walk_collects_urls_with_folder_prefix() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{
+              "name": "书签栏",
+              "type": "folder",
+              "children": [
+                { "type": "url", "name": "GitHub", "url": "https://github.com/" },
+                { "type": "url", "name": "空书签", "url": "" },
+                { "type": "url", "name": "脚本", "url": "javascript:void(0)" },
+                {
+                  "type": "folder",
+                  "name": "前端",
+                  "children": [
+                    { "type": "url", "name": "MDN", "url": "https://developer.mozilla.org/" }
+                  ]
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let mut out = Vec::new();
+        collect_bookmark_children(&json, "书签栏", "Chrome", &mut out);
+
+        assert_eq!(out.len(), 2, "应只保留两条有效 URL");
+        assert_eq!(out[0].name, "GitHub");
+        assert_eq!(out[0].folder, "书签栏");
+        assert_eq!(out[0].browser, "Chrome");
+        assert_eq!(out[1].name, "MDN");
+        assert_eq!(out[1].folder, "书签栏/前端");
+        assert_eq!(out[1].target, "https://developer.mozilla.org/");
+        // 无 children 的节点（如 workspaces_v2）应安全返回空
+        let mut empty = Vec::new();
+        collect_bookmark_children(
+            &serde_json::json!({ "type": "folder", "name": "x" }),
+            "x",
+            "Edge",
+            &mut empty,
+        );
+        assert!(empty.is_empty());
     }
 }

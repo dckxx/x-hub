@@ -115,6 +115,10 @@ const state = reactive<StoreState>({
     clipboard_shortcut: IS_MAC_PREVIEW ? 'CommandOrControl+Alt+V' : 'Ctrl+`',
     search_shortcut: DEFAULT_SEARCH_SHORTCUT,
     chat_shortcut: DEFAULT_CHAT_SHORTCUT,
+    global_shortcut_enabled: true,
+    clipboard_shortcut_enabled: true,
+    search_shortcut_enabled: true,
+    chat_shortcut_enabled: true,
     clipboard_max_items: 500,
     clipboard_ttl_days: 7,
     clipboard_paused: false,
@@ -131,9 +135,11 @@ const state = reactive<StoreState>({
     font_todo: 1,
     note_editor_mode: 'wysiwyg',
     runtime_strategy: 'auto',
+    service_auto_trust: false,
     sidebar_extensions: [],
     extension_open_modes: {},
     extension_link_modes: {},
+    extension_row_click: 'detail',
     run_at_startup: false,
     auto_update_enabled: true,
     update_interval_hours: 4,
@@ -560,6 +566,8 @@ export function useStore() {
     // 以 [新条目, ...组内原序] 整组重写排序位，让新建条目维持「新的在最上」直觉；
     // 组内全部未排序则不用管，创建时间倒序天然置顶。批量创建（序号拆分）并发补值
     // 出现的次序抖动与原有「新条目置顶、组内倒序」默认行为一致。
+    // 置顶条目经 groupOf 独立成「置顶」组，不会出现在日期组的 peers 里——
+    // 新建（未置顶）条目的补位永远排不到置顶条目上面。
     if (isTauri() && t.parent_id == null) {
       const now = new Date()
       const group = groupOf(t, now)
@@ -1125,6 +1133,30 @@ export function useStore() {
     return saved
   }
 
+  /** 启用/禁用某个全局快捷键：禁用 = 后端注销热键但保留键值（重开即恢复），失败回滚内存状态 */
+  async function setShortcutEnabled(
+    kind: 'main' | 'clipboard' | 'search' | 'chat',
+    enabled: boolean,
+  ) {
+    const key = (
+      {
+        main: 'global_shortcut_enabled',
+        clipboard: 'clipboard_shortcut_enabled',
+        search: 'search_shortcut_enabled',
+        chat: 'chat_shortcut_enabled',
+      } as const
+    )[kind]
+    const prev = state.config[key]
+    state.config[key] = enabled
+    if (!isTauri()) return
+    try {
+      await tauriApi.setShortcutEnabled(kind, enabled)
+    } catch (e) {
+      state.config[key] = prev
+      throw e
+    }
+  }
+
   /** 主页面「中上区块」显示内容：token/notes/todo/resources/countdown */
   async function setDashboardMidContent(value: string) {
     state.config.dashboard_mid_content = value
@@ -1246,6 +1278,14 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 全局自动信任 service 扩展：新装/更新版本无需逐个「去授权」即可运行本地后端。
+   *  单独关掉某扩展后端的选择仍优先于本开关（后端 permission_granted 判定） */
+  async function setServiceAutoTrust(enabled: boolean) {
+    state.config.service_auto_trust = enabled
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   /** 固定/取消固定扩展到左侧栏：点击侧栏菜单即在主区打开对应扩展（view 形态） */
   function setSidebarExtension(id: string, pinned: boolean) {
     const cur = state.config.sidebar_extensions ?? []
@@ -1278,6 +1318,13 @@ export function useStore() {
     state.config.extension_link_modes = { ...modes, [id]: mode }
     if (!isTauri()) return
     void tauriApi.saveConfig(state.config)
+  }
+
+  /** 扩展中心列表点击行为：detail（默认，点行看详情）/ open（点行直接打开、右侧 ⋯ 看详情） */
+  async function setExtensionRowClick(value: 'detail' | 'open') {
+    state.config.extension_row_click = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
   }
 
   // ---- 开机自启动 ----
@@ -1627,6 +1674,7 @@ export function useStore() {
     setGlobalShortcut,
     setSearchShortcut,
     setChatShortcut,
+    setShortcutEnabled,
     setDashboardMidContent,
     setDashboardLayout,
     setCountdownSound,
@@ -1641,10 +1689,12 @@ export function useStore() {
     setModuleFontScale,
     setNoteEditorMode,
     setRuntimeStrategy,
+    setServiceAutoTrust,
     setSidebarExtension,
     setSidebarExtensionBulk,
     setExtensionOpenMode,
     setExtensionLinkMode,
+    setExtensionRowClick,
     setRunAtStartup,
     setFloatingBallEnabled,
     setFloatingBallAutoHide,

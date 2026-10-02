@@ -13,6 +13,7 @@
 | 发行版 | 版本 | 包格式 | 状态 |
 |--------|------|--------|------|
 | Ubuntu | **24.04 LTS** | `.deb` | ✅ 实测正常运行 |
+| Ubuntu | **22.04 LTS** | `.deb`（源码构建） | 🧪 自动化测试通过（2026-10：cargo test 291 项 / 源码构建 deb / 安装启动 / 窗口渲染均正常），**未经人工验证** |
 | Fedora | **44** | `.rpm` | ✅ 实测正常运行 |
 | Ubuntu / Fedora | 高于上述版本 | 同上 | ⚠️ 预期可用，未逐一验证 |
 | Debian 系（Debian / Mint / Pop!_OS…） | 对应 Ubuntu 22.04+ 年份 | `.deb` | ⚠️ 机制相同，需自行验证 |
@@ -27,7 +28,9 @@
 
 > **glibc 提醒**：目前 `.deb` / `.rpm` 预发布由 GitHub Actions 的 `ubuntu-latest`（当前 = Ubuntu 24.04）
 > 构建，产物依赖较新的 glibc。**Ubuntu 22.04 及更旧系统大概率报 `GLIBC_2.3x not found`**，
-> 那类机器需要在 22.04 基座上自行构建（见第 8 节）。自查办法：
+> 那类机器需要在 22.04 基座上自行构建（见第 8 节；2026-10 已在 Ubuntu 22.04.5 实机完成
+> 自动化验证：cargo test 全过、源码构建 deb、安装启动正常，但该构建未经人工验证）。
+> 自查办法：
 >
 > ```bash
 > strings /usr/bin/x-hub | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -3

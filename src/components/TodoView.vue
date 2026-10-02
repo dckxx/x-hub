@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
-import { ChevronLeft, ChevronRight, ListTodo, Plus, X } from 'lucide-vue-next'
+import { Check, ChevronLeft, ChevronRight, ListTodo, Plus, X } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Todo, TodoOccurrence, TodoTag } from '../api/tauri'
 import { useTodoDrag } from '../composables/useTodoDrag'
@@ -10,10 +10,12 @@ import {
   addDays,
   calendarGrid,
   compareByOrder,
+  compareChildOrder,
   dueBadge,
   fmtHM,
   inHorizon,
   isoKey,
+  parseServerDate,
   startOfDay,
   viewGroupOf,
   type Horizon,
@@ -102,20 +104,24 @@ const kidsOf = computed(() => {
     if (list) list.push(t)
     else map.set(t.parent_id, [t])
   }
-  for (const list of map.values()) list.sort(compareByOrder)
+  for (const list of map.values()) list.sort(compareChildOrder)
   return map
 })
 
-/** 日历：真实条目按 due_at 落格；虚拟实例按命令返回的时刻落格（虚线） */
+/** 日历：真实条目按 due_at 落格；**已完成也显示**——有截止落原日期，没截止落在完成当天
+ *  （completed_at，UTC 字符串补 Z 解析），用删除线淡显。虚拟实例按命令返回时刻落格（虚线）。
+ *  同格内未完成排在已完成前面。 */
 const realByDay = computed(() => {
   const map = new Map<string, Todo[]>()
   for (const t of topTodos.value) {
-    if (t.done || t.due_at == null) continue
-    const key = isoKey(new Date(t.due_at))
+    const at = t.due_at ?? (t.done ? parseServerDate(t.completed_at)?.getTime() ?? null : null)
+    if (at == null) continue
+    const key = isoKey(new Date(at))
     const list = map.get(key)
     if (list) list.push(t)
     else map.set(key, [t])
   }
+  for (const list of map.values()) list.sort((a, b) => Number(a.done) - Number(b.done))
   return map
 })
 
@@ -135,6 +141,14 @@ const titleOf = computed(() => {
   for (const t of store.state.todos) map.set(t.id, t.title)
   return map
 })
+
+/** 右侧日历下方「选中那天」的待办清单：点格子切换（默认今天），未完成在前、已完成在后 */
+const selectedDay = ref(isoKey(new Date()))
+const selectedDayLabel = computed(() => {
+  const [y, m, d] = selectedDay.value.split('-').map(Number)
+  return `${y} 年 ${m} 月 ${d} 日`
+})
+const selectedTodos = computed<Todo[]>(() => realByDay.value.get(selectedDay.value) ?? [])
 
 const cells = computed(() => calendarGrid(cursor.value, today.value))
 
@@ -362,6 +376,8 @@ let chipDrag: { t: Todo; x: number; y: number; active: boolean } | null = null
 
 function onChipPointerDown(t: Todo, e: PointerEvent) {
   if (e.button !== 0) return
+  // 已完成的条目只做展示（点击进编辑），不允许拖动改期
+  if (t.done) return
   chipDrag = { t, x: e.clientX, y: e.clientY, active: false }
   window.addEventListener('pointermove', onChipPointerMove)
   window.addEventListener('pointerup', onChipPointerUp)
@@ -519,6 +535,7 @@ function onVirtualDown(e: PointerEvent) {
           <span><i class="swatch solid"></i>库里的条目（拖到其他日期可改期）</span>
           <span><i class="swatch dashed"></i>周期规则算出的虚拟实例（不落库，不能拖）</span>
           <span><i class="swatch late"></i>逾期</span>
+          <span><i class="swatch done"></i>已完成</span>
         </div>
 
         <div v-if="calUnit === 'month'" class="tv-grid">
@@ -527,8 +544,9 @@ function onVirtualDown(e: PointerEvent) {
             v-for="c in cells"
             :key="c.key"
             class="tv-cell"
-            :class="{ out: c.out, today: c.today, 'drop-on': dropDay === c.key }"
+            :class="{ out: c.out, today: c.today, 'drop-on': dropDay === c.key, sel: selectedDay === c.key }"
             :data-day="c.key"
+            @click="selectedDay = c.key"
             @dblclick="openNew(new Date(`${c.key}T23:59:00`).getTime())"
           >
             <span class="tv-day">{{ c.day }}</span>
@@ -538,8 +556,8 @@ function onVirtualDown(e: PointerEvent) {
                 :key="'r' + t.id"
                 type="button"
                 class="tv-chip real"
-                :class="{ late: badgeOf(t)?.kind === 'over', dragging: dragId === t.id }"
-                :title="`${t.title}（拖动到其他日期可改期）`"
+                :class="{ done: t.done, late: badgeOf(t)?.kind === 'over', dragging: dragId === t.id }"
+                :title="t.done ? `${t.title}（已完成）` : `${t.title}（拖动到其他日期可改期）`"
                 @pointerdown="onChipPointerDown(t, $event)"
                 @click="onChipClick(t)"
                 @dblclick.stop
@@ -564,8 +582,9 @@ function onVirtualDown(e: PointerEvent) {
             v-for="c in weekCells"
             :key="c.key"
             class="tv-weekcol"
-            :class="{ today: isoKey(c.date) === isoKey(today), 'drop-on': dropDay === c.key }"
+            :class="{ today: isoKey(c.date) === isoKey(today), 'drop-on': dropDay === c.key, sel: selectedDay === c.key }"
             :data-day="c.key"
+            @click="selectedDay = c.key"
           >
             <div class="tv-weekhead">{{ c.date.getMonth() + 1 }}/{{ c.date.getDate() }} 周{{ ['一', '二', '三', '四', '五', '六', '日'][(c.date.getDay() + 6) % 7] }}</div>
             <div class="tv-chips">
@@ -574,8 +593,8 @@ function onVirtualDown(e: PointerEvent) {
                 :key="'r' + t.id"
                 type="button"
                 class="tv-chip real"
-                :class="{ late: badgeOf(t)?.kind === 'over', dragging: dragId === t.id }"
-                :title="`${t.title}（拖动到其他日期可改期）`"
+                :class="{ done: t.done, late: badgeOf(t)?.kind === 'over', dragging: dragId === t.id }"
+                :title="t.done ? `${t.title}（已完成）` : `${t.title}（拖动到其他日期可改期）`"
                 @pointerdown="onChipPointerDown(t, $event)"
                 @click="onChipClick(t)"
                 @dblclick.stop
@@ -593,6 +612,38 @@ function onVirtualDown(e: PointerEvent) {
                 {{ titleOf.get(o.todo_id) ?? '周期待办' }}
               </span>
             </div>
+          </div>
+        </div>
+
+        <!-- 选中那天的待办明细：点日历格子后显示在日历下方（未完成在前、已完成在后） -->
+        <div class="tv-dayview">
+          <div class="tv-dayview-h">
+            <span class="tv-dayview-date">{{ selectedDayLabel }}</span>
+            <span class="cnt">{{ selectedTodos.length }}</span>
+            <span class="tv-spacer"></span>
+            <button
+              type="button"
+              class="tv-ghost"
+              @click="openNew(new Date(`${selectedDay}T23:59:00`).getTime())"
+            >加待办</button>
+          </div>
+          <p v-if="!selectedTodos.length" class="tv-dayview-empty">这天没有待办</p>
+          <div v-else class="tv-dayview-list">
+            <button
+              v-for="t in selectedTodos"
+              :key="t.id"
+              type="button"
+              class="tv-dayview-row"
+              :class="{ done: t.done }"
+              :title="t.done ? `${t.title}（已完成）` : t.title"
+              @click="openEdit(t)"
+            >
+              <span class="tv-dv-mark" :class="{ on: t.done }">
+                <Check v-if="t.done" :size="11" :stroke-width="3" />
+              </span>
+              <span class="tv-dv-title">{{ t.title }}</span>
+              <span class="tv-dv-time">{{ t.done ? '已完成' : (t.due_at ? fmtHM(t.due_at) : '') }}</span>
+            </button>
           </div>
         </div>
       </section>
@@ -895,6 +946,10 @@ function onVirtualDown(e: PointerEvent) {
   border-color: var(--c-red-ink);
   background: var(--c-red-soft);
 }
+.swatch.done {
+  border-color: var(--border-soft);
+  background: transparent;
+}
 .tv-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -919,6 +974,11 @@ function onVirtualDown(e: PointerEvent) {
 }
 .tv-cell.today {
   border-color: var(--brand-500);
+}
+.tv-cell.sel,
+.tv-weekcol.sel {
+  border-color: var(--brand-500);
+  box-shadow: inset 0 0 0 1px var(--brand-500);
 }
 .tv-day {
   font-size: 0.66rem;
@@ -970,6 +1030,96 @@ function onVirtualDown(e: PointerEvent) {
   border-color: var(--c-red-ink);
   background: var(--c-red-soft);
   color: var(--c-red-ink);
+}
+.tv-chip.done {
+  border-color: var(--border-soft);
+  background: transparent;
+  color: var(--text-4);
+  text-decoration: line-through;
+  cursor: pointer;
+}
+.tv-chip.real.done {
+  cursor: pointer;
+}
+/* 日历下方「选中那天」明细 */
+.tv-dayview {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tv-dayview-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+}
+.tv-dayview-date {
+  font-weight: 600;
+  color: var(--text-1);
+}
+.tv-dayview-h .cnt {
+  color: var(--text-4);
+}
+.tv-dayview-empty {
+  margin: 2px 0;
+  font-size: 0.72rem;
+  color: var(--text-4);
+}
+.tv-dayview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tv-dayview-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 4px 6px;
+  font-size: 0.75rem;
+  text-align: left;
+  color: var(--text-1);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.tv-dayview-row:hover {
+  background: var(--bg-card-soft);
+}
+.tv-dv-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 50%;
+  color: #fff;
+}
+.tv-dv-mark.on {
+  background: var(--brand-500);
+  border-color: var(--brand-500);
+}
+.tv-dv-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tv-dayview-row.done .tv-dv-title {
+  color: var(--text-4);
+  text-decoration: line-through;
+}
+.tv-dv-time {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  color: var(--text-4);
 }
 .tv-chip .time {
   margin-left: 4px;

@@ -1,0 +1,137 @@
+# Linux 安装系统 WebView（WebKitGTK 4.1）
+
+> 只想把 x-hub 装到 Linux 上（支持哪些发行版、一键脚本怎么用、装完在哪看数据与日志、
+> Linux 版有哪些差异）请看 [Linux 部署文档](LINUX-DEPLOY.md)；本文讲的是 WebView 依赖、
+> 构建基座与已知问题的**原理**。
+
+## 本地 / 容器构建（推荐）
+
+**发布用包一律在本地或容器里编**，不要在 CI 上编：CI 的 `ubuntu-latest` 通常是 24.04，
+编出来的包 glibc 要求过新（见下面「glibc 基座」一节）。宿主机是 24.04 时用 22.04 容器编即可。
+
+从已发布的 Linux 预发布包安装（自动判断 deb / rpm、先装 WebKit 等运行时依赖再装包）：
+
+```bash
+chmod +x scripts/install-linux.sh
+scripts/install-linux.sh
+```
+
+读 `/etc/os-release`：Debian 系用 `.deb`，Fedora / RHEL / openSUSE 用 `.rpm`。包来自本仓库 tag 含 `-linux.` 的 GitHub Release。指定某一构建：`scripts/install-linux.sh --tag v0.7.0-linux.<sha>`。Release 仍是 draft 时需带 `GH_TOKEN`。
+
+在 **Ubuntu 24.04** 测试机上从源码拉代码、装依赖、打 deb、安装并启动：
+
+```bash
+chmod +x scripts/ubuntu-build.sh
+scripts/ubuntu-build.sh --install --run
+```
+
+默认从 `https://github.com/inkchills/x-hub.git` 的 `feat/linux-support` 克隆到 `~/x-hub-build`；更多选项见 `scripts/ubuntu-build.sh --help`。
+
+## CI 产物（推送即构建）
+
+工作流 [`.github/workflows/linux-build.yml`](.github/workflows/linux-build.yml) 在推送到
+`feat/linux-support` 时运行，也可手动指定 ref。两台 runner 并行：
+
+- `linux-deb`：只打 `.deb`
+- `linux-rpm`：只打 `.rpm`（Ubuntu 上的 `rpm`/`rpmbuild`）
+- `publish`：两台都成功后打 `v{version}-linux.{短 SHA}` tag，上传同一个 prerelease
+
+`scripts/install-linux.sh` 按发行版拉对应附件。切到 22.04 runner 之前，这条路径出来的包
+可能因 glibc 过新而在老系统上不可用。正式发版仍以本地/容器构建或 `release.yml` 为准。
+
+---
+
+x-hub 在 Linux 上用的是发行版自带的 **WebKitGTK 4.1**（`libwebkit2gtk-4.1.so.0`），不是 Windows 的 WebView2，也没有独立安装包可以点一下就下完。
+
+动态链接器在进程进入 `main` 之前就要加载这个 `.so`。缺库时二进制直接起不来，应用内「自动下载 WebView」走不到任何代码，所以不会做进程内自下。用发行版的包管理器装一次即可。
+
+`.deb` 已经声明了运行时依赖。用 `apt` / `aptitude` 装官方包时会自动带上 WebKit，一般不用再手装。
+
+## 先确认缺没缺
+
+```bash
+# 有输出 = 运行时库已经在
+ldconfig -p | grep libwebkit2gtk-4.1.so.0
+```
+
+常见失败形态（装完再开一次）：
+
+```
+error while loading shared libraries: libwebkit2gtk-4.1.so.0: cannot open shared object file
+```
+
+开发态编译失败则是缺 **开发头文件**（`-dev` / `-devel`），和运行时缺库不是同一件事。
+
+## 运行 x-hub（只要运行时库）
+
+| 发行版 | 命令 |
+|--------|------|
+| Debian / Ubuntu | `sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1 librsvg2-2` |
+| Fedora | `sudo dnf install webkit2gtk4.1 libappindicator-gtk3 librsvg2` |
+| Arch / Manjaro | `sudo pacman -S webkit2gtk-4.1 libappindicator-gtk3 librsvg` |
+| openSUSE | `sudo zypper install libwebkit2gtk-4_1-0 libayatana-appindicator3-1 librsvg-2-2` |
+
+装的是 **4.1**。仓库里的 `webkit2gtk-4.0` 对不上，装了也不认。
+
+Debian / Ubuntu 更省事的路径是直接装我们打好的包（依赖会一起拉下来）：
+
+```bash
+sudo apt install ./src-tauri/target/release/bundle/deb/x-hub_*.deb
+```
+
+直接跑 `target/release/x-hub` 或拷贝裸二进制时，不会走 deb 依赖，需要自己执行上表对应发行版那一行。
+
+## 从源码编译（还要开发包）
+
+完整清单以 [Tauri 2 前置条件](https://v2.tauri.app/start/prerequisites/) 为准。Debian / Ubuntu 最少要有：
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+```
+
+Fedora 对应 `webkit2gtk4.1-devel`，Arch 开发头和运行时打在同一个 `webkit2gtk-4.1` 里。
+
+## glibc 基座：打包要在老系统上编
+
+Linux 二进制是**前向**兼容的（在新系统上跑老系统编的包可以，反过来不行）。在 Ubuntu 24.04
+（glibc 2.39）上编出来的包，装到 Ubuntu 22.04（glibc 2.35）会直接起不来：
+
+```
+/usr/bin/x-hub: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.39' not found
+```
+
+所以**发布用包必须在最老的受支持发行版上编**（当前基线 = Ubuntu 22.04 / glibc 2.35）。
+自查办法：
+
+```bash
+dpkg-deb -x x-hub_*.deb /tmp/chk
+strings /tmp/chk/usr/bin/x-hub | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -3
+# 末行不应高于 2.35（在 22.04 容器里编出来是 2.34）
+```
+
+宿主是 24.04 时，用容器编（`docker` 必需）：
+
+```bash
+docker run --rm -u "$(id -u):$(id -g)" \
+  -e HOME=/tmp -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
+  -e PATH=/opt/cargo/bin:/opt/node/bin:/usr/bin:/bin -e CI=true \
+  -v "$PWD":/src -v "$PWD/.cargo-vol":/cargo -v "$PWD/.target-vol":/target \
+  -w /src x-hub-builder:22.04 \
+  bash -lc 'pnpm install --frozen-lockfile && pnpm run tauri:build:deb'
+```
+
+`x-hub-builder:22.04` 是本机自建镜像（`ubuntu:22.04` + WebKitGTK 4.1 开发包 + Rust + Node 20 + pnpm）。
+两个坑：容器内 apt 源要用 **http**（base 镜像不带 ca-certificates，https 会报证书不可信）；
+装完 Node 要**同一步内** `export PATH` 或全程用绝对路径，否则 `npm` 找不到（exit 127）。
+
+## 已知问题
+
+- **悬浮球贴边自动隐藏在 Linux 上已禁用（配置层面强制关闭）**：该窗 `outer_size` 与
+  `inner_size` 不一致（实测差值约 **37px**，视觉球心不等于 `outer` 中心），叠加 Mutter/KWin
+  会把半截出屏的窗口钳回工作区，贴边落点偏移 + 位置抖动无解。因此设置页不渲染该开关，
+  `app.json` 里的值在读取/保存/启动加载三处一律归一为关（`config::floating_ball_auto_hide_for`），
+  Linux 上球只能自由摆放。诊断日志为 `debug!`；部署侧说明见 [LINUX-DEPLOY.md](LINUX-DEPLOY.md) 6.1。
+
+## 太老的发行版
+
+WebKitGTK **4.1** 大约从 Debian 12 / Ubuntu 22.04 / Fedora 37 / 同年份的滚动发行版才有。更老的系统（CentOS 7、Ubuntu 20.04 等）仓库里没有这个 so，也没有可替换的官方 WebView2 安装包。请换受支持的发行版，或在新系统上打 `.deb` 再装过去。

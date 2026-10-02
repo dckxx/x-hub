@@ -43,6 +43,10 @@ async function save(v) {
 
 module 摘要卡与 view 主页若共用数据，抽成 `assets/data.js`（`window.XXX = {...}` 挂全局，纯计算也放这里），两个入口 `<script src="../assets/data.js"></script>` 共享，避免复制两份数据。
 
+## 5. 外链（多数情况不用改）
+
+页面里的 `<a href="https://…">` 链接**保持原样即可**：宿主桥会拦截外链点击、按用户的「链接打开方式」设置打开（默认应用内置浏览器窗口）。两件事不要做：别改成 `target="_blank"` / `window.open`（宿主里静默失效）；别在外链 `<a>` 上绑自己的 click 逻辑（会被宿主接管吞掉），需要自定义点击行为就用按钮 + `xhub.openExternal(url)`（manifest 记得声明 `open-url` 权限）。
+
 ## 改完先验
 
 起本地预览（见 `debug-deploy.md`），浏览器过一遍勾选 / 保存 / 搜索等交互，再进宿主真机跑。

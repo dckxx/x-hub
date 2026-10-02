@@ -1,0 +1,167 @@
+name: Sync upstream
+
+# 定时任务只读默认分支上的 workflow。本文件是 master 上唯一允许与上游不同源的覆盖；
+# Linux 实现永远只留在 feat/linux-support。
+#
+# 1) origin/master ← 快进 upstream/master，再把本文件填回去
+# 2) 把 upstream/master merge 进 feat/linux-support；成功即新基线
+# 3) 有冲突：feat/linux-support 不动；把带冲突记号的 WIP 推到
+#    sync/linux-conflict 并对 feat/linux-support 开 PR（fork 关了 Issues）
+#
+# 不 rebase、不 force-push feat/linux-support，避免 linux-build.yml 打出的 tag 指针漂移。
+on:
+  schedule:
+    - cron: '17 1 * * *'
+  workflow_dispatch:
+    inputs:
+      sync_master:
+        description: '快进 origin/master 到 upstream/master（保留本 workflow）'
+        type: boolean
+        default: true
+      merge_linux:
+        description: '尝试把 upstream/master 合入 feat/linux-support'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM: https://github.com/dckxx/x-hub.git
+      LINUX_BRANCH: feat/linux-support
+      CONFLICT_BRANCH: sync/linux-conflict
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Keep a copy of this workflow
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/xhub-sync
+          cp -f .github/workflows/sync-upstream.yml /tmp/xhub-sync/sync-upstream.yml
+
+      - name: Fetch origin and upstream
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream "$UPSTREAM" 2>/dev/null || git remote set-url upstream "$UPSTREAM"
+          git fetch --prune origin
+          git fetch --prune upstream master
+          git rev-parse --short upstream/master
+          git rev-parse --short origin/master
+
+      - name: Fast-forward master to upstream
+        if: ${{ github.event_name == 'schedule' || inputs.sync_master }}
+        run: |
+          set -euo pipefail
+          git checkout -B master origin/master
+          if git merge-base --is-ancestor upstream/master master; then
+            echo "origin/master 已包含 upstream/master，不需快进"
+          else
+            if git merge --ff-only upstream/master; then
+              echo "master 已快进到 $(git rev-parse --short master)"
+            else
+              echo "master 无法快进，改用 reset + 填回 workflow"
+              git reset --hard upstream/master
+            fi
+          fi
+
+          mkdir -p .github/workflows
+          cp -f /tmp/xhub-sync/sync-upstream.yml .github/workflows/sync-upstream.yml
+          if [ -n "$(git status --porcelain .github/workflows/sync-upstream.yml)" ]; then
+            git add .github/workflows/sync-upstream.yml
+            git commit -m "ci(sync): 保留上游同步 workflow（master 不含 Linux）"
+          fi
+
+          git push origin master
+          echo "pushed master=$(git rev-parse --short master)"
+
+      - name: Merge upstream into Linux baseline
+        id: linux
+        if: ${{ github.event_name == 'schedule' || inputs.merge_linux }}
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify "origin/${LINUX_BRANCH}" >/dev/null 2>&1; then
+            echo "缺少 origin/${LINUX_BRANCH}，跳过"
+            echo "status=missing-branch" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git checkout -B "$LINUX_BRANCH" "origin/${LINUX_BRANCH}"
+          linux_before="$(git rev-parse HEAD)"
+          echo "linux_before=${linux_before}" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "${LINUX_BRANCH} 已包含 upstream/master，无需合并"
+            echo "status=already-current" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git merge --no-edit upstream/master; then
+            git push origin "$LINUX_BRANCH"
+            echo "status=merged" >> "$GITHUB_OUTPUT"
+            echo "linux_after=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "已合并并推送 ${LINUX_BRANCH}=$(git rev-parse --short HEAD)"
+            exit 0
+          fi
+
+          git diff --name-only --diff-filter=U > /tmp/xhub-sync/conflicts.txt || true
+          echo "status=conflict" >> "$GITHUB_OUTPUT"
+          echo "conflict_count=$(wc -l < /tmp/xhub-sync/conflicts.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          echo "有冲突，保留 merge 工作区以推 WIP 分支；${LINUX_BRANCH} 本身不推"
+
+      - name: Publish conflict PR and summary
+        if: ${{ steps.linux.outputs.status == 'conflict' }}
+        env:
+          LINUX_BEFORE: ${{ steps.linux.outputs.linux_before }}
+          CONFLICT_COUNT: ${{ steps.linux.outputs.conflict_count }}
+        run: |
+          set -euo pipefail
+          up_short="$(git rev-parse --short upstream/master)"
+          linux_short="${LINUX_BEFORE:0:7}"
+
+          {
+            echo "## Linux 基线无法自动合入上游 master"
+            echo
+            echo "- 上游：\`dckxx/x-hub\` \`${up_short}\`"
+            echo "- Linux 基线仍停：\`${LINUX_BRANCH}\` \`${linux_short}\`"
+            echo "- master **没有** 合入 Linux 代码"
+            echo "- 冲突文件数：${CONFLICT_COUNT}"
+            echo
+            echo '```'
+            cat /tmp/xhub-sync/conflicts.txt
+            echo '```'
+            echo
+            echo "在 PR 里消掉冲突记号后 merge 到 \`${LINUX_BRANCH}\` 即成新基线。"
+          } | tee -a "$GITHUB_STEP_SUMMARY" /tmp/xhub-sync/body.md
+
+          git add -A
+          git commit --no-verify -m "wip(sync): 合入 upstream/master@${up_short} 有冲突，待手修"
+          git branch -f "$CONFLICT_BRANCH" HEAD
+          git reset --hard "$LINUX_BEFORE"
+          git push --force origin "$CONFLICT_BRANCH"
+
+          existing=$(gh pr list --repo "${{ github.repository }}" --base "$LINUX_BRANCH" --head "$CONFLICT_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "${existing}" ]; then
+            gh pr comment "$existing" --repo "${{ github.repository }}" --body-file /tmp/xhub-sync/body.md
+            echo "updated PR #${existing}" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            gh pr create --repo "${{ github.repository }}" \
+              --base "$LINUX_BRANCH" \
+              --head "$CONFLICT_BRANCH" \
+              --title "wip(sync): 上游 ${up_short} 与 Linux 基线冲突" \
+              --body-file /tmp/xhub-sync/body.md
+          fi

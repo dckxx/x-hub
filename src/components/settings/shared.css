@@ -589,9 +589,22 @@
 }
 .settings-view .shortcut-edit{
   min-width: 240px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 禁用态（该快捷键已关）：输入框整体压暗，明确「保留但不生效」 */
+.settings-view .shortcut-edit.off .shortcut-input-wrap{
+  opacity: 0.45;
+  pointer-events: none;
+}
+.settings-view .shortcut-toggle{
+  flex-shrink: 0;
 }
 .settings-view .shortcut-input-wrap{
   width: 100%;
+  flex: 1;
+  min-width: 0;
   position: relative;
 }
 .settings-view .shortcut-icon{

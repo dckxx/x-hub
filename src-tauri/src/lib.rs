@@ -1,4 +1,3 @@
-mod about;
 mod account;
 mod api_spec;
 mod autostart;
@@ -14,6 +13,7 @@ mod countdown_window;
 mod db;
 mod extension;
 mod ext_protocol;
+mod favicon;
 mod floating_ball;
 mod float_window;
 pub mod market;
@@ -179,6 +179,75 @@ pub fn main_window(app: &tauri::AppHandle) -> Option<tauri::Window<tauri::Wry>> 
     app.get_window("main")
 }
 
+/// 纯几何：两个物理像素矩形是否相交（窗口是否还落在某块屏幕上）。
+/// 边缘恰好相切视为不相交。
+fn physical_rects_intersect(
+    ax: i32,
+    ay: i32,
+    aw: u32,
+    ah: u32,
+    bx: i32,
+    by: i32,
+    bw: u32,
+    bh: u32,
+) -> bool {
+    ax < bx.saturating_add(bw as i32)
+        && bx < ax.saturating_add(aw as i32)
+        && ay < by.saturating_add(bh as i32)
+        && by < ay.saturating_add(ah as i32)
+}
+
+/// 纯几何：把窗口常规尺寸夹进可用区（逻辑像素，预留 16px 边距、极小屏兜底），
+/// 小屏启动「先夹后最大化」用——否则还原（restore down）拿回的还是超屏几何。
+fn fit_window_size(w: f64, h: f64, avail_w: f64, avail_h: f64) -> (f64, f64) {
+    let fit = |v: f64, avail: f64, min: f64| v.min((avail - 16.0).max(min)).max(min);
+    (fit(w, avail_w, 320.0), fit(h, avail_h, 240.0))
+}
+
+/// 恢复位置完全脱离所有显示器（拔掉副屏残留坐标 / 位置漂移出屏）时，
+/// 把窗口搬回主显示器工作区左上角。只救「完全不可见」：与任一屏幕仍有交集的
+/// （含负坐标多显示器）一律不动。
+fn rescue_offscreen_window(window: &tauri::Window<tauri::Wry>) {
+    let Ok(pos) = window.outer_position() else { return };
+    let Ok(size) = window.outer_size() else { return };
+    let monitors = window.available_monitors().unwrap_or_default();
+    let visible = monitors.iter().any(|m| {
+        let wa = m.work_area();
+        physical_rects_intersect(
+            pos.x,
+            pos.y,
+            size.width,
+            size.height,
+            wa.position.x,
+            wa.position.y,
+            wa.size.width,
+            wa.size.height,
+        )
+    });
+    if visible {
+        return;
+    }
+    let fallback = window
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| monitors.into_iter().next());
+    if let Some(m) = fallback {
+        let wa = m.work_area();
+        let x = wa.position.x.saturating_add(16);
+        let y = wa.position.y.saturating_add(16);
+        log::warn!(
+            "窗口位置 ({},{}) 不在任何显示器上，移回 {} 工作区 ({},{})",
+            pos.x,
+            pos.y,
+            m.name().map_or("主显示器", |n| n.as_str()),
+            x,
+            y
+        );
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+}
+
 /// 应用启动时恢复上次保存的窗口位置、尺寸与置顶状态
 fn restore_window_state(app: &tauri::App) {
     let config = config::load();
@@ -190,8 +259,50 @@ fn restore_window_state(app: &tauri::App) {
                 let _ = window.set_position(tauri::LogicalPosition::new(x, y));
             }
         }
+        // 位置恢复后先救出屏：is_position_on_screen 的 ±10000 粗检挡不住拔掉
+        // 副屏/漂移残留的坐标，而位置完全出屏时 current_monitor 为 None，
+        // 连下面的小屏最大化兜底都会被跳过
+        rescue_offscreen_window(&window);
         if ws.always_on_top {
             let _ = window.set_always_on_top(true);
+        }
+        // 小屏适配：屏幕（按窗口当前所在显示器，取不到回退主显示器）容不下
+        // 默认 1400×900 时直接最大化启动——否则窗口下半部分掉到屏幕外，没有任何
+        // 入口能把窗口拖回来。物理像素先按 DPI 缩放折算成逻辑像素再比较；
+        // 比较基准取「默认尺寸与记忆尺寸的较大者」，记忆尺寸更小时也按默认判。
+        // monitor 查找必须连 Ok(None)（窗口不在任何屏上）一起兜底回主显示器：
+        // .or_else 只兜 Err 不兜 None，None 时整段静默跳过。
+        let want_w = ws.width.max(1400.0);
+        let want_h = ws.height.max(900.0);
+        let monitor = window
+            .current_monitor()
+            .ok()
+            .flatten()
+            .or_else(|| window.primary_monitor().ok().flatten());
+        if let Some(monitor) = monitor {
+            let scale = monitor.scale_factor();
+            let logical_w = monitor.size().width as f64 / scale;
+            let logical_h = monitor.size().height as f64 / scale;
+            if logical_w < want_w || logical_h < want_h {
+                log::info!(
+                    "屏幕逻辑分辨率 {:.0}x{:.0} 小于窗口 {:.0}x{:.0}，启动即最大化",
+                    logical_w,
+                    logical_h,
+                    want_w,
+                    want_h
+                );
+                // 先把常规几何夹进工作区再最大化：Windows 的还原态记住的是
+                // maximize 前的尺寸，直接最大化会让「还原」回到超屏窗口
+                let wa = monitor.work_area();
+                let (fit_w, fit_h) = fit_window_size(
+                    ws.width,
+                    ws.height,
+                    wa.size.width as f64 / scale,
+                    wa.size.height as f64 / scale,
+                );
+                let _ = window.set_size(tauri::LogicalSize::new(fit_w, fit_h));
+                let _ = window.maximize();
+            }
         }
         log::info!(
             "恢复窗口状态: {}x{} @ ({:?},{:?}) 置顶={}",
@@ -210,20 +321,66 @@ fn persist_window_state(app: &tauri::AppHandle) {
         if window.is_minimized().unwrap_or(false) {
             return;
         }
+        // 最大化态不覆盖记忆的常规几何：保存的是放大后的整屏尺寸，下次启动
+        // 会以「非最大化 + 超大窗口」恢复，反而把窗口撑出屏幕
+        if window.is_maximized().unwrap_or(false) {
+            return;
+        }
         if let Ok(pos) = window.outer_position() {
             if let Ok(size) = window.inner_size() {
+                // inner_size/outer_position 返回物理像素，落盘前统一折算成逻辑像素：
+                // 恢复侧按 LogicalSize/LogicalPosition 解释，直接存物理值会在非 100%
+                // 缩放下每关开一轮放大 scale_factor 倍、位置同步向右下漂移
+                //（125% 用户窗口逐次涨到超出屏幕即此因，2026-09-29 修）
+                let scale = window.scale_factor().unwrap_or(1.0);
+                let pos = pos.to_logical::<f64>(scale);
+                let size = size.to_logical::<f64>(scale);
                 let _guard = config::lock();
                 let mut cfg = config::load();
-                cfg.window.x = Some(pos.x as f64);
-                cfg.window.y = Some(pos.y as f64);
-                cfg.window.width = size.width as f64;
-                cfg.window.height = size.height as f64;
+                cfg.window.x = Some(pos.x);
+                cfg.window.y = Some(pos.y);
+                cfg.window.width = size.width;
+                cfg.window.height = size.height;
                 match config::save(&cfg) {
                     Ok(()) => log::debug!("窗口状态已保存: {}x{} @ ({},{})", size.width, size.height, pos.x, pos.y),
                     Err(e) => log::warn!("窗口状态保存失败: {}", e),
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rects_intersect_covers_overlap_and_miss() {
+        // 完全包含
+        assert!(physical_rects_intersect(0, 0, 1400, 900, -100, -100, 3000, 2000));
+        // 部分重叠
+        assert!(physical_rects_intersect(1000, 500, 1400, 900, 1920, 0, 1920, 1080));
+        // 负坐标副屏（主屏左侧）
+        assert!(physical_rects_intersect(-500, 100, 1400, 900, -1920, 0, 1920, 1080));
+        // 完全在屏幕右侧外
+        assert!(!physical_rects_intersect(3000, 0, 1400, 900, 0, 0, 1920, 1080));
+        // 完全在屏幕下方外
+        assert!(!physical_rects_intersect(0, 2000, 1400, 900, 0, 0, 1920, 1080));
+        // 边缘恰好相切不算相交
+        assert!(!physical_rects_intersect(1920, 0, 1400, 900, 0, 0, 1920, 1080));
+    }
+
+    #[test]
+    fn fit_size_clamps_only_what_overflows() {
+        // 屏内尺寸原样保留
+        assert_eq!(fit_window_size(1200.0, 700.0, 1536.0, 824.0), (1200.0, 700.0));
+        // 超屏夹到 可用区−16（125% 脏配置 1750×1125 落在 1120×720 逻辑屏）
+        assert_eq!(fit_window_size(1750.0, 1125.0, 1120.0, 720.0), (1104.0, 704.0));
+        // 仅一个维度超
+        assert_eq!(fit_window_size(1600.0, 650.0, 1536.0, 824.0), (1520.0, 650.0));
+        // 极小屏不会夹出负/零尺寸
+        let (w, h) = fit_window_size(1750.0, 1125.0, 300.0, 200.0);
+        assert_eq!((w, h), (320.0, 240.0));
     }
 }
 
@@ -319,7 +476,10 @@ pub fn run() {
             crate::ext_protocol::handle(ctx.app_handle(), request)
         })
         .setup(|app| {
-            log::info!("========== x-hub 启动 ==========");
+            log::info!(
+                "========== x-hub 启动 ========== build={}",
+                option_env!("XHUB_BUILD_TAG").unwrap_or("unknown")
+            );
 
             // 资产协议作用域：**只**放行必要的子目录（图标 / 壁纸 / 剪贴板图片 / 扩展），
             // 绝不放行整个数据根，也绝不写回 tauri.conf 的 `$APPDATA/**`。
@@ -527,6 +687,21 @@ pub fn run() {
                 crate::clipboard::toggle_overlay(&app_handle);
             });
 
+            // 搜索快捷键事件：唤起主窗（对话框由主窗前端收到同名事件后打开）
+            let app_handle = app.handle().clone();
+            app.listen("search-shortcut", move |_| {
+                crate::tray::show_window(&app_handle);
+            });
+
+            // AI 对话快捷键事件：抽屉形态先唤起主窗（面板在主窗里）；
+            // 独立窗口形态不弹主窗，由主窗前端收到事件后直接唤起对话小窗
+            let app_handle = app.handle().clone();
+            app.listen("chat-shortcut", move |_| {
+                if !crate::chat_window::mode_enabled() {
+                    crate::tray::show_window(&app_handle);
+                }
+            });
+
             // 静默检查更新：启动 5s 后一次，此后按配置间隔（默认 4h）循环。
             // 受 auto_update_enabled 开关控制；检查失败静默（updater 内部记日志）。
             {
@@ -556,6 +731,7 @@ pub fn run() {
             commands::delete_resource,
             commands::reorder_resources,
             commands::launch_resource,
+            commands::launch_resource_as_admin,
             commands::list_installed_browsers,
             commands::open_url_with_browser,
             commands::create_note,
@@ -569,6 +745,7 @@ pub fn run() {
             commands::delete_todo,
             commands::schedule_todo,
             commands::reorder_todo_orders,
+            commands::move_todo_child,
             commands::set_todo_description,
             commands::set_todo_pinned,
             commands::set_todo_repeat,
@@ -614,6 +791,9 @@ pub fn run() {
             commands::set_always_on_top_config,
             commands::get_global_shortcut,
             commands::set_global_shortcut,
+            commands::set_search_shortcut,
+            commands::set_chat_shortcut,
+            commands::set_shortcut_enabled,
             commands::get_run_at_startup,
             commands::set_run_at_startup,
             commands::get_startup_hidden,
@@ -631,6 +811,10 @@ pub fn run() {
             commands::import_note_image,
             commands::inspect_path,
             commands::scan_installed_apps,
+            commands::scan_desktop,
+            commands::delete_desktop_shortcuts,
+            commands::scan_browser_bookmarks,
+            commands::fetch_favicons,
             commands::get_running_processes,
             commands::list_tags,
             commands::create_tag,
@@ -760,6 +944,7 @@ pub fn run() {
             updater::download_update,
             updater::get_update_status,
             updater::skip_update_version,
+            updater::snooze_update,
             process::open_external,
             xhub_api::xhub_call,
             commands::check_connectivity,

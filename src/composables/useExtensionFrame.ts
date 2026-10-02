@@ -44,6 +44,27 @@ export function parseXHubError(err: unknown): { code: string; message: string } 
 }
 
 /**
+ * 错误信息是否为「service 后端未授权」类：宿主在 read_extension_entry 就拦截未信任的
+ * service 扩展（PERMISSION_DENIED: 本地后端尚未授权…），扩展页面根本不会加载，
+ * 因此「去授权」入口必须挂在宿主自己的错误态上，而不是扩展页面里。
+ */
+export function isUnauthorizedMessage(msg: string | null | undefined): boolean {
+  return /PERMISSION_DENIED|尚未授权|未获信任/.test(msg ?? '')
+}
+
+/**
+ * 请求宿主打开某扩展的设置/授权弹窗：广播全局事件（与桥 API runtime.openPermissions
+ * 同一条通道），由主窗 index.vue 接手——切到扩展中心并打开该扩展的设置弹窗。
+ * 从扩展独立窗发起同样成立（主窗常驻监听）。
+ */
+export function requestOpenExtensionSettings(extId: string) {
+  if (!isTauri()) return
+  void import('@tauri-apps/api/event')
+    .then(({ emit }) => emit('open-extension-settings', extId))
+    .catch(() => {})
+}
+
+/**
  * 扩展入口 URL 由后端 `read_extension_entry` 直接返回（`xhub-ext` 协议，逐段 percent 编码），
  * 前端不再自行拼 asset 协议地址：扩展 origin 因此与承载宿主数据的 `asset.localhost` 不同源，
  * 扩展无法直接读取数据根下的数据库与配置（见 docs/adr/0008-extension-content-origin-isolation.md）。

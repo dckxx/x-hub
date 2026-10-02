@@ -9,16 +9,36 @@ on:
 
 jobs:
   check:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config \
+            libgtk-3-dev \
+            libsecret-1-dev
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
+          cache: pnpm
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -27,20 +47,17 @@ jobs:
         uses: swatinem/rust-cache@v2
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Frontend type check & build
-        run: npm run build
+        run: pnpm run build
 
       # 安全回归（tests/security.test.mjs）：此前只存在于 package.json，CI 从未执行
       - name: Frontend security tests
-        run: npm run test:security
+        run: pnpm run test:security
 
       - name: Rust check
         run: cargo check --manifest-path src-tauri/Cargo.toml
 
-      # Rust 单测（含扩展内容协议的入口引用改写夹具回归）。必须走这个包装脚本：
-      # 它会给测试 exe 嵌 Common-Controls v6 manifest，否则 Windows 上测试进程
-      # 起不来（STATUS_ENTRYPOINT_NOT_FOUND），表现为「测试静默没跑」。
       - name: Rust tests
-        run: npm run tauri:test
+        run: cargo test --manifest-path src-tauri/Cargo.toml

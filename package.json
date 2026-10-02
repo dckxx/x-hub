@@ -1,8 +1,9 @@
 {
   "name": "x-hub",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.7.4",
   "type": "module",
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
     "test:security": "node --test tests/security.test.mjs",
     "dev": "vite",
@@ -14,7 +15,10 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:test": "pwsh -NoProfile -File scripts/cargo-test.ps1"
+    "tauri:build:deb": "tauri build --bundles deb",
+    "tauri:build:rpm": "tauri build --bundles rpm",
+    "tauri:build:linux": "tauri build --bundles deb,rpm",
+    "tauri:test": "cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
     "@internationalized/date": "^3.12.3",

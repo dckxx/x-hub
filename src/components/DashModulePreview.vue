@@ -465,6 +465,7 @@ const kind = computed(() => {
           <div v-for="t in g.items" :key="t.id" class="todo-row">
             <span class="todo-check"></span>
             <span class="todo-pri" :style="{ background: priBg(t.priority) }"></span>
+            <Pin v-if="t.pinned" class="pb-pin" />
             <span class="todo-label">{{ t.title }}</span>
             <span v-if="t.badge" class="todo-badge" :class="t.badge.kind">
               <component :is="BADGE_ICON[t.badge.kind]" class="ic-xs" />{{ t.badge.text }}
@@ -523,7 +524,7 @@ const kind = computed(() => {
       </header>
       <div v-if="sudaCustom.configured && sudaCustom.items.length" class="scc-grid">
         <div v-for="r in sudaCustom.items" :key="r.id" class="scc-item">
-          <span class="scc-icon" :style="{ background: sudaAccent(r).soft }">
+          <span class="scc-icon" :style="sudaImg(r) ? {} : { background: sudaAccent(r).soft }">
             <img v-if="sudaImg(r)" :src="sudaImg(r)" class="scc-img" alt="" @error="failedIcons.add(r.id)" />
             <Globe v-else-if="r.kind === 'web'" class="scc-lg" style="color: var(--c-green-ink)" />
             <component
@@ -1547,7 +1548,6 @@ html[data-theme='dark'] .dpv {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  background: var(--bg-card);
 }
 .rb-initial {
   font-size: calc(17 * var(--u));

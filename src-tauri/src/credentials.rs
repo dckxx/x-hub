@@ -26,16 +26,12 @@ pub fn migrate_to_keyring(path: &Path, service: &str, fixed_key: Option<&str>) -
     })
 }
 
-/// 远端凭据请求必须使用 HTTPS；仅明确回环地址可使用本地 HTTP 服务。
+/// 供应商端点仅接受 http/https；凭据一律走请求头，禁止内嵌在 URL 或携带 # 片段。
 pub fn validate_endpoint(url: &str) -> Result<(), String> {
     let url = reqwest::Url::parse(url).map_err(|_| "服务地址格式不正确")?;
-    let local = url.host_str().map(|host| {
-        host == "localhost" || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>()
-            .map(|ip| ip.is_loopback()).unwrap_or(false)
-    }).unwrap_or(false);
-    if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some()
-        || !(url.scheme() == "https" || (url.scheme() == "http" && local)) {
-        return Err("安全限制：远端 AI 服务必须使用 HTTPS；HTTP 仅允许本机回环地址".into());
+    if !(url.scheme() == "http" || url.scheme() == "https")
+        || !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+        return Err("服务地址仅支持 http/https，且不得内嵌账号密码或 # 片段".into());
     }
     Ok(())
 }
@@ -56,11 +52,23 @@ mod tests {
         assert!(!path.exists());
     }
     #[test]
-    fn security_remote_credentials_require_https() {
-        for url in ["https://example.com/v1", "http://127.0.0.1:11434/v1", "http://[::1]:11434/v1"] {
+    fn endpoint_accepts_http_and_https_only() {
+        for url in [
+            "https://example.com/v1",
+            "http://example.com/v1",
+            "http://192.168.1.10:8000/v1",
+            "http://127.0.0.1:11434/v1",
+            "http://[::1]:11434/v1",
+        ] {
             assert!(validate_endpoint(url).is_ok(), "{url}");
         }
-        for url in ["http://example.com/v1", "http://127.0.0.1.example.com/v1", "file:///secret", "https://user:pass@example.com/"] {
+        for url in [
+            "ftp://example.com/v1",
+            "file:///secret",
+            "https://user:pass@example.com/",
+            "http://user@example.com/v1",
+            "https://example.com/v1#frag",
+        ] {
             assert!(validate_endpoint(url).is_err(), "{url}");
         }
     }

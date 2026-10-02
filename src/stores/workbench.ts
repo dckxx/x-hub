@@ -33,6 +33,8 @@ const IS_MAC_PREVIEW =
 const DEFAULT_GLOBAL_SHORTCUT = IS_MAC_PREVIEW
   ? 'CommandOrControl+Shift+Space'
   : 'Ctrl+Shift+Space'
+const DEFAULT_SEARCH_SHORTCUT = IS_MAC_PREVIEW ? 'CommandOrControl+K' : 'Ctrl+K'
+const DEFAULT_CHAT_SHORTCUT = IS_MAC_PREVIEW ? 'CommandOrControl+Shift+K' : 'Ctrl+Shift+K'
 
 interface StoreState {
   resources: Resource[]
@@ -111,6 +113,12 @@ const state = reactive<StoreState>({
     chat_window_y: null,
     chat_window_pinned: false,
     clipboard_shortcut: IS_MAC_PREVIEW ? 'CommandOrControl+Alt+V' : 'Ctrl+`',
+    search_shortcut: DEFAULT_SEARCH_SHORTCUT,
+    chat_shortcut: DEFAULT_CHAT_SHORTCUT,
+    global_shortcut_enabled: true,
+    clipboard_shortcut_enabled: true,
+    search_shortcut_enabled: true,
+    chat_shortcut_enabled: true,
     clipboard_max_items: 500,
     clipboard_ttl_days: 7,
     clipboard_paused: false,
@@ -127,12 +135,16 @@ const state = reactive<StoreState>({
     font_todo: 1,
     note_editor_mode: 'wysiwyg',
     runtime_strategy: 'auto',
+    service_auto_trust: false,
     sidebar_extensions: [],
     extension_open_modes: {},
+    extension_link_modes: {},
+    extension_row_click: 'detail',
     run_at_startup: false,
     auto_update_enabled: true,
     update_interval_hours: 4,
     skipped_update_version: '',
+    update_snooze_until_ms: 0,
     floating_ball_enabled: true,
     floating_ball_auto_hide: true,
     floating_ball_with_main: false,
@@ -358,6 +370,13 @@ export function useStore() {
     if (r) r.last_launched_at = new Date().toISOString()
   }
 
+  /** 以管理员身份启动「程序」资源（UAC 确认；网页/文件由后端拒绝） */
+  async function launchResourceAsAdmin(id: number) {
+    await tauriApi.launchResourceAsAdmin(id)
+    const r = state.resources.find((x) => x.id === id)
+    if (r) r.last_launched_at = new Date().toISOString()
+  }
+
   // ---- 速达小类（ADR 0012）----
   async function refreshSubcategories() {
     if (!isTauri()) return
@@ -547,6 +566,8 @@ export function useStore() {
     // 以 [新条目, ...组内原序] 整组重写排序位，让新建条目维持「新的在最上」直觉；
     // 组内全部未排序则不用管，创建时间倒序天然置顶。批量创建（序号拆分）并发补值
     // 出现的次序抖动与原有「新条目置顶、组内倒序」默认行为一致。
+    // 置顶条目经 groupOf 独立成「置顶」组，不会出现在日期组的 peers 里——
+    // 新建（未置顶）条目的补位永远排不到置顶条目上面。
     if (isTauri() && t.parent_id == null) {
       const now = new Date()
       const group = groupOf(t, now)
@@ -582,15 +603,42 @@ export function useStore() {
   async function updateTodo(id: number, title: string, priority: number) {
     const i = state.todos.findIndex((t) => t.id === id)
     if (i < 0) return null
+    const wasPriority = state.todos[i].priority
+    let updated: Todo
     if (isTauri()) {
-      const updated = await tauriApi.updateTodo(id, title, priority)
+      updated = await tauriApi.updateTodo(id, title, priority)
       state.todos[i] = updated
-      return updated
+    } else {
+      const cur = state.todos[i]
+      updated = { ...cur, title, priority, updated_at: new Date().toISOString() }
+      state.todos[i] = updated
     }
-    const cur = state.todos[i]
-    const updated = { ...cur, title, priority, updated_at: new Date().toISOString() }
-    state.todos[i] = updated
+    // 优先级与「置顶」联动（跟手动置顶同一状态，保证观感与行为一致）：
+    // 切到「紧急」(2) → 自动置顶并排到「置顶」组最前；从紧急降下来 → 取消自动置顶。
+    if (priority === 2 && wasPriority !== 2) await promoteUrgent(id)
+    else if (wasPriority === 2 && priority !== 2) await demoteUrgent(id)
     return updated
+  }
+
+  /**
+   * 优先级切成「紧急」时自动置顶：直接复用 `pinned` 字段（与手动置顶同一状态），
+   * 再把自己的排序位排到「置顶」组最前。只处理未完成的顶级待办（子项 / 已完成不参与）。
+   */
+  async function promoteUrgent(id: number) {
+    const t = state.todos.find((x) => x.id === id)
+    if (!t || t.parent_id != null || t.done) return
+    if (!t.pinned) await setTodoPinned(id, true)
+    const peers = state.todos
+      .filter((x) => x.parent_id == null && !x.done && x.id !== id && x.pinned)
+      .sort(compareByOrder)
+    await assignTodoOrder([id, ...peers.map((x) => x.id)])
+  }
+
+  /** 从「紧急」降级时取消自动置顶（仅当当前处于置顶态，避免无谓写库） */
+  async function demoteUrgent(id: number) {
+    const t = state.todos.find((x) => x.id === id)
+    if (!t || t.parent_id != null || !t.pinned) return
+    await setTodoPinned(id, false)
   }
 
   async function deleteTodo(id: number) {
@@ -627,6 +675,35 @@ export function useStore() {
   /** 拖拽排序落库：前端按分组计算完整顺序后调用 */
   function reorderTodos(ids: number[]) {
     return assignTodoOrder(ids)
+  }
+
+  /**
+   * 跨父拖拽落库：把子待办改挂到另一个顶级父待办，并按 `orderedIds` 重写目标父下的子项排序。
+   * 本地乐观更新（改 parent_id + 目标父下 sort_order），后端失败则整批回滚并抛出，由调用方提示。
+   */
+  async function moveTodoChild(id: number, newParentId: number, orderedIds: number[]) {
+    const snapshot = state.todos.map((t) => ({
+      id: t.id,
+      parent_id: t.parent_id,
+      sort_order: t.sort_order,
+    }))
+    const rank = new Map(orderedIds.map((x, i) => [x, i + 1]))
+    state.todos = state.todos.map((t) => {
+      if (t.id === id) return { ...t, parent_id: newParentId }
+      const r = rank.get(t.id)
+      return r == null ? t : { ...t, sort_order: r }
+    })
+    if (!isTauri()) return
+    try {
+      await tauriApi.moveTodoChild(id, newParentId, orderedIds)
+    } catch (e) {
+      const byId = new Map(snapshot.map((s) => [s.id, s]))
+      state.todos = state.todos.map((t) => {
+        const s = byId.get(t.id)
+        return s ? { ...t, parent_id: s.parent_id, sort_order: s.sort_order } : t
+      })
+      throw e
+    }
   }
 
   /** 待办浮窗等外部修改后刷新列表 */
@@ -817,7 +894,11 @@ export function useStore() {
 
   async function focusDetachedSticky(slot: number) {
     if (!isTauri()) return false
-    return tauriApi.focusDetachedSticky(slot)
+    const ok = await tauriApi.focusDetachedSticky(slot)
+    // 聚焦失败 = 后端已无该浮窗（空内容关闭浮窗时记录即被删除）：
+    // 清掉本地幻影记录，让便签卡的「脱离」按钮从「已脱离」恢复为可脱离
+    if (!ok) state.detached = state.detached.filter((x) => x.slot !== slot)
+    return ok
   }
 
   /** 浮窗输入保存（600ms 防抖由浮窗组件处理） */
@@ -1036,6 +1117,46 @@ export function useStore() {
     return saved
   }
 
+  async function setSearchShortcut(value: string) {
+    state.config.search_shortcut = value
+    if (!isTauri()) return value
+    const saved = await tauriApi.setSearchShortcut(value)
+    state.config.search_shortcut = saved
+    return saved
+  }
+
+  async function setChatShortcut(value: string) {
+    state.config.chat_shortcut = value
+    if (!isTauri()) return value
+    const saved = await tauriApi.setChatShortcut(value)
+    state.config.chat_shortcut = saved
+    return saved
+  }
+
+  /** 启用/禁用某个全局快捷键：禁用 = 后端注销热键但保留键值（重开即恢复），失败回滚内存状态 */
+  async function setShortcutEnabled(
+    kind: 'main' | 'clipboard' | 'search' | 'chat',
+    enabled: boolean,
+  ) {
+    const key = (
+      {
+        main: 'global_shortcut_enabled',
+        clipboard: 'clipboard_shortcut_enabled',
+        search: 'search_shortcut_enabled',
+        chat: 'chat_shortcut_enabled',
+      } as const
+    )[kind]
+    const prev = state.config[key]
+    state.config[key] = enabled
+    if (!isTauri()) return
+    try {
+      await tauriApi.setShortcutEnabled(kind, enabled)
+    } catch (e) {
+      state.config[key] = prev
+      throw e
+    }
+  }
+
   /** 主页面「中上区块」显示内容：token/notes/todo/resources/countdown */
   async function setDashboardMidContent(value: string) {
     state.config.dashboard_mid_content = value
@@ -1157,6 +1278,14 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 全局自动信任 service 扩展：新装/更新版本无需逐个「去授权」即可运行本地后端。
+   *  单独关掉某扩展后端的选择仍优先于本开关（后端 permission_granted 判定） */
+  async function setServiceAutoTrust(enabled: boolean) {
+    state.config.service_auto_trust = enabled
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   /** 固定/取消固定扩展到左侧栏：点击侧栏菜单即在主区打开对应扩展（view 形态） */
   function setSidebarExtension(id: string, pinned: boolean) {
     const cur = state.config.sidebar_extensions ?? []
@@ -1181,6 +1310,21 @@ export function useStore() {
     state.config.extension_open_modes = { ...modes, [id]: mode }
     if (!isTauri()) return
     void tauriApi.saveConfig(state.config)
+  }
+
+  /** 扩展链接打开方式：inapp（应用内浏览器，默认）/ browser（系统默认浏览器） */
+  function setExtensionLinkMode(id: string, mode: string) {
+    const modes = state.config.extension_link_modes ?? {}
+    state.config.extension_link_modes = { ...modes, [id]: mode }
+    if (!isTauri()) return
+    void tauriApi.saveConfig(state.config)
+  }
+
+  /** 扩展中心列表点击行为：detail（默认，点行看详情）/ open（点行直接打开、右侧 ⋯ 看详情） */
+  async function setExtensionRowClick(value: 'detail' | 'open') {
+    state.config.extension_row_click = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
   }
 
   // ---- 开机自启动 ----
@@ -1458,6 +1602,7 @@ export function useStore() {
     removeResource,
     reorderResources,
     launchResource,
+    launchResourceAsAdmin,
     openResourceInBrowser,
     refreshSubcategories,
     subcategoriesOf,
@@ -1484,6 +1629,7 @@ export function useStore() {
     deleteTodo,
     scheduleTodo,
     reorderTodos,
+    moveTodoChild,
     refreshTodos,
     setTodoDescription,
     setTodoPinned,
@@ -1526,6 +1672,9 @@ export function useStore() {
     setSidebarToggle,
     setAlwaysOnTop,
     setGlobalShortcut,
+    setSearchShortcut,
+    setChatShortcut,
+    setShortcutEnabled,
     setDashboardMidContent,
     setDashboardLayout,
     setCountdownSound,
@@ -1540,9 +1689,12 @@ export function useStore() {
     setModuleFontScale,
     setNoteEditorMode,
     setRuntimeStrategy,
+    setServiceAutoTrust,
     setSidebarExtension,
     setSidebarExtensionBulk,
     setExtensionOpenMode,
+    setExtensionLinkMode,
+    setExtensionRowClick,
     setRunAtStartup,
     setFloatingBallEnabled,
     setFloatingBallAutoHide,

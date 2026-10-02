@@ -26,10 +26,32 @@ const appWindow = isTauri() ? getCurrentWindow() : null
 
 // ---- 窗口拖动：data-tauri-drag-region 只对 mousedown 的精确目标生效，
 // 点击标题栏内的子元素（svg/span）时不触发；改用 startDragging 统一处理
+// ---- 双击空白处最大化/还原：第一次按下即进入原生拖动循环，浏览器收不到
+// 完整的 click 序列、dblclick 事件不可靠，改按按压时序+位移手动判定 ----
+const DBLCLICK_MS = 500
+const DBLCLICK_SLOP_PX = 4
+let lastTitlePress: { t: number; x: number; y: number } | null = null
+
 function onDragStart(e: MouseEvent) {
   if (!appWindow || e.button !== 0) return
   const target = e.target as HTMLElement
-  if (target.closest('button')) return
+  if (target.closest('button')) {
+    lastTitlePress = null
+    return
+  }
+  const now = performance.now()
+  const prev = lastTitlePress
+  lastTitlePress = { t: now, x: e.clientX, y: e.clientY }
+  if (
+    prev &&
+    now - prev.t <= DBLCLICK_MS &&
+    Math.abs(e.clientX - prev.x) <= DBLCLICK_SLOP_PX &&
+    Math.abs(e.clientY - prev.y) <= DBLCLICK_SLOP_PX
+  ) {
+    lastTitlePress = null
+    toggleMaximize()
+    return
+  }
   appWindow.startDragging()
 }
 
@@ -78,10 +100,10 @@ function close() {
       <span class="title-text">X-Hub</span>
     </div>
     <div class="window-controls">
-      <button class="tool-btn" title="全局搜索 (Ctrl+K)" @click="$emit('search')">
+      <button class="tool-btn" :title="`全局搜索 (${store.state.config.search_shortcut || 'Ctrl+K'}，可在设置中自定义)`" @click="$emit('search')">
         <Search :size="15" :stroke-width="1.8" />
       </button>
-      <button class="tool-btn" title="AI 对话 (Ctrl+Shift+K)" @click="$emit('chat')">
+      <button class="tool-btn" data-chat-opener :title="`AI 对话 (${store.state.config.chat_shortcut || 'Ctrl+Shift+K'}，可在设置中自定义)`" @click="$emit('chat')">
         <MessageSquare :size="15" :stroke-width="1.8" />
       </button>
       <div class="tool-divider"></div>

@@ -1,0 +1,264 @@
+name: Linux packages
+
+# 推到 feat/linux-support 或手动触发。deb / rpm 分两台 runner 并行，
+# 都成功后再打 tag、上传同一个 prerelease。
+on:
+  push:
+    branches: [feat/linux-support]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '要构建的 git ref（分支 / tag / SHA）；留空 = 触发时选中的分支'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.tag.outputs.ref }}
+      tag_name: ${{ steps.tag.outputs.tag_name }}
+      version: ${{ steps.tag.outputs.version }}
+      shortsha: ${{ steps.tag.outputs.shortsha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Resolve Linux tag
+        id: tag
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          shortsha="$(git rev-parse --short=7 HEAD)"
+          tag_name="v${version}-linux.${shortsha}"
+          ref="$(git rev-parse HEAD)"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${tag_name}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "shortsha=${shortsha}" >> "$GITHUB_OUTPUT"
+          echo "ref=${ref} tag=${tag_name}"
+
+  linux-deb:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.meta.outputs.ref }}
+
+      - name: Install Debian build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config \
+            libgtk-3-dev \
+            libsecret-1-dev \
+            patchelf
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Rust 单测（config/process/repo 等回归）在打 deb 前跑：构建通过≠测试通过，
+      # 本分支的 Windows CI（ci.yml）不覆盖，测试机上手动 cargo test 不可持续
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build .deb
+        run: pnpm run tauri:build:deb
+
+      - name: Stage deb artifact
+        env:
+          TAG_NAME: ${{ needs.meta.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          deb=$(ls src-tauri/target/release/bundle/deb/*.deb 2>/dev/null | head -1)
+          if [ -z "${deb:-}" ] || [ ! -f "$deb" ]; then
+            echo "未找到 .deb 产物" >&2
+            find src-tauri/target/release/bundle -type f 2>/dev/null || true
+            exit 1
+          fi
+          mkdir -p dist-linux
+          dest="dist-linux/${TAG_NAME}_amd64.deb"
+          cp -f "$deb" "$dest"
+          echo "staged $dest"
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: dist-linux/*.deb
+          if-no-files-found: error
+
+  linux-rpm:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.meta.outputs.ref }}
+
+      - name: Install RPM build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config \
+            libgtk-3-dev \
+            libsecret-1-dev \
+            patchelf \
+            rpm
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build .rpm
+        run: pnpm run tauri:build:rpm
+
+      - name: Stage rpm artifact
+        env:
+          TAG_NAME: ${{ needs.meta.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          rpm=$(ls src-tauri/target/release/bundle/rpm/*.rpm 2>/dev/null | head -1)
+          if [ -z "${rpm:-}" ] || [ ! -f "$rpm" ]; then
+            echo "未找到 .rpm 产物" >&2
+            find src-tauri/target/release/bundle -type f 2>/dev/null || true
+            exit 1
+          fi
+          mkdir -p dist-linux
+          dest="dist-linux/${TAG_NAME}.x86_64.rpm"
+          cp -f "$rpm" "$dest"
+          echo "staged $dest"
+
+      - name: Upload rpm
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-rpm
+          path: dist-linux/*.rpm
+          if-no-files-found: error
+
+  publish:
+    needs: [meta, linux-deb, linux-rpm]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.meta.outputs.ref }}
+
+      - name: Download deb
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-deb
+          path: dist-linux
+
+      - name: Download rpm
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-rpm
+          path: dist-linux
+
+      - name: Create annotated tag if missing and push
+        env:
+          TAG_NAME: ${{ needs.meta.outputs.tag_name }}
+          SHORTSHA: ${{ needs.meta.outputs.shortsha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse "refs/tags/${TAG_NAME}" >/dev/null 2>&1; then
+            echo "本地已存在标签 ${TAG_NAME}"
+          else
+            git tag -a "${TAG_NAME}" -m "Linux packages (${SHORTSHA})"
+            echo "已创建 annotated tag ${TAG_NAME}"
+          fi
+          if git ls-remote --tags origin "refs/tags/${TAG_NAME}" | grep -q "refs/tags/${TAG_NAME}$"; then
+            echo "远程已存在标签 ${TAG_NAME}，跳过 push"
+          else
+            git push origin "refs/tags/${TAG_NAME}"
+          fi
+
+      - name: Publish prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag_name }}
+          name: '${{ needs.meta.outputs.tag_name }} (Linux)'
+          body: |
+            Linux 双 runner 构建（workflow: `linux-build.yml`）。
+
+            - 版本：${{ needs.meta.outputs.version }}
+            - 提交：${{ needs.meta.outputs.ref }}（${{ needs.meta.outputs.shortsha }}）
+            - 触发：${{ github.event_name }} / @${{ github.actor }}
+            - 产物：`.deb`（Ubuntu runner）+ `.rpm`（Ubuntu runner + rpmbuild）
+
+            安装：`scripts/install-linux.sh`
+            正式发版仍以 `release.yml` + semver tag 为准。
+          files: |
+            dist-linux/*.deb
+            dist-linux/*.rpm
+          draft: false
+          prerelease: true
+          fail_on_unmatched_files: true

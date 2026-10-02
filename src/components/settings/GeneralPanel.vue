@@ -13,6 +13,9 @@ import { FLOATING_BALL_BUTTONS, FLOATING_BALL_MAX_BUTTONS } from '../../composab
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
+const isLinux =
+  typeof navigator !== 'undefined' &&
+  /Linux/i.test(`${navigator.userAgent} ${navigator.platform}`)
 
 // ---- 桌面悬浮球（ADR 0004）：启用 / 贴边自动隐藏 / 与主窗同显 / 静止转动 / 环形按钮增删排序 ----
 const ballButtons = computed(() => store.state.config.floating_ball_buttons ?? [])
@@ -50,7 +53,8 @@ async function moveBallButton(index: number, delta: number) {
   await store.setFloatingBallButtons(arr)
 }
 
-// ---- 快捷键录入：全局 / 剪贴板共用一套录制逻辑（见 composables/useShortcutRecorder.ts） ----
+// ---- 快捷键录入：4 个可自定义快捷键（主窗/剪贴板/搜索/AI 对话）共用一套录制逻辑
+//（见 composables/useShortcutRecorder.ts） ----
 const {
   value: shortcut,
   error: shortcutError,
@@ -84,10 +88,78 @@ const {
   showToast,
 })
 
+const {
+  value: searchShortcut,
+  error: searchError,
+  listening: searchListening,
+  inputRef: searchInputRef,
+  commit: commitSearchShortcut,
+  startListening: startListenSearchShortcut,
+  onBlur: onSearchShortcutBlur,
+  onKeydown: onSearchShortcutKeydown,
+} = useShortcutRecorder({
+  initial: normalizeShortcutDisplay(store.state.config.search_shortcut ?? 'Ctrl+K'),
+  label: '搜索快捷键',
+  save: (v) => store.setSearchShortcut(v),
+  showToast,
+})
+
+const {
+  value: chatShortcut,
+  error: chatError,
+  listening: chatListening,
+  inputRef: chatInputRef,
+  commit: commitChatShortcut,
+  startListening: startListenChatShortcut,
+  onBlur: onChatShortcutBlur,
+  onKeydown: onChatShortcutKeydown,
+} = useShortcutRecorder({
+  initial: normalizeShortcutDisplay(store.state.config.chat_shortcut ?? 'Ctrl+Shift+K'),
+  label: 'AI 对话快捷键',
+  save: (v) => store.setChatShortcut(v),
+  showToast,
+})
+
 // inputRef 仅在模板 ref 绑定中使用（把 DOM 输入框连到 recorder 内部，点击「录入」自动聚焦），
 // vue-tsc 不把模板 ref 视为「读取」，这里显式求值一次以通过 noUnusedLocals
 void shortcutInputRef
 void clipInputRef
+void searchInputRef
+void chatInputRef
+
+// ---- 快捷键启用/禁用：关掉 = 注销热键但保留键值（重开即恢复），比「清空」更明确、不会误失效 ----
+type ShortcutKind = 'main' | 'clipboard' | 'search' | 'chat'
+
+function shortcutEnabled(kind: ShortcutKind): boolean {
+  const c = store.state.config
+  switch (kind) {
+    case 'main':
+      return c.global_shortcut_enabled
+    case 'clipboard':
+      return c.clipboard_shortcut_enabled
+    case 'search':
+      return c.search_shortcut_enabled
+    case 'chat':
+      return c.chat_shortcut_enabled
+  }
+}
+
+const shortcutToggleBusy = ref(false)
+
+async function toggleShortcutEnabled(kind: ShortcutKind) {
+  if (shortcutToggleBusy.value) return
+  const next = !shortcutEnabled(kind)
+  shortcutToggleBusy.value = true
+  try {
+    await store.setShortcutEnabled(kind, next)
+    const label = { main: '全局', clipboard: '剪贴板', search: '搜索', chat: 'AI 对话' }[kind]
+    showToast(next ? `${label}快捷键已启用` : `${label}快捷键已禁用（键值保留，随时可重开）`)
+  } catch (e) {
+    showToast(`设置失败：${String(e)}`)
+  } finally {
+    shortcutToggleBusy.value = false
+  }
+}
 
 // ---- 右下角通知驻留时长（秒；后端每条通知都带当前值下发，改完立即生效） ----
 const noticeSeconds = ref(5)
@@ -174,6 +246,10 @@ onMounted(async () => {
 
   clipSavedShortcut.value = clipShortcut.value
 
+  searchShortcut.value = normalizeShortcutDisplay(store.state.config.search_shortcut ?? 'Ctrl+K')
+
+  chatShortcut.value = normalizeShortcutDisplay(store.state.config.chat_shortcut ?? 'Ctrl+Shift+K')
+
   noticeSeconds.value = Math.round((store.state.config.notice_duration_ms ?? 5000) / 1000)
 
   void refreshAutostartStatus()
@@ -235,7 +311,7 @@ onMounted(async () => {
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">桌面悬浮球</span>
-              <span class="setting-desc">主窗口隐藏/最小化时在桌面显示悬浮球（可开启下方「与主窗口同时显示」常驻）：单击展开环形快捷菜单，双击显示主窗口，右键快捷菜单，可拖拽，贴边自动隐藏一半</span>
+              <span class="setting-desc">主窗口隐藏/最小化时在桌面显示悬浮球（可开启下方「与主窗口同时显示」常驻）：单击展开环形快捷菜单，双击显示主窗口，右键快捷菜单，可拖拽{{ isLinux ? '' : '，贴边自动隐藏一半' }}</span>
             </div>
             <button
               class="toggle"
@@ -249,7 +325,7 @@ onMounted(async () => {
             </button>
           </div>
 
-          <div class="setting-row">
+          <div v-if="!isLinux" class="setting-row">
             <div class="setting-info">
               <span class="setting-name">悬浮球贴边自动隐藏</span>
               <span class="setting-desc">拖到屏幕边缘附近松手时自动半隐：球体贴边只露出一半，鼠标悬停时完整滑出，移开再隐回</span>
@@ -339,9 +415,9 @@ onMounted(async () => {
           <div class="setting-row shortcut-row">
             <div class="setting-info">
               <span class="setting-name">全局快捷键</span>
-              <span class="setting-desc">支持手动输入或按键录入，无冲突自动保存</span>
+              <span class="setting-desc">支持手动输入或按键录入，无冲突自动保存；右侧开关可临时禁用（保留键值）</span>
             </div>
-            <div class="shortcut-edit">
+            <div class="shortcut-edit" :class="{ off: !store.state.config.global_shortcut_enabled }">
               <div class="shortcut-input-wrap">
                 <Keyboard :size="14" :stroke-width="2" class="shortcut-icon" />
                 <input
@@ -360,6 +436,18 @@ onMounted(async () => {
                   {{ shortcutListening ? '按下组合键…' : '录入' }}
                 </button>
               </div>
+              <button
+                class="toggle shortcut-toggle"
+                role="switch"
+                type="button"
+                :aria-checked="store.state.config.global_shortcut_enabled"
+                :class="{ on: store.state.config.global_shortcut_enabled }"
+                :disabled="shortcutToggleBusy"
+                :title="store.state.config.global_shortcut_enabled ? '点击禁用该快捷键' : '点击启用该快捷键'"
+                @click="toggleShortcutEnabled('main')"
+              >
+                <span class="toggle-knob"></span>
+              </button>
             </div>
           </div>
           <p v-if="shortcutError" class="shortcut-error">{{ shortcutError }}</p>
@@ -367,9 +455,9 @@ onMounted(async () => {
           <div class="setting-row shortcut-row">
             <div class="setting-info">
               <span class="setting-name">剪贴板呼出快捷键</span>
-              <span class="setting-desc">任何应用中一键唤起剪贴板历史浮层</span>
+              <span class="setting-desc">任何应用中一键唤起剪贴板历史浮层；右侧开关可临时禁用（保留键值）</span>
             </div>
-            <div class="shortcut-edit">
+            <div class="shortcut-edit" :class="{ off: !store.state.config.clipboard_shortcut_enabled }">
               <div class="shortcut-input-wrap">
                 <Keyboard :size="14" :stroke-width="2" class="shortcut-icon" />
                 <input
@@ -388,8 +476,100 @@ onMounted(async () => {
                   {{ clipListening ? '按下组合键…' : '录入' }}
                 </button>
               </div>
+              <button
+                class="toggle shortcut-toggle"
+                role="switch"
+                type="button"
+                :aria-checked="store.state.config.clipboard_shortcut_enabled"
+                :class="{ on: store.state.config.clipboard_shortcut_enabled }"
+                :disabled="shortcutToggleBusy"
+                :title="store.state.config.clipboard_shortcut_enabled ? '点击禁用该快捷键' : '点击启用该快捷键'"
+                @click="toggleShortcutEnabled('clipboard')"
+              >
+                <span class="toggle-knob"></span>
+              </button>
             </div>
           </div>
           <p v-if="clipError" class="shortcut-error">{{ clipError }}</p>
+
+          <div class="setting-row shortcut-row">
+            <div class="setting-info">
+              <span class="setting-name">搜索呼出快捷键</span>
+              <span class="setting-desc">任何应用中一键唤起全局搜索；弹窗内的快捷键提示也会随之更新；右侧开关可临时禁用（保留键值）</span>
+            </div>
+            <div class="shortcut-edit" :class="{ off: !store.state.config.search_shortcut_enabled }">
+              <div class="shortcut-input-wrap">
+                <Keyboard :size="14" :stroke-width="2" class="shortcut-icon" />
+                <input
+                  ref="searchInputRef"
+                  v-model="searchShortcut"
+                  class="shortcut-input"
+                  type="text"
+                  spellcheck="false"
+                  :readonly="searchListening"
+                  placeholder="Ctrl+K"
+                  @keydown="onSearchShortcutKeydown"
+                  @keydown.enter="commitSearchShortcut"
+                  @blur="onSearchShortcutBlur"
+                />
+                <button class="shortcut-record-btn" type="button" @click="startListenSearchShortcut">
+                  {{ searchListening ? '按下组合键…' : '录入' }}
+                </button>
+              </div>
+              <button
+                class="toggle shortcut-toggle"
+                role="switch"
+                type="button"
+                :aria-checked="store.state.config.search_shortcut_enabled"
+                :class="{ on: store.state.config.search_shortcut_enabled }"
+                :disabled="shortcutToggleBusy"
+                :title="store.state.config.search_shortcut_enabled ? '点击禁用该快捷键' : '点击启用该快捷键'"
+                @click="toggleShortcutEnabled('search')"
+              >
+                <span class="toggle-knob"></span>
+              </button>
+            </div>
+          </div>
+          <p v-if="searchError" class="shortcut-error">{{ searchError }}</p>
+
+          <div class="setting-row shortcut-row">
+            <div class="setting-info">
+              <span class="setting-name">AI 对话呼出快捷键</span>
+              <span class="setting-desc">任何应用中一键唤起 AI 对话（形态由「AI 助手」里的开关决定）；右侧开关可临时禁用（保留键值）</span>
+            </div>
+            <div class="shortcut-edit" :class="{ off: !store.state.config.chat_shortcut_enabled }">
+              <div class="shortcut-input-wrap">
+                <Keyboard :size="14" :stroke-width="2" class="shortcut-icon" />
+                <input
+                  ref="chatInputRef"
+                  v-model="chatShortcut"
+                  class="shortcut-input"
+                  type="text"
+                  spellcheck="false"
+                  :readonly="chatListening"
+                  placeholder="Ctrl+Shift+K"
+                  @keydown="onChatShortcutKeydown"
+                  @keydown.enter="commitChatShortcut"
+                  @blur="onChatShortcutBlur"
+                />
+                <button class="shortcut-record-btn" type="button" @click="startListenChatShortcut">
+                  {{ chatListening ? '按下组合键…' : '录入' }}
+                </button>
+              </div>
+              <button
+                class="toggle shortcut-toggle"
+                role="switch"
+                type="button"
+                :aria-checked="store.state.config.chat_shortcut_enabled"
+                :class="{ on: store.state.config.chat_shortcut_enabled }"
+                :disabled="shortcutToggleBusy"
+                :title="store.state.config.chat_shortcut_enabled ? '点击禁用该快捷键' : '点击启用该快捷键'"
+                @click="toggleShortcutEnabled('chat')"
+              >
+                <span class="toggle-knob"></span>
+              </button>
+            </div>
+          </div>
+          <p v-if="chatError" class="shortcut-error">{{ chatError }}</p>
         </section>
 </template>

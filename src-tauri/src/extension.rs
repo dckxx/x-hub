@@ -254,6 +254,9 @@ pub struct ExtensionEntry {
     pub module_variants: Vec<ModuleVariant>,
     /// 工作台模块选项（manifest.moduleOptions 原样透传；module 卡片表头默认显隐用）
     pub module_options: ModuleOptions,
+    /// 安装时间（目录创建时间，RFC3339；前端「已安装」列表按此排序，最后安装的在最下面）。
+    /// 取文件系统元数据，对本客户端装之前就存在的扩展同样有效；取不到时为 None
+    pub installed_at: Option<String>,
 }
 
 fn runtime_str(r: &ExtensionRuntime) -> &'static str {
@@ -353,6 +356,14 @@ pub fn read_manifest(dir: &Path) -> Result<ExtensionManifest, String> {
     serde_json::from_str(&content).map_err(|e| format!("manifest 解析失败：{e}"))
 }
 
+/// 目录创建时间（RFC3339）＝安装时间的最佳代理。Windows NTFS 支持创建时间；
+/// 市场更新经 tmp 目录换名落位，创建时间反映最近一次落盘——排序用途足够
+fn dir_created_at(dir: &Path) -> Option<String> {
+    let created = std::fs::metadata(dir).ok()?.created().ok()?;
+    let dt: chrono::DateTime<chrono::Utc> = created.into();
+    Some(dt.to_rfc3339())
+}
+
 /// 加载单个扩展目录为注册表项（永不 panic，损坏时返回 invalid 项）。
 /// `source` 区分「已装扩展」（扩展根）与「开发扩展」（「我的扩展」直挂的源码目录）。
 fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
@@ -361,6 +372,7 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
     // 也与喂给 Node 的脚本路径同源——两处口径不一致就会出现「扩展在跑但发布按钮不见了」。
     let dir = &crate::paths::simplify_existing(dir);
     let dir_str = dir.to_string_lossy().into_owned();
+    let installed_at = dir_created_at(dir);
     let fallback_name = dir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -389,6 +401,7 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
         actions: Vec::new(),
         module_variants: Vec::new(),
         module_options: ModuleOptions::default(),
+        installed_at: installed_at.clone(),
     };
 
     let manifest = match read_manifest(dir) {
@@ -440,6 +453,7 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
         actions: manifest.actions,
         module_variants: manifest.module_variants,
         module_options: manifest.module_options,
+        installed_at,
     }
 }
 
@@ -838,6 +852,10 @@ pub(crate) const XHUB_BRIDGE_SCRIPT: &str = r#"
     runtime:{
       info:function(){return call('runtime','info',{});},
       open:function(surface){window.parent.postMessage({__xhub:true,type:'open',surface:surface||'view'},'*');return Promise.resolve();},
+      // 请求宿主打开本扩展的设置/授权弹窗（runtime.openPermissions 能力，无需权限）。
+      // 典型用途：service 后端未授权时，扩展页展示提示并给「去授权」跳转
+      // （见 references/bridge-api.md）。
+      openPermissions:function(){return call('runtime','openPermissions',{});},
       callExtension:function(targetId,method,payload){
         return new Promise(function(resolve,reject){
           var id=++seq;pending[id]={resolve:resolve,reject:reject};
@@ -975,6 +993,18 @@ pub(crate) const XHUB_BRIDGE_SCRIPT: &str = r#"
       exposed[method]=handler;
     }
   };
+  // 接管页面里的普通外链 <a href="http(s)://…">：点击改为走 openExternal，
+  // 使其同样遵循用户配置的「链接打开方式」（应用内浏览器/系统浏览器）。
+  // capture 阶段注册并阻断传播——扩展自己绑的 click 处理（如 hotsearch bindOpen）
+  // 会再开一次造成双开；锚点/相对路径/非 http(s) 协议不拦，交还扩展页面自身导航。
+  document.addEventListener('click',function(e){
+    var t=e.target;var a=t&&t.closest?t.closest('a[href]'):null;
+    if(!a)return;
+    var href=a.getAttribute('href')||'';
+    if(!/^https?:\/\//i.test(href))return;
+    e.preventDefault();e.stopPropagation();
+    try{window.xhub.openExternal(href);}catch(err){}
+  },true);
   // 加载即拉取一次主题，确保首帧就与宿主一致
   call('theme','get',{}).then(applyTheme).catch(function(){});
 })();
@@ -1211,12 +1241,30 @@ pub fn permission_granted(app: &tauri::AppHandle, ext_id: &str, perm: &str) -> b
     if perm == "service:execute" {
         let version = crate::ext_protocol::resolve_ext_dir(app, ext_id).ok()
             .and_then(|dir| read_manifest(&dir).ok()).map(|m| m.version);
-        return service_version_trusted(&overrides, version.as_deref());
+        return service_execute_granted(
+            &overrides,
+            version.as_deref(),
+            crate::config::load().service_auto_trust,
+        );
     }
     overrides
         .get(perm)
         .and_then(|v| v.as_bool())
         .unwrap_or(true)
+}
+
+/// `service:execute` 是否放行（纯函数，供单测）：
+/// 显式拒绝 > 全局自动信任（`AppConfig.service_auto_trust`，设置 → 扩展）> 逐版本显式信任。
+/// 自动信任只在用户**没有单独关掉**该扩展后端时生效——否则全局开关会覆盖用户的明确选择。
+fn service_execute_granted(
+    overrides: &Map<String, Value>,
+    version: Option<&str>,
+    auto_trust: bool,
+) -> bool {
+    if overrides.get("service:execute").and_then(Value::as_bool) == Some(false) {
+        return false;
+    }
+    auto_trust || service_version_trusted(overrides, version)
 }
 
 fn service_version_trusted(overrides: &Map<String, Value>, version: Option<&str>) -> bool {
@@ -1295,6 +1343,25 @@ mod tests {
         assert!(!service_version_trusted(&permissions, Some("1.0.0")));
     }
 
+    #[test]
+    fn service_auto_trust_grants_untrusted_but_never_overrides_explicit_deny() {
+        // 自动信任关（默认）：维持逐版本显式信任的老口径
+        assert!(!service_execute_granted(&Map::new(), Some("1.0.0"), false));
+        // 自动信任开：新装/未授权/更新版本一律放行
+        assert!(service_execute_granted(&Map::new(), Some("1.0.0"), true));
+        assert!(service_execute_granted(&Map::new(), None, true));
+        // 显式拒绝优先：用户单独关掉该扩展后端时，全局开关不得越过
+        let mut denied = Map::new();
+        denied.insert("service:execute".into(), Value::Bool(false));
+        assert!(!service_execute_granted(&denied, Some("1.0.0"), true));
+        // 版本过期但自动信任开 → 仍放行（这正是「更新后不再逐个去授权」的语义）
+        let mut stale = Map::new();
+        stale.insert("service:execute".into(), Value::Bool(true));
+        stale.insert("service:version".into(), Value::String("0.9.0".into()));
+        assert!(!service_execute_granted(&stale, Some("1.0.0"), false));
+        assert!(service_execute_granted(&stale, Some("1.0.0"), true));
+    }
+
     fn write_manifest(root: &Path, id: &str, manifest: serde_json::Value) {
         let dir = root.join(id);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1321,6 +1388,17 @@ mod tests {
                 cap.method
             );
         }
+    }
+
+    #[test]
+    fn bridge_script_intercepts_external_anchors() {
+        // 普通外链 <a href="http(s)://…"> 必须走 openExternal（遵循「链接打开方式」设置）：
+        // capture 阶段接管 + preventDefault/stopPropagation（阻断扩展自身处理器，防双开）；
+        // 正则须是单反斜杠的 \/ 转义（桥是 r#""# 原始字符串，双反斜杠会写坏正则炸掉整个桥）
+        assert!(XHUB_BRIDGE_SCRIPT.contains("addEventListener('click'"));
+        assert!(XHUB_BRIDGE_SCRIPT.contains("e.preventDefault();e.stopPropagation();"));
+        assert!(XHUB_BRIDGE_SCRIPT.contains("/^https?:\\/\\//i.test(href)"));
+        assert!(XHUB_BRIDGE_SCRIPT.contains("window.xhub.openExternal(href)"));
     }
 
     #[test]

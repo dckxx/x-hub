@@ -237,7 +237,9 @@ fn activate_existing_by_name(exe_name: &str) -> bool {
 /// （微信 `WxTrayIconMessageWindow`，实测 1440×753 比真主窗还大），打分极易选错。
 /// 隐藏态返回 false 让调用方重启 exe、走应用自带单实例的正规唤起路径（两例均实测通过）。
 fn is_focus_candidate(visible: bool, title_len: i32, ex_style: u32, area: i64) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::WS_EX_NOACTIVATE;
+    // WS_EX_NOACTIVATE（Win32 固定值）以内联常量代替 windows_sys 导入：本函数是纯判定、
+    // 唯一调用方虽在 Windows 门控内，但回归测试不应依赖平台（Linux cargo test 也要能编译）
+    const WS_EX_NOACTIVATE: u32 = 0x0800_0000;
     visible && title_len > 0 && ex_style & WS_EX_NOACTIVATE == 0 && area > 0
 }
 

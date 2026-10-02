@@ -2958,6 +2958,7 @@ pub async fn scan_desktop() -> Result<Vec<DesktopEntry>, String> {
 /// 单次 PowerShell 枚举用户桌面一层并分类，输出 DESK=<json> 行（name/target/kind/src），
 /// Rust 侧解析、二次去重、排序、限量。名称/路径取值一律在 PS 内 Trim，中文经 UTF-8 输出。
 /// `src` = 该条目对应的桌面快捷方式原始路径（仅 `.lnk`/`.url` 非空），供「导入后清理」用。
+#[cfg(target_os = "windows")]
 fn scan_desktop_candidates() -> Result<Vec<(String, String, String, Option<String>)>, String> {
     let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
@@ -3086,6 +3087,142 @@ foreach ($e in $out) { Write-Output ('DESK=' + ($e | ConvertTo-Json -Compress)) 
     }
     log::info!("扫描桌面: 共 {} 项", entries.len());
     Ok(entries)
+}
+
+/// Linux：扫描用户桌面（XDG 桌面目录）一层并分类，口径与 Windows 侧一致：
+/// - `.desktop`：Type=Application → 应用（Exec 经 desktop_exec_to_target 解析）；
+///   Type=Link → 网页（URL=）；NoDisplay/Hidden 跳过；Type=Directory 跳过
+/// - 可执行文件 → 应用；目录 → 文件夹；其它文件 → 文件
+/// `source` = .desktop 路径（口径同 .lnk）；清理命令的扩展名护栏只认 `.lnk`/`.url`，
+/// `.desktop` 的「导入后清理」暂不支持，导入后保持只读。
+#[cfg(not(target_os = "windows"))]
+fn scan_desktop_candidates() -> Result<Vec<(String, String, String, Option<String>)>, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(desktop) = dirs::desktop_dir() else {
+        return Ok(vec![]);
+    };
+    let Ok(read) = std::fs::read_dir(&desktop) else {
+        return Ok(vec![]);
+    };
+    let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in read.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            if seen.insert(path.to_string_lossy().to_lowercase()) {
+                entries.push((name, path.to_string_lossy().into_owned(), "folder".into(), None));
+            }
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) == Some("desktop") {
+            if let Some((name, target, kind)) = desktop_entry_from_file(&path) {
+                if seen.insert(target.to_lowercase()) {
+                    entries.push((
+                        name,
+                        target,
+                        kind,
+                        Some(path.to_string_lossy().into_owned()),
+                    ));
+                }
+            }
+            continue;
+        }
+        let is_exec = path
+            .metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+        let kind = if is_exec { "app" } else { "file" };
+        if seen.insert(path.to_string_lossy().to_lowercase()) {
+            entries.push((name, path.to_string_lossy().into_owned(), kind.into(), None));
+        }
+    }
+    // 分类展示顺序：应用 → 网页 → 文件 → 文件夹，同类别内按名称排序（与 Windows 侧一致）
+    let kind_rank = |k: &str| match k {
+        "app" => 0,
+        "web" => 1,
+        "file" => 2,
+        _ => 3,
+    };
+    entries.sort_by(|a, b| {
+        kind_rank(&a.2)
+            .cmp(&kind_rank(&b.2))
+            .then_with(|| {
+                a.0.to_lowercase()
+                    .cmp(&b.0.to_lowercase())
+                    .then_with(|| a.1.cmp(&b.1))
+            })
+    });
+    const MAX_DESKTOP: usize = 500;
+    if entries.len() > MAX_DESKTOP {
+        entries.truncate(MAX_DESKTOP);
+    }
+    log::info!("扫描桌面: 共 {} 项", entries.len());
+    Ok(entries)
+}
+
+/// 解析单个桌面 `.desktop` 文件为 (name, target, kind)；NoDisplay/Hidden、
+/// Type=Directory 或 Exec 解析不出目标的返回 None（不导出死链，口径同 Windows）。
+#[cfg(not(target_os = "windows"))]
+fn desktop_entry_from_file(path: &std::path::Path) -> Option<(String, String, String)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut name = String::new();
+    let mut exec = String::new();
+    let mut url = String::new();
+    let mut is_link = false;
+    let mut hidden = false;
+    let mut in_entry = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_entry || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.eq_ignore_ascii_case("NoDisplay=true") || line.eq_ignore_ascii_case("Hidden=true") {
+            hidden = true;
+        } else if line.eq_ignore_ascii_case("Type=Link") {
+            is_link = true;
+        } else if let Some(v) = line.strip_prefix("Name=") {
+            if name.is_empty() && !v.contains('[') {
+                name = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("Exec=") {
+            if exec.is_empty() {
+                exec = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("URL=") {
+            if url.is_empty() {
+                url = v.trim().to_string();
+            }
+        }
+    }
+    if hidden {
+        return None;
+    }
+    if is_link {
+        if url.is_empty() {
+            return None;
+        }
+        let name = if name.is_empty() {
+            path.file_stem()?.to_str()?.to_string()
+        } else {
+            name
+        };
+        return Some((name, url, "web".into()));
+    }
+    let target = desktop_exec_to_target(&exec)?;
+    if name.is_empty() {
+        name = std::path::Path::new(&target)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("本地应用")
+            .to_string();
+    }
+    Some((name, target, "app".into()))
 }
 
 /// 删除桌面上的快捷方式（仅 `.lnk`/`.url`），供「扫描桌面 → 导入后清理」使用。

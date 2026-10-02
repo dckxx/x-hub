@@ -924,6 +924,8 @@ pub fn run() {
             publisher::dev_submit,
             // 发布弹窗的截图缩略图预览（读本地图为 data URL）
             publisher::read_image_data_url,
+            // 发布弹窗「引用上一版截图」：下载市场清单里已上架版本的截图到临时文件
+            publisher::fetch_remote_screenshots,
             publisher::dev_list_submissions,
             publisher::dev_get_submission,
             publisher::dev_withdraw_submission,

@@ -200,7 +200,15 @@ async fn fetch_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Str
         .await
         .map_err(|e| format!("通信失败：{e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        // 升级清单走平台服务端（v0.6.1 起）：4xx/5xx 是 JSON `{error, message}`，
+        // 优先带出服务端的可读 message；包下载（COS 直连）非 JSON 时退回状态码
+        let msg = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+            .unwrap_or_else(|| format!("HTTP {status}"));
+        return Err(msg);
     }
     let bytes = resp.bytes().await.map_err(|e| format!("读取响应失败: {e}"))?;
     Ok(bytes.to_vec())
@@ -388,6 +396,12 @@ pub fn snooze_update(app: tauri::AppHandle) -> Result<(), String> {
             log::info!("「稍后再提示」期间有更新的点击，本次补检跳过（已由最新那次顺延）");
             return;
         }
+        // 补检同受「自动检查更新」总开关控制（与 lib.rs 静默循环同口径）：用户在暂停
+        // 窗口内关掉开关就是不想再被打扰，到期补检不能成为绕过开关的旁路
+        if !crate::config::load().auto_update_enabled {
+            log::info!("「稍后再提示」到期补检被跳过：自动检查更新已关闭");
+            return;
+        }
         if let Ok(info) = check_for_update(handle, None).await {
             log::info!(
                 "「稍后再提示」到期补检：{}",
@@ -406,6 +420,12 @@ pub fn snooze_update(app: tauri::AppHandle) -> Result<(), String> {
 ///
 /// 前端传入 `version` 仅为目标版本校验：下载时若清单中的目标版本与请求不符
 /// 则中止（防并发/竞态下下载旧条目）。
+///
+/// ⚠️ 本命令是**用户确认后的手动路径**，全工程唯一调用点是 UpdateCheckDialog 的
+/// 「立即更新」按钮——因此**执行点不查 `auto_update_enabled`**（那个开关只约束
+/// 「自动检查」，与 About 页手动「检查更新」按钮同语义空间，关掉开关后手动下载
+/// 必须仍然可用）。**不要从任何自动流程直接调用本命令**：将来若新增自动下载，
+/// 必须像 check_for_update 的 `manual` 参数一样先过开关闸（反馈 2026-10-01）。
 #[tauri::command]
 pub async fn download_update(
     app: tauri::AppHandle,

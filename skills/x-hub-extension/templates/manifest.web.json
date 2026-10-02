@@ -11,5 +11,6 @@
   },
   "icon": "./icon.svg",
   "description": "一句话说明这个扩展做什么",
+  "author": "作者署名（改成你的名字或团队名，市场卡片与详情页会展示）",
   "permissions": []
 }

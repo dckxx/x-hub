@@ -91,13 +91,10 @@ const unauthorized = computed(() => isUnauthorizedMessage(error.value))
   flex-direction: column;
   overflow: hidden;
 }
-/* module 卡片：复用宿主 .card 玻璃表面 + 边框 + 圆角 + 阴影，与工作台其他卡片严格统一 */
-.extension-view.card {
-  background: var(--frost-surface);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--frost-edge), var(--shadow-card);
-}
+/* module 卡片的外观（玻璃面/边框/圆角/阴影）完全走全局 .card：scoped 禁止重声明
+   background/border/border-radius/box-shadow——scoped [data-v] 的特异性会压过 style.css
+   里透底态/沉浸模式等 html[data-*] 变体规则，曾导致透底态下全工作台唯独扩展卡保留白描边；
+   要差异化外观就自建独立类（同 .modal-card），不要在 .card 上叠写 */
 .ev-header {
   flex: 0 0 auto;
   display: flex;

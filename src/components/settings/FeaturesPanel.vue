@@ -279,7 +279,7 @@ onMounted(() => {
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">小类管理</span>
-              <span class="setting-desc">大类（应用/网页/文件）下的二级归属，每条资源归入一个小类；行内改名、拖拽排序、点星标设默认，删除后条目自动改挂默认小类</span>
+              <span class="setting-desc">大类（应用/网页/文件）下的二级归属，每条资源归入一个小类；行内改名、拖拽排序、点星标设默认，名称可用 / 分层级（如 开发/前端）；删除需点两下——第一下垃圾桶变 √ 勾，再点一下才真删（3 秒后自动取消），删除后条目自动改挂默认小类；右上「批量删除」可勾选多个一并删除</span>
             </div>
           </div>
           <SudaSubcategoryManager />

@@ -23,7 +23,7 @@ import { isTauri, tauriApi } from '../api/tauri'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import type { Countdown, ExtensionEntry, Note, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
-import { FileText, FolderOpen, LayoutDashboard, ListTodo, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight, AppWindow, PanelRight } from 'lucide-vue-next'
+import { FileText, FolderOpen, LayoutDashboard, ListTodo, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import { useTheme } from '../composables/useTheme'
 import { broadcastThemeToFrames } from '../composables/themeTokens'
@@ -269,19 +269,6 @@ function openExtensionSurface(extId: string, surface: string) {
 function closeExtension() {
   openedExtension.value = null
   activeView.value = 'extensions'
-}
-
-function openExtensionWindow() {
-  if (!openedExtension.value) return
-  tauriApi.openExtensionWindow(openedExtension.value.id).catch((e) => {
-    showToast(`打开窗口失败：${String(e)}`)
-  })
-}
-
-function openExtensionDrawer() {
-  if (!openedExtension.value) return
-  extensionReloadTick.value++
-  drawerExtension.value = { ...openedExtension.value }
 }
 
 function closeExtensionDrawer() {
@@ -1014,18 +1001,9 @@ provide('showToast', showToast)
           />
         </section>
 
-        <!-- 扩展运行视图：主区渲染扩展入口（iframe + window.xhub 桥 API） -->
+        <!-- 扩展运行视图：主区渲染扩展入口（iframe + window.xhub 桥 API）。
+             不带宿主工具栏：扩展名与「窗口/抽屉」多形态打开入口已由扩展中心承载 -->
         <section v-else-if="activeView === 'extension'" class="view view-extension" tabindex="-1" aria-label="扩展">
-          <div class="ext-toolbar">
-            <span class="ext-toolbar-name">{{ openedExtension?.name ?? '扩展' }}</span>
-            <div class="ext-toolbar-spacer" />
-            <button class="icon-btn" type="button" title="在窗口打开" aria-label="在窗口打开" @click="openExtensionWindow">
-              <AppWindow :size="15" :stroke-width="2" />
-            </button>
-            <button class="icon-btn" type="button" title="在抽屉打开" aria-label="在抽屉打开" @click="openExtensionDrawer">
-              <PanelRight :size="15" :stroke-width="2" />
-            </button>
-          </div>
           <ExtensionView
             v-if="openedExtension"
             :ext-id="openedExtension.id"
@@ -1533,32 +1511,10 @@ html[data-wallpaper='1'] .title-bar [data-tip]::after {
 .view-extensions :deep(.extension-center) {
   padding: 0 20px 20px 0;
 }
-/* 扩展运行视图：仅右下外边距 */
+/* 扩展运行视图（整页形态既定标准）：宿主零边距，留白由扩展页自行控制——
+   默认左上 0 / 右下 20（skill 模板内置），用户选「完全无边距」的扩展四面贴边 */
 .view-extension {
-  padding: 0 20px 20px 0;
-}
-.ext-toolbar {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 0 12px;
-}
-.ext-toolbar-spacer {
-  flex: 1;
-}
-.ext-toolbar-name {
-  font-size: 0.8125rem;
-  font-weight: 650;
-  color: var(--text-1);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ext-toolbar .icon-btn {
-  width: 30px;
-  height: 30px;
-  color: var(--text-3);
+  padding: 0;
 }
 
 /* 扩展抽屉：absolute 悬浮于工作区之上，右侧滑入 */

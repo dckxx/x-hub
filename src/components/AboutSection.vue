@@ -89,7 +89,7 @@ function onToggleAutoUpdate() {
     <div class="setting-row">
       <div class="setting-info">
         <span class="setting-name">自动检查更新</span>
-        <span class="setting-desc">启动后静默检查新版本，发现更新时弹窗提示；关闭后不再发起自动检查</span>
+        <span class="setting-desc">启动后定期静默检查新版本，发现更新时弹窗提示，点「立即更新」后才开始下载，已下载的更新在下次启动时自动完成安装；关闭后不再自动检查与提醒，右侧「检查更新」按钮与更新弹窗里的操作不受此开关影响</span>
       </div>
       <button
         class="toggle"

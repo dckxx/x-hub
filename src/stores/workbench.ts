@@ -1,6 +1,7 @@
 import { reactive, readonly } from 'vue'
 import { normalizeNoteEditorMode } from '../utils/noteEditorMode'
 import { compareByOrder, groupOf } from '../utils/todoSchedule'
+import { isHttpWebTarget } from '../utils/web'
 import {
   tauriApi,
   isTauri,
@@ -345,7 +346,9 @@ export function useStore() {
    */
   async function launchResource(id: number) {
     const r = state.resources.find((x) => x.id === id)
-    if (r && r.kind === 'web' && isTauri()) {
+    // smb/ftp 等远程协议只有系统能打开（webview 内嵌面板/应用内浏览器都导航不了），
+    // 走后端 launch_resource 的 open_url（smb 自动转 UNC 交资源管理器）
+    if (r && r.kind === 'web' && isTauri() && isHttpWebTarget(r.target)) {
       if (state.config.suda_web_open_mode === 'window') {
         await tauriApi.sudaBrowserOpen(id)
         r.last_launched_at = new Date().toISOString()

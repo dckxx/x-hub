@@ -736,6 +736,20 @@ mod tests {
     }
 
     #[test]
+    fn auto_update_default_consistent_across_serde_and_default_impl() {
+        // 两级默认值必须一致：serde 字段默认（app.json 缺字段时取 default_true）与
+        // Default impl（首次生成/文件损坏回退）若漂移，会出现「新装用户与老用户升级后
+        // 的默认行为不同」——曾在外部反馈（2026-10-01）中作为问题 3 提出，此处锁住
+        assert_eq!(default_true(), true);
+        assert!(AppConfig::default().auto_update_enabled);
+        let from_empty: AppConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            from_empty.auto_update_enabled,
+            AppConfig::default().auto_update_enabled
+        );
+    }
+
+    #[test]
     fn save_to_and_load_from_roundtrip() {
         let mut config = AppConfig::default();
         config.theme_mode = "dark".to_string();

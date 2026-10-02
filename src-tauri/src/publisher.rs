@@ -7,6 +7,7 @@
 //! - **打包在临时目录进行**，绝不往开发者的源码目录里写任何东西（见 ADR 0005）。
 //! - 客户端**不内置任何审核规则**，只展示服务端返回的结论（PRD 附录 A 红线）。
 
+use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -105,6 +106,34 @@ pub fn bump_manifest_in_dir(dir: &Path, new_version: &str) -> Result<String, Str
     Ok(current)
 }
 
+/// 把作者署名写进扩展目录 manifest.json 的顶层 `author` 字段（发布弹窗「作者署名」的落盘动作）。
+///
+/// - 值与当前相同则不动文件（返回 `None`）；发生了回写返回 `Some(旧值)`（旧值可为空串 = 原本没填）。
+/// - 与 `bump_manifest_in_dir` 同一条「Value 改字段 + `.` 开头临时文件原子替换」路径：键序保持原样，
+///   其余字段一律不动；临时文件既不会被打进包，也不触发热重载。
+pub fn set_author_in_dir(dir: &Path, author: &str) -> Result<Option<String>, String> {
+    let path = dir.join("manifest.json");
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("IO_ERROR: 读取 manifest.json 失败 {e}"))?;
+    let mut value: Value = serde_json::from_str(&raw).map_err(|e| format!("manifest 解析失败：{e}"))?;
+    let old = value
+        .get("author")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if old == author {
+        return Ok(None);
+    }
+    value["author"] = Value::String(author.to_string());
+    let mut out = serde_json::to_string_pretty(&value).map_err(|e| format!("manifest 序列化失败 {e}"))?;
+    if raw.ends_with('\n') {
+        out.push('\n');
+    }
+    let tmp = dir.join(".manifest.json.author-tmp");
+    std::fs::write(&tmp, out).map_err(|e| format!("IO_ERROR: 写入 manifest 失败 {e}"))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("IO_ERROR: 替换 manifest.json 失败 {e}"))?;
+    Ok(Some(old))
+}
+
 /// 上传打包产物：multipart（package 文件 + 展示字段），返回服务端结论
 async fn upload(
     base: &str,
@@ -184,15 +213,34 @@ pub async fn dev_submit(
     // 发布弹窗「发布版本」：非空时先把该版本写回 manifest.json 再打包（须大于当前版本）——
     // 包内 manifest 带上新版本号，服务端的版本递增关卡才认。空 = 按 manifest 当前版本发布。
     new_version: Option<String>,
+    // 发布弹窗「作者署名」：非空且与 manifest 当前值不同时回写 `author` 字段再打包——
+    // 服务端发布时从包内 manifest 读署名写进市场清单，市场卡片与详情页展示的就是它。
+    // 空 = 不动 manifest（保留现有署名）。
+    author: Option<String>,
 ) -> Result<SubmitResult, String> {
     let token = crate::account::session_token().ok_or("UNAUTHORIZED: 请先在「设置 → 账号」登录")?;
     let base = crate::account::base_url();
 
-    // 先落盘再打包：打包读的就是 manifest.json，顺序反了包里还是旧版本
+    // 先落盘再打包：打包读的就是 manifest.json，顺序反了包里还是旧版本。
+    // 与当前版本相同 = 原号重发（撤回 / 被驳回 / 关卡未过 / 已撤销后的重新发布），跳过回写直接打包；
+    // 低于当前版本仍报错（填错的兜底，弹窗侧已先行校验）。
     if let Some(v) = new_version.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let dir = crate::ext_protocol::resolve_ext_dir(&app, &id)?;
-        let old = bump_manifest_in_dir(&dir, v)?;
-        log::info!("发布版本回写: {id} {old} -> {v}");
+        let current = crate::extension::read_manifest(&dir)?.version;
+        if crate::market::version_cmp(v, &current) == Ordering::Equal {
+            log::info!("发布版本与 manifest 当前版本一致（{v}），跳过回写");
+        } else {
+            let old = bump_manifest_in_dir(&dir, v)?;
+            log::info!("发布版本回写: {id} {old} -> {v}");
+        }
+    }
+
+    // 作者署名与发布版本同一条「先落盘再打包」顺序：打包读的就是 manifest.json。
+    if let Some(a) = author.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let dir = crate::ext_protocol::resolve_ext_dir(&app, &id)?;
+        if let Some(old) = set_author_in_dir(&dir, a)? {
+            log::info!("作者署名回写: {id}「{old}」->「{a}」");
+        }
     }
 
     let (pkg, pack_id, version) = pack_to_temp(&app, &id)?;
@@ -267,6 +315,111 @@ pub fn read_image_data_url(path: String) -> Result<String, String> {
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(format!("data:{mime};base64,{b64}"))
+}
+
+/// 按文件头嗅探图片类型（与发布弹窗的 png/jpg/webp 白名单一致；服务端截图关卡同样按文件头判，
+/// 本地先挡一道，清单 URL 失效或被换成非图片时不必白传一次再被打回）
+fn sniff_image_ext(bytes: &[u8]) -> Option<&'static str> {
+    const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    if bytes.starts_with(&PNG_MAGIC) {
+        Some("png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("jpg")
+    } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+/// 分块读取响应体并限长（清单 URL 由市场侧下发，content-length 缺失或虚报时不至把内存读爆）
+async fn download_capped(mut resp: reqwest::Response, cap: usize) -> Result<Vec<u8>, String> {
+    if let Some(len) = resp.content_length() {
+        if len as usize > cap {
+            return Err(format!("TOO_LARGE: 图片超过 {} MB", cap / 1024 / 1024));
+        }
+    }
+    let mut bytes: Vec<u8> = Vec::with_capacity(resp.content_length().unwrap_or(0).min(8 * 1024 * 1024) as usize);
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("NETWORK_ERROR: 下载失败 {e}"))?
+    {
+        if bytes.len() + chunk.len() > cap {
+            return Err(format!("TOO_LARGE: 图片超过 {} MB", cap / 1024 / 1024));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+/// 「引用上一版截图」：把市场清单里该扩展当前已上架版本的截图 URL 下载成本地临时文件，
+/// 返回路径列表；前端把它们当手选图片一样塞进发布表单，后续上传走既有本地路径链路——
+/// **服务端契约零改动**（截图本就按内容哈希存储，同图重传不占新空间）。
+///
+/// 防线：仅接受 http(s)；单张 ≤ 2MB（与发布弹窗同限）；按文件头嗅探类型；
+/// 临时目录由本命令独占、每次调用先清空，引用残留不会无限堆积（不含用户手选的文件，不能拿到处清理）。
+#[tauri::command]
+pub async fn fetch_remote_screenshots(urls: Vec<String>) -> Result<Vec<String>, String> {
+    const MAX_BYTES: usize = 2 * 1024 * 1024;
+    if urls.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let dir = std::env::temp_dir().join("x-hub-pub-shots");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("IO_ERROR: 创建临时目录失败 {e}"))?;
+
+    let client = crate::net::direct()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut saved: Vec<String> = Vec::new();
+    for url in &urls {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            log::warn!("引用截图跳过非 http(s) 地址: {url}");
+            continue;
+        }
+        let resp = match client.get(url).send().await {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                log::warn!("引用截图下载失败 {url}: HTTP {}", r.status());
+                continue;
+            }
+            Err(e) => {
+                log::warn!("引用截图下载失败 {url}: {e}");
+                continue;
+            }
+        };
+        let bytes = match download_capped(resp, MAX_BYTES).await {
+            Ok(b) => b,
+            Err(e) => {
+                log::warn!("引用截图下载失败 {url}: {e}");
+                continue;
+            }
+        };
+        let Some(ext) = sniff_image_ext(&bytes) else {
+            log::warn!("引用截图跳过非图片内容: {url}");
+            continue;
+        };
+        // 内容哈希命名：同图天然去重（与市场截图桶的存储口径一致）
+        let name = format!("{}.{}", &crate::market::to_hex(&Sha256::digest(&bytes))[..16], ext);
+        if saved.iter().any(|p| p.ends_with(&name)) {
+            continue;
+        }
+        let path = dir.join(&name);
+        if let Err(e) = std::fs::write(&path, &bytes) {
+            log::warn!("引用截图落盘失败 {name}: {e}");
+            continue;
+        }
+        saved.push(path.to_string_lossy().to_string());
+    }
+
+    if saved.is_empty() {
+        return Err("NETWORK_ERROR: 上一版截图全部下载失败（可能已失效），请手动选择图片".into());
+    }
+    Ok(saved)
 }
 
 /// 我的提交列表（含剩余配额：服务端只回剩余次数）
@@ -563,5 +716,54 @@ mod tests {
     fn bump_rejects_missing_manifest() {
         let dir = tempfile::tempdir().unwrap();
         assert!(bump_manifest_in_dir(dir.path(), "1.0.0").is_err());
+    }
+
+    #[test]
+    fn author_write_back_sets_field_and_preserves_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        write_bump_fixture(dir.path(), "0.1.0");
+
+        // 原本没填 author：发生了回写（旧值为空串），字段落盘
+        let old = set_author_in_dir(dir.path(), "张三").unwrap();
+        assert_eq!(old, Some(String::new()));
+
+        let raw = std::fs::read_to_string(dir.path().join("manifest.json")).unwrap();
+        let v: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["author"], "张三");
+        // 其余字段与键序原样保留，author 追加在末尾（开发者的 diff 只有新增的一行）
+        assert_eq!(v["config"]["version"], "internal-marker");
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["name", "version", "id", "config", "author"]);
+        assert!(raw.ends_with('\n'));
+        assert!(!dir.path().join(".manifest.json.author-tmp").exists());
+
+        // 值相同：不动文件
+        assert_eq!(set_author_in_dir(dir.path(), "张三").unwrap(), None);
+        // 改署名：返回旧值
+        assert_eq!(set_author_in_dir(dir.path(), "李四").unwrap(), Some("张三".into()));
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(v["author"], "李四");
+
+        // manifest 缺失：报错而不是静默成功
+        let empty = tempfile::tempdir().unwrap();
+        assert!(set_author_in_dir(empty.path(), "张三").is_err());
+    }
+
+    #[test]
+    fn sniff_image_ext_by_magic_bytes() {
+        // PNG：8 字节签名
+        assert_eq!(sniff_image_ext(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0]), Some("png"));
+        // JPEG：FF D8 FF
+        assert_eq!(sniff_image_ext(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("jpg"));
+        // WebP：RIFF....WEBP（长度不足 12 字节不认）
+        assert_eq!(
+            sniff_image_ext(b"RIFF\x24\x00\x00\x00WEBPVP8 "),
+            Some("webp")
+        );
+        assert_eq!(sniff_image_ext(b"RIFF\x24\x00WEBP"), None);
+        // 非图片 / 空内容：拒（清单 URL 失效被换成 HTML 错误页的场景）
+        assert_eq!(sniff_image_ext(b"<!DOCTYPE html>"), None);
+        assert_eq!(sniff_image_ext(&[]), None);
     }
 }

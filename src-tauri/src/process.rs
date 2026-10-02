@@ -116,7 +116,24 @@ fn split_args(s: &str) -> Vec<String> {
     result
 }
 
+/// smb:// URL → Windows UNC 路径（纯函数）。非 smb 协议或无主机名返回 None。
+/// 例：`smb://nas/media/docs/` → `\\nas\media\docs`
+fn smb_url_to_unc(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("smb://")?;
+    let rest = rest.trim_end_matches('/');
+    if rest.is_empty() {
+        return None;
+    }
+    Some(format!("\\\\{}", rest.replace('/', "\\")))
+}
+
 pub fn open_url(url: &str) -> Result<(), String> {
+    // smb://host/share/path → UNC \\host\share\path 交给资源管理器：Windows 不注册 smb:
+    // 协议（ShellExecute 报「没有与之关联的应用」），网络共享的原生写法就是 UNC；
+    // ftp/ftps/sftp 系协议系统有处理器（浏览器/资源管理器），照常走 opener
+    if let Some(unc) = smb_url_to_unc(url) {
+        return open_path(&unc);
+    }
     opener::open(url).map_err(|e| format!("打开链接失败: {}", e))
 }
 
@@ -353,6 +370,22 @@ mod tests {
         assert_eq!(exe_file_name("/usr/bin/firefox").as_deref(), Some("firefox"));
         assert_eq!(exe_file_name("chrome.exe").as_deref(), Some("chrome.exe"));
         assert_eq!(exe_file_name(""), None);
+    }
+
+    #[test]
+    fn smb_url_to_unc_converts_share_paths() {
+        assert_eq!(
+            smb_url_to_unc("smb://nas/media/docs/").as_deref(),
+            Some(r"\\nas\media\docs")
+        );
+        assert_eq!(
+            smb_url_to_unc("smb://192.168.1.10/share").as_deref(),
+            Some(r"\\192.168.1.10\share")
+        );
+        // 非 smb 协议 / 只写协议不给主机：不转换（ftp 等交给系统默认处理器）
+        assert_eq!(smb_url_to_unc("ftp://example.com/pub"), None);
+        assert_eq!(smb_url_to_unc("https://example.com"), None);
+        assert_eq!(smb_url_to_unc("smb://"), None);
     }
 
     #[test]

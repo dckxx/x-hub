@@ -258,14 +258,30 @@ pub fn launch_resource_as_admin(state: State<'_, DbState>, id: i64) -> Result<()
 
 // ---------- 速达小类（ADR 0012）----------
 
+/// 小类名（可含「/」层级）的形状校验：全路径 1–60 字符、每段 1–20、分段首尾禁空格。
+/// create 与 rename 共用——资源按全路径字符串匹配，形状不一会让行名与树推导的路径对不上。
+fn validate_subcategory_name(name: &str) -> Result<(), String> {
+    let chars = name.chars().count();
+    if chars == 0 || chars > 60 {
+        return Err("小类名称需为 1–60 个字符".into());
+    }
+    for seg in name.split('/') {
+        if seg.trim() != seg {
+            return Err("小类路径分段的前后不能有空格（用 / 分隔层级）".into());
+        }
+        let n = seg.chars().count();
+        if n == 0 || n > 20 {
+            return Err("小类路径的每一段需为 1–20 个字符（用 / 分隔层级）".into());
+        }
+    }
+    Ok(())
+}
+
 fn validate_subcategory_input(kind: &str, name: &str) -> Result<(), String> {
     if !subcategory::VALID_KINDS.contains(&kind) {
         return Err("无效的大类".into());
     }
-    if name.is_empty() || name.chars().count() > 20 {
-        return Err("小类名称需为 1–20 个字符".into());
-    }
-    Ok(())
+    validate_subcategory_name(name)
 }
 
 #[tauri::command]
@@ -296,9 +312,7 @@ pub fn create_subcategory(
 #[tauri::command]
 pub fn rename_subcategory(state: State<'_, DbState>, id: i64, name: String) -> Result<(), String> {
     let name = name.trim().to_string();
-    if name.is_empty() || name.chars().count() > 20 {
-        return Err("小类名称需为 1–20 个字符".into());
-    }
+    validate_subcategory_name(&name)?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     subcategory::rename(&mut conn, id, &name)
 }
@@ -1484,6 +1498,38 @@ impl ConfiguredShortcut {
             ConfiguredShortcut::Chat => cfg.chat_shortcut_enabled = value,
         }
     }
+
+    /// 键值是否与**其它**三个快捷键里某一个相同（物理按键口径，CommandOrControl 与 Ctrl
+    /// 视为同键）。改键/启用前的配置层冲突预检用——配置相同而 OS 各自注册必然撞车，
+    /// 与其在启用时报一句含糊的「快捷键冲突」，不如在写入配置时就拦下并点名是谁。
+    fn conflicts_with_other(
+        &self,
+        cfg: &crate::config::AppConfig,
+        key: &str,
+    ) -> Option<(&'static str, String)> {
+        let others = [
+            (
+                ConfiguredShortcut::Main,
+                cfg.global_shortcut.clone(),
+                "主窗口",
+            ),
+            (
+                ConfiguredShortcut::Clipboard,
+                cfg.clipboard_shortcut.clone(),
+                "剪贴板",
+            ),
+            (ConfiguredShortcut::Search, cfg.search_shortcut.clone(), "搜索"),
+            (ConfiguredShortcut::Chat, cfg.chat_shortcut.clone(), "AI 对话"),
+        ];
+        others
+            .into_iter()
+            .find(|(which, value, _)| {
+                std::mem::discriminant(which) != std::mem::discriminant(self)
+                    && !value.is_empty()
+                    && crate::shortcut::same_hotkey(value, key)
+            })
+            .map(|(_, value, label)| (label, value))
+    }
 }
 
 /// 更新某个可自定义全局快捷键：改绑（冲突预检/反注册/注册/回滚）+ 配置持久化。
@@ -1503,6 +1549,11 @@ fn set_configured_shortcut(
     let previous = config_field(&config, &which);
     if previous == shortcut {
         return Ok(previous);
+    }
+    // 改键前先做配置层冲突预检：其它三个快捷键已占用同一物理按键时无论本键是否禁用
+    // 都拦下（禁用态存进去就是颗雷——重新启用时注册必然撞车，报错还不知所云）
+    if let Some((label, _)) = which.conflicts_with_other(&config, shortcut) {
+        return Err(format!("与「{label}」快捷键冲突，请换一个组合"));
     }
     // 该快捷键处于「禁用」状态（config.*_shortcut_enabled = false）时只改存储值、不注册，
     // 否则禁用后一改键就又把热键注册上了，开关形同虚设（重新启用时按新值注册）
@@ -1569,12 +1620,34 @@ pub fn set_shortcut_enabled(
         }
         // 只在实际未注册时注册（已注册则幂等跳过，避免「已注册」冲突）
         if !crate::shortcut::is_shortcut_registered(&app, &value) {
-            crate::shortcut::register_toggle_shortcut(&app, &value)
-                .map_err(|e| crate::shortcut::format_shortcut_error(&e))?;
+            if let Err(e) = crate::shortcut::register_toggle_shortcut(&app, &value) {
+                // 注册报「已被注册」但登记表说没有：先强反注册再试一次自愈——登记表与
+                // 系统热键状态失同步（历史反注册失败留下的残留等）时按原样重试永远失败
+                let mut last_err = crate::shortcut::format_shortcut_error(&e);
+                if crate::shortcut::is_conflict_error(&e) {
+                    let _ = crate::shortcut::unregister_toggle_shortcut(&app, &value);
+                    match crate::shortcut::register_toggle_shortcut(&app, &value) {
+                        Ok(()) => last_err.clear(),
+                        Err(e2) => last_err = crate::shortcut::format_shortcut_error(&e2),
+                    }
+                }
+                if !last_err.is_empty() {
+                    // 报错要点名冲突来源：其它三个快捷键占了同键（配置撞车）与外部程序
+                    // 占用（本进程从未注册成功过）对用户是完全不同的两件事
+                    if let Some((label, _)) = which.conflicts_with_other(&config, &value) {
+                        return Err(format!("与「{label}」快捷键键值相同，请先修改其中一个"));
+                    }
+                    return Err(format!(
+                        "启用失败：{last_err}（该组合可能正被其它程序占用）"
+                    ));
+                }
+            }
         }
     } else if crate::shortcut::is_shortcut_registered(&app, &value) {
         // 未注册时忽略：可能当初注册就被别的程序占用而失败过
-        let _ = crate::shortcut::unregister_toggle_shortcut(&app, &value);
+        if let Err(e) = crate::shortcut::unregister_toggle_shortcut(&app, &value) {
+            log::warn!("[快捷键] 禁用时反注册失败（残留会导致下次启用报冲突）: {e}");
+        }
     }
     which.set_enabled(&mut config, enabled);
     crate::config::save(&config)?;

@@ -423,6 +423,8 @@ export interface ExtensionEntry {
   open_in: string[]
   permissions: string[]
   description: string
+  /** 作者署名（manifest.author；发布弹窗预填，市场卡片与详情页展示） */
+  author: string | null
   /** 图标文件绝对路径（存在时才非空） */
   icon: string | null
   /** 扩展目录绝对路径 */
@@ -1322,7 +1324,8 @@ export const tauriApi = {
   /** 撤销某台设备（换机/设备丢失时用） */
   accountRevokeDevice: (id: number) => invoke<unknown>('account_revoke_device', { id }),
   // ---- 扩展发布（打包上传 / 我的提交 / 撤回） ----
-  /** newVersion 非空时，Rust 端会先把它写回扩展 manifest.json（须大于当前版本）再打包上传 */
+  /** newVersion 非空时，Rust 端会先把它写回扩展 manifest.json（须大于当前版本）再打包上传；
+   *  author 非空且与 manifest 当前署名不同时同样先回写 `author` 字段（市场卡片与详情页展示用它） */
   devSubmit: (
     id: string,
     changelog?: string,
@@ -1330,6 +1333,7 @@ export const tauriApi = {
     homepage?: string,
     screenshots?: string[],
     newVersion?: string,
+    author?: string,
   ) =>
     invoke<SubmitResult>('dev_submit', {
       id,
@@ -1338,9 +1342,15 @@ export const tauriApi = {
       homepage: homepage ?? null,
       screenshots: screenshots && screenshots.length ? screenshots : null,
       newVersion: newVersion ?? null,
+      author: author ?? null,
     }),
   /** 读本地图片为 data URL（发布弹窗的截图缩略图预览用；作者选的图不在资产白名单目录里） */
   readImageDataUrl: (path: string) => invoke<string>('read_image_data_url', { path }),
+  /**
+   * 「引用上一版截图」：下载市场清单里该扩展已上架版本的截图 URL 到本地临时文件。
+   * 返回成功下载的本地路径列表（失效/非图片的 URL 会被跳过；全部失败时 reject）。
+   */
+  fetchRemoteScreenshots: (urls: string[]) => invoke<string[]>('fetch_remote_screenshots', { urls }),
   devListSubmissions: (page?: number, pageSize?: number) =>
     invoke<DevSubmissionList>('dev_list_submissions', {
       page: page ?? null,

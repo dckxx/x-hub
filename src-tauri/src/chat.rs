@@ -101,6 +101,35 @@ pub async fn platform_models() -> Result<Vec<String>, String> {
         .unwrap_or_default())
 }
 
+/// 从对话接口的错误响应体提取可读文案，两处（流式对话 / 拉模型列表）共用。
+/// 三种形状按序尝试：自备供应商是 OpenAI 形状 `{"error":{"message":..}}`；
+/// 平台中转是扁平形状 `{"error":"quota_exceeded","message":"AI 额度已用完"}`（message 优先展示）；
+/// 都不在（非 JSON / HTML 错误页）时退回原文截断。
+fn extract_error_detail(body: &str) -> String {
+    let parsed: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return truncate_body(body),
+    };
+    if let Some(s) = parsed["error"]["message"].as_str() {
+        return s.to_string();
+    }
+    if let Some(s) = parsed.get("message").and_then(|m| m.as_str()) {
+        return s.to_string();
+    }
+    if let Some(s) = parsed.get("error").and_then(|e| e.as_str()) {
+        return s.to_string();
+    }
+    truncate_body(body)
+}
+
+fn truncate_body(body: &str) -> String {
+    if body.chars().count() > 300 {
+        body.chars().take(300).collect()
+    } else {
+        body.to_string()
+    }
+}
+
 /// 发送一次 OpenAI 兼容流式对话请求，逐段回调 on_chunk，并把完整回复累积到 out
 ///
 /// - 协议：`POST {base_url}/chat/completions`，`stream: true`，SSE 逐行解析
@@ -175,18 +204,8 @@ where
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        // 常见错误提取（OpenAI 兼容实现通常返回 {"error":{"message":...}}）
-        let detail = serde_json::from_str::<Value>(&body)
-            .ok()
-            .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
-            .unwrap_or_else(|| {
-                if body.len() > 300 {
-                    body[..300].to_string()
-                } else {
-                    body.clone()
-                }
-            });
-        return Err(format!("模型接口返回 {}: {}", status, detail));
+        // 常见错误提取：OpenAI 形状 error.message / 平台中转扁平 message / 原文截断
+        return Err(format!("模型接口返回 {}: {}", status, extract_error_detail(&body)));
     }
 
     // 逐行解析 SSE：data: {json}，[DONE] 结束；delta.content 为增量
@@ -298,17 +317,7 @@ pub async fn fetch_provider_models(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        let detail = serde_json::from_str::<Value>(&body)
-            .ok()
-            .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
-            .unwrap_or_else(|| {
-                if body.len() > 300 {
-                    body[..300].to_string()
-                } else {
-                    body.clone()
-                }
-            });
-        return Err(format!("接口返回 {}: {}", status, detail));
+        return Err(format!("接口返回 {}: {}", status, extract_error_detail(&body)));
     }
 
     let body: Value = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
@@ -329,6 +338,24 @@ pub async fn fetch_provider_models(
 mod tests {
     use super::*;
     use crate::models::ChatMessage;
+
+    #[test]
+    fn extract_error_detail_covers_both_shapes() {
+        // OpenAI 形状（自备供应商）
+        assert_eq!(
+            extract_error_detail(r#"{"error":{"message":"Incorrect API key"}}"#),
+            "Incorrect API key"
+        );
+        // 平台中转扁平形状：可读 message 优先于错误码
+        assert_eq!(
+            extract_error_detail(r#"{"error":"quota_exceeded","message":"AI 额度已用完"}"#),
+            "AI 额度已用完"
+        );
+        // 老服务端只有错误码时原样带出（前端有映射兜底）
+        assert_eq!(extract_error_detail(r#"{"error":"server_busy"}"#), "server_busy");
+        // 非 JSON（网关 HTML 错误页）退回原文截断
+        assert_eq!(extract_error_detail("<html>502</html>"), "<html>502</html>");
+    }
 
     #[test]
     fn build_messages_map() {

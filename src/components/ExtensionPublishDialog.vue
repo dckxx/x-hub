@@ -25,6 +25,8 @@ useFocusTrap(visible, cardRef)
 const changelog = ref('')
 const homepage = ref('')
 const minAppVersion = ref('')
+/** 作者署名：预填 manifest.author，非空且与当前署名不同时提交会写回 manifest.json（市场卡片与详情页展示它） */
+const author = ref('')
 /** 「发布版本」输入框：非空 = 提交时先把该版本写回扩展的 manifest.json 再打包；留空 = 按 manifest 当前版本发布（重提同一版的路径） */
 const newVersion = ref('')
 /** 本会话跟踪的当前 manifest 版本：props.extension 在提交后是旧值（列表要等 5s stamp 轮询才刷新），提交成功后用 result.version 就地更新 */
@@ -143,7 +145,7 @@ function checkSubmittable(): boolean {
   return true
 }
 
-// ---- 发布版本：写回 manifest 的本地校验（与 Rust bump_manifest_in_dir 同口径） ----
+// ---- 发布版本：写回 manifest 的本地校验（服务端关卡才是最终结论，这里只挡明显的误填） ----
 
 /** x.y.z 三段纯数字（与服务端关卡同口径，1.0.0-beta / 1.2 不合法）；返回 null = 不合法 */
 function parseXyz(v: string): [number, number, number] | null {
@@ -160,6 +162,18 @@ function suggestNextVersion(v: string): string {
   return p ? `${p[0]}.${p[1]}.${p[2] + 1}` : ''
 }
 
+/**
+ * 某版本是否正挂在市场上（该扩展有这条提交：已上架且未被撤销）。
+ * 决定「发布版本」的默认建议与校验口径：在架上 → 必须升号（服务端递增关卡）；不在架上 → 允许原号重发。
+ */
+function isVersionLive(v: string): boolean {
+  const extId = props.extension?.id
+  if (!extId) return false
+  return extSubmissions.value.some(
+    (s) => s.status === 'published' && s.version === v && !revokedKeys.value.includes(`${extId}@${v}`),
+  )
+}
+
 /** 错误文案；null = 通过（含留空：留空是合法路径，按 manifest 当前版本发布） */
 function validateNewVersion(): string | null {
   const v = newVersion.value.trim()
@@ -168,6 +182,14 @@ function validateNewVersion(): string | null {
   if (!p) return `版本号必须是 x.y.z 三段纯数字（如 0.2.1），当前填的是「${v}」`
   const c = parseXyz(currentVersion.value)
   if (c) {
+    if (p[0] === c[0] && p[1] === c[1] && p[2] === c[2]) {
+      // 与 manifest 当前版本相同：只有「正在架上」才必须升号（服务端递增关卡会拒）；
+      // 未上架的（首发 / 审核中撤回 / 被驳回 / 关卡未过 / 已撤销）允许原号重发——市场没有（或已收回）这个版本
+      if (isVersionLive(currentVersion.value)) {
+        return `v${v} 正在市场上架，新版本号必须高于它（留空则按当前版本原样重新发布）`
+      }
+      return null
+    }
     const greater =
       p[0] > c[0] ||
       (p[0] === c[0] && p[1] > c[1]) ||
@@ -176,6 +198,24 @@ function validateNewVersion(): string | null {
   }
   return null
 }
+
+/** 用户是否手动改过「发布版本」：预填只跟随默认值到用户动手为止，别覆盖输入 */
+const versionTouched = ref(false)
+
+/**
+ * 「发布版本」默认值：当前版本在架上 → 升一版（补丁号 +1，服务端要求递增）；
+ * 不在架上（首发 / 撤回 / 驳回 / 关卡未过 / 已撤销）→ 原号——市场没有这个版本号，没必要强迫叠加。
+ * 提交记录是异步拉取的，这里做成 computed：记录到位后（未动手时）自动校正预填。
+ */
+const defaultNewVersion = computed(() => {
+  const cur = currentVersion.value
+  if (!parseXyz(cur)) return ''
+  return isVersionLive(cur) ? suggestNextVersion(cur) : cur
+})
+
+watch(defaultNewVersion, (v) => {
+  if (!versionTouched.value) newVersion.value = v
+})
 
 // 「我的提交」里被指引的那一行：短暂高亮（配合说明里的可点行动）
 const highlightedId = ref<number | null>(null)
@@ -285,10 +325,16 @@ async function loadAllSubmissions() {
  */
 async function loadRevokedKeys() {
   if (!isTauri()) return
+  const extId = props.extension?.id
   try {
     // 优先拉最新清单；联网失败时回退读本地缓存（Rust 端把验签过的清单缓存到数据根）
     const status = await tauriApi.refreshMarketRegistry().catch(() => tauriApi.getMarketRegistry())
     revokedKeys.value = status?.revoked ?? []
+    // 顺手取该扩展当前已上架版本的截图 URL ——「引用上一版截图」的数据源（未上架 = 空，按钮不出现）。
+    // 响应回来时可能已切到别的扩展：只在本扩展仍在场时才落位，防串台
+    if (props.extension?.id === extId) {
+      prevShots.value = status?.extensions?.find((e) => e.id === extId)?.screenshots?.slice() ?? []
+    }
   } catch {
     revokedKeys.value = []
   }
@@ -317,6 +363,10 @@ const MAX_SHOTS = 5
 const screenshots = ref<string[]>([])
 /** path → data URL（作者选的图不在资产白名单目录，只能读成 base64 预览） */
 const shotPreviews = ref<Record<string, string>>({})
+/** 该扩展当前已上架版本（= 发布新版本时的「上一版」）在市场清单里的截图 URL */
+const prevShots = ref<string[]>([])
+/** 正在下载上一版截图（按钮 busy 态） */
+const fetchingShots = ref(false)
 
 async function pickScreenshots() {
   if (!isTauri()) return
@@ -345,6 +395,43 @@ async function pickScreenshots() {
     }
   } catch (e) {
     showToast(String(e))
+  }
+}
+
+/**
+ * 「引用上一版截图」：把市场清单里已上架版本的截图下载成本地临时文件（Rust 按文件头嗅探类型、
+ * 限 2MB、内容哈希命名），之后与手选图片走同一条上传链路——服务端截图本就按内容哈希存储，
+ * 同图重传不占新空间。接口未变时发布新版本可整组复用，不必重新选图。
+ */
+async function reusePrevShots() {
+  if (!isTauri() || fetchingShots.value) return
+  const room = MAX_SHOTS - screenshots.value.length
+  if (room <= 0) {
+    showToast(`最多 ${MAX_SHOTS} 张截图`)
+    return
+  }
+  fetchingShots.value = true
+  try {
+    // 空位不够时只取前 room 张（与手选多处同口径）；单张失败由 Rust 跳过并落日志
+    const paths = await tauriApi.fetchRemoteScreenshots(prevShots.value.slice(0, room))
+    let added = 0
+    for (const p of paths) {
+      if (screenshots.value.length >= MAX_SHOTS) break
+      if (screenshots.value.includes(p)) continue
+      screenshots.value.push(p)
+      added += 1
+      try {
+        shotPreviews.value[p] = await tauriApi.readImageDataUrl(p)
+      } catch {
+        /* 下载侧已验过文件头，预览失败极罕见；模板会给「无法预览」占位 */
+      }
+    }
+    const failed = Math.max(0, Math.min(prevShots.value.length, room) - added)
+    showToast(failed ? `已引用 ${added} 张，${failed} 张下载失败` : `已引用上一版 ${added} 张截图`)
+  } catch (e) {
+    showToast(String(e))
+  } finally {
+    fetchingShots.value = false
   }
 }
 
@@ -377,13 +464,14 @@ async function submit() {
       homepage.value.trim(),
       screenshots.value,
       newVersion.value.trim() || undefined,
+      author.value.trim() || undefined,
     )
     quota.value = result.value.quota ?? quota.value
     // 版本已随提交落盘：就地跟进当前版本（props.extension 是旧值，列表要等 stamp 轮询刷新），
-    // 并预填下一版——「关卡挂了 → 改完源码 → 再点发布」的循环一击直达，不用手填
+    // 并预填同版本号——刚提交的版本还没上架，「关卡挂了 → 撤回 → 改完源码 → 原号重发」一击直达，不用手填
     currentVersion.value = result.value.version
-    const next = suggestNextVersion(result.value.version)
-    if (next) newVersion.value = next
+    versionTouched.value = false
+    newVersion.value = result.value.version
     // 提交后刷新：新记录要立刻出现在列表里（它现在也是一条「待处理」）
     await loadAllSubmissions()
   } catch (e) {
@@ -433,15 +521,20 @@ function initDialog() {
   changelog.value = ''
   homepage.value = ''
   minAppVersion.value = ''
+  author.value = props.extension?.author ?? ''
   currentVersion.value = props.extension?.version ?? ''
-  // 预填建议的下一版（补丁号 +1）：改完扩展直接点「打包并发布」，不必再去扩展目录手改版本号
-  newVersion.value = suggestNextVersion(currentVersion.value)
+  // 预填「发布版本」默认值（在架上 → 升一版；不在架上 → 原号重发，见 defaultNewVersion）；
+  // 提交记录还在异步拉取，到位后由 watcher 校正（用户已动手则不覆盖）
+  versionTouched.value = false
+  newVersion.value = defaultNewVersion.value
   precheck.value = null
   showDraftDetail.value = false
   // 截图属于上一个扩展的会话状态：不清空会带到下一个扩展的弹窗里，
   // 且此时提交会把 A 扩展挑的截图挂到 B 扩展名下（组件常驻挂载、只靠 v-if 隐藏）
   screenshots.value = []
   shotPreviews.value = {}
+  // 上一版截图同样跟着扩展走；清单在异步拉取，到位后由 loadRevokedKeys 落位
+  prevShots.value = []
   detailId.value = null
   submissions.value = []
   visibleCount.value = PAGE_SIZE
@@ -493,8 +586,8 @@ onBeforeUnmount(() => {
         <div class="pub-body">
           <p class="pub-hint">
             打包在本机完成（不含 <code>node_modules</code> 与隐藏文件），上传后由平台跑关卡与人工审核。
-            「发布版本」会自动写回扩展的 manifest.json 再打包（须大于当前版本
-            v{{ currentVersion || extension?.version }}），留空则按 manifest 当前版本发布。
+            「发布版本」「作者署名」会写回扩展的 manifest.json 再打包：正在市场上架的版本必须填更大的号；
+            还没上架的（首发、审核中撤回、被驳回、未过关卡）可以填原版本号直接重发，留空则按 manifest 当前版本发布。
           </p>
 
           <!-- 本地预检：只列需要修的问题（ok 项不刷屏），服务端关卡才是最终结论 -->
@@ -524,11 +617,22 @@ onBeforeUnmount(() => {
           <div class="pub-row">
             <label class="pub-field pub-field-sm">
               <span>发布版本</span>
-              <input v-model="newVersion" placeholder="留空 = 按当前版本发布" />
+              <input v-model="newVersion" placeholder="留空 = 按当前版本发布" @input="versionTouched = true" />
             </label>
             <label class="pub-field pub-field-sm">
               <span>宿主最低版本</span>
               <input v-model="minAppVersion" placeholder="如 0.5.5" />
+            </label>
+          </div>
+          <div class="pub-row">
+            <label class="pub-field pub-field-sm">
+              <span>作者署名</span>
+              <input
+                v-model="author"
+                maxlength="60"
+                placeholder="显示在市场卡片与详情页"
+                title="会写回扩展的 manifest.json（author 字段）"
+              />
             </label>
             <label class="pub-field pub-field-sm">
               <span>项目主页</span>
@@ -537,7 +641,19 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="pub-field">
-            <span>截图（可选，最多 {{ MAX_SHOTS }} 张 · 单张 ≤ 2MB）</span>
+            <div class="pub-shots-head">
+              <span>截图（可选，最多 {{ MAX_SHOTS }} 张 · 单张 ≤ 2MB）</span>
+              <button
+                v-if="prevShots.length"
+                class="pub-shot-reuse"
+                type="button"
+                :disabled="fetchingShots || screenshots.length >= MAX_SHOTS"
+                title="下载市场清单里当前已上架版本的截图，直接作为本版截图；界面没变时不必重新选图"
+                @click="reusePrevShots"
+              >
+                {{ fetchingShots ? '正在引用…' : `引用上一版截图（${prevShots.length} 张）` }}
+              </button>
+            </div>
             <div class="pub-shots">
               <div v-for="p in screenshots" :key="p" class="pub-shot">
                 <img v-if="shotPreviews[p]" :src="shotPreviews[p]" :alt="p" />
@@ -639,7 +755,7 @@ onBeforeUnmount(() => {
                 </button>
               </div>
               <p v-if="isDelisted(s)" class="pub-item-delisted">
-                该版本已被平台下架，不再出现在市场清单里。要重新上架请联系平台，或改好问题后提交新版本。
+                该版本已被平台下架，暂不提供下载与更新。修好问题后可直接用原版本号重新发布（留空「发布版本」重新提审，审核通过即恢复上架），也可以提交新的版本号。
               </p>
             </div>
             <button v-if="hasMore" class="ghost-btn pub-more" type="button" @click="showMore">
@@ -1128,7 +1244,41 @@ onBeforeUnmount(() => {
   background: var(--c-green-soft);
   color: var(--c-green-ink);
 }
-/* 截图：缩略图条 + 虚线「添加图片」块 */
+/* 截图：标签行（含「引用上一版截图」入口）+ 缩略图条 + 虚线「添加图片」块 */
+.pub-shots-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.pub-shots-head > span {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-2);
+}
+/* 引用上一版截图：小药丸钮（样式口径同 .pub-quota-detail） */
+.pub-shot-reuse {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 0.69rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 150ms ease-out, color 150ms ease-out, border-color 150ms ease-out;
+}
+.pub-shot-reuse:hover:not(:disabled) {
+  background: var(--brand-50);
+  border-color: var(--brand-500);
+  color: var(--brand-500);
+}
+.pub-shot-reuse:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 .pub-shots {
   display: flex;
   flex-wrap: wrap;

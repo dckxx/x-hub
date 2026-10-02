@@ -92,6 +92,38 @@ function emailErrorText(e: unknown): { text: string; raw: string } {
   return authErrorText(e)
 }
 
+/**
+ * 邀请码兑换的错误文案：错误码（INVITE_CODE_EXHAUSTED 等）对用户不可读，直接塞进 toast
+ * 就是「兑换失败：INVITE_CODE_EXHAUSTED:服务端返回400」。服务端已补可读 message
+ * （api_error 拼成 `CODE: 说明`，前缀在这里剥掉）；同时保留本地映射兜底——
+ * 服务端发版前，老响应不带 message 也照样给可读句子。
+ */
+function redeemErrorText(e: unknown): { text: string; raw: string } {
+  const raw = String(e)
+  if (raw.startsWith('INVITE_CODE_EXHAUSTED')) {
+    return { text: '该邀请码已被领完，请换一个邀请码', raw }
+  }
+  if (raw.startsWith('INVITE_CODE_REVOKED')) {
+    return { text: '该邀请码已失效', raw }
+  }
+  if (raw.startsWith('INVITE_CODE_EXPIRED')) {
+    return { text: '该邀请码已过期', raw }
+  }
+  if (raw.startsWith('INVITE_CODE_INVALID')) {
+    return { text: '邀请码不存在，请检查是否输入有误', raw }
+  }
+  if (raw.startsWith('ALREADY_REDEEMED')) {
+    return { text: '这个账号已经兑换过邀请码，无需重复兑换', raw }
+  }
+  if (raw.startsWith('INVITE_CODE_REQUIRED')) {
+    return { text: '请填写邀请码', raw }
+  }
+  if (raw.startsWith('NETWORK_ERROR')) {
+    return { text: '连不上服务器，请检查网络后重试', raw }
+  }
+  return authErrorText(e)
+}
+
 /** 发送成功后的重发冷却：连点不但会撞服务端限流，还会把「最新一封」的验证码换掉 */
 function startEmailCooldown(sec: number) {
   emailCooldown.value = sec
@@ -374,7 +406,7 @@ async function doLogout() {
     account.value = await tauriApi.accountLogout()
     showToast('已退出登录')
   } catch (e) {
-    showToast(`退出失败：${e}`)
+    showToast(`退出失败：${authErrorText(e).text}`)
   } finally {
     accountBusy.value = false
   }
@@ -391,7 +423,8 @@ async function doRedeem() {
     redeemInput.value = ''
     showToast('兑换成功，权益已到账')
   } catch (e) {
-    showToast(`兑换失败：${e}`)
+    const { text } = redeemErrorText(e)
+    showToast(`兑换失败：${text}`)
   } finally {
     accountBusy.value = false
   }
@@ -411,7 +444,7 @@ async function doApply() {
     await loadAccount()
   } catch (e) {
     if (await handleAuthError(e)) return
-    showToast(`提交失败：${e}`)
+    showToast(`提交失败：${authErrorText(e).text}`)
   } finally {
     accountBusy.value = false
   }

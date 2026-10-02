@@ -58,7 +58,8 @@ const expandedFolders = ref<Set<string>>(new Set())
 
 const keyOf = (a: { target: string }) => a.target.toLowerCase()
 
-/** 后端小类名的长度上限（commands::validate_subcategory_input） */
+/** 后端小类名的长度上限（commands::validate_subcategory_input）：全路径 60、每段 20 */
+const SUBCATEGORY_PATH_MAX = 60
 const SUBCATEGORY_NAME_MAX = 20
 
 /** 书签文件夹路径切分（trim + 去空段），folderToCategory / 文件夹树 / 默认展开三处共用 */
@@ -67,26 +68,36 @@ function folderSegments(folder: string | undefined | null): string[] {
   return folder.split('/').map((s) => s.trim()).filter(Boolean)
 }
 
-/** 书签文件夹 → 速达小类名：剥掉浏览器根名（书签栏/其他书签/移动端），余下路径用 / 连接——
- *  浏览器里已分好的目录直接沿用（「书签栏/前端」→「前端」、「书签栏/开发/前端」→「开发/前端」）；
- *  根下直挂的书签返回 null（走默认小类/未归类）；全路径超 20 字符时退化为末级文件夹名，仍超才硬截断 */
+/** 书签文件夹 → 速达小类全路径：剥掉浏览器根名（书签栏/其他书签/移动端），余下路径用 / 连接——
+ *  浏览器里已分好的目录直接沿用（「书签栏/前端」→「前端」、「书签栏/开发/前端」→「开发/前端」；
+ *  「/」层级在速达小类行里逐级嵌套展示，见 utils/subcategoryTree.ts）；
+ *  根下直挂的书签返回 null（走默认小类/未归类）；全路径超 60 字符时退化为末级文件夹名，仍超才硬截断 */
 function folderToCategory(folder: string | undefined | null): string | null {
   const segs = folderSegments(folder)
   if (segs.length <= 1) return null
   const full = segs.slice(1).join('/')
-  if (full.length <= SUBCATEGORY_NAME_MAX) return full
+  // 全路径 ≤60 且每段 ≤20 才用完整路径；任一段超 20（后端按段校验）退化到末级，
+  // 仍超才硬截断——否则小类创建被拒，资源挂着不存在的小类落库、任何 chip 都筛不出来
+  if (full.length <= SUBCATEGORY_PATH_MAX && segs.slice(1).every((s) => s.length <= SUBCATEGORY_NAME_MAX)) return full
   const leaf = segs[segs.length - 1]
   if (leaf.length <= SUBCATEGORY_NAME_MAX) return leaf
   return leaf.slice(0, SUBCATEGORY_NAME_MAX)
 }
 
-/** 文件夹最终归入的小类：手动覆盖优先（trim；空 = 明确归默认小类），否则自动映射 */
+/** 文件夹最终归入的小类：手动覆盖优先（trim；空 = 明确归默认小类），否则自动映射。
+ *  覆盖输入按分段 trim + 拼回全路径——后端校验「分段首尾禁空格 + 每段 1–20 + 全路径 ≤60」，
+ *  「开发 / 前端」这类顺手的输入不归一会让小类创建被拒、资源挂着不存在的小类落库，
+ *  在任何小类 chip 下都筛不出来（Suda.vue onScanImported 的创建失败兜底只报错不拦截） */
 function effectiveCategory(folder: string | undefined | null): string | null {
   if (!folder) return null
   const ov = categoryOverrides.value.get(folder)
   if (ov === undefined) return folderToCategory(folder)
-  const t = ov.trim()
-  return t === '' ? null : t.slice(0, SUBCATEGORY_NAME_MAX)
+  const t = ov
+    .split('/')
+    .map((s) => s.trim().slice(0, SUBCATEGORY_NAME_MAX))
+    .filter(Boolean)
+    .join('/')
+  return t === '' ? null : t.slice(0, SUBCATEGORY_PATH_MAX)
 }
 
 /** 编辑文件夹的小类映射（存原始输入不即时 trim，避免输入中途空格被绑定值吃掉） */
@@ -585,7 +596,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 @change="groupByFolder = !groupByFolder"
               />
               <span>
-                按<b>浏览器文件夹</b>设置速达小类（如「书签栏/前端」→ 小类「前端」；各文件夹的小类可在列表中直接修改，留空归默认，改同名即合并；缺的小类自动创建<template v-if="newCategoryCount > 0">，本次将新建 {{ newCategoryCount }} 个</template>）
+                按<b>浏览器文件夹</b>设置速达小类，目录层级原样保留（如「书签栏/开发/前端」→ 小类「开发/前端」，在速达中逐级嵌套选择）；各文件夹的小类可在列表中直接修改，留空归默认，改同名即合并；缺的小类自动创建<template v-if="newCategoryCount > 0">，本次将新建 {{ newCategoryCount }} 个</template>
               </span>
             </label>
           </template>
@@ -684,14 +695,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                   <input
                     class="scan-cat-input"
                     type="text"
-                    maxlength="20"
+                    maxlength="60"
                     :value="
                       categoryOverrides.get(row.node.path) ??
                       folderToCategory(row.node.path) ??
                       ''
                     "
                     placeholder="默认"
-                    title="导入时归入的速达小类，可修改；留空 = 按默认小类归档；多个文件夹改成同名会合并进同一个小类"
+                    title="导入时归入的速达小类（可用 / 分层级，如「开发/前端」），可修改；留空 = 按默认小类归档；多个文件夹改成同名会合并进同一个小类"
                     @keydown.stop
                     @input="onCatInput(row.node.path, $event)"
                   />

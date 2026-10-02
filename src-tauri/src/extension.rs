@@ -194,6 +194,9 @@ pub struct ExtensionManifest {
     /// 一句话描述（列表展示用；spec §4 未列，作为可选补充字段）
     #[serde(default)]
     pub description: String,
+    /// 作者署名（市场卡片与详情页展示；发布弹窗可补填并回写本字段）
+    #[serde(default)]
+    pub author: Option<String>,
     /// 扩展默认配置（对象）；用户覆盖存 `.config.json`，读取时用户覆盖优先（配置分层）
     #[serde(default)]
     pub config: Map<String, Value>,
@@ -228,6 +231,8 @@ pub struct ExtensionEntry {
     pub open_in: Vec<String>,
     pub permissions: Vec<String>,
     pub description: String,
+    /// 作者署名（manifest.author；发布弹窗预填与回写用）
+    pub author: Option<String>,
     /// 图标文件绝对路径（存在时才非空）
     pub icon: Option<String>,
     /// 扩展目录绝对路径
@@ -388,6 +393,7 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
         open_in: Vec::new(),
         permissions: Vec::new(),
         description: String::new(),
+        author: None,
         icon: None,
         dir: dir_str.clone(),
         source: source.to_string(),
@@ -440,6 +446,7 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
         open_in: manifest.open_in,
         permissions: manifest.permissions,
         description: manifest.description,
+        author: manifest.author,
         icon,
         dir: dir_str,
         source: source.to_string(),

@@ -4,6 +4,8 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import {
   Bookmark,
   Check,
+  ChevronLeft,
+  ChevronRight,
   FilePlus,
   Globe,
   Laptop,
@@ -24,8 +26,11 @@ import { reportClientError } from '../utils/error-report'
 import { accentOf, fileAccentOf, iconSrc, useResourceIcon } from '../composables/useResourceIcon'
 import { useAdaptivePolling } from '../composables/useAdaptivePolling'
 import { useSudaDrag } from '../composables/useSudaDrag'
+import { isHttpWebTarget } from '../utils/web'
+import { buildSubcategoryTree, categoryMatchesPath, subcatLeaf } from '../utils/subcategoryTree'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
+import SubcatCascadeMenu from './SubcatCascadeMenu.vue'
 import SudaFormDialog from './SudaFormDialog.vue'
 import SudaScanDialog, { type ScanItem, type ScanMode } from './SudaScanDialog.vue'
 
@@ -189,15 +194,106 @@ const subTabs = computed(() => {
   return store.subcategoriesOf(kind)
 })
 
+// 小类层级树（书签导入的「/」路径 → 逐级嵌套）：chips 只出顶层，深层经级联下钻
+const subTree = computed(() => buildSubcategoryTree(subTabs.value))
+
+/** 顶级 chip 的高亮口径：精确命中或选中项在它之下（深层选中时父级 chip 也亮着） */
+function isSubActive(path: string): boolean {
+  return activeSub.value === path || activeSub.value.startsWith(`${path}/`)
+}
+
+// ---- 小类级联菜单开合（三角形按钮点开，选行/点外部/Esc 关闭） ----
+const subMenuOpen = ref<string | null>(null)
+/** 顶层菜单锚点（视口坐标，Teleport 到 body 后按 fixed 定位；打开时由触发按钮实测） */
+const subMenuPos = ref({ x: 0, y: 0 })
+
+function toggleSubMenu(path: string, e: MouseEvent) {
+  if (subMenuOpen.value === path) {
+    subMenuOpen.value = null
+    return
+  }
+  const wrap = (e.currentTarget as HTMLElement).closest('.sub-chip-wrap')
+  const rect = (wrap ?? (e.currentTarget as HTMLElement)).getBoundingClientRect()
+  subMenuPos.value = { x: rect.left, y: rect.bottom + 5 }
+  subMenuOpen.value = path
+}
+
+function selectSub(path: string) {
+  activeSub.value = path
+  subMenuOpen.value = null
+}
+
+function onWindowClickCloseSubMenu(e: MouseEvent) {
+  // 菜单本体（Teleport 到 body）与触发按钮之外的一律关闭；
+  // 菜单内自己的 mousedown 已 stop，这里的 closest 只是双保险
+  if (!(e.target as HTMLElement).closest('.sub-chip-wrap, .sub-cascade')) subMenuOpen.value = null
+}
+
+function onKeydownCloseSubMenu(e: KeyboardEvent) {
+  if (e.key === 'Escape') subMenuOpen.value = null
+}
+
+watch(subMenuOpen, (open) => {
+  if (open) {
+    window.addEventListener('mousedown', onWindowClickCloseSubMenu)
+    window.addEventListener('keydown', onKeydownCloseSubMenu)
+  } else {
+    window.removeEventListener('mousedown', onWindowClickCloseSubMenu)
+    window.removeEventListener('keydown', onKeydownCloseSubMenu)
+  }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('mousedown', onWindowClickCloseSubMenu)
+  window.removeEventListener('keydown', onKeydownCloseSubMenu)
+  window.removeEventListener('resize', syncCatEdge)
+})
+
+// ---- 小类行横向滚动（行内 chips 多到溢出时右侧选不到）：滚轮竖转横 + 两端 ‹ › 按钮 ----
+const catTabsRef = ref<HTMLElement | null>(null)
+const catEdge = ref({ left: false, right: false })
+
+function syncCatEdge() {
+  const el = catTabsRef.value
+  if (!el) return
+  catEdge.value = {
+    left: el.scrollLeft > 4,
+    right: el.scrollLeft + el.clientWidth < el.scrollWidth - 4,
+  }
+}
+
+function onCatWheel(e: WheelEvent) {
+  const el = catTabsRef.value
+  if (!el) return
+  // 只在真的横向溢出时拦截竖直滚轮转横向滚动，避免抢占页面纵向滚动
+  if (el.scrollWidth <= el.clientWidth + 4) return
+  if (e.deltaY !== 0) {
+    el.scrollLeft += e.deltaY
+    e.preventDefault()
+  }
+}
+
+/** ‹ › 滚动按钮：一次滚过约两个 chip 的宽度 */
+function scrollCatBy(dx: number) {
+  catTabsRef.value?.scrollBy({ left: dx, behavior: 'smooth' })
+}
+
+onMounted(() => window.addEventListener('resize', syncCatEdge))
+
+// subTabs 是 computed（每次重算出新数组，引用变化即触发），activeFilter 是字符串，都不需要 deep
+watch([activeFilter, subTabs], () => requestAnimationFrame(syncCatEdge))
+
 // 切大类时重置小类筛选：同名不同义，跨大类沿用旧名会筛出错误集合
 watch(activeFilter, () => {
   activeSub.value = 'all'
+  subMenuOpen.value = null
 })
 
 function matchSub(r: Resource): boolean {
   if (activeSub.value === 'all') return true
   if (activeSub.value === 'none') return r.category == null
-  return r.category === activeSub.value
+  // 选中目录展示其下全部资源（含子孙级，浏览器目录口径）
+  return categoryMatchesPath(r.category, activeSub.value)
 }
 
 const visibleResources = computed<Resource[]>(() => {
@@ -223,7 +319,7 @@ const emptyTitle = computed(() => {
   if (activeFilter.value === '全部') return '还没有速达资源'
   if (activeSub.value === 'none') return `暂无未归类的${activeFilter.value}`
   if (typeof activeSub.value === 'string' && activeSub.value !== 'all') {
-    return `暂无「${activeSub.value}」小类资源`
+    return `暂无「${subcatLeaf(activeSub.value)}」小类资源`
   }
   return `暂无「${activeFilter.value}」资源`
 })
@@ -441,15 +537,18 @@ async function onResourceContext(e: MouseEvent, r: Resource) {
   if (isApp) {
     items.push({ label: '以管理员身份运行', onClick: () => void onOpenAsAdmin(r) })
   }
+  // smb/ftp 等远程协议只有系统能打开：内嵌面板/独立窗口/指定浏览器入口只对 http(s) 出
   let isWeb = false
   if (r.kind === 'web') {
     isWeb = true
-    // 显式覆盖默认打开方式（默认方式见 设置 → 功能 → 速达）
-    items.push({ label: '在内嵌面板打开', dividerBefore: true, onClick: () => store.openWebPanel(r.id) })
-    items.push({ label: '在独立窗口打开', onClick: () => void onOpenInWindow(r) })
-    const browsers = await installedBrowsers()
-    for (const b of browsers) {
-      items.push({ label: `用 ${b.name} 打开`, onClick: () => void onOpenWithBrowser(r, b) })
+    if (isHttpWebTarget(r.target)) {
+      // 显式覆盖默认打开方式（默认方式见 设置 → 功能 → 速达）
+      items.push({ label: '在内嵌面板打开', dividerBefore: true, onClick: () => store.openWebPanel(r.id) })
+      items.push({ label: '在独立窗口打开', onClick: () => void onOpenInWindow(r) })
+      const browsers = await installedBrowsers()
+      for (const b of browsers) {
+        items.push({ label: `用 ${b.name} 打开`, onClick: () => void onOpenWithBrowser(r, b) })
+      }
     }
   }
   items.push({
@@ -485,16 +584,19 @@ async function onOpen(r: Resource) {
  *  避免覆盖用户这期间的删除/改图标 */
 async function fillWebFavicons(created: Resource[]) {
   if (!isTauri() || created.length === 0) return
+  // smb/ftp 等远程协议没有站点图标语义，跳过抓取
+  const targets = created.filter((r) => isHttpWebTarget(r.target))
+  if (targets.length === 0) return
   let map: Record<string, string | null>
   try {
-    map = await tauriApi.fetchFavicons(created.map((r) => r.target))
+    map = await tauriApi.fetchFavicons(targets.map((r) => r.target))
   } catch (e) {
     void reportClientError('抓取网页图标失败', e)
     return
   }
   // 回填前先确认资源还在且仍无图标，避免覆盖用户这期间的删除/改图标；
   // 各任务目标互不相同且守卫在启动前同步完成，并行安全
-  const jobs = created.flatMap((r) => {
+  const jobs = targets.flatMap((r) => {
     const icon = map[r.target]
     if (!icon) return []
     const cur = store.state.resources.find((x) => x.id === r.id)
@@ -519,6 +621,21 @@ async function fillWebFavicons(created: Resource[]) {
   if (got > 0) showToast(`已获取 ${got} 个网页图标`)
 }
 
+/** 打开「添加」弹窗：已在大类视图（应用/网页/文件）时自动预选该大类——
+ *  正在筛某个小类就连小类一起带上，新增的资源直接落进当前分类里 */
+function openAddForm() {
+  editing.value = null
+  const kind = SUB_KIND[activeFilter.value]
+  prefill.value = kind
+    ? {
+        kind,
+        category:
+          activeSub.value !== 'all' && activeSub.value !== 'none' ? activeSub.value : null,
+      }
+    : null
+  formVisible.value = true
+}
+
 function onFormSubmit(payload: {
   id?: number
   kind: 'app' | 'web' | 'file'
@@ -534,8 +651,8 @@ function onFormSubmit(payload: {
   } else {
     void store.addResource(payload).then((r) => {
       showToast(`已添加「${payload.name}」`)
-      // 新增网页且没配图标：后台抓 favicon 自动补齐
-      if (r.kind === 'web' && !r.icon) void fillWebFavicons([r])
+      // 新增网页且没配图标：后台抓 favicon 自动补齐（远程协议 smb/ftp 无站点图标）
+      if (r.kind === 'web' && !r.icon && isHttpWebTarget(r.target)) void fillWebFavicons([r])
     })
   }
   prefill.value = null
@@ -621,8 +738,15 @@ async function onScanImported(items: ScanItem[], cleanShortcuts = false) {
 // ---- 图标渲染（统一在 useResourceIcon composable） ----
 
 function kindLabel(r: Resource): string {
-  // 有小类显示小类名（应用/网页/文件统一），否则回退大类名
-  return r.category ?? (r.kind === 'app' ? '应用' : r.kind === 'web' ? '网页' : '文件')
+  // 有小类显示小类名（应用/网页/文件统一），否则回退大类名；
+  // 层级小类（书签导入的「开发/前端」）只显示末级，完整路径放卡片 title 里备查
+  return r.category
+    ? subcatLeaf(r.category)
+    : r.kind === 'app'
+      ? '应用'
+      : r.kind === 'web'
+        ? '网页'
+        : '文件'
 }
 
 function cardAccentStyle(r: Resource) {
@@ -711,7 +835,7 @@ function cardAccentStyle(r: Resource) {
           <button
             class="icon-btn add"
             title="添加"
-            @click="editing = null; prefill = null; formVisible = true"
+            @click="openAddForm"
           >
             <Plus :size="15" :stroke-width="2.2" />
           </button>
@@ -732,8 +856,32 @@ function cardAccentStyle(r: Resource) {
       </button>
     </nav>
 
-<!-- 大类小类筛选（ADR 0012）：应用/网页/文件各有小类库；未归类=category 为空 -->
-<nav v-if="SUB_KIND[activeFilter]" class="filter-tabs suda-cat-tabs" aria-label="小类筛选">
+<!-- 大类小类筛选（ADR 0012）：应用/网页/文件各有小类库；未归类=category 为空。
+     书签导入的小类带「/」层级：chips 只出顶层，有下级的带 ▸ 展开级联菜单逐级选择，
+     选中某级 = 展示该目录下（含子级）全部资源。小类多到溢出时两端出现 ‹ › 滚动按钮，
+     滚轮竖向滑动也可横滚该行 -->
+<div
+  v-if="SUB_KIND[activeFilter]"
+  class="suda-cat-wrap"
+  :class="{ 'can-left': catEdge.left, 'can-right': catEdge.right }"
+>
+  <button
+    v-if="catEdge.left"
+    class="cat-scroll-btn"
+    type="button"
+    aria-label="小类列表向左滚动"
+    title="还有左侧小类"
+    @click="scrollCatBy(-180)"
+  >
+    <ChevronLeft :size="12" :stroke-width="2.2" />
+  </button>
+  <nav
+    ref="catTabsRef"
+    class="filter-tabs suda-cat-tabs"
+    aria-label="小类筛选"
+    @wheel="onCatWheel"
+    @scroll.passive="syncCatEdge"
+  >
   <button
     class="filter-tab filter-tab--tag"
     :class="{ active: activeSub === 'all' }"
@@ -748,24 +896,57 @@ function cardAccentStyle(r: Resource) {
   >
     未归类
   </button>
-  <button
-    v-for="s in subTabs"
-    :key="s.id"
-    class="filter-tab filter-tab--tag"
-    :class="{ active: activeSub === s.name }"
-    @click="activeSub = s.name"
-  >
-    <Star
-      v-if="s.is_default"
-      class="sub-default-star"
-      :size="10"
-      :stroke-width="2.4"
-      title="默认小类：新增资源未指定小类时自动归入；删除小类时条目也改挂到这里（在 设置 → 功能 → 小类管理 更换）"
-      aria-hidden="true"
+  <span v-for="node in subTree" :key="node.path" class="sub-chip-wrap">
+    <button
+      class="filter-tab filter-tab--tag"
+      :class="{ active: isSubActive(node.path) }"
+      :title="node.path"
+      @click="selectSub(node.path)"
+    >
+      <Star
+        v-if="node.isDefault"
+        class="sub-default-star"
+        :size="10"
+        :stroke-width="2.4"
+        title="默认小类：新增资源未指定小类时自动归入；删除小类时条目也改挂到这里（在 设置 → 功能 → 小类管理 更换）"
+        aria-hidden="true"
+      />
+      {{ node.name }}
+    </button>
+    <button
+      v-if="node.children.length"
+      class="sub-chip-arrow"
+      :class="{ open: subMenuOpen === node.path }"
+      type="button"
+      :title="`展开「${node.name}」的下级小类`"
+      :aria-label="`展开「${node.name}」的下级小类`"
+      :aria-expanded="subMenuOpen === node.path"
+      @click.stop="toggleSubMenu(node.path, $event)"
+    >
+      <ChevronRight :size="11" :stroke-width="2.4" />
+    </button>
+    <SubcatCascadeMenu
+      v-if="node.children.length && subMenuOpen === node.path"
+      teleport
+      :nodes="node.children"
+      :active-path="activeSub"
+      :x="subMenuPos.x"
+      :y="subMenuPos.y"
+      @select="selectSub($event)"
     />
-    {{ s.name }}
+  </span>
+  </nav>
+  <button
+    v-if="catEdge.right"
+    class="cat-scroll-btn"
+    type="button"
+    aria-label="小类列表向右滚动"
+    title="还有更多小类"
+    @click="scrollCatBy(180)"
+  >
+    <ChevronRight :size="12" :stroke-width="2.2" />
   </button>
-</nav>
+</div>
 
     <!-- 资源网格（5 列） -->
     <div class="suda-body">
@@ -795,7 +976,7 @@ function cardAccentStyle(r: Resource) {
           <span v-if="batchMode" class="suda-batch-check" :class="{ on: batchChecked.has(r.id) }">
             <Check v-if="batchChecked.has(r.id)" :size="12" :stroke-width="3" />
           </span>
-          <span class="suda-kind" :class="r.kind" :title="kindLabel(r)">{{
+          <span class="suda-kind" :class="r.kind" :title="r.category ?? kindLabel(r)">{{
             kindLabel(r)
           }}</span>
           <div class="suda-actions">
@@ -874,7 +1055,7 @@ function cardAccentStyle(r: Resource) {
         <button
           class="pill-btn"
           style="margin-top: 6px"
-          @click="editing = null; prefill = null; formVisible = true"
+          @click="openAddForm"
         >
           添加
         </button>
@@ -980,10 +1161,70 @@ function cardAccentStyle(r: Resource) {
 .suda-tabs {
   margin-bottom: 10px;
 }
-.suda-cat-tabs {
+/* 小类行外壳：nav 可横滚，两端 ‹ › 按钮提示还有更多小类（小类多时右侧选不到的修复） */
+.suda-cat-wrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
   margin-bottom: 14px;
-  padding-bottom: 4px;
   border-bottom: 1px solid var(--border-soft);
+}
+.suda-cat-tabs {
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 4px;
+}
+.cat-scroll-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card-soft);
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.cat-scroll-btn:hover {
+  background: var(--brand-50);
+  color: var(--brand-500);
+}
+/* 有下层级的 chip：名称 + ▸ 组合，级联菜单坐标锚定由 JS 实测（Teleport 到 body） */
+.sub-chip-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.sub-chip-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 22px;
+  margin-left: -4px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  color: var(--text-4);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.sub-chip-arrow:hover {
+  color: var(--brand-500);
+  background: var(--brand-50);
+}
+.sub-chip-arrow svg {
+  transition: transform 0.15s;
+}
+.sub-chip-arrow.open {
+  color: var(--brand-500);
+}
+.sub-chip-arrow.open svg {
+  transform: rotate(90deg);
 }
 /* 默认小类星标（含义见 tooltip，设置里可改默认）：置于小类名前；Tailwind preflight 把 svg 置为 block，必须恢复行内否则掉到文字下一行 */
 .sub-default-star {

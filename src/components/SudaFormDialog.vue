@@ -55,8 +55,18 @@ useFocusTrap(toRef(props, 'visible'), cardRef, nameInputRef)
 
 const isEdit = computed(() => props.editing !== null)
 
-/** 当前大类的小类库名单（各大类一套、允许同名不同义） */
-const kindOptions = computed(() => store.subcategoriesOf(kind.value).map((s) => s.name))
+/** 当前大类的小类选项（书签导入的小类带「/」层级，展示为「祖先 / 叶名」便于区分同名目录） */
+const kindOptions = computed(() =>
+  store.subcategoriesOf(kind.value).map((s) => {
+    const segs = s.name.split('/').filter(Boolean)
+    const leaf = segs.length > 0 ? segs[segs.length - 1] : s.name
+    return {
+      full: s.name,
+      leaf,
+      ancestor: segs.length > 1 ? segs.slice(0, -1).join(' / ') : '',
+    }
+  }),
+)
 
 /** 新建/切换大类时的缺省小类 = 该大类默认小类（还没有小类库时为 null → 未归类） */
 function defaultCategoryFor(k: 'app' | 'web' | 'file'): string | null {
@@ -73,11 +83,11 @@ const targetLabel = computed(() => {
 const targetPlaceholder = computed(() => {
   if (kind.value === 'file') return '选择要链接的文件或文件夹'
   if (kind.value === 'app') return '如：C:\\Program Files\\...\\code.exe'
-  return '如：github.com 或 https://github.com'
+  return '如：github.com、https://… 或 smb://nas/share、ftp://…'
 })
 
 const iconPlaceholder = computed(() => {
-  if (kind.value === 'web') return '留空使用当前网站 favicon'
+  if (kind.value === 'web') return '留空使用当前网站 favicon（smb/ftp 无图标）'
   return 'Emoji 或留空自动生成'
 })
 
@@ -358,7 +368,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             </div>
           </template>
 
-          <!-- 小类（ADR 0012）：各大类一套小类库；编辑时可选「未归类」清空归属 -->
+          <!-- 小类（ADR 0012）：各大类一套小类库；带层级的小类以「祖先 / 叶名」展示；编辑时可选「未归类」清空归属 -->
           <template v-if="kindOptions.length">
             <label class="field-label">小类</label>
             <div class="cat-pills">
@@ -372,12 +382,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               </button>
               <button
                 v-for="c in kindOptions"
-                :key="c"
+                :key="c.full"
                 class="cat-pill"
-                :class="{ active: category === c }"
-                @click="category = c"
+                :class="{ active: category === c.full }"
+                :title="c.full"
+                @click="category = c.full"
               >
-                {{ c }}
+                <span v-if="c.ancestor" class="cat-pill-ancestor">{{ c.ancestor }} / </span>{{ c.leaf }}
               </button>
             </div>
           </template>
@@ -530,6 +541,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   background: var(--brand-500);
   border-color: var(--brand-500);
   color: var(--text-on-accent);
+}
+/* 层级小类的祖先路径前缀：弱化显示，选中时同样压暗（保持主文字对比） */
+.cat-pill-ancestor {
+  color: var(--text-4);
+  font-weight: 400;
+}
+.cat-pill.active .cat-pill-ancestor {
+  color: color-mix(in srgb, var(--text-on-accent) 75%, transparent);
 }
 .link-hint {
   margin-top: 14px;

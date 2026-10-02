@@ -298,30 +298,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             </div>
           </div>
 
-          <!-- 截图放大：覆盖整屏，点任意处关闭；多图时 ←/→ 翻页（和笔记图片预览同一交互口径） -->
-          <div v-if="shotPreview" class="md-lightbox" @click="shotPreview = false">
-            <img :src="currentShot" :alt="`${m!.name} 截图 ${shotIndex + 1}`" />
-            <template v-if="shots.length > 1">
-              <button
-                class="md-lb-nav md-lb-prev"
-                type="button"
-                aria-label="上一张截图"
-                @click.stop="showShot(shotIndex - 1)"
-              >
-                <ChevronLeft :size="20" :stroke-width="2.2" aria-hidden="true" />
-              </button>
-              <button
-                class="md-lb-nav md-lb-next"
-                type="button"
-                aria-label="下一张截图"
-                @click.stop="showShot(shotIndex + 1)"
-              >
-                <ChevronRight :size="20" :stroke-width="2.2" aria-hidden="true" />
-              </button>
-              <span class="md-lb-count">{{ shotIndex + 1 }} / {{ shots.length }}</span>
-            </template>
-          </div>
-
           <div class="md-foot">
             <button class="ghost-btn" type="button" @click="emit('close')">关闭</button>
             <button
@@ -337,6 +313,33 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         </div>
       </div>
     </Transition>
+
+    <!-- 截图放大灯箱：必须挂在 Teleport 根、与遮罩平级，不能放进 .md-card——
+         .modal-card 带 backdrop-filter（玻璃弹窗），会把自己变成 fixed 后代的包含块，
+         灯箱放卡片里 inset:0 只能铺到弹窗大小（实测就是「点开还在弹窗内，看不清」的根因）；
+         挂出来 fixed 才相对视口定位，铺满整个软件窗口。点任意处关闭；多图时 ←/→ 翻页 -->
+    <div v-if="visible && shotPreview" class="md-lightbox" @click="shotPreview = false">
+      <img :src="currentShot" :alt="`${m!.name} 截图 ${shotIndex + 1}`" />
+      <template v-if="shots.length > 1">
+        <button
+          class="md-lb-nav md-lb-prev"
+          type="button"
+          aria-label="上一张截图"
+          @click.stop="showShot(shotIndex - 1)"
+        >
+          <ChevronLeft :size="20" :stroke-width="2.2" aria-hidden="true" />
+        </button>
+        <button
+          class="md-lb-nav md-lb-next"
+          type="button"
+          aria-label="下一张截图"
+          @click.stop="showShot(shotIndex + 1)"
+        >
+          <ChevronRight :size="20" :stroke-width="2.2" aria-hidden="true" />
+        </button>
+        <span class="md-lb-count">{{ shotIndex + 1 }} / {{ shots.length }}</span>
+      </template>
+    </div>
   </Teleport>
 </template>
 
@@ -410,7 +413,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   gap: 13px;
   padding: 14px 18px 16px;
 }
-/* 截图展示区：主图（16:10 舞台）+ 缩略图切换 + 放大灯箱 */
+/* 截图展示区：主图（16:10 舞台）+ 缩略图切换；点击进放大灯箱（Teleport 根级，铺满整窗） */
 .md-shots {
   gap: 8px;
 }
@@ -526,6 +529,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   padding: 24px;
   background: var(--scrim);
   cursor: zoom-out;
+  animation: mask-in 0.18s ease-out;
 }
 .md-lightbox img {
   max-width: 100%;

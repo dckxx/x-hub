@@ -171,7 +171,15 @@ async fn fetch_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Str
         .await
         .map_err(|e| format!("通信失败：{e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        // 清单/签名都走平台服务端（v0.6.1 起）：4xx/5xx 是 JSON `{error, message}`，
+        // 优先带出服务端的可读 message，别只给「HTTP 503」；非 JSON（不会出现）退回状态码
+        let msg = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+            .unwrap_or_else(|| format!("HTTP {status}"));
+        return Err(msg);
     }
     let bytes = resp.bytes().await.map_err(|e| format!("读取响应失败: {e}"))?;
     Ok(bytes.to_vec())
@@ -328,7 +336,8 @@ fn temp_extract_dir() -> PathBuf {
     std::env::temp_dir().join(format!("xhub-ext-{}-{}", std::process::id(), nanos))
 }
 
-fn to_hex(bytes: &[u8]) -> String {
+/// 字节流转小写 hex（发布截图「引用上一版」也用内容哈希命名，crate 内共用）
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 

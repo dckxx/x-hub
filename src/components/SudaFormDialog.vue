@@ -7,6 +7,7 @@ import { categorize } from '../utils/categories'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { useStore } from '../stores/workbench'
 import { deriveFaviconUrl, normalizeWebUrl } from '../utils/web'
+import AppSelect, { type AppSelectOption } from './AppSelect.vue'
 
 const store = useStore()
 
@@ -35,6 +36,7 @@ const emit = defineEmits<{
       category?: string | null
       icon?: string | null
       args?: string | null
+      zoneId?: number | null
     },
   ): void
 }>()
@@ -46,6 +48,8 @@ const args = ref('')
 const icon = ref('')
 /** 小类名；null = 编辑时「未归类」/ 新建时跟随默认小类（后端自动归入） */
 const category = ref<string | null>(null)
+/** 所属分区（「全部」tab 成组陈列）；null = 未分区 */
+const zoneId = ref<number | null>(null)
 const isDir = ref(false)
 const error = ref('')
 const cardRef = ref<HTMLElement | null>(null)
@@ -72,6 +76,19 @@ const kindOptions = computed(() =>
 function defaultCategoryFor(k: 'app' | 'web' | 'file'): string | null {
   return store.defaultSubcategoryName(k)
 }
+
+/** 分区下拉选项（建了分区才渲染该行；'' = 未分区） */
+const zoneOptions = computed<AppSelectOption[]>(() => [
+  { value: '', label: '未分区' },
+  ...store.state.zones.map((z) => ({ value: String(z.id), label: z.name })),
+])
+
+const zoneValue = computed<string>({
+  get: () => (zoneId.value == null ? '' : String(zoneId.value)),
+  set: (v) => {
+    zoneId.value = v === '' ? null : Number(v)
+  },
+})
 
 const isExtractedIcon = computed(() => /\.(png|jpg|jpeg|ico|gif|webp)$/i.test(icon.value))
 const targetLabel = computed(() => {
@@ -103,6 +120,7 @@ watch(
       args.value = props.editing.args ?? ''
       icon.value = props.editing.icon ?? ''
       category.value = props.editing.category ?? null
+      zoneId.value = props.editing.zone_id ?? null
       isDir.value = props.editing.category === '文件夹'
     } else {
       kind.value = 'app'
@@ -111,6 +129,7 @@ watch(
       args.value = ''
       icon.value = ''
       category.value = defaultCategoryFor('app')
+      zoneId.value = null
       isDir.value = false
       if (props.prefill) {
         kind.value = props.prefill.kind ?? 'app'
@@ -213,6 +232,7 @@ function submit() {
     category: category.value,
     icon: icon.value.trim() || null,
     args: kind.value === 'app' ? (args.value.trim() || null) : null,
+    zoneId: zoneId.value,
   })
   emit('close')
 }
@@ -397,6 +417,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             <p class="link-hint">
               该大类还没有小类，可到 设置 → 功能 → 速达 中新增；当前将显示为「未归类」
             </p>
+          </template>
+          <!-- 分区（「全部」tab 成组陈列）：建了分区才出现；不影响应用/网页/文件 tab 的小类筛选 -->
+          <template v-if="zoneOptions.length > 1">
+            <label class="field-label">分区</label>
+            <AppSelect
+              v-model="zoneValue"
+              :options="zoneOptions"
+              aria-label="所属分区"
+              style="width: 100%"
+            />
           </template>
           <p v-if="kind === 'file'" class="link-hint">
             <Link :size="12" :stroke-width="2" class="link-hint-icon" aria-hidden="true" />

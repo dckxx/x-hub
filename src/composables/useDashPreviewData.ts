@@ -9,6 +9,7 @@ import {
   GROUP_META,
   groupOf,
   isoKey,
+  startOfDay,
   type DueBadge,
 } from '../utils/todoSchedule'
 import { sudaCustomConfigured, sudaCustomItems } from '../utils/sudaCustom'
@@ -247,6 +248,24 @@ const todoDayMarks = computed(() => {
   return map
 })
 
+/**
+ * 日历缩印的「含未完成逾期」日期集合：口径照抄真卡 `TodoCalendarCard.overdueByDay`——
+ * 未完成且截止日早于今天（startOfDay 比较，同 dueBadge kind 'over'），全量条目判定、
+ * 不按截断后的 chip；周期待办虚拟实例同样不参与。读 previewDate 绑定分钟 tick，
+ * 编辑器跨午夜打开时「今天」推进后红标记随之消长。
+ */
+const todoOverdueMarks = computed(() => {
+  const today0 = startOfDay(previewDate.value)
+  const set = new Set<string>()
+  for (const t of topTodos.value) {
+    if (t.done || t.due_at == null) continue
+    if (startOfDay(new Date(t.due_at)).getTime() < today0.getTime()) {
+      set.add(isoKey(new Date(t.due_at)))
+    }
+  }
+  return set
+})
+
 // ---- 最近使用（有启动记录 → last_launched_at 倒序，同 RecentBar）----
 const recentList = computed<Resource[]>(() =>
   store.state.resources
@@ -304,6 +323,7 @@ export const dashPreviewData = {
   snippetList,
   todoGroups,
   todoDayMarks,
+  todoOverdueMarks,
   pendingCount,
   doneCount,
   recentList,

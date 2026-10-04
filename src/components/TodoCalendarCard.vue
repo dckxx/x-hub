@@ -25,9 +25,13 @@ const monthLabel = computed(() => `${cursor.value.getFullYear()} 年 ${cursor.va
 
 const topTodos = computed(() => store.state.todos.filter((t) => t.parent_id == null))
 
+/** 未完成且截止日早于今天（红色 chip 与格子红底标记共用的唯一口径） */
+const isOverdue = (t: Todo) => !t.done && dueBadge(t, today.value)?.kind === 'over'
+
 /** 真实条目落格：未完成按 due_at；**已完成也显示**——有截止落原日期，
  *  没截止则落在完成当天（completed_at，UTC 字符串需补 Z 解析），用删除线淡显。
- *  同一格内未完成排在已完成前面（MAX_CHIPS 截断时不至于把待办挤掉）。 */
+ *  同一格内未完成排在已完成前面，未完成内部**逾期优先**——MAX_CHIPS 截断时
+ *  红色 chip 不会被正常条目挤进「+N」（同天混合逾期与正常时的唯一诚实显示方式）。 */
 const realByDay = computed(() => {
   const map = new Map<string, Todo[]>()
   for (const t of topTodos.value) {
@@ -38,8 +42,25 @@ const realByDay = computed(() => {
     if (list) list.push(t)
     else map.set(key, [t])
   }
-  for (const list of map.values()) list.sort((a, b) => Number(a.done) - Number(b.done))
+  for (const list of map.values()) {
+    list.sort((a, b) => {
+      const d = Number(a.done) - Number(b.done)
+      if (d !== 0) return d
+      return Number(isOverdue(b)) - Number(isOverdue(a))
+    })
+  }
   return map
+})
+
+/** 含未完成逾期待办的日期（格子淡红底标记）：按**全量**条目判定（不按截断后的 chip），
+ *  红标记不因截断丢失；周期待办虚拟实例不参与（与 chip 的 late 口径一致）。
+ *  全部完成后 isOverdue 不再命中，标记随 done 状态自动消退。 */
+const overdueByDay = computed(() => {
+  const set = new Set<string>()
+  for (const [key, list] of realByDay.value) {
+    if (list.some(isOverdue)) set.add(key)
+  }
+  return set
 })
 
 const virtualByDay = computed(() => {
@@ -153,7 +174,7 @@ const chipsByDay = computed(() => {
         v-for="c in cells"
         :key="c.key"
         class="tc-cell"
-        :class="{ out: c.out, today: c.today }"
+        :class="{ out: c.out, today: c.today, 'has-overdue': overdueByDay.has(c.key) }"
       >
         <span class="tc-day">{{ c.day }}</span>
         <div class="tc-chips">
@@ -161,7 +182,7 @@ const chipsByDay = computed(() => {
             v-for="t in (chipsByDay.get(c.key)?.real ?? [])"
             :key="'r' + t.id"
             class="tc-chip real"
-            :class="{ done: t.done, late: !t.done && dueBadge(t, today)?.kind === 'over' }"
+            :class="{ done: t.done, late: isOverdue(t) }"
             :title="t.done ? `${t.title}（已完成）` : t.title"
           >{{ t.title }}</span>
           <span
@@ -271,6 +292,12 @@ const chipsByDay = computed(() => {
 }
 .tc-cell.today {
   border-color: var(--brand-500);
+}
+/* 含未完成逾期待办的日期：淡红底扫视信号（issue #29）。用底色而非边框——
+ * 与「今天」的品牌色边框分属不同视觉通道，今天恰有逾期时两者叠加不冲突；
+ * 色调压得比 late chip 的实底轻一档，格内红 chip 仍靠描边区分。 */
+.tc-cell.has-overdue {
+  background: color-mix(in srgb, var(--c-red-soft) 50%, var(--bg-card-soft));
 }
 .tc-day {
   /* 独立行盒避免继承正文行高，紧凑格子也能容纳完整日期。 */

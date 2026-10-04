@@ -233,14 +233,14 @@ mod tests {
     fn create_resource_auto_assigns_default_subcategory() {
         let conn = init_in_memory().unwrap();
         // 应用大类还没有小类 → 保持「未归类」
-        let r = resource::create(&conn, ResourceKind::App, "a", "t", None, None, None).unwrap();
+        let r = resource::create(&conn, ResourceKind::App, "a", "t", None, None, None, None).unwrap();
         assert_eq!(r.category, None);
         // 建了小类之后 → 自动归默认
         create(&conn, "app", "开发工具").unwrap();
-        let r2 = resource::create(&conn, ResourceKind::App, "b", "t", None, None, None).unwrap();
+        let r2 = resource::create(&conn, ResourceKind::App, "b", "t", None, None, None, None).unwrap();
         assert_eq!(r2.category.as_deref(), Some("开发工具"));
         // 显式指定不受影响
-        let r3 = resource::create(&conn, ResourceKind::App, "c", "t", Some("常用"), None, None).unwrap();
+        let r3 = resource::create(&conn, ResourceKind::App, "c", "t", Some("常用"), None, None, None).unwrap();
         assert_eq!(r3.category.as_deref(), Some("常用"));
     }
 
@@ -249,7 +249,7 @@ mod tests {
         let conn = init_in_memory().unwrap();
         // 文件种子小类已存在，这里新建一个专属小类验证改名级联
         let sub = create(&conn, "file", "临时分类").unwrap();
-        let r = resource::create(&conn, ResourceKind::File, "d", "t", Some("临时分类"), None, None).unwrap();
+        let r = resource::create(&conn, ResourceKind::File, "d", "t", Some("临时分类"), None, None, None).unwrap();
         let mut conn = conn;
         rename(&mut conn, sub.id, "资料").unwrap();
         let after = resource::get(&conn, r.id).unwrap();
@@ -264,8 +264,8 @@ mod tests {
         let mut conn = init_in_memory().unwrap();
         let doc = create(&conn, "app", "文档类").unwrap(); // 第一个 → 默认
         let dev = create(&conn, "app", "开发工具").unwrap();
-        let r_doc = resource::create(&conn, ResourceKind::App, "x", "t", Some("文档类"), None, None).unwrap();
-        let r_dev = resource::create(&conn, ResourceKind::App, "y", "t", Some("开发工具"), None, None).unwrap();
+        let r_doc = resource::create(&conn, ResourceKind::App, "x", "t", Some("文档类"), None, None, None).unwrap();
+        let r_dev = resource::create(&conn, ResourceKind::App, "y", "t", Some("开发工具"), None, None, None).unwrap();
         // 删默认小类 → 其条目改挂新默认（晋升的开发工具）
         delete(&mut conn, doc.id).unwrap();
         assert_eq!(

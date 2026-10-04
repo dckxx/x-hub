@@ -125,6 +125,17 @@ const realByDay = computed(() => {
   return map
 })
 
+/** 含未完成逾期待办的日期（月历格淡红底，与工作台日历卡 TodoCalendarCard.overdueByDay
+ *  同口径）：badgeOf 已把已完成排除；按**全量**条目判定，周期待办虚拟实例不参与
+ *  （与 chip 的 late 口径一致），全部完成后自动消退。 */
+const overdueByDay = computed(() => {
+  const set = new Set<string>()
+  for (const [key, list] of realByDay.value) {
+    if (list.some((t) => badgeOf(t)?.kind === 'over')) set.add(key)
+  }
+  return set
+})
+
 const virtualByDay = computed(() => {
   const map = new Map<string, TodoOccurrence[]>()
   for (const o of occurrences.value) {
@@ -544,7 +555,7 @@ function onVirtualDown(e: PointerEvent) {
             v-for="c in cells"
             :key="c.key"
             class="tv-cell"
-            :class="{ out: c.out, today: c.today, 'drop-on': dropDay === c.key, sel: selectedDay === c.key }"
+            :class="{ out: c.out, today: c.today, 'has-overdue': overdueByDay.has(c.key), 'drop-on': dropDay === c.key, sel: selectedDay === c.key }"
             :data-day="c.key"
             @click="selectedDay = c.key"
             @dblclick="openNew(new Date(`${c.key}T23:59:00`).getTime())"
@@ -974,6 +985,12 @@ function onVirtualDown(e: PointerEvent) {
 }
 .tv-cell.today {
   border-color: var(--brand-500);
+}
+/* 含未完成逾期待办的日期：淡红底（与工作台日历卡 .tc-cell.has-overdue 同一口径，
+ * 基底取本视图格子的 --bg-card-solid）。改红色比例须两处同步。
+ * 用底色而非边框：与「今天 / 选中」的品牌色边框分通道，叠加不冲突。 */
+.tv-cell.has-overdue {
+  background: color-mix(in srgb, var(--c-red-soft) 50%, var(--bg-card-solid));
 }
 .tv-cell.sel,
 .tv-weekcol.sel {

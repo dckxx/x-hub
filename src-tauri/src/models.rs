@@ -21,6 +21,10 @@ pub struct Resource {
     pub last_launched_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// 所属速达分区 id（「全部」tab 的自定义分组，跨大类）；NULL = 未分区。
+    /// 与 category（小类）是两个独立维度：小类归各大类的筛选 chips 用，分区只管「全部」的陈列。
+    #[serde(default)]
+    pub zone_id: Option<i64>,
 }
 
 /// 速达小类（ADR 0012）：大类（resources.kind）下单归属的小类，单归属、非多选标签。
@@ -32,6 +36,29 @@ pub struct ResourceSubcategory {
     pub name: String,
     pub sort_order: i64,
     pub is_default: bool,
+}
+
+/// 速达分区：「全部」tab 的自定义成组陈列（如「办公区」「影音区」），跨大类混居、
+/// 无 kind 维度、无层级；成员经 resources.zone_id 关联。一个分区都没有时「全部」保持平铺。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceZone {
+    pub id: i64,
+    pub name: String,
+    pub sort_order: i64,
+    /// 分区框宽度（卡片格数，吸附单元），新建默认 3
+    #[serde(default = "default_zone_cols")]
+    pub cols: i64,
+    /// 分区框高度（卡片行数，下限——内容超出按行自动膨胀），新建默认 2
+    #[serde(default = "default_zone_rows")]
+    pub rows: i64,
+}
+
+fn default_zone_cols() -> i64 {
+    3
+}
+
+fn default_zone_rows() -> i64 {
+    2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

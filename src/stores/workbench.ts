@@ -14,6 +14,7 @@ import {
   type Quote,
   type Resource,
   type ResourceSubcategory,
+  type ResourceZone,
   type SudaCustomModuleConfig,
   type Snippet,
   type Sticky,
@@ -52,6 +53,8 @@ interface StoreState {
   todoTagLinks: TodoTagLink[]
   /** 速达小类定义（ADR 0012：各大类一套、单归属；category 为 null = 未归类） */
   resourceSubcategories: ResourceSubcategory[]
+  /** 速达分区（「全部」tab 自定义成组陈列，跨大类；zone_id 为 null = 未分区） */
+  zones: ResourceZone[]
   config: AppConfig
   systemInfo: SystemInfo | null
   online: boolean
@@ -72,6 +75,7 @@ const state = reactive<StoreState>({
   todoTags: [],
   todoTagLinks: [],
   resourceSubcategories: [],
+  zones: [],
   config: {
     theme_mode: 'light',
     theme_preset: 'indigo',
@@ -92,6 +96,7 @@ const state = reactive<StoreState>({
     global_shortcut: DEFAULT_GLOBAL_SHORTCUT,
     dashboard_mid_content: 'countdown',
     dashboard_layout: '',
+    dashboard_default_layout: '',
     countdown_sound: false,
     clock_quote: '',
     notice_duration_ms: 5000,
@@ -190,6 +195,8 @@ export function useStore() {
     void refreshTodoTags()
     // 速达小类单独拉（同上）
     void refreshSubcategories()
+    // 速达分区单独拉（同上）
+    void refreshZones()
   }
 
   // ---- 提示词百宝箱 ----
@@ -301,6 +308,7 @@ export function useStore() {
     category?: string | null
     icon?: string | null
     args?: string | null
+    zoneId?: number | null
   }) {
     const r = await tauriApi.createResource(payload)
     state.resources.push(r)
@@ -315,6 +323,7 @@ export function useStore() {
     category?: string | null
     icon?: string | null
     args?: string | null
+    zoneId?: number | null
   }) {
     const r = await tauriApi.updateResource(payload)
     const idx = state.resources.findIndex((x) => x.id === r.id)
@@ -445,6 +454,81 @@ export function useStore() {
     for (const s of state.resourceSubcategories) {
       if (s.kind === target.kind) s.is_default = s.id === id
     }
+  }
+
+  // ---- 速达分区（「全部」tab 自定义成组陈列，独立于小类）----
+  async function refreshZones() {
+    if (!isTauri()) return
+    state.zones = await tauriApi.listZones()
+  }
+
+  /** 新建分区：后端落尾部（sort_order=max+1） */
+  async function addZone(name: string) {
+    const z = await tauriApi.createZone(name)
+    state.zones.push(z)
+    return z
+  }
+
+  /** 改名：资源按 id 关联，本地无需级联 */
+  async function editZone(id: number, name: string) {
+    await tauriApi.renameZone(id, name)
+    const z = state.zones.find((x) => x.id === id)
+    if (z) z.name = name
+  }
+
+  /** 删除分区：后端单事务把成员 zone_id 置 NULL，本地同口径推演；返回被移出的成员 id 快照 */
+  async function removeZone(id: number) {
+    const memberIds = state.resources.filter((r) => r.zone_id === id).map((r) => r.id)
+    await tauriApi.deleteZone(id)
+    state.zones = state.zones.filter((z) => z.id !== id)
+    for (const r of state.resources) {
+      if (r.zone_id === id) r.zone_id = null
+    }
+    return memberIds
+  }
+
+  async function reorderZones(ids: number[]) {
+    const rank = new Map(ids.map((id, i) => [id, i]))
+    state.zones = state.zones
+      .map((z) => ({ ...z, sort_order: rank.get(z.id) ?? z.sort_order }))
+      .sort((a, b) => a.sort_order - b.sort_order)
+    if (isTauri()) await tauriApi.reorderZones(ids)
+  }
+
+  /** 调整分区框尺寸（卡片格数；乐观更新 + 持久化） */
+  async function resizeZone(id: number, cols: number, rows: number) {
+    const z = state.zones.find((x) => x.id === id)
+    if (!z || (z.cols === cols && z.rows === rows)) return
+    z.cols = cols
+    z.rows = rows
+    if (isTauri()) await tauriApi.resizeZone(id, cols, rows)
+  }
+
+  /** 批量改分区归属（右键移动/删分区撤销），不动 sort_order */
+  async function setResourcesZone(ids: number[], zoneId: number | null) {
+    if (isTauri()) await tauriApi.setResourcesZone(ids, zoneId)
+    const set = new Set(ids)
+    for (const r of state.resources) {
+      if (set.has(r.id)) r.zone_id = zoneId
+    }
+  }
+
+  /**
+   * 分区模式拖拽的原子写回：entries 顺序即全表新 sort_order（ids[i] → i），
+   * 每项携带目标分区。本地乐观更新与后端同口径：sort_order 与 zone_id 一次到位。
+   */
+  async function reorderResourcesZoned(entries: { id: number; zoneId: number | null }[]) {
+    const zoneOf = new Map(entries.map((e) => [e.id, e.zoneId]))
+    const rank = new Map(entries.map((e, i) => [e.id, i]))
+    state.resources = state.resources
+      .map((r) => ({
+        ...r,
+        zone_id: zoneOf.has(r.id) ? (zoneOf.get(r.id) as number | null) : r.zone_id,
+        sort_order: rank.get(r.id) ?? Number.MAX_SAFE_INTEGER,
+      }))
+      .sort((a, b) => a.sort_order - b.sort_order)
+      .map((r, i) => ({ ...r, sort_order: i }))
+    if (isTauri()) await tauriApi.reorderResourcesZoned(entries)
   }
 
   /** 网页默认打开方式（ADR 0011：panel=内嵌面板 / window=独立窗口） */
@@ -1174,6 +1258,13 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 用户保存的默认布局快照（「存为默认布局」写入，「恢复默认布局」读取） */
+  async function setDashboardDefaultLayout(value: string) {
+    state.config.dashboard_default_layout = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   /** 倒计时到点提示音开关 */
   async function setCountdownSound(value: boolean) {
     state.config.countdown_sound = value
@@ -1615,6 +1706,14 @@ export function useStore() {
     removeSubcategory,
     reorderSubcategories,
     setDefaultSubcategory,
+    refreshZones,
+    addZone,
+    editZone,
+    removeZone,
+    reorderZones,
+    resizeZone,
+    setResourcesZone,
+    reorderResourcesZoned,
     setSudaWebOpenMode,
     openResourceInWindow,
     openWebPanel,
@@ -1680,6 +1779,7 @@ export function useStore() {
     setShortcutEnabled,
     setDashboardMidContent,
     setDashboardLayout,
+    setDashboardDefaultLayout,
     setCountdownSound,
     setNoticeDuration,
     setClockQuote,

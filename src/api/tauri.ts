@@ -12,6 +12,8 @@ export interface Resource {
   last_launched_at: string | null
   created_at: string
   updated_at: string
+  /** 所属速达分区 id（「全部」tab 自定义分组，跨大类）；null = 未分区。与小类 category 正交 */
+  zone_id: number | null
 }
 
 /** 工作台「自定义速达」槽位内容配置（槽位 id 固定 suda1..suda4，同便签 1/2 池子模式） */
@@ -40,6 +42,16 @@ export interface ResourceSubcategory {
   name: string
   sort_order: number
   is_default: boolean
+}
+
+/** 速达分区：「全部」tab 的自定义成组陈列（跨大类、无层级）；一个都没有时「全部」保持平铺。
+ *  cols/rows = 分区框尺寸（卡片格数，新建默认 3×2，下限语义：内容超出按行自动膨胀） */
+export interface ResourceZone {
+  id: number
+  name: string
+  sort_order: number
+  cols: number
+  rows: number
 }
 
 /** 速达独立应用内浏览器窗口槽位快照（chrome 页挂载时拉取） */
@@ -255,6 +267,8 @@ export interface AppConfig {
   dashboard_mid_content: string
   /** 工作台自定义布局（placements JSON 数组字符串；空串 = 未自定义，回退推荐布局） */
   dashboard_layout: string
+  /** 用户保存的默认布局快照（placements JSON 数组字符串；空串 = 未保存过，恢复默认不可用） */
+  dashboard_default_layout: string
   countdown_sound: boolean
   clock_quote: string // 时钟卡片语录（可配置，空串回退默认）
   notice_duration_ms: number // 右下角通知弹窗驻留时长（毫秒，1000–60000）
@@ -915,6 +929,7 @@ export const tauriApi = {
     category?: string | null
     icon?: string | null
     args?: string | null
+    zoneId?: number | null
   }) => invoke<Resource>('create_resource', {
     kind: payload.kind,
     name: payload.name,
@@ -922,6 +937,7 @@ export const tauriApi = {
     category: payload.category ?? null,
     icon: payload.icon ?? null,
     args: payload.args ?? null,
+    zoneId: payload.zoneId ?? null,
   }),
   updateResource: (payload: {
     id: number
@@ -931,6 +947,7 @@ export const tauriApi = {
     category?: string | null
     icon?: string | null
     args?: string | null
+    zoneId?: number | null
   }) => invoke<Resource>('update_resource', {
     id: payload.id,
     kind: payload.kind,
@@ -939,6 +956,7 @@ export const tauriApi = {
     category: payload.category ?? null,
     icon: payload.icon ?? null,
     args: payload.args ?? null,
+    zoneId: payload.zoneId ?? null,
   }),
   deleteResource: (id: number) => invoke<void>('delete_resource', { id }),
   reorderResources: (ids: number[]) => invoke<void>('reorder_resources', { ids }),
@@ -957,6 +975,21 @@ export const tauriApi = {
   reorderSubcategories: (kind: 'app' | 'web' | 'file', ids: number[]) =>
     invoke<void>('reorder_subcategories', { kind, ids }),
   setDefaultSubcategory: (id: number) => invoke<void>('set_default_subcategory', { id }),
+  // ---- 速达分区（「全部」tab 自定义成组陈列，独立于小类）----
+  listZones: () => invoke<ResourceZone[]>('list_zones'),
+  createZone: (name: string) => invoke<ResourceZone>('create_zone', { name }),
+  renameZone: (id: number, name: string) => invoke<void>('rename_zone', { id, name }),
+  deleteZone: (id: number) => invoke<void>('delete_zone', { id }),
+  reorderZones: (ids: number[]) => invoke<void>('reorder_zones', { ids }),
+  /** 调整分区框尺寸（卡片格数 1..=12；拖拽缩放已按格吸附，这里落最终值） */
+  resizeZone: (id: number, cols: number, rows: number) =>
+    invoke<void>('resize_zone', { id, cols, rows }),
+  /** 批量改分区归属（右键移动/删分区撤销），不动 sort_order；zoneId=null 移回未分区 */
+  setResourcesZone: (ids: number[], zoneId: number | null) =>
+    invoke<void>('set_resources_zone', { ids, zoneId }),
+  /** 分区模式拖拽的原子写回：entries 顺序即全表新 sort_order，每项携带目标分区 */
+  reorderResourcesZoned: (entries: { id: number; zoneId: number | null }[]) =>
+    invoke<void>('reorder_resources_zoned', { entries }),
   setSudaWebOpenMode: (mode: 'panel' | 'window') =>
     invoke<string>('set_suda_web_open_mode', { mode }),
   // ---- 速达「应用内打开网页」（ADR 0011）----

@@ -1575,9 +1575,15 @@ fn data_resources_create(
         .map(str::to_owned)
         .ok_or_else(|| "INVALID_ARGUMENT: 缺少 target".to_string())?;
     let category = args.get("category").and_then(|v| v.as_str()).map(str::to_owned);
+    let zone_id = args.get("zoneId").and_then(|v| v.as_i64());
     let icon = args.get("icon").and_then(|v| v.as_str()).map(str::to_owned);
     let extra = args.get("args").and_then(|v| v.as_str()).map(str::to_owned);
     data_write(app, state, None, |conn| {
+        if let Some(zid) = zone_id {
+            if !repo::zone::exists(conn, zid).map_err(|e| e.to_string())? {
+                return Err(format!("NOT_FOUND: 分区 {zid} 不存在"));
+            }
+        }
         let resource = repo::resource::create(
             conn,
             kind,
@@ -1586,6 +1592,7 @@ fn data_resources_create(
             category.as_deref(),
             icon.as_deref(),
             extra.as_deref(),
+            zone_id,
         )
         .map_err(|e| e.to_string())?;
         serde_json::to_value(resource).map_err(|e| e.to_string())
@@ -1613,9 +1620,16 @@ fn data_resources_update(
         .map(str::to_owned)
         .ok_or_else(|| "INVALID_ARGUMENT: 缺少 target".to_string())?;
     let category = args.get("category").and_then(|v| v.as_str()).map(str::to_owned);
+    // 与 category 同款「全对象写」语义：调用方不传 zoneId 即写为未分区
+    let zone_id = args.get("zoneId").and_then(|v| v.as_i64());
     let icon = args.get("icon").and_then(|v| v.as_str()).map(str::to_owned);
     let extra = args.get("args").and_then(|v| v.as_str()).map(str::to_owned);
     data_write(app, state, None, |conn| {
+        if let Some(zid) = zone_id {
+            if !repo::zone::exists(conn, zid).map_err(|e| e.to_string())? {
+                return Err(format!("NOT_FOUND: 分区 {zid} 不存在"));
+            }
+        }
         let resource = repo::resource::update(
             conn,
             id,
@@ -1625,6 +1639,7 @@ fn data_resources_update(
             category.as_deref(),
             icon.as_deref(),
             extra.as_deref(),
+            zone_id,
         )
         .map_err(|e| e.to_string())?;
         serde_json::to_value(resource).map_err(|e| e.to_string())

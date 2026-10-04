@@ -90,6 +90,10 @@ pub struct AppConfig {
     /// 工作台自定义布局（placements JSON 数组字符串；空串 = 未自定义，回退推荐布局）
     #[serde(default)]
     pub dashboard_layout: String,
+    /// 用户保存的默认布局快照（placements JSON 数组字符串；空串 = 未保存过，恢复默认不可用）。
+    /// 独立于生效布局：编辑器里改布局不影响快照，恢复默认永远回到保存那一刻的样子
+    #[serde(default)]
+    pub dashboard_default_layout: String,
     /// 倒计时到点提示音（默认关闭）
     pub countdown_sound: bool,
     /// 时钟卡片语录（工作台时间卡片下方显示的一句话，空串时回退默认）
@@ -440,6 +444,7 @@ impl Default for AppConfig {
             global_shortcut: crate::shortcut::DEFAULT_TOGGLE_SHORTCUT.to_string(),
             dashboard_mid_content: "countdown".to_string(),
             dashboard_layout: String::new(),
+            dashboard_default_layout: String::new(),
             countdown_sound: false,
             clock_quote: String::new(),
             notice_duration_ms: default_notice_duration_ms(),

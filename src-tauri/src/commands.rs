@@ -3,13 +3,13 @@ use crate::config;
 use crate::config::AppConfig;
 use crate::models::{
     ChatMessage, ChatModelConfig, ChatSession, ClipboardItem, Countdown, DetachedSticky, Note,
-    RepeatRule, Resource, ResourceKind, ResourceSubcategory, SearchResult, Snippet, Sticky, Tag,
-    Todo, TodoOccurrence, TodoTag, TodoTagLink,
+    RepeatRule, Resource, ResourceKind, ResourceSubcategory, ResourceZone, SearchResult, Snippet,
+    Sticky, Tag, Todo, TodoOccurrence, TodoTag, TodoTagLink,
 };
 use crate::process;
 use crate::repo::{
     chat, clipboard, countdown, detached_sticky, note, resource, snippet, sticky, subcategory,
-    tag, todo, todo_tag,
+    tag, todo, todo_tag, zone,
 };
 use crate::todo_recurrence;
 use rusqlite::Connection;
@@ -85,9 +85,15 @@ pub fn create_resource(
     category: Option<String>,
     icon: Option<String>,
     args: Option<String>,
+    zone_id: Option<i64>,
 ) -> Result<Resource, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let kind = parse_kind(&kind)?;
+    if let Some(zid) = zone_id {
+        if !zone::exists(&conn, zid).map_err(err_str)? {
+            return Err(format!("NOT_FOUND: 分区 {zid} 不存在"));
+        }
+    }
     let res = resource::create(
         &conn,
         kind,
@@ -96,6 +102,7 @@ pub fn create_resource(
         category.as_deref(),
         icon.as_deref(),
         args.as_deref(),
+        zone_id,
     )
     .map_err(err_str)?;
     log::info!(
@@ -117,9 +124,15 @@ pub fn update_resource(
     category: Option<String>,
     icon: Option<String>,
     args: Option<String>,
+    zone_id: Option<i64>,
 ) -> Result<Resource, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let kind = parse_kind(&kind)?;
+    if let Some(zid) = zone_id {
+        if !zone::exists(&conn, zid).map_err(err_str)? {
+            return Err(format!("NOT_FOUND: 分区 {zid} 不存在"));
+        }
+    }
     let res = resource::update(
         &conn,
         id,
@@ -129,6 +142,7 @@ pub fn update_resource(
         category.as_deref(),
         icon.as_deref(),
         args.as_deref(),
+        zone_id,
     )
     .map_err(err_str)?;
     log::info!("更新资源: id={} {} ({:?})", res.id, res.name, res.kind);
@@ -341,6 +355,127 @@ pub fn reorder_subcategories(
 pub fn set_default_subcategory(state: State<'_, DbState>, id: i64) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     subcategory::set_default(&conn, id)
+}
+
+// ---------- 速达分区（「全部」tab 自定义成组陈列，独立于小类） ----------
+
+/// 分区名形状校验：trim 后 1–20 字符（无 kind 维度、无层级，`/` 是普通字符不禁）
+fn validate_zone_name(name: &str) -> Result<(), String> {
+    let chars = name.chars().count();
+    if chars == 0 || chars > 20 {
+        return Err("分区名称需为 1–20 个字符".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_zones(state: State<'_, DbState>) -> Result<Vec<ResourceZone>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    zone::list(&conn).map_err(err_str)
+}
+
+#[tauri::command]
+pub fn create_zone(state: State<'_, DbState>, name: String) -> Result<ResourceZone, String> {
+    let name = name.trim().to_string();
+    validate_zone_name(&name)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    if !zone::is_name_free(&conn, &name, None).map_err(err_str)? {
+        return Err(format!("DUP: 已有名为「{name}」的分区"));
+    }
+    let z = zone::create(&conn, &name).map_err(err_str)?;
+    log::info!("新建分区: {}", z.name);
+    Ok(z)
+}
+
+#[tauri::command]
+pub fn rename_zone(state: State<'_, DbState>, id: i64, name: String) -> Result<(), String> {
+    let name = name.trim().to_string();
+    validate_zone_name(&name)?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    zone::rename(&mut conn, id, &name)
+}
+
+/// 删除分区：成员批量落「未分区」（资源本身不动，单事务，见 repo::zone::delete）
+#[tauri::command]
+pub fn delete_zone(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    zone::delete(&mut conn, id)
+}
+
+#[tauri::command]
+pub fn reorder_zones(state: State<'_, DbState>, ids: Vec<i64>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    zone::reorder(&conn, &ids).map_err(err_str)
+}
+
+/// 调整分区框尺寸（cols/rows 为卡片格数，1..=12；新建默认 3×2）。
+/// 尺寸是下限语义：内容超出时前端按行自动膨胀，这里只改空框占位。
+#[tauri::command]
+pub fn resize_zone(
+    state: State<'_, DbState>,
+    id: i64,
+    cols: i64,
+    rows: i64,
+) -> Result<(), String> {
+    if !(1..=12).contains(&cols) || !(1..=12).contains(&rows) {
+        return Err("分区尺寸需在 1–12 格之间".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    zone::resize(&conn, id, cols, rows)
+}
+
+/// 批量改分区归属（右键「移动到分区」/ 删分区撤销恢复），不动 sort_order
+#[tauri::command]
+pub fn set_resources_zone(
+    state: State<'_, DbState>,
+    ids: Vec<i64>,
+    zone_id: Option<i64>,
+) -> Result<(), String> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    if let Some(zid) = zone_id {
+        if !zone::exists(&conn, zid).map_err(err_str)? {
+            return Err(format!("NOT_FOUND: 分区 {zid} 不存在"));
+        }
+    }
+    resource::set_zone(&conn, &ids, zone_id).map_err(err_str)
+}
+
+/// 分区模式拖拽的原子写回载荷：顺序即新的全表 sort_order，zone_id 为目标分区（null=未分区）
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZonedOrderEntry {
+    pub id: i64,
+    pub zone_id: Option<i64>,
+}
+
+/// 「全部」tab 分区模式下的拖拽落盘：全表 sort_order 与每项的分区归属单事务同写。
+/// entries 必须覆盖全表（「全部」tab 下所有资源都可见，前端天然满足），
+/// 目标分区不存在时整批拒绝——宁可让前端报错重拉，也不留「有 zone_id 却无分区」的孤儿成员。
+#[tauri::command]
+pub fn reorder_resources_zoned(
+    state: State<'_, DbState>,
+    entries: Vec<ZonedOrderEntry>,
+) -> Result<(), String> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut known: Vec<i64> = Vec::new();
+    for zid in entries.iter().filter_map(|e| e.zone_id) {
+        if !known.contains(&zid) {
+            if !zone::exists(&conn, zid).map_err(err_str)? {
+                return Err(format!("NOT_FOUND: 分区 {zid} 不存在"));
+            }
+            known.push(zid);
+        }
+    }
+    let pairs: Vec<(i64, Option<i64>)> = entries.iter().map(|e| (e.id, e.zone_id)).collect();
+    resource::reorder_zoned(&conn, &pairs).map_err(err_str)?;
+    log::info!("资源分区排序更新: {} 项", entries.len());
+    Ok(())
 }
 
 /// 速达网页默认打开方式（panel=内嵌面板 / window=独立窗口，ADR 0011 2026-09-25 拍板）
@@ -2119,112 +2254,82 @@ fn powershell() -> std::process::Command {
     cmd
 }
 
-/// 单次 PowerShell 进程内解析 .lnk 目标并提取图标
-/// （原两段式需要先后启动两次 PowerShell，合并为一次调用可省约一半耗时）
-/// 图标仍按「目标路径」命名缓存，与 .exe 导入共用缓存键
+/// 解析 .lnk 目标并提取图标：目标解析走 IShellLink COM（app_icon.rs，不再为取
+/// 目标单独起一个 PowerShell），图标提取复用 extract_app_icon（含低清缓存升级）。
+/// 图标仍按「目标路径」命名缓存，与 .exe 导入共用缓存键。
 fn resolve_lnk_target_and_icon(lnk_path: &str) -> Result<(String, Option<String>), String> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let dir = crate::paths::data_root().join("icons");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-
-    // 先用 lnk 路径生成临时输出路径；解析出目标后再按目标路径（既有缓存键）重命名
-    let mut tmp_hasher = DefaultHasher::new();
-    lnk_path.hash(&mut tmp_hasher);
-    let tmp_path = dir.join(format!("{:016x}.png", tmp_hasher.finish()));
-
-    let script = "Add-Type -AssemblyName System.Drawing; $sh=New-Object -ComObject WScript.Shell; $t=$sh.CreateShortcut($env:XHUB_LNK).TargetPath; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Write-Output ('TARGET='+$t); if($t -ne ''){$i=[System.Drawing.Icon]::ExtractAssociatedIcon($t); if($i -ne $null){$i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png)}}";
-    let output = powershell()
-        .args(["-NoProfile", "-Command", script])
-        .env("XHUB_LNK", lnk_path)
-        .env("XHUB_OUT", tmp_path.to_str().unwrap_or(""))
-        .output()
-        .map_err(|e| {
-            log::error!("解析快捷方式失败（PowerShell 执行错误）: {}", e);
-            format!("解析快捷方式失败: {}", e)
-        })?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let target = stdout
-        .lines()
-        .find_map(|l| l.strip_prefix("TARGET="))
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log::error!(
-                "解析快捷方式失败（目标为空）: {} {}",
-                lnk_path,
-                stderr.trim()
-            );
-            "无法解析快捷方式目标路径".to_string()
-        })?;
-
-    // 图标按目标路径命名：与 .exe 拖入/已缓存图标共用缓存键，避免重复提取
-    let icon = if tmp_path.exists() {
-        let mut final_hasher = DefaultHasher::new();
-        target.hash(&mut final_hasher);
-        let final_path = dir.join(format!("{:016x}.png", final_hasher.finish()));
-        if final_path != tmp_path {
-            if final_path.exists() {
-                let _ = std::fs::remove_file(&tmp_path);
-            } else {
-                let _ = std::fs::rename(&tmp_path, &final_path);
-            }
-        }
-        Some(final_path.to_string_lossy().into_owned())
-    } else {
-        None
-    };
-
+    let target = crate::app_icon::resolve_lnk_target(lnk_path)?;
+    let icon = extract_app_icon(&target);
     Ok((target, icon))
 }
 
-/// 提取程序图标（System.Drawing.ExtractAssociatedIcon），保存 PNG 到 app_data_dir/icons/
-/// 提取失败或无图标时返回 None（前端回退到名称首字母）
-fn extract_app_icon(source: &str) -> Option<String> {
+/// 图标缓存判旧阈值（像素）：旧 PowerShell ExtractAssociatedIcon 只能产出 32×32，
+/// 宽度低于此值的缓存视为低清、重新提取（新链路固定提取 256×256）
+const ICON_CACHE_MIN_WIDTH: u32 = 64;
+
+/// 图标缓存文件名：DefaultHasher(target) 的 16 位十六进制（沿用旧缓存键，
+/// 老数据直接命中缓存，低清的经宽度判别升级）。
+fn icon_cache_path(target: &str) -> std::path::PathBuf {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-
-    let dir = crate::paths::data_root().join("icons");
-    std::fs::create_dir_all(&dir).ok()?;
-
     let mut hasher = DefaultHasher::new();
-    source.hash(&mut hasher);
-    let file_name = format!("{:016x}.png", hasher.finish());
-    let output_path = dir.join(&file_name);
+    target.hash(&mut hasher);
+    crate::paths::data_root()
+        .join("icons")
+        .join(format!("{:016x}.png", hasher.finish()))
+}
 
-    // 已提取过则直接复用
-    if output_path.exists() {
+/// 原子写缓存：先写 .tmp 再替换，避免前端 <img> 恰好读到半截文件。
+/// Windows 的 rename 不能覆盖既有文件，先删再挪（窗口极小，丢了也只是重提一次）。
+fn write_png_atomically(path: &std::path::Path, bytes: &[u8]) -> bool {
+    let tmp = path.with_extension("png.tmp");
+    if std::fs::write(&tmp, bytes).is_err() {
+        return false;
+    }
+    if path.exists() {
+        let _ = std::fs::remove_file(path);
+    }
+    std::fs::rename(&tmp, path).is_ok()
+}
+
+/// 缓存文件存在且足够高清（宽度达标）才可直接复用；非 PNG（历史脏文件）也判旧重提
+fn icon_cache_usable(path: &std::path::Path) -> bool {
+    path.exists()
+        && crate::app_icon::png_width(path)
+            .map(|w| w >= ICON_CACHE_MIN_WIDTH)
+            .unwrap_or(false)
+}
+
+/// 提取程序图标（Shell IShellItemImageFactory，256×256，进程内无子进程），
+/// 保存 PNG 到数据根 icons/。缓存键 = target 路径哈希；旧 32×32 低清缓存自动
+/// 重提，重提失败保留旧图（宁可糊着不能没图标）。失败且无缓存返回 None
+/// （前端回退到名称首字母）。
+fn extract_app_icon(source: &str) -> Option<String> {
+    let output_path = icon_cache_path(source);
+    if icon_cache_usable(&output_path) {
         return Some(output_path.to_string_lossy().into_owned());
     }
-
-    let script = "Add-Type -AssemblyName System.Drawing; $i=[System.Drawing.Icon]::ExtractAssociatedIcon($env:XHUB_SRC); if($i -ne $null){$i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'}";
-    let output = match powershell()
-        .args(["-NoProfile", "-Command", script])
-        .env("XHUB_SRC", source)
-        .env("XHUB_OUT", output_path.to_str().unwrap_or(""))
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            log::warn!("图标提取失败（PowerShell 无法执行）: {} -> {}", source, e);
-            return None;
+    if let Some(dir) = output_path.parent() {
+        std::fs::create_dir_all(dir).ok()?;
+    }
+    match crate::app_icon::extract_icon_png(source) {
+        Some(png) => {
+            write_png_atomically(&output_path, &png);
+            Some(output_path.to_string_lossy().into_owned())
         }
-    };
-
-    if String::from_utf8_lossy(&output.stdout).contains("OK") {
-        Some(output_path.to_string_lossy().into_owned())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        log::warn!("图标提取失败（程序无图标或提取出错）: {} -> {}", source, stderr.trim());
-        None
+        None => {
+            if output_path.exists() {
+                log::warn!("图标高清重提失败，沿用旧缓存: {}", source);
+                Some(output_path.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        }
     }
 }
 
 /// 导入用户选择的图标文件到 icons 目录：
-/// - .ico 经 System.Drawing 转为 PNG
+/// - .ico 经 image crate 解码（自动选目录里最大的一帧，旧 PowerShell 写法只会拿 32×32）转存 PNG
 /// - png/jpg 等图片直接复制
 /// 返回存储后的 PNG 路径（失败返回 None）
 #[tauri::command]
@@ -2246,33 +2351,33 @@ pub fn import_icon_file(source: String) -> Result<Option<String>, String> {
     let file_name = format!("{:016x}.png", hasher.finish());
     let output_path = dir.join(&file_name);
 
-    // 已导入过则直接复用
-    if output_path.exists() {
+    // 已导入且足够高清则直接复用（旧 32×32 缓存重导入时升级；
+    // 直接复制的非 PNG 小图重导一次也只是幂等复制，无副作用）
+    if icon_cache_usable(&output_path) {
         return Ok(Some(output_path.to_string_lossy().into_owned()));
     }
 
     if ext == "ico" {
-        let script = "Add-Type -AssemblyName System.Drawing; $i=New-Object System.Drawing.Icon($env:XHUB_SRC); $i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'";
-        let output = powershell()
-            .args(["-NoProfile", "-Command", script])
-            .env("XHUB_SRC", &source)
-            .env("XHUB_OUT", output_path.to_str().unwrap_or(""))
-            .output()
-            .map_err(|e| {
-                log::error!("图标转换失败（PowerShell 无法执行）: {}", e);
-                format!("图标转换失败: {}", e)
-            })?;
-        if String::from_utf8_lossy(&output.stdout).contains("OK") {
-            log::info!("图标导入成功: {} -> {}", source, output_path.display());
-            Ok(Some(output_path.to_string_lossy().into_owned()))
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log::error!("图标转换失败: {} -> {}", source, stderr.trim());
-            Err("图标转换失败".into())
+        let bytes =
+            std::fs::read(&source).map_err(|e| format!("读取图标文件失败: {}", e))?;
+        let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Ico)
+            .map_err(|e| format!("图标转换失败（.ico 解码失败）: {}", e))?;
+        let mut png = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .map_err(|e| format!("图标转换失败: {}", e))?;
+        if !write_png_atomically(&output_path, &png) {
+            return Err("图标转换失败（写入缓存失败）".into());
         }
+        log::info!("图标导入成功: {} -> {}", source, output_path.display());
+        Ok(Some(output_path.to_string_lossy().into_owned()))
     } else {
-        match std::fs::copy(&source, &output_path) {
-            Ok(_) => {
+        // 与 .ico 分支同款原子写（先 .tmp 再替换）：前端 <img> 不会读到半截文件
+        match std::fs::read(&source) {
+            Ok(bytes) => {
+                if !write_png_atomically(&output_path, &bytes) {
+                    log::error!("图标写入失败: {} -> {}", source, output_path.display());
+                    return Err("图标导入失败（写入缓存失败）".into());
+                }
                 log::info!("图标导入成功: {} -> {}", source, output_path.display());
                 Ok(Some(output_path.to_string_lossy().into_owned()))
             }
@@ -2436,7 +2541,12 @@ pub async fn scan_installed_apps() -> Result<Vec<InstalledAppInfo>, String> {
     if candidates.is_empty() {
         return Ok(vec![]);
     }
-    let icons = batch_extract_icons(&candidates)?;
+    let icons = {
+        let cs = candidates.clone();
+        tauri::async_runtime::spawn_blocking(move || batch_extract_icons(&cs))
+            .await
+            .map_err(|e| format!("应用图标提取失败: {}", e))??
+    };
     Ok(candidates
         .into_iter()
         .zip(icons)
@@ -2542,100 +2652,74 @@ foreach ($a in $out) {
     Ok(apps)
 }
 
-/// 批量提取程序图标：单次 PowerShell 提取所有未缓存目标图标到临时目录，
-/// 再按 DefaultHasher(target) 重命名为正式缓存键（与 extract_app_icon 共用缓存，
-/// 已缓存的目标直接复用，重复扫描零开销）。
-fn batch_extract_icons(
-    apps: &[(String, String)],
-) -> Result<Vec<Option<String>>, String> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let icons_dir = crate::paths::data_root().join("icons");
-    std::fs::create_dir_all(&icons_dir).map_err(|e| e.to_string())?;
-
-    // 已缓存目标直接复用，只收集未缓存的索引
-    let mut missing: Vec<usize> = Vec::new();
-    let mut result: Vec<Option<String>> = Vec::with_capacity(apps.len());
-    for (i, (_, target)) in apps.iter().enumerate() {
-        let mut hasher = DefaultHasher::new();
-        target.hash(&mut hasher);
-        let cached = icons_dir.join(format!("{:016x}.png", hasher.finish()));
-        if cached.exists() {
-            result.push(Some(cached.to_string_lossy().into_owned()));
-        } else {
-            result.push(None);
-            missing.push(i);
-        }
-    }
-    if missing.is_empty() {
-        return Ok(result);
-    }
-
-    let tmp_dir = icons_dir.join(".scan_tmp");
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
-    let list_path = tmp_dir.join("list.txt");
-    let mut list = String::new();
-    for &i in &missing {
-        list.push_str(&apps[i].1);
-        list.push('\n');
-    }
-    std::fs::write(&list_path, list).map_err(|e| e.to_string())?;
-
-    let script = r#"
-$ErrorActionPreference = 'SilentlyContinue'
-Add-Type -AssemblyName System.Drawing
-$listFile = $env:XHUB_LIST
-$outDir = $env:XHUB_OUTDIR
-$idx = 0
-Get-Content -LiteralPath $listFile -Encoding UTF8 | ForEach-Object {
-  $p = $_.Trim()
-  if ($p) {
-    try {
-      $i = [System.Drawing.Icon]::ExtractAssociatedIcon($p)
-      if ($i -ne $null) {
-        try {
-          $bmp = $i.ToBitmap()
-          $bmp.Save((Join-Path $outDir ('{0}.png' -f $idx)), [System.Drawing.Imaging.ImageFormat]::Png)
-          $bmp.Dispose()
-        } catch {}
-        $i.Dispose()
-      }
-    } catch {}
-  }
-  $idx++
+/// 批量提取程序图标：逐个复用 extract_app_icon（Shell COM 进程内提取，
+/// 免去旧方案的 PowerShell 子进程 + 临时目录周转）。已缓存且高清的目标直接
+/// 复用、低清旧缓存就地升级，重复扫描零开销。调用方须在阻塞线程上执行
+/// （scan_installed_apps / scan_desktop 均经 spawn_blocking 调入）。
+fn batch_extract_icons(apps: &[(String, String)]) -> Result<Vec<Option<String>>, String> {
+    let result: Vec<Option<String>> = apps
+        .iter()
+        .map(|(_, target)| extract_app_icon(target))
+        .collect();
+    log::info!("应用图标提取完成: 共 {} 个", apps.len());
+    Ok(result)
 }
-"#;
-    let output = powershell()
-        .args(["-NoProfile", "-Command", script])
-        .env("XHUB_LIST", list_path.to_str().unwrap_or(""))
-        .env("XHUB_OUTDIR", tmp_dir.to_str().unwrap_or(""))
-        .output()
-        .map_err(|e| format!("应用图标提取失败（PowerShell 执行错误）: {}", e))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        log::warn!("应用图标提取脚本异常退出: {}", stderr.trim());
-    }
 
-    // 临时图标重命名为正式缓存键（缺文件 = 该程序无可用图标）
-    for (n, &i) in missing.iter().enumerate() {
-        let tmp_file = tmp_dir.join(format!("{}.png", n));
-        if !tmp_file.exists() {
+/// 低清图标缓存清扫（启动 15s 后一次性后台跑，见 lib.rs）：
+/// 把旧 PowerShell 链路产出的 32×32 缓存按 target 键就地重提为 256×256。
+/// 只处理「资源图标路径 == target 的缓存键」的条目——用户手动导入的图标
+/// （键 = 图标文件路径哈希）与网页 favicon（fav- 前缀）不越权重置；
+/// 重提失败保留旧图。图标路径不变，前端下次挂载/重启即见高清图。
+pub fn sweep_stale_icons(app: &tauri::AppHandle) {
+    use tauri::Manager;
+
+    let Some(state) = app.try_state::<DbState>() else {
+        return;
+    };
+    // 读完全量资源立刻放锁：后续 COM 提取是秒级 IO，不能攥着 DB 互斥锁
+    let resources = {
+        let Ok(conn) = state.0.lock() else {
+            return;
+        };
+        match crate::repo::resource::list_all(&conn) {
+            Ok(rs) => rs,
+            Err(e) => {
+                log::warn!("图标清扫：读取资源列表失败: {e}");
+                return;
+            }
+        }
+    };
+
+    let mut stale: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for r in &resources {
+        let Some(icon) = &r.icon else { continue };
+        // 只认自动提取键（icon == hash(target).png），手动导入/favicon 不动
+        if icon_cache_path(&r.target) != std::path::PathBuf::from(icon) {
             continue;
         }
-        let mut hasher = DefaultHasher::new();
-        apps[i].1.hash(&mut hasher);
-        let final_path = icons_dir.join(format!("{:016x}.png", hasher.finish()));
-        if final_path.exists() {
-            let _ = std::fs::remove_file(&tmp_file);
-        } else {
-            let _ = std::fs::rename(&tmp_file, &final_path);
+        if !seen.insert(r.target.clone()) {
+            continue;
         }
-        result[i] = Some(final_path.to_string_lossy().into_owned());
+        let p = std::path::Path::new(icon);
+        if crate::app_icon::png_width(p)
+            .map(|w| w < ICON_CACHE_MIN_WIDTH)
+            .unwrap_or(true)
+        {
+            stale.push(r.target.clone());
+        }
     }
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-    log::info!("应用图标提取完成: {} 个（缺 {} 个）", apps.len(), missing.len());
-    Ok(result)
+    if stale.is_empty() {
+        return;
+    }
+    log::info!("图标清扫：{} 个低清缓存待升级", stale.len());
+    let mut ok = 0;
+    for target in &stale {
+        if extract_app_icon(target).is_some() {
+            ok += 1;
+        }
+    }
+    log::info!("图标清扫完成：{}/{} 升级成功（失败项保留旧图）", ok, stale.len());
 }
 
 // ---------- 扫描桌面 ----------
@@ -2670,7 +2754,10 @@ pub async fn scan_desktop() -> Result<Vec<DesktopEntry>, String> {
         .filter(|(_, _, kind, _)| kind != "web")
         .map(|(name, target, _, _)| (name.clone(), target.clone()))
         .collect();
-    let icons = batch_extract_icons(&icon_pairs)?;
+    let icons =
+        tauri::async_runtime::spawn_blocking(move || batch_extract_icons(&icon_pairs))
+            .await
+            .map_err(|e| format!("应用图标提取失败: {}", e))??;
     let mut icon_iter = icons.into_iter();
     let entries = candidates
         .into_iter()

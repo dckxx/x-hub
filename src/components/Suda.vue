@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import {
   Bookmark,
@@ -8,9 +8,11 @@ import {
   ChevronRight,
   FilePlus,
   Globe,
+  GripVertical,
   Laptop,
   ListChecks,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Plus,
   ScanSearch,
@@ -19,13 +21,14 @@ import {
   Wrench,
   X,
 } from 'lucide-vue-next'
-import { isTauri, tauriApi, type InstalledBrowser, type Resource } from '../api/tauri'
+import { isTauri, tauriApi, type InstalledBrowser, type Resource, type ResourceZone } from '../api/tauri'
 import { categorize } from '../utils/categories'
 import { useStore } from '../stores/workbench'
 import { reportClientError } from '../utils/error-report'
 import { accentOf, fileAccentOf, iconSrc, useResourceIcon } from '../composables/useResourceIcon'
 import { useAdaptivePolling } from '../composables/useAdaptivePolling'
 import { useSudaDrag } from '../composables/useSudaDrag'
+import { useSudaZoneDrag } from '../composables/useSudaZoneDrag'
 import { isHttpWebTarget } from '../utils/web'
 import { buildSubcategoryTree, categoryMatchesPath, subcatLeaf } from '../utils/subcategoryTree'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
@@ -326,13 +329,337 @@ const emptyTitle = computed(() => {
 
 // ---- 长按拖拽排序（#6）：「常用」按最近使用排序，不开放手动排序 ----
 const gridRef = ref<HTMLElement | null>(null)
+/** v-for 里的网格用函数 ref：平铺块把元素交给平铺拖拽，分区模式下置空即可 */
+function setGridRef(el: unknown) {
+  gridRef.value = zoneMode.value ? null : (el as HTMLElement | null)
+}
 const { draggingId, dragOffset, dragOrigin, dropBeforeId, dropAtEnd, onCardPointerDown, swallowClick } =
   useSudaDrag({
     gridRef,
     items: visibleResources,
-    enabled: () => activeFilter.value !== '常用',
+    enabled: () => activeFilter.value !== '常用' && !zoneMode.value,
     reorder: (ids) => void onReorderVisible(ids),
   })
+
+// ---- 速达分区（「全部」tab 自定义成组陈列，独立于小类）----
+interface ZoneBlock {
+  /** 分区 id；null = 尾部「未分区」兜底块；'flat' = 无分区时的平铺单块 */
+  key: number | string | null
+  zone: ResourceZone | null
+  items: Resource[]
+}
+
+/** 分区模式 = 「全部」tab 且至少建了一个分区；否则保持平铺（行为与分区功能引入前一致） */
+const zoneMode = computed(
+  () => activeFilter.value === '全部' && store.state.zones.length > 0,
+)
+
+/** 按分区陈列的块序列：各分区（store 序）+ 尾部未分区；区内序沿用全局 sort_order */
+const zoneGroups = computed<ZoneBlock[]>(() => {
+  const blocks: ZoneBlock[] = store.state.zones.map((z) => ({ key: z.id, zone: z, items: [] }))
+  const byId = new Map(blocks.map((b) => [b.key as number, b]))
+  const unzoned: Resource[] = []
+  for (const r of store.state.resources) {
+    const b = r.zone_id != null ? byId.get(r.zone_id) : undefined
+    // zone_id 指向已删分区理论不该出现（delete 单事务置 NULL），本地兜底进未分区
+    if (b) b.items.push(r)
+    else unzoned.push(r)
+  }
+  return [...blocks, { key: null, zone: null, items: unzoned }]
+})
+
+/** 渲染块统一出口：分区模式 = 分区块序列；平铺模式 = 单块（现行网格不动） */
+const gridBlocks = computed<ZoneBlock[]>(() =>
+  zoneMode.value ? zoneGroups.value : [{ key: 'flat', zone: null, items: visibleResources.value }],
+)
+
+function zkeyOf(b: ZoneBlock): string {
+  return b.key == null ? '' : String(b.key)
+}
+
+// ---- 分区模式拖拽：跨区拖 = 改归属 + 插入序，reorder_resources_zoned 单命令原子落盘 ----
+const bodyRef = ref<HTMLElement | null>(null)
+const zdrag = useSudaZoneDrag({
+  bodyRef,
+  groups: computed(() => zoneGroups.value.map((b) => ({ key: b.key as number | null, items: b.items }))),
+  enabled: () => zoneMode.value,
+  commit: (entries) => void store.reorderResourcesZoned(entries),
+})
+
+/** 当前生效的拖拽态（两个 composable 按模式二选一，互不同时激活） */
+const draggingCardId = computed(() =>
+  zoneMode.value ? zdrag.draggingId.value : draggingId.value,
+)
+
+function zoneDropBefore(r: Resource, b: ZoneBlock): boolean {
+  return zdrag.dropZoneKey.value === zkeyOf(b) && zdrag.dropBeforeId.value === r.id
+}
+
+function zoneDropAtEnd(b: ZoneBlock): boolean {
+  return zdrag.dropZoneKey.value === zkeyOf(b) && zdrag.dropAtZoneEnd.value
+}
+
+function zoneDropActive(b: ZoneBlock): boolean {
+  return zdrag.draggingId.value != null && zdrag.dropZoneKey.value === zkeyOf(b)
+}
+
+// ---- 分区头拖拽排序：按住头部（非按钮区）移动即拖（头部不是启动目标，无需长按区分） ----
+const zoneDragKey = ref<number | null>(null)
+/** 插入位（分区序 0..zones.length；zones.length = 未分区之前） */
+const zoneDropIndex = ref<number | null>(null)
+
+/** 分区头拖拽的插入位：分区块横向流式并排（可换行），按「行 + 列」推插入位——
+ *  指针与某块同行比左右（x 过块中心 = 在它后面），不同行比上下（y 过块中心行 = 在它后面） */
+function updateZoneDrop(x: number, y: number) {
+  const blocks = Array.from(
+    bodyRef.value?.querySelectorAll<HTMLElement>(':scope .suda-zone') ?? [],
+  ).filter((b) => b.dataset.zkey !== '') // 未分区块不在候选，仅承接 zones.length 位
+  let idx = 0
+  for (const b of blocks) {
+    const r = b.getBoundingClientRect()
+    const sameRow = y >= r.top && y <= r.bottom
+    const after = sameRow ? x > (r.left + r.right) / 2 : y > (r.top + r.bottom) / 2
+    if (after) idx++
+  }
+  zoneDropIndex.value = idx
+}
+
+function onZoneHeadPointerDown(e: PointerEvent, zoneId: number) {
+  if (e.button !== 0 || batchMode.value || !zoneMode.value) return
+  const target = e.target as HTMLElement | null
+  if (target?.closest('button, input, a, [data-no-drag]')) return
+  // 阈值取二维位移：分区块横向并排，纯横向拖动也要能起拖
+  const x0 = e.clientX
+  const y0 = e.clientY
+  let armed = false
+
+  const onMove = (ev: PointerEvent) => {
+    if (ev.buttons === 0) {
+      onUp()
+      return
+    }
+    if (!armed) {
+      if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return
+      armed = true
+      zoneDragKey.value = zoneId
+      document.body.classList.add('suda-dragging')
+      document.getSelection()?.removeAllRanges()
+    }
+    updateZoneDrop(ev.clientX, ev.clientY)
+  }
+
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+    window.removeEventListener('pointercancel', onUp)
+    if (!armed) return
+    const from = store.state.zones.findIndex((z) => z.id === zoneId)
+    const to = zoneDropIndex.value
+    zoneDragKey.value = null
+    zoneDropIndex.value = null
+    document.body.classList.remove('suda-dragging')
+    if (from < 0 || to == null || to === from || to === from + 1) return
+    const ids = store.state.zones.map((z) => z.id)
+    const [moved] = ids.splice(from, 1)
+    ids.splice(to > from ? to - 1 : to, 0, moved)
+    void store.reorderZones(ids)
+  }
+
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+  window.addEventListener('pointercancel', onUp)
+}
+
+// ---- 分区框缩放：右下角把手拖动，尺寸以卡片格为吸附单元（宽度只会是整卡数，不会出现两卡半）；
+// cols/rows 是**下限**——空框保持设定占位，内容超出按行自动膨胀（grid-auto-rows 天然生长） ----
+const zoneResizing = ref<{ id: number; cols: number; rows: number } | null>(null)
+
+/** 分区当前尺寸：缩放中用预览值，否则用库值；未分区块无尺寸（整行宽自适应） */
+function zoneSizeOf(b: ZoneBlock): { cols: number; rows: number } {
+  if (!b.zone) return { cols: 3, rows: 2 }
+  const pv = zoneResizing.value
+  if (pv && pv.id === b.zone.id) return { cols: pv.cols, rows: pv.rows }
+  return { cols: b.zone.cols, rows: b.zone.rows }
+}
+
+function zoneStyleOf(b: ZoneBlock): Record<string, string> {
+  if (!b.zone) return {}
+  const { cols, rows } = zoneSizeOf(b)
+  return { '--zone-cols': String(cols), '--zone-rows': String(rows) }
+}
+
+function onZoneResizeDown(e: PointerEvent, zone: ResourceZone) {
+  if (e.button !== 0 || batchMode.value || !zoneMode.value) return
+  e.preventDefault()
+  const grid = (e.currentTarget as HTMLElement)
+    .closest('.suda-zone')
+    ?.querySelector<HTMLElement>('.suda-zone-grid')
+  const body = bodyRef.value
+  if (!grid || !body) return
+  const rect = grid.getBoundingClientRect()
+  // 与 CSS 常量同步：卡宽 124 / 行高 100 / 间距 10（.suda-card 与 .suda-zone-grid 的 --suda-row-h）
+  const CELL_W = 124
+  const CELL_H = 100
+  const GAP = 10
+  // 宽度上限 = 陈列区可用宽度能容纳的整卡数（区内边距 10×2 + 边框 1×2），别拖出横向滚动
+  const maxCols = Math.max(1, Math.floor((body.clientWidth - 22 + GAP) / (CELL_W + GAP)))
+  const clampCols = (n: number) => Math.max(1, Math.min(12, n, maxCols))
+  const clampRows = (n: number) => Math.max(1, Math.min(12, n))
+  zoneResizing.value = { id: zone.id, cols: zone.cols, rows: zone.rows }
+
+  const onMove = (ev: PointerEvent) => {
+    if (ev.buttons === 0) {
+      onUp()
+      return
+    }
+    // 吸附：宽度 n 格 = n*124+(n-1)*10 → n = round((px + 10) / 134)，行同式
+    const cols = clampCols(Math.round((ev.clientX - rect.left + GAP) / (CELL_W + GAP)))
+    const rows = clampRows(Math.round((ev.clientY - rect.top + GAP) / (CELL_H + GAP)))
+    if (zoneResizing.value) zoneResizing.value = { id: zone.id, cols, rows }
+  }
+
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+    window.removeEventListener('pointercancel', onUp)
+    const final = zoneResizing.value
+    zoneResizing.value = null
+    if (final && (final.cols !== zone.cols || final.rows !== zone.rows)) {
+      store.resizeZone(final.id, final.cols, final.rows).catch((err) => showToast(String(err)))
+    }
+  }
+
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+  window.addEventListener('pointercancel', onUp)
+}
+
+// ---- 分区 CRUD：新建（自动命名 + 立即行内改名）/ 改名 / 上移下移 / 删除（成员落未分区，可撤销） ----
+const zoneRenamingId = ref<number | null>(null)
+const zoneRenameText = ref('')
+const zoneRenameInput = ref<HTMLInputElement | null>(null)
+
+function setRenameInputRef(el: unknown) {
+  zoneRenameInput.value = el instanceof HTMLInputElement ? el : null
+}
+
+function startZoneRename(id: number, name: string) {
+  zoneRenamingId.value = id
+  zoneRenameText.value = name
+  void nextTick(() => zoneRenameInput.value?.select())
+}
+
+async function commitZoneRename() {
+  const id = zoneRenamingId.value
+  if (id == null) return
+  const name = zoneRenameText.value.trim()
+  zoneRenamingId.value = null
+  if (!name) return
+  const cur = store.state.zones.find((z) => z.id === id)
+  if (!cur || cur.name === name) return
+  try {
+    await store.editZone(id, name)
+  } catch (e) {
+    showToast(String(e))
+  }
+}
+
+function cancelZoneRename() {
+  zoneRenamingId.value = null
+}
+
+async function onCreateZone() {
+  // 自动命名「分区 N」，建完立即进入行内改名——创建零输入、命名即时可改
+  const names = new Set(store.state.zones.map((z) => z.name))
+  let n = 1
+  while (names.has(`分区 ${n}`)) n++
+  try {
+    const z = await store.addZone(`分区 ${n}`)
+    startZoneRename(z.id, z.name)
+  } catch (e) {
+    showToast(String(e))
+  }
+}
+
+function moveZoneBy(id: number, dir: -1 | 1) {
+  const ids = store.state.zones.map((z) => z.id)
+  const i = ids.indexOf(id)
+  const j = i + dir
+  if (i < 0 || j < 0 || j >= ids.length) return
+  ;[ids[i], ids[j]] = [ids[j], ids[i]]
+  void store.reorderZones(ids)
+}
+
+async function onDeleteZone(zone: ResourceZone) {
+  const index = store.state.zones.findIndex((z) => z.id === zone.id)
+  const memberIds = await store.removeZone(zone.id)
+  showToast(`已删除分区「${zone.name}」，${memberIds.length} 项移入未分区`, {
+    label: '撤销',
+    onClick: async () => {
+      try {
+        const z = await store.addZone(zone.name)
+        if (index >= 0) {
+          const ids = store.state.zones.map((x) => x.id).filter((x) => x !== z.id)
+          ids.splice(Math.min(index, ids.length), 0, z.id)
+          await store.reorderZones(ids)
+        }
+        if (memberIds.length > 0) await store.setResourcesZone(memberIds, z.id)
+        showToast('已恢复分区')
+      } catch (e) {
+        showToast(String(e))
+      }
+    },
+  })
+}
+
+function zoneMenuItems(zone: ResourceZone): ContextMenuItem[] {
+  return [
+    { label: '重命名', onClick: () => startZoneRename(zone.id, zone.name) },
+    { label: '上移', onClick: () => moveZoneBy(zone.id, -1) },
+    { label: '下移', onClick: () => moveZoneBy(zone.id, 1) },
+    {
+      label: '删除分区（成员移入未分区）',
+      dividerBefore: true,
+      danger: true,
+      onClick: () => void onDeleteZone(zone),
+    },
+  ]
+}
+
+function onZoneContext(e: MouseEvent, zone: ResourceZone) {
+  e.preventDefault()
+  if (batchMode.value) return
+  openMenu(e, zoneMenuItems(zone))
+}
+
+function onZoneMore(e: MouseEvent, zone: ResourceZone) {
+  if (batchMode.value) return
+  openMenu(e, zoneMenuItems(zone))
+}
+
+// ---- 右键「移动到分区」：点开二级列表（分区 + 未分区；当前归属不出现） ----
+function moveResourceToZone(r: Resource, zoneId: number | null) {
+  if (r.zone_id === zoneId) return
+  void store
+    .setResourcesZone([r.id], zoneId)
+    .then(() => {
+      const name = store.state.zones.find((z) => z.id === zoneId)?.name
+      showToast(zoneId == null ? '已移入未分区' : `已移入「${name}」`)
+    })
+    .catch((e) => showToast(String(e)))
+}
+
+/** 二级菜单沿用原右键坐标（ContextMenu 单实例换内容，视觉等同子菜单展开） */
+function openZoneMoveMenu(anchor: { clientX: number; clientY: number }, r: Resource) {
+  const items: ContextMenuItem[] = store.state.zones
+    .filter((z) => z.id !== r.zone_id)
+    .map((z) => ({ label: `移入「${z.name}」`, onClick: () => moveResourceToZone(r, z.id) }))
+  if (r.zone_id != null) {
+    items.push({ label: '移入「未分区」', onClick: () => moveResourceToZone(r, null) })
+  }
+  if (!items.length) return
+  openMenu({ clientX: anchor.clientX, clientY: anchor.clientY } as MouseEvent, items)
+}
 
 /** 可见项新顺序 → 全表顺序：可见项占住它在全表里的原有槽位，其余项不动 */
 function onReorderVisible(visibleIds: number[]) {
@@ -353,12 +680,22 @@ function onReorderVisible(visibleIds: number[]) {
 /** 被拖卡片跟手飞行的位移；非拖拽态不给 inline 样式，让位给 hover 位移。
  *  卡片拖拽时是 absolute（脱离流，见 .suda-card.is-dragging），所以要先平移到原位再叠加位移。
  *  这里刻意用独立的 `translate` 属性而不是 `transform`：位移必须即时跟手（不能进过渡列表），
- *  而「浮起」的放大交给独立 `scale` 属性做短过渡 —— 两者分开，才能一个即时、一个柔和。 */
+ *  而「浮起」的放大交给独立 `scale` 属性做短过渡 —— 两者分开，才能一个即时、一个柔和。
+ *  平铺/分区两套拖拽 composable 按当前模式取各自的原位与位移（各分区网格自带
+ *  position:relative，跨块拖拽的定位上下文与平铺版一致）。 */
 function dragStyleOf(r: Resource) {
-  if (draggingId.value !== r.id) return {}
-  const x = dragOrigin.value.x + dragOffset.value.x
-  const y = dragOrigin.value.y + dragOffset.value.y
+  const dragging = zoneMode.value ? zdrag.draggingId.value : draggingId.value
+  if (dragging !== r.id) return {}
+  const origin = zoneMode.value ? zdrag.dragOrigin.value : dragOrigin.value
+  const offset = zoneMode.value ? zdrag.dragOffset.value : dragOffset.value
+  const x = origin.x + offset.x
+  const y = origin.y + offset.y
   return { translate: `${x}px ${y}px` }
+}
+
+/** 拖拽后的 click 吞掉也按模式路由（blockClick 标记在各自的 composable 里） */
+function swallowCardClick(): boolean {
+  return zoneMode.value ? zdrag.swallowClick() : swallowClick()
 }
 
 function onCardClick(r: Resource) {
@@ -367,7 +704,7 @@ function onCardClick(r: Resource) {
     toggleBatch(r.id)
     return
   }
-  if (swallowClick()) return
+  if (swallowCardClick()) return
   void onOpen(r)
 }
 
@@ -395,6 +732,8 @@ async function onDeleteResource(r: Resource) {
         category: r.category,
         icon: r.icon,
         args: r.args,
+        // 所属分区可能已被删除：按现存分区兜底，避免恢复时因分区不存在而失败
+        zoneId: store.state.zones.some((z) => z.id === r.zone_id) ? r.zone_id : null,
       })
       showToast('已恢复')
     },
@@ -466,6 +805,7 @@ async function doBatchDelete() {
             category: r.category,
             icon: r.icon,
             args: r.args,
+            zoneId: store.state.zones.some((z) => z.id === r.zone_id) ? r.zone_id : null,
           })
           restored++
         } catch {
@@ -483,10 +823,12 @@ function onCardKeyActivate(r: Resource) {
   else void onOpen(r)
 }
 
-/** 批量模式下禁用卡片拖拽排序（拖拽手势与点选冲突），只保留点击选择 */
+/** 批量模式下禁用卡片拖拽排序（拖拽手势与点选冲突），只保留点击选择；
+ *  分区模式路由到分区拖拽（跨区改归属），平铺模式路由到平铺拖拽（仅重排序） */
 function onCardPointer(r: Resource, e: PointerEvent) {
   if (batchMode.value) return
-  onCardPointerDown(r, e)
+  if (zoneMode.value) zdrag.onCardPointerDown(r, e)
+  else onCardPointerDown(r, e)
 }
 
 // ---- 指定浏览器打开（网页资源）：列表来自本机已安装浏览器（Rust 注册表枚举） ----
@@ -551,9 +893,17 @@ async function onResourceContext(e: MouseEvent, r: Resource) {
       }
     }
   }
+  // 移动到分区：只在建了分区后出现（当前归属不进列表；点开二级菜单沿用本坐标）
+  if (store.state.zones.length > 0) {
+    items.push({
+      label: '移动到分区',
+      dividerBefore: isWeb,
+      onClick: () => openZoneMoveMenu(e, r),
+    })
+  }
   items.push({
     label: '编辑',
-    dividerBefore: isWeb,
+    dividerBefore: isWeb && store.state.zones.length === 0,
     onClick: () => {
       editing.value = r
       formVisible.value = true
@@ -610,6 +960,8 @@ async function fillWebFavicons(created: Resource[]) {
         category: cur.category,
         icon,
         args: cur.args,
+        // update 是全对象写：不带 zoneId 会把归属抹成未分区
+        zoneId: cur.zone_id,
       }),
     ]
   })
@@ -644,6 +996,7 @@ function onFormSubmit(payload: {
   category?: string | null
   icon?: string | null
   args?: string | null
+  zoneId?: number | null
 }) {
   if (payload.id != null) {
     void store.editResource({ ...payload, id: payload.id })
@@ -708,6 +1061,8 @@ async function onScanImported(items: ScanItem[], cleanShortcuts = false) {
         category: a.kind === 'web' ? (a.category ?? null) : null,
         icon: a.icon,
         args: null,
+        // 导入的资源统一落未分区（用户可再拖进分区）
+        zoneId: null,
       })
       added++
       if (r.kind === 'web' && !r.icon) createdWeb.push(r)
@@ -843,18 +1198,30 @@ function cardAccentStyle(r: Resource) {
       </div>
     </header>
 
-    <!-- 分类 tabs -->
-    <nav class="filter-tabs suda-tabs" aria-label="速达分类">
+    <!-- 分类 tabs + 「全部」分区入口 -->
+    <div class="suda-tabs-row">
+      <nav class="filter-tabs suda-tabs" aria-label="速达分类">
+        <button
+          v-for="f in FILTER_TABS"
+          :key="f"
+          class="filter-tab filter-tab--primary"
+          :class="{ active: activeFilter === f }"
+          @click="activeFilter = f"
+        >
+          {{ f }}
+        </button>
+      </nav>
       <button
-        v-for="f in FILTER_TABS"
-        :key="f"
-        class="filter-tab filter-tab--primary"
-        :class="{ active: activeFilter === f }"
-        @click="activeFilter = f"
+        v-if="activeFilter === '全部'"
+        class="suda-zone-add"
+        type="button"
+        title="新建分区：「全部」里按分区成组陈列，把资源拖进分区即可归类"
+        @click="onCreateZone"
       >
-        {{ f }}
+        <Plus :size="12" :stroke-width="2.4" />
+        分区
       </button>
-    </nav>
+    </div>
 
 <!-- 大类小类筛选（ADR 0012）：应用/网页/文件各有小类库；未归类=category 为空。
      书签导入的小类带「/」层级：chips 只出顶层，有下级的带 ▸ 展开级联菜单逐级选择，
@@ -948,102 +1315,199 @@ function cardAccentStyle(r: Resource) {
   </button>
 </div>
 
-    <!-- 资源网格（5 列） -->
-    <div class="suda-body">
-      <div v-if="visibleResources.length > 0" ref="gridRef" class="suda-grid">
-        <template v-for="r in visibleResources" :key="r.id">
-          <div v-if="dropBeforeId === r.id" class="suda-drop-slot" aria-hidden="true" />
-        <div
-          class="suda-card"
-          :class="{
-            'is-dragging': draggingId === r.id,
-            'batch-on': batchMode,
-            selected: batchMode && batchChecked.has(r.id),
-          }"
-          :data-id="r.id"
-          :title="r.target"
-          role="button"
-          tabindex="0"
-          :aria-pressed="batchMode ? batchChecked.has(r.id) : undefined"
-          :style="[cardAccentStyle(r), dragStyleOf(r)]"
-          @click="onCardClick(r)"
-          @pointerdown="onCardPointer(r, $event)"
-          @dragstart.prevent
-          @keydown.enter="onCardKeyActivate(r)"
-          @keydown.space.prevent="onCardKeyActivate(r)"
-          @contextmenu="onResourceContext($event, r)"
-        >
-          <span v-if="batchMode" class="suda-batch-check" :class="{ on: batchChecked.has(r.id) }">
-            <Check v-if="batchChecked.has(r.id)" :size="12" :stroke-width="3" />
-          </span>
-          <span class="suda-kind" :class="r.kind" :title="r.category ?? kindLabel(r)">{{
-            kindLabel(r)
-          }}</span>
-          <div class="suda-actions">
-            <button
-              class="suda-action"
-              title="编辑"
-              aria-label="编辑"
-              @click.stop="editing = r; formVisible = true"
-            >
-              <Pencil :size="11" :stroke-width="2" />
-            </button>
-            <button
-              class="suda-action del"
-              title="删除"
-              aria-label="删除"
-              @click.stop="onDeleteResource(r)"
-            >
-              <Trash2 :size="11" :stroke-width="2" />
-            </button>
-          </div>
-            <div
-              class="suda-icon"
-              :class="{ 'web-default': showWebFallbackIcon(r) }"
-              :style="
-                showImageIcon(r)
-                  ? {}
-                  : { background: 'var(--suda-accent-soft)' }
-            "
+    <!-- 资源陈列：分区模式 = 分区块横向流式并排（新建往右长、放不下换行）+ 尾部整行「未分区」；
+         无分区 = 单块平铺（行为与分区功能引入前一致） -->
+    <div ref="bodyRef" class="suda-body">
+      <div v-if="zoneMode || visibleResources.length > 0" class="suda-zone-flow">
+        <template v-for="(g, gi) in gridBlocks" :key="g.key ?? 'unzoned'">
+          <!-- 分区头拖拽排序的插入线（落点=某分区之前；zones.length 位 = 未分区之前） -->
+          <div
+            v-if="zoneDragKey != null && zoneDropIndex === gi"
+            class="suda-zone-insert"
+            aria-hidden="true"
+          />
+          <section
+            class="suda-zone"
+            :class="{
+              flat: !zoneMode,
+              'unzoned-block': zoneMode && g.zone == null,
+              'is-drop-target': zoneMode && zoneDropActive(g),
+              'is-zone-dragging': zoneDragKey === g.key,
+              'is-resizing': zoneResizing != null && zoneResizing.id === g.zone?.id,
+            }"
+            :style="zoneStyleOf(g)"
+            :data-zkey="zkeyOf(g)"
           >
-            <img
-              v-if="showImageIcon(r)"
-              class="suda-img"
-              :src="iconSrc(r.icon!)"
-              alt=""
-              draggable="false"
-              @error="onIconError(r)"
-            />
-            <Globe
-              v-else-if="showWebFallbackIcon(r)"
-              class="suda-file-icon"
-              :size="25"
-              :stroke-width="1.7"
-              :style="{ color: 'var(--c-green-ink)' }"
-            />
-            <component
-              v-else-if="r.kind === 'file'"
-              :is="fileIconOf(r)"
-              class="suda-file-icon"
-              :size="25"
-              :stroke-width="1.7"
-              :style="{ color: 'var(--suda-accent)' }"
-            />
-            <span
-              v-else
-              class="suda-letter"
-              :style="{ color: 'var(--suda-accent-ink)' }"
+            <header
+              v-if="zoneMode"
+              class="suda-zone-head"
+              @pointerdown="g.zone ? onZoneHeadPointerDown($event, g.zone.id) : undefined"
+              @contextmenu.prevent="g.zone ? onZoneContext($event, g.zone) : undefined"
             >
-              {{ iconText(r) }}
-            </span>
-          </div>
-          <span class="suda-name">
-            <span v-if="isRunning(r)" class="suda-dot" title="运行中" />
-                <span class="suda-name-text" :title="r.name">{{ r.name }}</span>
-          </span>
-        </div>
+              <GripVertical
+                v-if="g.zone && !batchMode"
+                class="suda-zone-grip"
+                :size="14"
+                :stroke-width="2"
+                aria-hidden="true"
+              />
+              <template v-if="g.zone">
+                <input
+                  v-if="zoneRenamingId === g.zone.id"
+                  :ref="setRenameInputRef"
+                  v-model="zoneRenameText"
+                  class="suda-zone-rename"
+                  type="text"
+                  maxlength="20"
+                  placeholder="分区名称"
+                  @keydown.enter.prevent="commitZoneRename"
+                  @keydown.esc.stop.prevent="cancelZoneRename"
+                  @blur="commitZoneRename"
+                  @pointerdown.stop
+                  @click.stop
+                />
+                <span
+                  v-else
+                  class="suda-zone-name"
+                  title="双击重命名；按住分区头拖动可调整分区顺序"
+                  @dblclick="startZoneRename(g.zone.id, g.zone.name)"
+                >
+                  {{ g.zone.name }}
+                </span>
+                <span class="suda-zone-count">{{ g.items.length }}</span>
+                <button
+                  v-if="!batchMode"
+                  class="suda-zone-more"
+                  type="button"
+                  title="分区操作"
+                  aria-label="分区操作"
+                  @click.stop="onZoneMore($event, g.zone)"
+                >
+                  <MoreHorizontal :size="14" :stroke-width="2" />
+                </button>
+              </template>
+              <template v-else>
+                <span class="suda-zone-name">未分区</span>
+                <span class="suda-zone-count">{{ g.items.length }}</span>
+              </template>
+            </header>
+            <div :ref="setGridRef" class="suda-grid" :class="{ 'suda-zone-grid': zoneMode }">
+              <template v-for="r in g.items" :key="r.id">
+                <div
+                  v-if="!zoneMode && dropBeforeId === r.id"
+                  class="suda-drop-slot"
+                  aria-hidden="true"
+                />
+                <div
+                  v-if="zoneMode && zoneDropBefore(r, g)"
+                  class="suda-drop-slot"
+                  aria-hidden="true"
+                />
+                <div
+                  class="suda-card"
+                  :class="{
+                    'is-dragging': draggingCardId === r.id,
+                    'batch-on': batchMode,
+                    selected: batchMode && batchChecked.has(r.id),
+                  }"
+                  :data-id="r.id"
+                  :title="r.target"
+                  role="button"
+                  tabindex="0"
+                  :aria-pressed="batchMode ? batchChecked.has(r.id) : undefined"
+                  :style="[cardAccentStyle(r), dragStyleOf(r)]"
+                  @click="onCardClick(r)"
+                  @pointerdown="onCardPointer(r, $event)"
+                  @dragstart.prevent
+                  @keydown.enter="onCardKeyActivate(r)"
+                  @keydown.space.prevent="onCardKeyActivate(r)"
+                  @contextmenu="onResourceContext($event, r)"
+                >
+                  <span v-if="batchMode" class="suda-batch-check" :class="{ on: batchChecked.has(r.id) }">
+                    <Check v-if="batchChecked.has(r.id)" :size="12" :stroke-width="3" />
+                  </span>
+                  <span class="suda-kind" :class="r.kind" :title="r.category ?? kindLabel(r)">{{
+                    kindLabel(r)
+                  }}</span>
+                  <div class="suda-actions">
+                    <button
+                      class="suda-action"
+                      title="编辑"
+                      aria-label="编辑"
+                      @click.stop="editing = r; formVisible = true"
+                    >
+                      <Pencil :size="11" :stroke-width="2" />
+                    </button>
+                    <button
+                      class="suda-action del"
+                      title="删除"
+                      aria-label="删除"
+                      @click.stop="onDeleteResource(r)"
+                    >
+                      <Trash2 :size="11" :stroke-width="2" />
+                    </button>
+                  </div>
+                  <div
+                    class="suda-icon"
+                    :class="{ 'web-default': showWebFallbackIcon(r) }"
+                    :style="
+                      showImageIcon(r)
+                        ? {}
+                        : { background: 'var(--suda-accent-soft)' }
+                    "
+                  >
+                    <img
+                      v-if="showImageIcon(r)"
+                      class="suda-img"
+                      :src="iconSrc(r.icon!)"
+                      alt=""
+                      draggable="false"
+                      @error="onIconError(r)"
+                    />
+                    <Globe
+                      v-else-if="showWebFallbackIcon(r)"
+                      class="suda-file-icon"
+                      :size="25"
+                      :stroke-width="1.7"
+                      :style="{ color: 'var(--c-green-ink)' }"
+                    />
+                    <component
+                      v-else-if="r.kind === 'file'"
+                      :is="fileIconOf(r)"
+                      class="suda-file-icon"
+                      :size="25"
+                      :stroke-width="1.7"
+                      :style="{ color: 'var(--suda-accent)' }"
+                    />
+                    <span
+                      v-else
+                      class="suda-letter"
+                      :style="{ color: 'var(--suda-accent-ink)' }"
+                    >
+                      {{ iconText(r) }}
+                    </span>
+                  </div>
+                  <span class="suda-name">
+                    <span v-if="isRunning(r)" class="suda-dot" title="运行中" />
+                    <span class="suda-name-text" :title="r.name">{{ r.name }}</span>
+                  </span>
+                </div>
+              </template>
+              <div v-if="!zoneMode && dropAtEnd" class="suda-drop-slot" aria-hidden="true" />
+              <div v-if="zoneMode && zoneDropAtEnd(g)" class="suda-drop-slot" aria-hidden="true" />
+            </div>
+            <p v-if="zoneMode && g.items.length === 0" class="suda-zone-empty">
+              {{ g.zone ? '拖动资源到这里' : '未分区的资源会显示在这里' }}
+            </p>
+            <!-- 尺寸把手：拖动按整卡格吸附（宽度只会是整卡数）；cols/rows 为下限，内容超出自动按行膨胀 -->
+            <span
+              v-if="g.zone && !batchMode && zoneMode"
+              class="suda-zone-resize"
+              title="拖动调整分区大小（按卡片格吸附）"
+              @pointerdown="onZoneResizeDown($event, g.zone)"
+            />
+          </section>
         </template>
-        <div v-if="dropAtEnd" class="suda-drop-slot" aria-hidden="true" />
       </div>
 
       <div v-else class="empty-state">
@@ -1158,8 +1622,216 @@ function cardAccentStyle(r: Resource) {
   color: var(--text-on-accent);
 }
 
-.suda-tabs {
+/* tabs 行：nav + 「分区」入口同排 */
+.suda-tabs-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 10px;
+}
+.suda-tabs-row .suda-tabs {
+  margin-bottom: 0;
+}
+.suda-zone-add {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  border-radius: var(--radius-pill);
+  padding: 4px 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.suda-zone-add:hover {
+  border-color: var(--brand-500);
+  border-style: solid;
+  color: var(--brand-500);
+  background: var(--brand-50);
+}
+
+/* ---- 分区块（「全部」tab 成组陈列）：横向流式并排（新建往右长、放不下换行）；
+        未分区与平铺块占满整行；flat = 平铺模式的无框单块 ---- */
+.suda {
+  /* 分区网格的行高单元（卡片自然高度 98px 上取整留 2px 余量）：行数尺寸以它为基准 */
+  --suda-row-h: 100px;
+}
+.suda-zone-flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 14px;
+}
+.suda-zone {
+  position: relative;
+  background: var(--bg-card-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  padding: 8px 10px 10px;
+  /* 框宽贴合 cols 列内容（不会整行铺满留一片空框）；未分区块另行放开为整行宽 */
+  width: fit-content;
+  max-width: 100%;
+  transition: border-color 0.15s, background 0.15s, opacity 0.15s;
+}
+.suda-zone.flat {
+  background: transparent;
+  border-color: transparent;
+  border-radius: 0;
+  padding: 0;
+  width: 100%;
+}
+/* 未分区：兜底位不做蒙版填充（比分区更透亮），虚线描边 + 弱化标题与分区拉开区分；
+   占满整行（flex-wrap 下自然独占最后一行） */
+.suda-zone.unzoned-block {
+  background: transparent;
+  border: 1.5px dashed var(--border-strong);
+  width: 100%;
+}
+.suda-zone.unzoned-block .suda-zone-name {
+  color: var(--text-3);
+  font-weight: 500;
+}
+.suda-zone.unzoned-block .suda-zone-count {
+  background: transparent;
+  border: 1px solid var(--border-soft);
+}
+/* 分区网格按格定宽定行：cols 列 × rows 行为**下限**占位（min-height 兜底空框），
+   内容超出时 grid-auto-rows 自然生长 = 自动膨胀；吸附单元见 onZoneResizeDown 常量 */
+.suda-zone:not(.unzoned-block):not(.flat) .suda-zone-grid {
+  grid-template-columns: repeat(var(--zone-cols, 3), 124px);
+  grid-auto-rows: var(--suda-row-h);
+  min-height: calc(var(--zone-rows, 2) * (var(--suda-row-h) + 10px) - 10px);
+  justify-content: start;
+}
+/* 缩放进行中不做过渡，尺寸跟手即时 */
+.suda-zone.is-resizing {
+  transition: none;
+}
+.suda-zone.is-resizing .suda-zone-grid {
+  transition: none;
+}
+/* 尺寸把手：右下角斜纹小方块（悬停分区时更明显），nwse 方向光标 */
+.suda-zone-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 5;
+}
+.suda-zone:hover .suda-zone-resize,
+.suda-zone-resize:focus-visible {
+  opacity: 1;
+}
+.suda-zone-resize::after {
+  content: '';
+  width: 10px;
+  height: 10px;
+  margin: 0 3px 3px 0;
+  border-radius: 2px;
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0 3px,
+    var(--text-4) 3px 4px
+  );
+}
+.suda-zone-resize:hover::after {
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0 3px,
+    var(--brand-500) 3px 4px
+  );
+}
+.suda-zone-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  user-select: none;
+  min-height: 26px;
+}
+.suda-zone.flat .suda-zone-head {
+  display: none;
+}
+.suda-zone-grip {
+  color: var(--text-4);
+  cursor: grab;
+  flex-shrink: 0;
+}
+.suda-zone-name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.suda-zone-count {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-4);
+  background: var(--bg-card-solid);
+  border-radius: var(--radius-pill);
+  padding: 1px 8px;
+}
+.suda-zone-more {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-4);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.suda-zone-more:hover {
+  background: var(--brand-50);
+  color: var(--brand-500);
+}
+.suda-zone-rename {
+  width: 160px;
+  padding: 2px 8px;
+  border: 1px solid var(--brand-500);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card-solid);
+  color: var(--text-1);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-family: inherit;
+}
+.suda-zone-rename:focus {
+  outline: none;
+}
+.suda-zone-empty {
+  padding: 0 2px 2px;
+  font-size: 0.75rem;
+  color: var(--text-4);
+}
+/* 分区头拖拽排序的插入线：横向流式并排 → 竖线（随所在行高拉伸） */
+.suda-zone-insert {
+  width: 3px;
+  min-height: 48px;
+  align-self: stretch;
+  border-radius: 2px;
+  background: var(--brand-500);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-500) 18%, transparent);
 }
 /* 小类行外壳：nav 可横滚，两端 ‹ › 按钮提示还有更多小类（小类多时右侧选不到的修复） */
 .suda-cat-wrap {

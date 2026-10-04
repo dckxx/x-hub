@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { Check, GripVertical, LayoutGrid, X } from 'lucide-vue-next'
 import {
   DASH_COLS,
@@ -37,6 +37,7 @@ import WeatherCard from './WeatherCard.vue'
 const emit = defineEmits<{ (e: 'done'): void }>()
 
 const layout = useDashboardLayout()
+const showToast = inject<(msg: string) => void>('showToast', () => {})
 
 /** 画布列间距与真实工作台 .dash-grid 取齐（16px），保证缩印比例一致 */
 const GAP = 16
@@ -419,6 +420,23 @@ function confirmDone() {
   emit('done')
 }
 
+// ---- 默认布局快照：存为默认（立即落盘，不随草稿取消回滚）/ 恢复默认（回到草稿，确认后生效） ----
+function onSaveDefault() {
+  if (!layout.saveDefaultLayout()) {
+    showToast('画布为空，先拖入模块再存为默认布局')
+    return
+  }
+  showToast('已存为默认布局，之后可随时一键恢复')
+}
+
+function onRestoreDefault() {
+  if (!layout.restoreDefaultLayout()) {
+    showToast('默认布局已失效，请重新「存为默认」')
+    return
+  }
+  showToast('已恢复为默认布局，点「确认」生效')
+}
+
 onMounted(() => {
   layout.beginEdit()
   // 预览里的时间 / 农历 / 倒计时剩余按分钟推进（离开编辑器即停，无常驻定时器）
@@ -463,6 +481,19 @@ function previewComponent(id: string) {
         </label>
         <button class="ghost-btn" type="button" @click="layout.clear()">清空</button>
         <button class="ghost-btn" type="button" @click="layout.applyPreset()">推荐布局</button>
+        <button
+          class="ghost-btn"
+          type="button"
+          title="把画布当前布局存为默认布局，之后可随时一键恢复"
+          @click="onSaveDefault"
+        >存为默认</button>
+        <button
+          class="ghost-btn"
+          type="button"
+          :disabled="!layout.hasSavedDefault.value"
+          title="把画布恢复为保存的默认布局（需点「确认」生效）"
+          @click="onRestoreDefault"
+        >恢复默认</button>
         <button class="pill-btn" type="button" @click="confirmDone">
           <Check :size="14" :stroke-width="2.5" aria-hidden="true" />
           确认

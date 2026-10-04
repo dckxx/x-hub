@@ -331,6 +331,47 @@ fn migrate(conn: &Connection) -> Result<()> {
         ",
     )?;
 
+    // 速达分区：「全部」tab 的自定义成组陈列，独立于小类（无 kind 维度、无层级、跨大类混居）。
+    // 一个分区都没有时「全部」保持平铺，行为与分区功能引入前完全一致；成员经
+    // resources.zone_id 关联（NULL = 未分区），不设外键约束，级联在 repo::zone 单事务手工做。
+    // cols/rows = 分区框尺寸（卡片格数，新建默认 3×2）：是**下限**——内容超出时前端按行自动
+    // 膨胀，尺寸只决定空框的最小占位与拖拽缩放的吸附单元。
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS resource_zones (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          cols INTEGER NOT NULL DEFAULT 3,
+          rows INTEGER NOT NULL DEFAULT 2
+        );
+        ",
+    )?;
+    // 老库（分区功能首版建的表）补尺寸列，默认 3×2
+    let zone_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(resource_zones)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !zone_cols.iter().any(|c| c == "cols") {
+        conn.execute(
+            "ALTER TABLE resource_zones ADD COLUMN cols INTEGER NOT NULL DEFAULT 3",
+            [],
+        )?;
+    }
+    if !zone_cols.iter().any(|c| c == "rows") {
+        conn.execute(
+            "ALTER TABLE resource_zones ADD COLUMN rows INTEGER NOT NULL DEFAULT 2",
+            [],
+        )?;
+    }
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(resources)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !cols.iter().any(|c| c == "zone_id") {
+        conn.execute("ALTER TABLE resources ADD COLUMN zone_id INTEGER", [])?;
+    }
+
     // 旧 chat_sessions 表缺 token 累计列：逐列补齐（ALTER TABLE ADD COLUMN 幂等）
     let chat_cols: Vec<String> = conn
         .prepare("PRAGMA table_info(chat_sessions)")?

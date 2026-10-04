@@ -15,6 +15,8 @@ import { useStore } from '../stores/workbench'
  * - 自由布局：模块放到哪就落在哪（不左上贪心压实）；目标被占时自动向下找最近空位落位（不弹回）
  * - 草稿语义：进入编辑器 beginEdit 快照，确认 commitEdit 才写库，未确认切走 cancelEdit 恢复编辑前
  * - 持久化到应用配置（AppConfig.dashboard_layout，经 Rust config.json 落盘）；浏览器预览回退 localStorage
+ * - 默认布局快照：编辑器「存为默认布局」把当前画布存进 AppConfig.dashboard_default_layout（预览回退 localStorage），
+ *   「恢复默认布局」随时一键回到快照——编辑器内 = 回到草稿（确认后生效），编辑器外 = 立即生效
  * - 单例状态：编辑器与主界面共享同一份 placements，变更实时同步
  */
 
@@ -26,6 +28,9 @@ export const TITLE_MAX = 24
 
 /** 旧版 localStorage 存储 key（仅用于迁移到应用配置，迁移后清除） */
 const STORAGE_KEY = 'xhub.dashboard.layout.v2'
+
+/** 默认布局快照的 localStorage key（仅浏览器预览用；Tauri 走 AppConfig.dashboard_default_layout） */
+const STORAGE_KEY_DEFAULT = 'xhub.dashboard.layout.default.v1'
 
 /** 形态定义：min = 内容完整展示的最小格子，ideal = 内容正好铺满的推荐格子 */
 export interface DashVariantDef {
@@ -347,9 +352,9 @@ function loadFromLocalStorage(): DashPlacement[] | null {
   return null
 }
 
-// ---- 持久化：写应用配置（Tauri）/ 回退 localStorage（浏览器预览） ----
-function persist() {
-  const data = JSON.stringify(
+/** 当前 placements 序列化为 placements JSON（标题/表头字段只在设置过时写入） */
+function serializePlacements(): string {
+  return JSON.stringify(
     placements.value.map((p) => {
       const o: DashPlacement = {
         id: p.id,
@@ -366,6 +371,11 @@ function persist() {
       return o
     }),
   )
+}
+
+// ---- 持久化：写应用配置（Tauri）/ 回退 localStorage（浏览器预览） ----
+function persist() {
+  const data = serializePlacements()
   if (isTauri()) {
     void store.setDashboardLayout(data)
   } else {
@@ -425,6 +435,17 @@ function syncCommitted() {
   reportCountdownCardVisible()
 }
 
+// ---- 默认布局快照：编辑器「存为默认」写入，「恢复默认」读取（Tauri 走 AppConfig，预览回退 localStorage） ----
+function loadDefaultFromLocalStorage(): string {
+  try {
+    return localStorage.getItem(STORAGE_KEY_DEFAULT) ?? ''
+  } catch {
+    return ''
+  }
+}
+const savedDefaultRaw = ref(isTauri() ? '' : loadDefaultFromLocalStorage())
+const hasSavedDefault = computed(() => savedDefaultRaw.value.trim().length > 0)
+
 /** 加载声明 module 形态的扩展，注册进工作台模块库（id 用 `ext:<扩展id>` 前缀与内置模块区分）。
  *  manifest.moduleVariants 声明的形态直接进模块库（形态芯片 / 尺寸钳制 / 适配徽标全生效）；
  *  未声明则注册单个默认形态（沿用历史 min 2×2 / ideal 4×3）。 */
@@ -470,6 +491,9 @@ watch(
   async (loaded) => {
     if (!loaded) return
     await loadExtensionModules()
+    // 默认布局快照：config 非空才覆盖（浏览器预览 config 为空串，保留 localStorage 快照）
+    const cfgDefault = store.state.config.dashboard_default_layout
+    if (cfgDefault) savedDefaultRaw.value = cfgDefault
     const cfg = store.state.config.dashboard_layout
     if (cfg) {
       const parsed = parsePlacements(cfg)
@@ -642,6 +666,32 @@ function applyPreset() {
   persistIfIdle()
 }
 
+/** 把当前布局存为默认布局快照（编辑器内 = 草稿现状，独立于草稿的确认/取消；空布局不允许存，避免恢复出空工作台） */
+function saveDefaultLayout(): boolean {
+  if (!placements.value.length) return false
+  const data = serializePlacements()
+  savedDefaultRaw.value = data
+  if (isTauri()) {
+    void store.setDashboardDefaultLayout(data)
+  } else {
+    try {
+      localStorage.setItem(STORAGE_KEY_DEFAULT, data)
+    } catch {
+      // 存储失败静默，不影响交互
+    }
+  }
+  return true
+}
+
+/** 恢复为保存的默认布局：编辑器内回到草稿（确认后生效），编辑器外立即生效并落盘。无快照/快照失效返回 false */
+function restoreDefaultLayout(): boolean {
+  const parsed = parsePlacements(savedDefaultRaw.value)
+  if (!parsed) return false
+  placements.value = parsed
+  persistIfIdle()
+  return true
+}
+
 function clear() {
   placements.value = []
   persistIfIdle()
@@ -659,6 +709,9 @@ export function useDashboardLayout() {
     setModuleTitle,
     applyPreset,
     clear,
+    saveDefaultLayout,
+    restoreDefaultLayout,
+    hasSavedDefault,
     beginEdit,
     commitEdit,
     cancelEdit,

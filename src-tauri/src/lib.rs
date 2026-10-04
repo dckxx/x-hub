@@ -2,6 +2,7 @@ mod account;
 mod api_spec;
 mod autostart;
 mod browsers;
+mod app_icon;
 mod chat;
 mod chat_window;
 mod clipboard;
@@ -718,6 +719,20 @@ pub fn run() {
                 });
             }
 
+            // 低清图标缓存升级：启动 15s 后一次性后台清扫（逐个串行，IO 前释放 DB 锁）。
+            // 旧 PowerShell 链路只产出 32×32 缓存，高分屏发糊；此处就地重提为 256×256，
+            // 图标路径不变（键 = target 哈希），前端下次挂载/重启即见高清图。
+            {
+                let handle = app.handle().clone();
+                std::thread::Builder::new()
+                    .name("icon-sweep".into())
+                    .spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(15));
+                        commands::sweep_stale_icons(&handle);
+                    })
+                    .ok();
+            }
+
             log::info!("x-hub 启动完成");
             Ok(())
         })
@@ -872,6 +887,14 @@ pub fn run() {
             commands::delete_subcategory,
             commands::reorder_subcategories,
             commands::set_default_subcategory,
+            commands::list_zones,
+            commands::create_zone,
+            commands::rename_zone,
+            commands::delete_zone,
+            commands::reorder_zones,
+            commands::resize_zone,
+            commands::set_resources_zone,
+            commands::reorder_resources_zoned,
             commands::set_suda_web_open_mode,
             commands::get_app_info,
             commands::clipboard_list,

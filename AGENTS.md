@@ -1,6 +1,6 @@
 # x-hub (个人效率工作台)
 
-**生成:** 2026-08-29 | **分支:** master | **版本:** 0.7.5
+**生成:** 2026-08-29 | **分支:** master | **版本:** 0.7.6
 
 ## 概述
 
@@ -15,9 +15,9 @@ x-hub/
 │   ├── App.vue                 # 窗口壳：按 label 路由（main 主窗 / sticky-* 便签浮窗 / countdown-* 倒计时浮窗 / clipboard 剪贴板浮层 / ext-* 扩展浮窗 / prompt-float 提示词浮窗 / todo-float 待办浮窗 / chat AI 对话独立窗 / floating-ball 悬浮球 / notice 通知）
 │   ├── index/index.vue         # 首页：侧栏导航(工作台/待办/速记/速达) + 扩展中心/扩展视图 + 左下角设置入口 + 视图协调 + 三轴主题 + 启动欢迎页
 │   ├── style.css               # 设计令牌（亮/暗色 CSS 变量）+ Tailwind + 通用组件样式
-│   ├── api/tauri.ts            # 所有 Tauri invoke 调用封装（219 个命令）+ 模型/配置类型
+│   ├── api/tauri.ts            # 所有 Tauri invoke 调用封装（227 个命令）+ 模型/配置类型
 │   ├── stores/workbench.ts     # 响应式状态管理（reactive + readonly，无 Pinia；工作台/便签/待办/倒计时/提示词/AI 对话/扩展/更新）
-│   ├── composables/            # useResourceIcon（资源图标）/ useFocusTrap（焦点陷阱）/ useTheme + themeTokens（三轴主题，后者广播给扩展 iframe）/ useDashboardLayout（工作台网格布局 + 形态注册表）/ useDashPreviewData（布局编辑器预览的共享派生数据，口径逐张照抄真卡）/ useExtensionFrame（扩展 webview 桥接）/ useShortcutRecorder（快捷键录制）
+│   ├── composables/            # useResourceIcon（资源图标）/ useFocusTrap（焦点陷阱）/ useTheme + themeTokens（三轴主题，后者广播给扩展 iframe）/ useDashboardLayout（工作台网格布局 + 形态注册表）/ useDashPreviewData（布局编辑器预览的共享派生数据，口径逐张照抄真卡）/ useExtensionFrame（扩展 webview 桥接）/ useShortcutRecorder（快捷键录制）/ useSudaDrag + useSudaZoneDrag（速达卡片排序/分区跨区拖拽，指针实现）
 │   ├── utils/                  # categories（文件分类）/ time / web / error-report / chime（提示音）/ weather（Open-Meteo 天气码映射）/ quotes（本地名言兜底语料）/ todoParse（序号列表拆多条待办）/ lunar（农历转换）/ sudaCustom（工作台自定义速达槽位的内容口径，真卡与编辑器缩印共用）
 │   └── components/
 │       ├── TitleBar.vue        # 透明自制标题栏（startDragging 拖动 + 窗口控制 + AI 对话/搜索入口）
@@ -33,7 +33,7 @@ x-hub/
 │       ├── PromptManageDialog.vue  # 提示词管理弹窗（新增/编辑/删除/置顶）
 │       ├── PromptFloat.vue     # 提示词整列表浮窗（prompt-float label 专属渲染）
 │       ├── TodoCard.vue        # 待办清单（分段视图 + 优先级圆点 + 行内编辑 + 删除撤销；工作台卡片，常驻）
-│       ├── TodoCalendarCard.vue # 工作台「日历」模块：月历上标出待办分布（含周期待办虚拟实例），只读、点整卡进待办视图
+│       ├── TodoCalendarCard.vue # 工作台「日历」模块：月历上标出待办分布（含周期待办虚拟实例），只读、点整卡进待办视图；含未完成逾期待办的日期格淡红底标记（issue #29：格子底色与「今天」边框分通道可叠加，chip 逾期优先防截断埋红，缩印 DashModulePreview 同步同款）
 │       ├── TodoView.vue        # 待办独立视图（宽窗左列表 40% + 右日历 60%，窄窗单栏切换；范围×形态双维工具栏 + 标签筛选 + 月/周日历 + 行渲染复用 TodoRow，异步分包）
 │       ├── TodoEditDialog.vue  # 待办编辑弹层（标题/描述/标签/置顶/周期规则/截止与提醒，一次保存）
 │       ├── TodoDateTimeField.vue # 待办「截止/提醒/周期结束」时刻字段（reka-ui DatePicker + TimeField + 快捷时间，禁原生 datetime-local）
@@ -41,8 +41,8 @@ x-hub/
 │       ├── ConfirmDialog.vue   # 通用确认弹窗（勾父带子 / 删标签 / 删除等二次确认；宿主层单实例）
 │       ├── TodoFloat.vue       # 待办整列表浮窗（todo-float label 专属渲染）
 │       ├── RecentBar.vue       # 最近使用通栏（按 last_launched_at 排序，前 10）
-│       ├── Suda.vue            # 速达资源管理（全部/常用/应用/网页/文件 + 大类小类筛选（ADR 0012）+ 拖拽导入 + 扫描安装应用 + 指定浏览器打开 + 网页应用内打开入口）
-│       ├── SudaFormDialog.vue  # 新增/编辑资源弹窗（app/web/file + 小类选择（各大类一套）+ 文件选择）
+│       ├── Suda.vue            # 速达资源管理（全部/常用/应用/网页/文件 + 大类小类筛选（ADR 0012）+ 「全部」自定义分区（见约定 56）+ 拖拽导入 + 扫描安装应用 + 指定浏览器打开 + 网页应用内打开入口）
+│       ├── SudaFormDialog.vue  # 新增/编辑资源弹窗（app/web/file + 小类选择（各大类一套）+ 分区下拉 + 文件选择）
 │       ├── SudaWebPanel.vue    # 速达网页主窗内嵌面板（ADR 0011：自绘工具栏 + 内容区空白位，子 webview 由 Rust 预创建，见 suda_browser.rs）
 │       ├── BrowserChrome.vue   # 独立应用内浏览器顶栏（suda-web-{i}-chrome label 专属渲染：轻量 tab 条 + 地址栏 + 系统浏览器出口）
 │       ├── SudaScanDialog.vue  # 扫描已安装应用批量导入弹窗
@@ -76,13 +76,14 @@ x-hub/
 ├── src-tauri/                  # Tauri 后端 (Rust)
 │   ├── src/
 │   │   ├── main.rs             # Windows 子系统入口 → app_lib::run()
-│   │   ├── lib.rs              # Tauri Builder：数据库/托盘/快捷键/窗口状态/单实例/数据迁移与恢复/219 命令注册/xhub-note 笔记图片协议/退出停 service
+│   │   ├── lib.rs              # Tauri Builder：数据库/托盘/快捷键/窗口状态/单实例/数据迁移与恢复/227 命令注册/xhub-note 笔记图片协议/退出停 service
 │   │   ├── commands.rs         # Tauri 命令处理函数（资源/笔记/待办/便签/提示词/倒计时/对话/剪贴板/配置/窗口/备份等）
 │   │   ├── models.rs           # Resource/Note/Todo/Sticky/DetachedSticky/Snippet/ClipboardItem/Tag/Countdown/Chat* 结构体
 │   │   ├── db.rs               # rusqlite 数据库初始化与迁移（init_in_memory 仅测试用）
 │   │   ├── config.rs           # 数据根下 app.json 读写（AppConfig 全字段 serde default，字段清单见「注意事项·配置位置」）
 │   │   ├── paths.rs            # 数据根目录解析（标准版 %APPDATA%\x-hub / 便携版 exe\data / 设置自定义迁移）
 │   │   ├── process.rs          # 外部进程启动/URL 打开/本地路径打开（app/web/file）+ UAC 提权
+│   │   ├── app_icon.rs        # 应用图标提取（Shell IShellItemImageFactory 256×256 + IShellLink 解析 .lnk；BGRA 预乘→RGBA 转 PNG，见约定 14）
 │   │   ├── browsers.rs         # 已安装浏览器枚举（注册表 StartMenuInternet）+ open_url_with_browser 指定浏览器打开
 │   │   ├── shortcut.rs         # 全局快捷键注册（主窗 Ctrl+Shift+Space + 剪贴板 Ctrl+`，均可自定义）
 │   │   ├── tray.rs             # 系统托盘（显示/隐藏/退出菜单）
@@ -108,7 +109,7 @@ x-hub/
 │   │   ├── floating_ball.rs    # 桌面悬浮球（预创建透明置顶小窗 + 环形菜单几何 + 贴边半隐/悬停滑出的边缘监视循环，见 ADR 0004）
 │   │   ├── notify.rs           # 右下角自绘通知窗（独立 WebView「notice」，跨 Win10/11 一致；替代 tauri-plugin-notification，前端 NoticeOverlay.vue 渲染卡片）
 │   │   ├── suda_browser.rs     # 速达「应用内打开网页」（ADR 0011）：主窗内嵌面板 child webview + 独立浏览器窗口池×1（2026-09-25 内存优化 4→2→1，全部页面收进 tab；chrome 走轻量入口 chrome.html，chrome/content 双子 webview），启动期预创建、运行期零 build/destroy；tauri `unstable` 特性
-│   │   └── repo/               # 数据访问层：resource, note, todo, sticky, detached_sticky, snippet, tag, countdown, chat, clipboard, subcategory
+│   │   └── repo/               # 数据访问层：resource, note, todo, sticky, detached_sticky, snippet, tag, countdown, chat, clipboard, subcategory, zone
 │   ├── capabilities/default.json  # Tauri 权限声明（含 start-dragging/global-shortcut/dialog/notification）
 │   └── tauri.conf.json         # 窗口配置（无边框、1400x900）
 ├── docs/
@@ -153,14 +154,15 @@ x-hub/
 - **唯一通道：** `@tauri-apps/api/core` → `invoke<ReturnType>('command_name', args)`
 - **类型安全：** 所有 invoke 调用封装在 `src/api/tauri.ts` 的 `tauriApi` 对象中，含完整 TypeScript 类型
 - **环境守卫：** `isTauri()` 检查 `'__TAURI_INTERNALS__' in window`，确保浏览器预览环境不崩溃
-- **命令注册：** `src-tauri/src/lib.rs` 的 `invoke_handler!` 宏列出全部 219 个命令（前端封装一一对应 `src/api/tauri.ts`）
+- **命令注册：** `src-tauri/src/lib.rs` 的 `invoke_handler!` 宏列出全部 227 个命令（前端封装一一对应 `src/api/tauri.ts`）
 
 ## 数据模型（SQLite）
 
 | 表 | 说明 |
 |----|------|
-| `resources` | 速达资源（app/web/file，category=所属大类的小类名（NULL=未归类）/icon/args/sort_order/last_launched_at） |
+| `resources` | 速达资源（app/web/file，category=所属大类的小类名（NULL=未归类）/zone_id=所属分区（NULL=未分区，见约定 56）/icon/args/sort_order/last_launched_at） |
 | `resource_subcategories` | 速达小类（ADR 0012：kind/name/sort_order/is_default，UNIQUE(kind,name) 各大类一套；文件大类 7 内置值经建表种子并入） |
+| `resource_zones` | 速达分区（「全部」tab 自定义成组陈列，name UNIQUE/sort_order/cols·rows 框尺寸（卡片格数，默认 3×2、下限语义），跨大类；成员经 resources.zone_id 关联） |
 | `notes` | 速记笔记（title/content） |
 | `tags` / `note_tags` | 笔记标签（多对多） |
 | `todos` | 待办（done/priority/completed_at/due_at/remind_at/parent_id 子待办/sort_order 手动拖拽排序位/description 轻量 Markdown/pinned 置顶/repeat_* 周期规则 + repeat_done_count 累计次数） |
@@ -188,7 +190,7 @@ x-hub/
 11. **全局快捷键：** **四个**全局快捷键都在 `shortcut.rs` 统一注册、统一分发（v0.7.2 起搜索/AI 对话升级为全局）——主窗显隐默认 Ctrl+Shift+Space、剪贴板浮层默认 Ctrl+`（避开 Ctrl+Shift+V 无格式粘贴）、全局搜索默认 Ctrl+K、AI 对话默认 Ctrl+Shift+K；均可在设置 → 快捷键录制（4 个 recorder 实例共用 `useShortcutRecorder`），失焦/回车自动保存，录制中失焦取消并还原。**分发与改绑各只有一份实现**：`setup()` 的 with_handler 按 config 比对 emit `clipboard-toggle`/`search-shortcut`/`chat-shortcut`/`global-shortcut-toggle`（前两个 Rust 侧 app.listen 处理显隐/浮层，后两个主窗前端监听开弹窗/分流对话形态）；`rebind_shortcut` 承载全部 set_*_shortcut 命令的冲突预检/反注册/注册/回滚。**快捷键可单独禁用（v0.7.4）：`set_shortcut_enabled` 只切开关不动键值（禁用=反注册保留存储值，启用=按当前键值注册，幂等守卫先查 `is_shortcut_registered`）；三道防冲突闸（2026-10-01 修「关掉再开启报快捷键冲突」）：① `set_configured_shortcut` 改键前先做**配置层预检**——其它三个快捷键（无论启用与否）存了同一物理按键就当场拦下并点名（`conflicts_with_other`），禁用态改键不再是无预检的旁路（旧实现允许禁用态存进重复键值、重新启用时注册必然撞车报一句不知所云的「快捷键冲突」）；② 启用时注册失败先**自愈重试**（强反注册再注册一次，对付登记表与系统热键状态失同步的残留）；③ 报错语境化——配置撞车点名「与「搜索」快捷键键值相同」，外部占用明说「可能正被其它程序占用」（启动时注册被别程序占走只落日志，用户关掉再开就会撞上这条）**。**桌面端绝不给搜索/对话再挂应用内 window keydown 监听**——全局热键与 keydown 双触发会让两次 toggle 相互抵消，表现恰是「按了没反应」（keydown 兜底只存在于非 Tauri 预览）；改绑用 `ConfiguredShortcut` 枚举走 `set_configured_shortcut`，别再复制粘贴第四份
 12. **轻提示：** index.vue `provide('showToast')`，子组件 `inject` 使用
 13. **只读 props：** store.state 为 readonly 深度代理，组件 props 用 `readonly Note[]` 等类型
-14. **拖拽导入：** 拖入 exe/lnk/文件夹到窗口 → `onDragDropEvent`（Suda.vue）→ `parse_dropped_path` 命令（.lnk 经 PowerShell COM 解析目标 + System.Drawing 提取图标存 `app_data_dir/icons/`）→ 自动预填资源弹窗；图标经 `convertFileSrc`（assetProtocol 已启用，作用域为**白名单子目录**：icons / wallpapers / clipboard-images，见约定 44）渲染，提取失败回退名称 hash 首字母。注意：该功能依赖 Tauri 原生拖放拦截（`dragDropEnabled` 默认开），它与 WebView2 内 HTML5 拖拽互斥、无运行时开关（tauri 2.11 仅有创建时的 `disable_drag_drop_handler()`）——笔记编辑器块拖拽已改为指针实现绕开（见约定 38），速达原生拖入保持不受影响
+14. **拖拽导入：** 拖入 exe/lnk/文件夹到窗口 → `onDragDropEvent`（Suda.vue）→ `parse_dropped_path` 命令（.lnk 经 IShellLink COM 解析目标）→ 自动预填资源弹窗；图标经 `convertFileSrc`（assetProtocol 已启用，作用域为**白名单子目录**：icons / wallpapers / clipboard-images，见约定 44）渲染，提取失败回退名称 hash 首字母。**图标提取统一走 Rust 原生 `app_icon.rs`（2026-10-03 修「高分屏图标模糊」）**：`IShellItemImageFactory::GetImage(256, SIIGBF_ICONONLY)` 进程内提取（exe/文件夹/任意文件关联图标通吃）→ `GetDIBits` 32bpp 顶朝下 DIB → **BGRA 预乘 → RGBA 直通**（B/R 通道必须换序、预乘 alpha 必须还原、整图 alpha 全 0 按不透明——三个坑各有单测锁住）→ image crate 编码 PNG，存 `数据根/icons/<hash16(target)>.png`；旧 PowerShell `ExtractAssociatedIcon` 链路（只出 32×32，高 DPI 必糊）已全部移除，`.ico` 导入改 image crate 解码自动选最大帧。**缓存键不变（DefaultHasher(target)）**，但判旧按 PNG IHDR 宽度（<64 视为旧 32×32 产物）：拖入/扫描/重导入命中低清缓存就重提，重提失败保留旧图；启动 15s 后 `sweep_stale_icons` 后台一次性清扫存量低清缓存（只动「图标路径 == hash(target).png」的自动提取键，手动导入图标与 favicon 不越权重置，DB 锁在读完全量资源后立即释放）。COM 单元进出沿用 `service.rs::firewall_com` 口径（S_FALSE 也配对 Uninitialize，主线程同步命令安全）。注意：该功能依赖 Tauri 原生拖放拦截（`dragDropEnabled` 默认开），它与 WebView2 内 HTML5 拖拽互斥、无运行时开关（tauri 2.11 仅有创建时的 `disable_drag_drop_handler()`）——笔记编辑器块拖拽已改为指针实现绕开（见约定 38），速达原生拖入保持不受影响
 15. **PowerShell 调用约定：** 一律用**环境变量传参**（`Command::env`）而非 `$args`——实测 `-Command` 模式下 `$args` 不可靠；输出前设 `[Console]::OutputEncoding=UTF8` 防中文乱码
 16. **文件选择：** 已集成 tauri-plugin-dialog（`dialog:allow-open` 权限）；SudaFormDialog 路径/图标输入框右侧有选择按钮，选 exe/lnk 自动解析名称与图标，选图标文件经 `import_icon_file` 存入 icons 目录
 17. **AI 用量：** 已拆分为 service 扩展 `com.x-hub.token-stats`（实时读 opencode 数据库聚合，宿主零 token 代码）；详见 `x-hub-extensions/extensions/com.x-hub.token-stats`。宿主侧旧用量代码（`usage.rs`/TokenStatsCard/用量视图）已全部移除，侧栏无「用量」入口
@@ -201,7 +203,7 @@ x-hub/
 24. **reka-ui Portal 弹层（铁律）：** `DatePickerContent` 等经 Portal 渲染到 `<body>` 后父组件 scoped `data-v` 不传播到容器，容器样式（`z-index`/背景/边框/阴影）全部失效 → 日历被 `modal-mask`(100) 盖住选不到；容器样式必须用 `:global()`，`z-index` 设 110（CountdownCard.vue `.cc-calendar-content` 即此例）
 25. **reka-ui segment 组件（铁律）：** `TimeField`/`DatePickerField` 外层禁止 `<label>` 包裹（segment 是 contenteditable div、非 labelable，label 会激活组件内部隐藏 input → `onFocus` 强制聚焦第一个 segment，表现为点「分」跳「时」）；外层用 `<div class="cc-field">`；`NumberField` 的原生 input 不受影响可继续用 label
 26. **主题三轴系统（v0.1.15）：** 主题 = 模式（light/dark/system，`data-theme`）× 预设（10 单色 `data-preset` + 10 渐变，渐变仅覆盖 `--app-bg` 背景）× 强调色（8 预设 + 自定义 hex，inline `--accent`）。`style.css` 中 `--brand-500` = `var(--accent)`，`--brand-600/50/glow` 均 `color-mix` 派生；实现/读取都在 `composables/useTheme.ts`，配置字段 `theme_mode`/`theme_preset`/`accent_color`（旧 `theme` 字段经 serde alias 自动迁移）
-27. **工作台自由网格布局 + 形态注册表（v0.3.0 引入网格，v0.5.x 形态化）：** 工作台卡片由配置 `dashboard_layout`（JSON 网格坐标，每项含 `variant` 形态字段）驱动，模块目录 + 形态注册表在 `useDashboardLayout.ts`（`DASH_MODULES`，每模块声明多个形态，每形态带 `min` 最小完整尺寸 / `ideal` 推荐尺寸 / 名称）：clock（big/lunar/minimal 三形态）、weather（now/detail）、sysmon / sticky1 / sticky2 / notes / todo_overview / resources / countdown / prompts / todo / calendar / recent 单形态，外加 suda1..suda4「自定义速达」固定槽位（单形态 grid）。**「自定义速达」槽位（suda1..suda4，2026-09-25，同便签 1/2 池子模式）**：内容配置存 `AppConfig.suda_custom_modules`（source = pinned（resource_ids 勾选顺序即展示序，已删资源自动跳过）/ app / web / file / subcategory；前端改 `state.config` 后 saveConfig 整体落盘，无专属命令；**从布局删卡不删配置**，重加同槽位内容还在），内容过滤/排序唯一实现在 `utils/sudaCustom.ts`（真卡 `SudaCustomCard` 与编辑器缩印共用，预览口径铁律），点击条目走 `store.launchResource`（网页打开方式分流 / 最近使用 / last_launched_at 全生效）。**仅真渲染的模块暴露多形态**，其余单形态保持现状。可增删、拖拽、调宽高并持久化；编辑入口为设置 →「布局编辑器」（`DashboardLayoutEditor.vue`，完成后回工作台）。**所见即所得编辑器**：clock/weather 画布内挂载真实组件（`preview` prop 禁交互），其余模块（含扩展 module）与形态浮层缩略图统一走 `components/DashModulePreview.vue`——**逐张复刻真实卡片的 DOM 结构与设计令牌**（卡头 13px/600 + 14px 品牌色 lucide 图标 + 右侧 26px 钮位、概览 `--bg-card-soft` 统计块、待办分组头/圆点/日期徽标、最近使用 42px 图标格……数据全部来自 `useDashPreviewData` 的模块级共享 computed——所有格子只做一次过滤/排序，编辑器在场时按分钟推进时间/农历/倒计时剩余/相对时间，离开即停定时器；无数据即真实卡片空态），尺寸一律写成 `calc(真实px * var(--u))`，`--u = 1px * --dp-k`，`--dp-k` 由编辑器按「画布每列像素 ÷ 真实工作台每列像素」实测注入（ResizeObserver + 窗口宽推算，clamp 0.5~1）；**铁律：预览不许退回纯 cqh 小字号**（旧实现正文只给 2.6cqh ≈ 3px，与真卡 13px 差 3~4 倍，就是「预览不真实、又小又空」的根因），也不许 1:1 原 px（画布格子只有真实的 65%~85%，必然溢出裁字）；形态浮层的缩略框按该形态真实宽高比成形（`aspect-ratio: idealW/idealH`，系数 `thumbK = 62px ÷ 真实卡片宽`），列表只设防超大 DOM 的**软上限**（待办每组 8 / 提示词 12 / 倒计时 8 / 最近使用 20），可见行数由容器 `overflow: hidden` 按格子高度裁切——裁切本身即「这块不够大」的诚实信号；**派生数据的过滤/排序口径必须与对应真卡逐条一致**（待办分组计数取全量而非截断数、倒计时按 `end_at` 升序、速记最近一条按 `updated_at` 降序、最近使用按 `new Date(last_launched_at)` 倒序、今日新增沿用真卡的 `toDateString()` 判定、相对时间与摘要沿用 `NotesOverviewCard` 的 `fmtTime`/`summary`），预览数字或顺序与真卡不符会被用户当成新 bug。画布列间距与卡片圆角与真实工作台取齐（gap 16px / `--radius-lg`），适配状态的彩色描边只在 hover 或开「填充审计」时出现（红=低于最小常显），避免四色边框糊满画布失真；缩放钳制到形态最小尺寸，卡片带适配徽标（绿=正好铺满/黄=紧凑/蓝=弹性空间/红=低于最小自动钳制），⇄ 按钮切换形态（格小于新形态最小自动补足并就近让位）。**容器查询弹性**：ClockCard/WeatherCard 内容用 cq（cqw/cqh）+ clamp 双保险——真实工作台格子（`repeat(N,minmax(0,1fr))` 随窗口缩放）保持现有观感，编辑器缩略按比例缩印（前提：`.dash-cell` 与编辑器 `.le-cell` 均为 `container-type: size`）。老数据无 variant 字段 → 回退 defaultVariant 天然兼容；`dashboard_mid_content` 已废弃不再被 UI 读取（保留在配置结构中向后兼容）。天气模块（WeatherCard）为独立卡片，数据来自 store.state.weather（当前天气，无 7 日预报）；农历用 `utils/lunar.ts` 经典数据表算法（1900–2100，已验证与官方天文历在 1996-10 之后全部一致，更早年份为经典表与天文历的历史差异，今日展示不受影响）
+27. **工作台自由网格布局 + 形态注册表（v0.3.0 引入网格，v0.5.x 形态化）：** 工作台卡片由配置 `dashboard_layout`（JSON 网格坐标，每项含 `variant` 形态字段）驱动，模块目录 + 形态注册表在 `useDashboardLayout.ts`（`DASH_MODULES`，每模块声明多个形态，每形态带 `min` 最小完整尺寸 / `ideal` 推荐尺寸 / 名称）：clock（big/lunar/minimal 三形态）、weather（now/detail）、sysmon / sticky1 / sticky2 / notes / todo_overview / resources / countdown / prompts / todo / calendar / recent 单形态，外加 suda1..suda4「自定义速达」固定槽位（单形态 grid）。**「自定义速达」槽位（suda1..suda4，2026-09-25，同便签 1/2 池子模式）**：内容配置存 `AppConfig.suda_custom_modules`（source = pinned（resource_ids 勾选顺序即展示序，已删资源自动跳过）/ app / web / file / subcategory；前端改 `state.config` 后 saveConfig 整体落盘，无专属命令；**从布局删卡不删配置**，重加同槽位内容还在），内容过滤/排序唯一实现在 `utils/sudaCustom.ts`（真卡 `SudaCustomCard` 与编辑器缩印共用，预览口径铁律），点击条目走 `store.launchResource`（网页打开方式分流 / 最近使用 / last_launched_at 全生效）。**仅真渲染的模块暴露多形态**，其余单形态保持现状。可增删、拖拽、调宽高并持久化；编辑入口为设置 →「布局编辑器」（`DashboardLayoutEditor.vue`，完成后回工作台）。**默认布局快照（`AppConfig.dashboard_default_layout`，独立于生效布局）**：编辑器「存为默认」把画布当前布局（含草稿未确认的改动）立即写入快照、不随「取消」回滚，空布局拒存；「恢复默认」解析快照铺回画布——编辑器内 = 回到草稿（点「确认」生效，取消即放弃），编辑器外（设置 → 工作台「恢复默认布局」按钮）= 立即生效落盘；空串 = 未保存过，两处按钮置灰。**所见即所得编辑器**：clock/weather 画布内挂载真实组件（`preview` prop 禁交互），其余模块（含扩展 module）与形态浮层缩略图统一走 `components/DashModulePreview.vue`——**逐张复刻真实卡片的 DOM 结构与设计令牌**（卡头 13px/600 + 14px 品牌色 lucide 图标 + 右侧 26px 钮位、概览 `--bg-card-soft` 统计块、待办分组头/圆点/日期徽标、最近使用 42px 图标格……数据全部来自 `useDashPreviewData` 的模块级共享 computed——所有格子只做一次过滤/排序，编辑器在场时按分钟推进时间/农历/倒计时剩余/相对时间，离开即停定时器；无数据即真实卡片空态），尺寸一律写成 `calc(真实px * var(--u))`，`--u = 1px * --dp-k`，`--dp-k` 由编辑器按「画布每列像素 ÷ 真实工作台每列像素」实测注入（ResizeObserver + 窗口宽推算，clamp 0.5~1）；**铁律：预览不许退回纯 cqh 小字号**（旧实现正文只给 2.6cqh ≈ 3px，与真卡 13px 差 3~4 倍，就是「预览不真实、又小又空」的根因），也不许 1:1 原 px（画布格子只有真实的 65%~85%，必然溢出裁字）；形态浮层的缩略框按该形态真实宽高比成形（`aspect-ratio: idealW/idealH`，系数 `thumbK = 62px ÷ 真实卡片宽`），列表只设防超大 DOM 的**软上限**（待办每组 8 / 提示词 12 / 倒计时 8 / 最近使用 20），可见行数由容器 `overflow: hidden` 按格子高度裁切——裁切本身即「这块不够大」的诚实信号；**派生数据的过滤/排序口径必须与对应真卡逐条一致**（待办分组计数取全量而非截断数、倒计时按 `end_at` 升序、速记最近一条按 `updated_at` 降序、最近使用按 `new Date(last_launched_at)` 倒序、今日新增沿用真卡的 `toDateString()` 判定、相对时间与摘要沿用 `NotesOverviewCard` 的 `fmtTime`/`summary`），预览数字或顺序与真卡不符会被用户当成新 bug。画布列间距与卡片圆角与真实工作台取齐（gap 16px / `--radius-lg`），适配状态的彩色描边只在 hover 或开「填充审计」时出现（红=低于最小常显），避免四色边框糊满画布失真；缩放钳制到形态最小尺寸，卡片带适配徽标（绿=正好铺满/黄=紧凑/蓝=弹性空间/红=低于最小自动钳制），⇄ 按钮切换形态（格小于新形态最小自动补足并就近让位）。**容器查询弹性**：ClockCard/WeatherCard 内容用 cq（cqw/cqh）+ clamp 双保险——真实工作台格子（`repeat(N,minmax(0,1fr))` 随窗口缩放）保持现有观感，编辑器缩略按比例缩印（前提：`.dash-cell` 与编辑器 `.le-cell` 均为 `container-type: size`）。老数据无 variant 字段 → 回退 defaultVariant 天然兼容；`dashboard_mid_content` 已废弃不再被 UI 读取（保留在配置结构中向后兼容）。天气模块（WeatherCard）为独立卡片，数据来自 store.state.weather（当前天气，无 7 日预报）；农历用 `utils/lunar.ts` 经典数据表算法（1900–2100，已验证与官方天文历在 1996-10 之后全部一致，更早年份为经典表与天文历的历史差异，今日展示不受影响）
 28. **侧栏默认收起（v0.1.15）：** `sidebarCollapsed` 默认 `true`（56px 图标态，hover 出名称气泡）；展开/收起按钮仅在设置开启 `sidebar_toggle` 后出现（默认关闭）；720px 以下强制恢复文字导航
 29. **关于 / 更新日志（v0.1.16，v0.3.0 改版，v0.7.2 再改）：** 设置「关于」区（`AboutSection.vue`）展示版本号 + 开源声明 + 检查更新；**内置「版本历史」折叠列表已移除**，改为「版本历史 → GitHub Releases」跳转（`tauriApi.openExternal` 打开 `https://github.com/dckxx/x-hub/releases`）。版本号运行时读 `app.package_info().version`（随 `tauri.conf.json` 烘焙），README badge 是文档侧唯一真相。升级提醒已改走**应用自动更新**链路（见约定 35：updater.rs 静默检查 + UpdateCheckDialog 弹窗），旧 `check_whats_new`/`whats_new_enabled`/`last_seen_version` 机制已移除。**v0.7.2 起版本历史不再打包进二进制**：`about.rs`（`include_str! RELEASE_NOTES` + `version_sections()`/`latest_section()`）已删除，`get_app_info` 只返回 `version`（exe 去重几十 KB）。RELEASE_NOTES 仍为累积式单一数据源：每发版在顶部新增一节 `# vX.Y.Z 发布说明`，客户端不再解析它；v0.7.2 起 `publish-release.ps1` 的 `-Notes` 缺省自动取该最新一节的完整文本写进 update.json.notes（客户端弹窗全量展示、可滚动），不再手写摘要
 30. **优先复用现成组件：** 需要下拉选择、弹窗、输入等交互控件时，先查 `src/components/` 已有通用组件（如 `AppSelect.vue` 下拉选择器、`ContextMenu.vue` 右键菜单、`useFocusTrap` 焦点陷阱），优先复用而非新写原生控件（如原生 `<select>`）——保证交互与视觉一致、避免样式重复（反例：设置「粘贴方式」曾用原生 `<select>` 加 `min-width` 撑宽，应改用 `AppSelect`）
@@ -262,6 +264,7 @@ x-hub/
 
 68. **capability 的 `windows` 字段匹配的是窗口 label，多 webview 窗口的子 webview 必须用 `webviews` 字段（2026-09-26 实测）：** Tauri v2 ACL 的 `resolve_access` 按「webview label 匹配 capability 的 `webviews` 模式 ∨ **窗口** label 匹配 `windows` 模式」放行插件命令（应用自身的 `#[tauri::command]` 不经此门）。速达独立浏览器是唯一的多 webview 窗口（window `suda-web-0` + 子 webview `suda-web-0-chrome`/`-content`），曾把 `suda-web-*-chrome` 写进 `windows` 数组——它永远匹配不上窗口 label `suda-web-0`，而 capability 又没声明 `webviews`，结果 chrome 页的 `plugin:event|listen` 被 ACL 拒绝：`listen()` reject → `onMounted` 在第一个 `await listen` 处静默中断 → 后续监听全部没注册 → chrome 页永远收不到 tab/地址栏同步事件，独立窗口打开网页永远显示「此窗口当前没有打开的页面」空态（挂载时的 `suda_browser_state` 拉取能成功是因为应用命令不走 ACL，反而把症状捂严实了：只有 chrome 页恰好晚于首次打开挂载时才会被拉取掩盖成「正常」）。修复：capability 拆成 `windows`（原样，不含 suda）+ `"webviews": ["suda-web-*-chrome"]`——content 子 webview 两边都匹配不上，维持「外站页面零 IPC」铁律（约定 44 的 capabilities 口径）。**今后给多 webview 窗口的子 webview 配权限一律用 `webviews` 字段**；症状自查：怀疑权限问题时在目标 webview 里 `listen('x', () => {})` 看是否报 `not allowed on window ...`（错误信息里「allowed on」列表会把 capability 的 windows 模式全列出来，对照窗口 label 一眼定位）。改动 capability 后 `tauri dev` 会自动重编译重启（capability 编译期烘进二进制）。
 69. **速达唤起已运行程序：候选窗只认「可见（含最小化）」，托盘隐藏窗一律走重启 exe 的单实例唤起（2026-09-29 微信/WorkBuddy 两轮实测定稿）：** `process.rs::focus_windows_of` 负责在目标进程的顶层窗口里挑主窗拉前台。铁律是**隐藏窗口绝不能被外部 `SW_SHOW` 拉起**——应用内部仍认为窗口是隐藏的，外部拉起只会得到一个不可用的空壳：微信 4.x（Qt）拉起后**点击无响应**，Electron 系（WorkBuddy）拉起后**停留在隐藏前的最后一帧不再重绘**（用户看到一片空白）。正确路径：候选窗必须 `IsWindowVisible`（最小化窗口该位仍置位，照常 SW_RESTORE 还原）；进程在跑但窗口全隐藏（托盘挂后台）→ `activate_existing` 返回 false → 调用方照常 `launch_program`，托盘类应用自带的单实例逻辑会把主窗正规唤起（微信：重启后主窗正常出现；WorkBuddy：同 hwnd 窗口内容正常恢复，均实测）。**演化史（勿走回头路）**：第一轮修复曾用「chrome 位过滤」（隐藏窗须带 `WS_SYSMENU`/`WS_THICKFRAME` 等）挡掉微信的托盘消息窗 `WxTrayIconMessageWindow`（带标题、1440×753 比真主窗还大、style 仅 CAPTION，旧打分「面积+非工具窗」下会反超真主窗被拉成白窗）——幽灵窗确实修掉了，但真主窗被外部拉起后依然点不动/空白，证明该路本身不可行，遂收紧为仅可见候选、过滤删除。回归测试 `focus_candidate_rejects_hidden_windows` 用两应用实测值锁住「隐藏一律非候选」；1a119b4「托盘隐藏主窗也能调度到前台」的能力即由此撤销。已知代价：无单实例逻辑、又靠第三方工具（如 RBTray）把窗口藏进托盘的应用，点速达会开出第二个实例——可接受（此类组合罕见，且旧行为在主流托盘应用上必坏）。
+70. **速达分区是独立于小类的正交分组维度（2026-10-03 实施）：** 「全部」tab 的自定义成组陈列（「办公区」「影音区」……），数据层 = `resource_zones` 表（name UNIQUE / sort_order，无 kind 维度无层级）+ `resources.zone_id`（NULL = 未分区，ALTER 幂等迁移）；**与小类（ADR 0012）完全正交**——分区跨大类混居、只管「全部」的视觉分组，小类仍归应用/网页/文件 tab 的筛选 chips，互不级联、互不感知。设计时明确否决过「分区复用 category」：自动归默认小类的资源会自己跑进分区、category↔分区多对多歧义、「有分类却在未分区」的语义混乱。口径六条：① **一个分区都没建 → 「全部」保持平铺**，行为与功能引入前逐字节一致；「未分区」块恒在尾部、不可改名/删除/排序，兼作「拖出分区」的落点（含空态也渲染）；② **拖拽是双 composable 按模式路由**：平铺/kind tab 走 `useSudaDrag`（只写全表 sort_order），分区模式走 `useSudaZoneDrag`（跨区拖 = 改 zone_id + 插入序，经 `reorder_resources_zoned` **单命令单事务原子写**——entries 顺序即全表新 sort_order、每项携带目标分区，绝不拆成「改归属」「重排序」两次写）；③ 分区模式下「全部」拖拽重排全局 sort_order，应用/网页/文件 tab 的相对顺序随之变化——与平铺拖拽同款行为，非新增破坏；④ 分区管理全内联在速达页（tabs 行「＋ 分区」按钮自动命名 + 建完立即行内改名；分区头双击/⋯ 菜单/右键 改名/上移/下移/删除；**拖分区头排序是「移动即拖」**——头部不是启动目标，无需卡片那套 300ms 长按区分）；⑤ 删分区成员落未分区，带 toast 撤销（快照分区定义 + 成员 id + 原位次，撤销 = 重建 + 插回原位 + `set_resources_zone` 批量恢复）；⑥ 批量管理模式禁用全部分区拖拽（同卡片拖拽）。**⚠️ `update_resource` 是全对象写**：前端所有 `editResource` 调用必须带上当前 `zoneId`，漏传 = 归属被抹成未分区（`fillWebFavicons` 的图标回填曾是最易漏的点）；资源删除撤销同理要带（且按「分区仍存在」兜底）。桥 API：`Resource.zone_id` 随模型免费出现在 list/get/create/update 响应里，create/update 接受 `zoneId`（缺省 = 未分区），**未加 `zones.*` CRUD 能力**（扩展改不了宿主视图，建分区的场景暂不存在）。分区术语（分区/未分区 vs 小类/未归类的辨析）见 CONTEXT.md「速达」节。**分区框尺寸（2026-10-04 补）**：`resource_zones.cols/rows`（卡片格数，新建默认 3×2，`resize_zone` 命令校验 1..=12）——**吸附与下限两条铁律**：右下角把手拖动按整卡格吸附（宽度只可能是整卡数，吸附公式 `round((px+gap)/(cell+gap))`，卡 124/行 100/距 10 三个常量在 `onZoneResizeDown` 与 `.suda-zone-grid` 的 CSS 里**两处同步**）；cols/rows 是**下限占位**（空框保持设定大小、min-height 兜底），内容超出时 `grid-auto-rows` 按行自然生长 = 自动膨胀，宽度永不自动变。分区框宽 `fit-content`（不整行铺满），未分区块整行宽、**无填充膜 + 虚线描边**（透亮且与实底分区区分，拖入时品牌高亮照常）。**横向流式排列（2026-10-04 二次调整）**：分区块在 `.suda-zone-flow`（flex-wrap，gap 14）里**横向并排、放不下换行，新建分区往右边长**（尾部追加即落右侧）；「未分区」与平铺块 `width: 100%` 独占整行。连锁三处口径：卡片拖拽的**落点命中是二维的**（矩形包含优先，间隙归平面上最近块，`useSudaZoneDrag::updateDrop`）；分区头拖拽的插入位按「同行比左右、异行比上下」推（`updateZoneDrop`），插入指示线为**竖线**（align-self: stretch 随行高拉伸）；分区头**起拖阈值必须取二维位移**（纯横向拖动也要武装）。
 
 ## 命令速查
 

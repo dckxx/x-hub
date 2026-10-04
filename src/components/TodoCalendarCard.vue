@@ -190,24 +190,33 @@ const chipsByDay = computed(() => {
 }
 .tc-header {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 6px;
   margin-bottom: 6px;
 }
 .tc-title {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
   margin: 0;
   font-size: 0.8125rem;
   font-weight: 600;
+  white-space: nowrap;
   color: var(--text-1);
 }
+.tc-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tc-title :deep(svg) {
+  flex-shrink: 0;
   color: var(--brand-500);
 }
 .tc-month {
   font-size: 0.6875rem;
+  white-space: nowrap;
   color: var(--text-3);
 }
 .tc-spacer {
@@ -219,6 +228,7 @@ const chipsByDay = computed(() => {
   justify-content: center;
   width: 22px;
   height: 22px;
+  flex-shrink: 0;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -237,16 +247,18 @@ const chipsByDay = computed(() => {
   min-height: 0;
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  grid-auto-rows: minmax(0, 1fr);
+  grid-template-rows: 14px repeat(6, minmax(0, 1fr));
   gap: 2px;
 }
 .tc-dow {
   font-size: 0.5625rem;
+  line-height: 14px;
   font-weight: 700;
   color: var(--text-4);
   text-align: center;
 }
 .tc-cell {
+  min-width: 0;
   min-height: 0;
   padding: 2px 3px;
   border: 1px solid var(--border-soft);
@@ -261,7 +273,10 @@ const chipsByDay = computed(() => {
   border-color: var(--brand-500);
 }
 .tc-day {
+  /* 独立行盒避免继承正文行高，紧凑格子也能容纳完整日期。 */
+  display: block;
   font-size: 0.5625rem;
+  line-height: 12px;
   color: var(--text-4);
   font-variant-numeric: tabular-nums;
 }
@@ -302,5 +317,30 @@ const chipsByDay = computed(() => {
 .tc-more-cnt {
   font-size: 0.5rem;
   color: var(--text-4);
+}
+/* 宿主 .dash-cell 已提供尺寸容器；窄卡片将月份放到第二行。
+ * 隐藏标题时沿用悬浮工具栏，避免改变其定位与交互。 */
+@container (max-width: 320px) {
+  .tc-header:not(.hd-float) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 22px 22px;
+    row-gap: 2px;
+  }
+  .tc-header:not(.hd-float) .tc-title {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .tc-header:not(.hd-float) .tc-month {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    line-height: 14px;
+  }
+  .tc-header:not(.hd-float) .tc-nav {
+    grid-row: 1;
+  }
+  .tc-header:not(.hd-float) .tc-spacer,
+  .tc-header:not(.hd-float) .tc-more {
+    display: none;
+  }
 }
 </style>

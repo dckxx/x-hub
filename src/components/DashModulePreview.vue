@@ -587,16 +587,19 @@ const kind = computed(() => {
   min-height: 0;
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  grid-auto-rows: minmax(0, 1fr);
+  grid-template-rows: calc(14 * var(--u)) repeat(6, minmax(0, 1fr));
   gap: calc(2 * var(--u));
 }
 .cal-dow {
   font-size: calc(9 * var(--u));
+  line-height: calc(14 * var(--u));
   font-weight: 700;
   color: var(--text-4);
   text-align: center;
 }
 .cal-cell {
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -616,7 +619,9 @@ const kind = computed(() => {
   border-color: var(--brand-500);
 }
 .cal-day {
+  flex-shrink: 0;
   font-size: calc(9 * var(--u));
+  line-height: calc(12 * var(--u));
   color: var(--text-4);
   font-variant-numeric: tabular-nums;
 }

@@ -12,10 +12,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           # 24：下面的 test:utils 用 node --test 直接加载 .ts 源码（原生类型剥离），
           # Node 20 不支持、会 ERR_UNKNOWN_FILE_EXTENSION。构建产物不受影响（release.yml 仍走 20）

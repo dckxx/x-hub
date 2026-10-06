@@ -14,15 +14,17 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # 完整历史 + tags：release 正文优先取 RELEASE_NOTES.md 对应段落，
           # 段落缺失时回退读 tag annotation（需要 tag 对象在本地）
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
+          # 构建用的 Node 与 action 自身运行时是两回事：这里 20 够用（前端只跑 vue-tsc + vite build），
+          # 真正依赖 Node 24 的 test:utils 只在 CI 跑。除非构建报错，不必跟着升
           node-version: 20
           cache: npm
 
@@ -82,7 +84,7 @@ jobs:
           }
 
       - name: Upload win-x64 zip
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           # ⚠️ 参数名是 `name`，不是 `release_name`（写错会被静默忽略，标题退回 tag 名 vX.Y.Z；

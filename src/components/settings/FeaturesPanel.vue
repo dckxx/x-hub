@@ -40,12 +40,14 @@ const chatWindowMode = computed(() => !!store.state.config.chat_window_mode)
 const SUDA_OPEN_MODE_OPTIONS = [
   { value: 'panel', label: '内嵌面板（主窗口内）' },
   { value: 'window', label: '独立浏览器窗口' },
+  { value: 'system', label: '系统默认浏览器' },
 ]
-const sudaWebOpenMode = computed(() =>
-  store.state.config.suda_web_open_mode === 'window' ? 'window' : 'panel',
-)
+const sudaWebOpenMode = computed(() => {
+  const mode = store.state.config.suda_web_open_mode
+  return mode === 'window' || mode === 'system' ? mode : 'panel'
+})
 function onSudaOpenModeChange(v: string | number) {
-  void store.setSudaWebOpenMode(v === 'window' ? 'window' : 'panel')
+  void store.setSudaWebOpenMode(v === 'window' || v === 'system' ? v : 'panel')
 }
 
 async function onToggleSudaPanelToolbar() {
@@ -249,7 +251,7 @@ onMounted(() => {
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">网页默认打开方式</span>
-              <span class="setting-desc">点击网页条目时的打开位置：内嵌面板在主窗口右侧视图打开（轻量、单页），独立浏览器窗口支持多标签与同地址复用；右键菜单可临时换另一种方式</span>
+              <span class="setting-desc">点击网页条目时的打开位置：内嵌面板在主窗口右侧视图打开（轻量、单页），独立浏览器窗口支持多标签与同地址复用，系统默认浏览器交由 Windows 按系统设置打开；右键菜单可临时换其它方式</span>
             </div>
             <AppSelect
               :model-value="sudaWebOpenMode"

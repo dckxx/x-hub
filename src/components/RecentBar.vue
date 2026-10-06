@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
-import { ArrowRight, Flame, Globe } from 'lucide-vue-next'
+import { Flame, Globe } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Resource } from '../api/tauri'
 import { iconSrc, accentOf, useResourceIcon } from '../composables/useResourceIcon'
@@ -16,7 +16,9 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
   () => {},
 )
 
-// ---- 尺寸自适应：卡片固定 72px、间距 10px，按容器实际宽×高算能放几张就显示几张 ----
+// ---- 尺寸自适应：卡片最小宽 72px、间距 10px，按容器实际宽×高算能放几张就显示几张 ----
+// 列数公式与 .rb-body 的 repeat(auto-fill, minmax(72px, 1fr)) 一致（auto-fill 按 min 计数），
+// 富余宽度由 1fr 均摊进每张卡——任意窗口宽度下整行铺满，不再固定 72px 除不尽留行尾空格；
 // 窄格（如 3×1）只显示一行几个；格子加高变宽后自动换行、按行数多显示（3×3 = 3 列 × 3 行）
 const CHIP_W = 72
 const CHIP_H = 80
@@ -75,20 +77,11 @@ async function onOpen(r: Resource) {
 
 <template>
   <section class="card recent-bar" :aria-label="title ?? '最近使用'">
-    <header class="rb-header" :class="{ 'hd-float': hideTitle }">
-      <h3 v-if="!hideTitle" class="rb-title">
+    <header v-if="!hideTitle" class="rb-header">
+      <h3 class="rb-title">
         <Flame :size="14" :stroke-width="2" aria-hidden="true" />
         <span>{{ title ?? '最近使用' }}</span>
       </h3>
-      <button
-        class="rb-more"
-        type="button"
-        title="全部速达"
-        aria-label="全部速达"
-        @click="emit('goSuda')"
-      >
-        <ArrowRight :size="14" :stroke-width="2" aria-hidden="true" />
-      </button>
     </header>
 
     <div v-if="recent.length" ref="bodyRef" class="rb-body">
@@ -150,13 +143,8 @@ async function onOpen(r: Resource) {
   min-height: 0;
 }
 .rb-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
   margin-bottom: 8px;
 }
-/* 关闭标题：表头整条不占位，动作按钮由全局 .hd-float 悬浮在卡片右上角（见 style.css） */
 .rb-title {
   display: flex;
   align-items: center;
@@ -170,29 +158,14 @@ async function onOpen(r: Resource) {
 .rb-title :deep(svg) {
   color: var(--brand-500);
 }
-.rb-more {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-3);
-  cursor: pointer;
-  transition: background 0.18s, color 0.18s;
-}
-.rb-more:hover {
-  background: var(--bg-card-soft);
-  color: var(--brand-500);
-}
 .rb-body {
   flex: 1;
   min-height: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-content: flex-start;
+  /* auto-fill 按 minmax 下限 72px 计列数（与上方 JS 公式一致），富余宽度经 1fr 均摊进每卡，
+     任意容器宽下整行铺满；行高固定 80px 与 recomputeVisible 的行数口径一致 */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  grid-auto-rows: 80px;
   gap: 10px;
   /* 格子放不下时滚动兜底，而不是把换行后的图标静默裁掉 */
   overflow-y: auto;
@@ -200,8 +173,7 @@ async function onOpen(r: Resource) {
   padding-bottom: 2px;
 }
 .rb-card {
-  flex-shrink: 0;
-  width: 72px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;

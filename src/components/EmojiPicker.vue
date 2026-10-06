@@ -207,6 +207,9 @@ onBeforeUnmount(() => {
 .ep-card {
   width: 384px;
   padding: 14px 16px 16px;
+  /* 背景与斜杠呼出菜单统一：同为 --input-bg 烟玻璃（modal-card 默认是实底 --bg-card-solid，
+     两个入口紧挨着用，底色不一致观感割裂，用户反馈已对齐） */
+  background: var(--input-bg);
 }
 
 .ep-head {

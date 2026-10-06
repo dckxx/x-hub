@@ -5,11 +5,19 @@
 //! 高分屏上必然发糊。本模块改走 Shell 原生 COM，进程内提取、不再起子进程：
 //! - 图标：`IShellItemImageFactory::GetImage(256, SIIGBF_ICONONLY)`——Shell 的标准
 //!   取图标入口，exe / dll / 文件夹 / 任意文件的关联图标都能取；现代应用自带
-//!   256×256 帧原样返回，老程序最大帧不足 256 时由 Shell 缩放补足（观感不劣于
-//!   浏览器放大 32px 源，只会更好）；
+//!   256×256 帧原样返回。⚠️ **老程序最大帧不足 256 时 Shell 不做放大**：把最大帧
+//!   原尺寸居中垫进 256 画布，空位是未初始化的半透明 alpha 垃圾（2026-10-05 修
+//!   「速达扫描出的图标变小/像损坏」实测：Cheat Engine 48 帧垫进 256 画布，字形
+//!   不透明像素恒为 934 个不随请求尺寸变、垃圾半透明像素随画布增大 164→5172——
+//!   「变小」即 48px 字形被 256 画布稀释成 ~19%，「像损坏」即垃圾 alpha 经预乘
+//!   还原成深色鬼影）。补偿见下方「小帧垫图补偿」；
 //! - `.lnk` 目标解析：`IShellLinkW` + `IPersistFile`，替代 PowerShell WScript.Shell
 //!   ——拖入导入不再为取个目标路径单独起一个 PowerShell（省约 300–500ms）；
 //! - 位图落地：HBITMAP → `GetDIBits` 32bpp 顶朝下 → 预乘 alpha 还原 → `image` 编码 PNG。
+//! - 小帧垫图补偿：256 请求命中垫图时（墨迹包围盒不足画布一半，见 `padded_retry_size`），
+//!   按墨迹档位（snap 到 16/24/32/48/64/96/128/256）再提一次——按帧尺寸请求时画布
+//!   即被字形铺满（实测 48 帧程序请求 48 得 45×47 墨迹满幅），垫图垃圾也随之消失；
+//!   重提仅在「墨迹占比确实变好」时采纳，防稀疏设计的大帧图标被误伤。
 //!
 //! COM 单元进出沿用 `service.rs::firewall_com` 的口径：`CoInitializeEx` 回 S_FALSE
 //! （线程已初始化为同一单元）也配对 `CoUninitialize`，`RPC_E_CHANGED_MODE`（线程
@@ -20,7 +28,71 @@
 #[cfg(target_os = "windows")]
 const ICON_SIZE: i32 = 256;
 
-/// 提取程序/文件图标为 PNG 字节（Shell 关联图标，256×256）。
+/// 墨迹判定阈值（alpha）：小帧垫图的空位垃圾实测 alpha ≤ 77、真字形核心 > 200，
+/// 取偏高居中的 160 分离两者（偏取高值防个别源的垫图垃圾更「实」串进墨迹）。
+/// 垫图垃圾与本阈值是 `ink_box`/`icon_png_padded` 能识别鬼影缓存的前提，勿调低。
+const INK_ALPHA: u8 = 160;
+
+/// 墨迹包围盒任一边不足画布对应边此比例 → 判定「小帧居中垫图」，按档位重提。
+/// 正常满幅图标的字形墨迹占画布 ~85-100%（含图标自带的内边距），0.5 留足裕量。
+const PADDED_INK_RATIO: f64 = 0.5;
+
+/// 垫图重提的尺寸档位（图标系统的原生帧尺寸）：吸附档位后请求恰为帧尺寸，
+/// Shell 直接返回原生帧铺满画布，避免对帧做二次缩放。
+const SNAP_SIZES: [u32; 8] = [16, 24, 32, 48, 64, 96, 128, 256];
+
+/// 在 RGBA/BGRA 像素缓冲上计算墨迹（alpha ≥ INK_ALPHA）的包围盒，返回
+/// (x, y, w, h)。alpha 在两种字节序下都在每像素第 4 字节。无墨迹返回 None。
+fn ink_box(w: u32, h: u32, buf: &[u8]) -> Option<(u32, u32, u32, u32)> {
+    let (mut minx, mut miny, mut maxx, mut maxy) = (w, h, 0u32, 0u32);
+    for y in 0..h {
+        for x in 0..w {
+            if buf[(y * w + x) as usize * 4 + 3] >= INK_ALPHA {
+                minx = minx.min(x);
+                maxx = maxx.max(x);
+                miny = miny.min(y);
+                maxy = maxy.max(y);
+            }
+        }
+    }
+    if maxx < minx {
+        return None;
+    }
+    Some((minx, miny, maxx - minx + 1, maxy - miny + 1))
+}
+
+/// 墨迹最长边占画布最长边的比例（无墨迹记 0）：垫图判定与「重提是否更优」共用。
+fn ink_fill_ratio(w: u32, h: u32, buf: &[u8]) -> f64 {
+    match ink_box(w, h, buf) {
+        Some((_, _, iw, ih)) => iw.max(ih) as f64 / w.max(h) as f64,
+        None => 0.0,
+    }
+}
+
+/// 吸附到 ≥ n 的最小档位（n 超出 256 按 256——上游画布守卫已限制到 ≤512）
+fn snap_up(n: u32) -> u32 {
+    SNAP_SIZES
+        .iter()
+        .copied()
+        .find(|s| *s >= n)
+        .unwrap_or(SNAP_SIZES[SNAP_SIZES.len() - 1])
+}
+
+/// 判定 DIB 是否「小帧居中垫图」并给出重提尺寸：墨迹任一边不足画布一半 → 视为
+/// 垫图，按墨迹最长边吸附档位重提（按帧尺寸请求画布即被字形铺满）。非垫图或
+/// 无墨迹（全透明等，交由既有 opaque 兜底口径）返回 None。纯函数，单测锁定。
+fn padded_retry_size(w: u32, h: u32, buf: &[u8]) -> Option<i32> {
+    let (_, _, iw, ih) = ink_box(w, h, buf)?;
+    let m = iw.max(ih);
+    if (m as f64) < PADDED_INK_RATIO * (w.max(h) as f64) {
+        Some(snap_up(m) as i32)
+    } else {
+        None
+    }
+}
+
+/// 提取程序/文件图标为 PNG 字节（Shell 关联图标；有 256 帧的程序得 256×256，
+/// 最大帧不足的程序得按帧尺寸的紧凑画布——见模块文档「小帧垫图补偿」）。
 /// 任何失败返回 None——图标是锦上添花，调用方回退旧缓存或名称首字母。
 #[cfg(target_os = "windows")]
 pub fn extract_icon_png(path: &str) -> Option<Vec<u8>> {
@@ -38,20 +110,41 @@ pub fn extract_icon_png(path: &str) -> Option<Vec<u8>> {
     let out = (|| {
         let factory: IShellItemImageFactory =
             unsafe { SHCreateItemFromParsingName(&HSTRING::from(path), None).ok()? };
-        let hbm = unsafe {
-            factory
-                .GetImage(
-                    SIZE {
-                        cx: ICON_SIZE,
-                        cy: ICON_SIZE,
-                    },
-                    SIIGBF_ICONONLY,
-                )
-                .ok()?
+        let get = |size: i32| unsafe {
+            factory.GetImage(
+                SIZE { cx: size, cy: size },
+                SIIGBF_ICONONLY,
+            )
         };
-        let png = unsafe { hbitmap_to_png(hbm) };
+        let hbm = get(ICON_SIZE).ok()?;
+        let mut chosen = unsafe { hbitmap_to_dib(hbm) };
+        // 小帧垫图补偿：256 请求垫回的是「原尺寸居中 + 半透明垃圾」的鬼影图，
+        // 按墨迹档位重提一次；仅在墨迹占比确实变好时采纳（稀疏设计的大帧图标
+        // 按比例缩放后墨迹占比不变，不采纳、保留原 256 产物）。
+        if let Some((buf, w, h)) = chosen.as_ref() {
+            let base_ratio = ink_fill_ratio(*w, *h, buf);
+            if let Some(size) = padded_retry_size(*w, *h, buf) {
+                if let Ok(hbm2) = get(size) {
+                    let retry = unsafe { hbitmap_to_dib(hbm2) };
+                    let _ = unsafe { DeleteObject(hbm2.into()) };
+                    if retry
+                        .as_ref()
+                        .map(|(b, w, h)| ink_fill_ratio(*w, *h, b) > base_ratio)
+                        .unwrap_or(false)
+                    {
+                        chosen = retry;
+                    }
+                }
+            }
+        }
         let _ = unsafe { DeleteObject(hbm.into()) };
-        png
+        let (mut buf, w, h) = chosen?;
+        bgra_premul_to_rgba(&mut buf);
+        let img = image::RgbaImage::from_raw(w, h, buf)?;
+        let mut png = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .ok()?;
+        Some(png)
     })();
     if entered {
         unsafe { CoUninitialize() };
@@ -96,8 +189,12 @@ pub fn resolve_lnk_target(lnk_path: &str) -> Result<String, String> {
     out
 }
 
+/// HBITMAP → 32bpp 顶朝下 DIB 原始字节（BGRA 预乘，未做任何 alpha 处理）+ 尺寸。
+/// GetImage 按 256 请求，异常超大位图（串到缩略图等）直接放弃。
 #[cfg(target_os = "windows")]
-unsafe fn hbitmap_to_png(hbm: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<Vec<u8>> {
+unsafe fn hbitmap_to_dib(
+    hbm: windows::Win32::Graphics::Gdi::HBITMAP,
+) -> Option<(Vec<u8>, u32, u32)> {
     use windows::Win32::Graphics::Gdi::{
         GetDC, GetDIBits, GetObjectW, ReleaseDC, BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER,
         DIB_RGB_COLORS,
@@ -113,7 +210,6 @@ unsafe fn hbitmap_to_png(hbm: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<
         return None;
     }
     let (w, h) = (bm.bmWidth.unsigned_abs(), bm.bmHeight.unsigned_abs());
-    // GetImage 按 256 请求，异常超大位图（串到缩略图等）直接放弃
     if w == 0 || h == 0 || w > 512 || h > 512 {
         return None;
     }
@@ -146,13 +242,23 @@ unsafe fn hbitmap_to_png(hbm: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<
     if !ok {
         return None;
     }
+    Some((buf, w, h))
+}
 
-    bgra_premul_to_rgba(&mut buf);
-    let img = image::RgbaImage::from_raw(w, h, buf)?;
-    let mut png = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .ok()?;
-    Some(png)
+/// 判定已落盘的图标缓存是否为「小帧居中垫图」劣化产物（画布宽达标、字形墨迹却
+/// 只占中间一小块）：缓存判旧/清扫用——v0.7.6 引入的鬼影缓存宽度就是 256，按
+/// 宽度判旧永远抓不到，必须解码看墨迹。解码失败也按垫图处理（让调用方重提自愈）；
+/// 无墨迹（全透明等异常）不按垫图处理，交由各口径自行兜底。
+pub fn icon_png_padded(path: &std::path::Path) -> bool {
+    let Ok(img) = image::open(path) else {
+        return true;
+    };
+    let rgba = img.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    match ink_box(w, h, rgba.as_raw()) {
+        Some((_, _, iw, ih)) => (iw.max(ih) as f64) < PADDED_INK_RATIO * (w.max(h) as f64),
+        None => false,
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -243,6 +349,88 @@ mod tests {
         std::fs::write(&p2, b"not a png at all").unwrap();
         assert_eq!(png_width(&p2), None);
         assert_eq!(png_width(&dir.path().join("absent.png")), None);
+    }
+
+    /// 小帧垫图判定的口径锁定（实测病灶形态的合成复刻）：
+    /// 256 画布正中 47px 实心字形 + 四周 alpha 70 垫图垃圾（实测 Cheat Engine 48 帧
+    /// 垫进 256 画布：字形不透明、垃圾 alpha 26~77）→ 判垫图、按档位重提 48。
+    #[test]
+    fn ink_box_and_retry_size() {
+        let (w, h) = (256u32, 256u32);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        for y in 104..151 {
+            for x in 104..151 {
+                buf[(y * w + x) as usize * 4 + 3] = 255;
+            }
+        }
+        // 四角垫图垃圾（alpha 70 < INK_ALPHA，不得计入墨迹）
+        buf[3] = 70;
+        buf[((w - 1) as usize) * 4 + 3] = 70;
+        let last = ((h - 1) * w + w - 1) as usize * 4 + 3;
+        buf[last] = 70;
+        assert_eq!(ink_box(w, h, &buf), Some((104, 104, 47, 47)));
+        assert_eq!(padded_retry_size(w, h, &buf), Some(48));
+
+        // 满幅字形 → 不重提
+        for px in buf.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        assert_eq!(padded_retry_size(w, h, &buf), None);
+
+        // 无墨迹（全透明）→ 不重提，交由全透明→不透明的既有兜底
+        for px in buf.chunks_exact_mut(4) {
+            px[3] = 0;
+        }
+        assert_eq!(ink_box(w, h, &buf), None);
+        assert_eq!(padded_retry_size(w, h, &buf), None);
+        assert_eq!(ink_fill_ratio(w, h, &buf), 0.0);
+    }
+
+    #[test]
+    fn snap_up_buckets() {
+        assert_eq!(snap_up(10), 16);
+        assert_eq!(snap_up(16), 16);
+        assert_eq!(snap_up(17), 24);
+        assert_eq!(snap_up(33), 48);
+        assert_eq!(snap_up(47), 48);
+        assert_eq!(snap_up(48), 48);
+        assert_eq!(snap_up(127), 128);
+        assert_eq!(snap_up(200), 256);
+        assert_eq!(snap_up(300), 256);
+    }
+
+    /// 落盘鬼影缓存的识别口径：256 宽垫图 → true；满幅/无墨迹/非 PNG 各归其位
+    #[test]
+    fn padded_png_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        // 垫图形态：256 画布中间 45px 方块
+        let mut img = image::RgbaImage::from_raw(256, 256, vec![0u8; 256 * 256 * 4]).unwrap();
+        for y in 100..145 {
+            for x in 100..145 {
+                img.put_pixel(x, y, image::Rgba([10, 20, 30, 255]));
+            }
+        }
+        let p = dir.path().join("padded.png");
+        img.save(&p).unwrap();
+        assert!(icon_png_padded(&p));
+
+        // 正常满幅 → false
+        let mut full = vec![0u8; 256 * 256 * 4];
+        for px in full.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        let p2 = dir.path().join("full.png");
+        image::RgbaImage::from_raw(256, 256, full)
+            .unwrap()
+            .save(&p2)
+            .unwrap();
+        assert!(!icon_png_padded(&p2));
+
+        // 非 PNG / 读不了 → true（调用方重提自愈）
+        let p3 = dir.path().join("x.bin");
+        std::fs::write(&p3, b"not a png").unwrap();
+        assert!(icon_png_padded(&p3));
+        assert!(icon_png_padded(&dir.path().join("absent.png")));
     }
 
     /// 真机链路验证（先例：service::tests::backend_entry_runs_under_real_node）：

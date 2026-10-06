@@ -138,8 +138,9 @@ mod tests {
         conn.execute("INSERT INTO tags (name) VALUES ('工作')", []).unwrap();
         let t = create(&conn, "工作", "#123456").unwrap();
         assert_eq!(t.color, "#123456");
+        // 只数用户标签：tags 表含内置种子（「剪藏」，速记改造引入），不参与独立断言
         let note_tags: i64 = conn
-            .query_row("SELECT COUNT(*) FROM tags", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM tags WHERE builtin = 0", [], |r| r.get(0))
             .unwrap();
         assert_eq!(note_tags, 1);
     }

@@ -169,7 +169,7 @@ mod tests {
         let conn = init_in_memory().unwrap();
         let a = create(&conn, "办公区").unwrap();
         create(&conn, "影音区").unwrap();
-        let r = resource::create(&conn, ResourceKind::App, "x", "t", None, None, None, None).unwrap();
+        let r = resource::create(&conn, ResourceKind::App, "x", "t", None, None, None, None, None, None, None).unwrap();
         resource::set_zone(&conn, &[r.id], Some(a.id)).unwrap();
         let mut conn = conn;
         rename(&mut conn, a.id, "工作区").unwrap();
@@ -182,8 +182,8 @@ mod tests {
     fn delete_drops_members_to_unzoned_in_one_tx() {
         let conn = init_in_memory().unwrap();
         let z = create(&conn, "办公区").unwrap();
-        let r1 = resource::create(&conn, ResourceKind::App, "a", "t", None, None, None, Some(z.id)).unwrap();
-        let r2 = resource::create(&conn, ResourceKind::Web, "b", "u", None, None, None, Some(z.id)).unwrap();
+        let r1 = resource::create(&conn, ResourceKind::App, "a", "t", None, None, None, Some(z.id), None, None, None).unwrap();
+        let r2 = resource::create(&conn, ResourceKind::Web, "b", "u", None, None, None, Some(z.id), None, None, None).unwrap();
         let mut conn = conn;
         delete(&mut conn, z.id).unwrap();
         assert_eq!(resource::get(&conn, r1.id).unwrap().zone_id, None);

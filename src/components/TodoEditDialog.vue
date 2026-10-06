@@ -304,7 +304,8 @@ async function remove() {
 
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="modal-mask" @click.self="emit('close')">
+    <!-- 点遮罩不关：编辑项多（标签/周期/时刻字段），误触遮罩丢整表输入，只能走右上 × / 取消 -->
+    <div v-if="visible" class="modal-mask">
       <div ref="cardRef" class="modal-card te-card" role="dialog" aria-modal="true" aria-label="编辑待办">
         <div class="te-head">
           <h2 class="te-title">{{ props.todo ? '编辑待办' : '新建待办' }}</h2>

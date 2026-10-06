@@ -3,6 +3,8 @@ pub mod chat;
 pub mod clipboard;
 pub mod detached_sticky;
 pub mod note;
+pub mod note_folder;
+pub mod note_link;
 pub mod resource;
 pub mod snippet;
 pub mod sticky;

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.7.6"
+version = "0.8.0"
 description = "本地个人效率工作台"
 authors = ["you"]
 license = ""
@@ -75,6 +75,7 @@ winreg = "0.52"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Security_Cryptography",
     "Win32_System_Com",
     "Win32_System_Ole",
     "Win32_System_Variant",

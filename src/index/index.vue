@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, onUnmounted, provide, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import TitleBar from '../components/TitleBar.vue'
 import SudaWebPanel from '../components/SudaWebPanel.vue'
 import TodoCard from '../components/TodoCard.vue'
 import TodoCalendarCard from '../components/TodoCalendarCard.vue'
 import Suda from '../components/Suda.vue'
-import NoteList from '../components/NoteList.vue'
 import NotesOverviewCard from '../components/NotesOverviewCard.vue'
 import TodoOverviewCard from '../components/TodoOverviewCard.vue'
 import ResourcesOverviewCard from '../components/ResourcesOverviewCard.vue'
@@ -38,7 +37,8 @@ import {
 import SettingsSkeleton from '../components/SettingsSkeleton.vue'
 
 // 大体量/低频视图异步分包按需加载，缩小首屏主 chunk
-const NoteEditor = defineAsyncComponent(() => import('../components/NoteEditor.vue'))
+// 速记视图：两栏容器（NoteFolderTree 树 + NoteEditor，编辑器在其内部异步分包）
+const SpeednoteView = defineAsyncComponent(() => import('../components/SpeednoteView.vue'))
 const GlobalSearch = defineAsyncComponent(() => import('../components/GlobalSearch.vue'))
 // 待办视图：自带编辑弹层 / 确认弹窗 / 日期时间字段，体量大且非首屏，同样按需分包
 const TodoView = defineAsyncComponent(() => import('../components/TodoView.vue'))
@@ -518,6 +518,10 @@ onMounted(async () => {
     unlistenChatShortcut = await on('chat-shortcut', () => {
       toggleChat()
     })
+    // 速记快捷键（全局注册，Rust 分发）：唤起主窗（Rust 侧 show_window）→ 切速记视图 → 聚焦新建
+    unlistenNotesShortcut = await on('notes-shortcut', () => {
+      void onCreateNote()
+    })
     // 扩展页「去授权」跳转（桥 API xhub.openPermissions）：切到扩展中心并打开该扩展的
     // 设置弹窗（权限管理所在处）。payload = 扩展 id
     unlistenOpenExtSettings = await on<string>('open-extension-settings', (e) => {
@@ -555,6 +559,7 @@ let unlistenBallAction: (() => void) | null = null
 let unlistenOpenChatSettings: (() => void) | null = null
 let unlistenSearchShortcut: (() => void) | null = null
 let unlistenChatShortcut: (() => void) | null = null
+let unlistenNotesShortcut: (() => void) | null = null
 let unlistenOpenExtSettings: (() => void) | null = null
 let unlistenChatMode: (() => void) | null = null
 
@@ -572,6 +577,7 @@ onUnmounted(() => {
   unlistenOpenChatSettings?.()
   unlistenSearchShortcut?.()
   unlistenChatShortcut?.()
+  unlistenNotesShortcut?.()
   unlistenOpenExtSettings?.()
   unlistenChatMode?.()
   window.removeEventListener('suda-open-web-panel', onSudaWebPanelEvent)
@@ -588,43 +594,27 @@ function hideBootSplash() {
   }
 }
 
-// ---- 笔记选中与操作 ----
-const activeNoteId = ref<number | null>(null)
+// ---- 笔记选中与操作（三栏视图挂 SpeednoteView，选择/删除/回收站在视图内部管理；
+// 这里只保留外部入口：悬浮球新建、全局搜索跳转、热键直达） ----
 const highlightTodoId = ref<number | null>(null)
 
-const activeNote = computed(
-  () => store.state.notes.find((n) => n.id === activeNoteId.value) ?? null,
-)
+const speednoteRef = ref<{ openNote: (id: number) => void; createNote: () => void } | null>(null)
+
+/** 等速记视图就绪（异步 chunk + 挂载），最多 ~1.5s；未就绪返回 null（调用方静默放弃） */
+async function waitSpeednoteReady() {
+  activeView.value = 'notes'
+  await nextTick()
+  for (let i = 0; i < 30; i++) {
+    if (speednoteRef.value) return speednoteRef.value
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  return null
+}
 
 async function onCreateNote() {
-  const n = await store.addNote('无标题笔记')
-  activeNoteId.value = n.id
   // 悬浮球等入口触发时可能停在其它视图：新建后必须切到速记页，否则只见新建不见页面
-  activeView.value = 'notes'
-}
-
-function onSelectNote(id: number) {
-  activeNoteId.value = id
-}
-
-async function onDeleteNote(id: number) {
-  const target = store.state.notes.find((n) => n.id === id)
-  if (!target) return
-  await store.removeNote(id)
-  if (activeNoteId.value === id) activeNoteId.value = null
-  showToast('笔记已删除', {
-    label: '撤销',
-    onClick: async () => {
-      const n = await store.addNote(target.title)
-      await store.saveNote(n.id, target.title, target.content)
-      activeNoteId.value = n.id
-      showToast('已恢复笔记')
-    },
-  })
-}
-
-function onSaveNote(id: number, title: string, content: string) {
-  store.saveNote(id, title, content)
+  const view = await waitSpeednoteReady()
+  view?.createNote()
 }
 
 // ---- 全局搜索 / 设置 ----
@@ -773,10 +763,10 @@ async function onOpenResource(r: Resource) {
   }
 }
 
-function onOpenNote(n: Note) {
-  activeNoteId.value = n.id
-  activeView.value = 'notes'
+async function onOpenNote(n: Note) {
   searchVisible.value = false
+  const view = await waitSpeednoteReady()
+  view?.openNote(n.id)
 }
 
 // ---- 轻提示 ----
@@ -951,23 +941,8 @@ provide('showToast', showToast)
         <!-- 待办视图：标签筛选 / 月·周日历 / 周期待办（宽窗左右同屏，窄窗单栏） -->
         <TodoView v-else-if="activeView === 'todos'" />
 
-        <!-- 速记：独立视图 -->
-        <section v-else-if="activeView === 'notes'" class="view view-notes" tabindex="-1" aria-label="速记">
-          <div class="notes-split">
-            <NoteList
-              :notes="store.state.notes"
-              :active-id="activeNoteId"
-              @select="onSelectNote"
-              @create="onCreateNote"
-              @delete="onDeleteNote"
-            />
-            <NoteEditor
-              :note="activeNote"
-              @save="onSaveNote"
-              @delete="onDeleteNote"
-            />
-          </div>
-        </section>
+        <!-- 速记：三栏视图（文件夹树 / 列表 / 编辑器，docs/speednote-plan.md） -->
+        <SpeednoteView v-else-if="activeView === 'notes'" ref="speednoteRef" class="view view-notes" />
 
         <!-- 速达：独立视图 -->
         <section v-else-if="activeView === 'suda'" class="view view-suda" tabindex="-1" aria-label="速达">
@@ -1595,20 +1570,6 @@ html[data-theme='dark'][data-wallpaper-clear='1'] .ext-drawer {
 }
 .view-layout-editor {
   padding: 0 20px 20px 0;
-}
-.notes-split {
-  display: flex;
-  gap: 14px;
-  height: 100%;
-  min-height: 0;
-}
-.notes-split > *:first-child {
-  flex: 0 0 300px;
-  min-width: 0;
-}
-.notes-split > *:last-child {
-  flex: 1;
-  min-width: 0;
 }
 .view-chat-hint {
   flex: 1;

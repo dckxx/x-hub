@@ -3,16 +3,17 @@ use crate::config;
 use crate::config::AppConfig;
 use crate::models::{
     ChatMessage, ChatModelConfig, ChatSession, ClipboardItem, Countdown, DetachedSticky, Note,
-    RepeatRule, Resource, ResourceKind, ResourceSubcategory, ResourceZone, SearchResult, Snippet,
-    Sticky, Tag, Todo, TodoOccurrence, TodoTag, TodoTagLink,
+    NoteFolder, NoteImageGcReport, NoteLinks, PurgeReport, RepeatRule, Resource, ResourceKind,
+    ResourceSubcategory, ResourceZone, SearchResult, Snippet, Sticky, Tag, Todo, TodoOccurrence,
+    TodoTag, TodoTagLink,
 };
 use crate::process;
 use crate::repo::{
-    chat, clipboard, countdown, detached_sticky, note, resource, snippet, sticky, subcategory,
-    tag, todo, todo_tag, zone,
+    chat, clipboard, countdown, detached_sticky, note, note_folder, note_link, resource, snippet,
+    sticky, subcategory, tag, todo, todo_tag, zone,
 };
 use crate::todo_recurrence;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 
@@ -34,6 +35,7 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let resources = resource::list_all(&conn).map_err(err_str)?;
     let notes = note::list(&conn).map_err(err_str)?;
+    let note_folders = note_folder::list(&conn).map_err(err_str)?;
     let tags = tag::list(&conn).map_err(err_str)?;
     let todos = todo::list(&conn).map_err(err_str)?;
     let stickies = sticky::list(&conn).map_err(err_str)?;
@@ -41,9 +43,10 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
     let countdowns = countdown::list(&conn).map_err(err_str)?;
     let config = crate::config::load();
     log::info!(
-        "初始化数据加载完成: resources={} notes={} tags={} todos={} stickies={} detached={} countdowns={}",
+        "初始化数据加载完成: resources={} notes={} folders={} tags={} todos={} stickies={} detached={} countdowns={}",
         resources.len(),
         notes.len(),
+        note_folders.len(),
         tags.len(),
         todos.len(),
         stickies.len(),
@@ -53,6 +56,7 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
     Ok(InitialData {
         resources,
         notes,
+        note_folders,
         tags,
         todos,
         stickies,
@@ -66,6 +70,7 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
 pub struct InitialData {
     pub resources: Vec<Resource>,
     pub notes: Vec<Note>,
+    pub note_folders: Vec<NoteFolder>,
     pub tags: Vec<Tag>,
     pub todos: Vec<Todo>,
     pub stickies: Vec<Sticky>,
@@ -86,6 +91,9 @@ pub fn create_resource(
     icon: Option<String>,
     args: Option<String>,
     zone_id: Option<i64>,
+    description: Option<String>,
+    remark: Option<String>,
+    remark_label: Option<String>,
 ) -> Result<Resource, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let kind = parse_kind(&kind)?;
@@ -103,6 +111,9 @@ pub fn create_resource(
         icon.as_deref(),
         args.as_deref(),
         zone_id,
+        description.as_deref(),
+        remark.as_deref(),
+        remark_label.as_deref(),
     )
     .map_err(err_str)?;
     log::info!(
@@ -125,6 +136,9 @@ pub fn update_resource(
     icon: Option<String>,
     args: Option<String>,
     zone_id: Option<i64>,
+    description: Option<String>,
+    remark: Option<String>,
+    remark_label: Option<String>,
 ) -> Result<Resource, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let kind = parse_kind(&kind)?;
@@ -143,10 +157,23 @@ pub fn update_resource(
         icon.as_deref(),
         args.as_deref(),
         zone_id,
+        description.as_deref(),
+        remark.as_deref(),
+        remark_label.as_deref(),
     )
     .map_err(err_str)?;
     log::info!("更新资源: id={} {} ({:?})", res.id, res.name, res.kind);
     Ok(res)
+}
+
+/// 备注明文按需解密（编辑弹窗打开时拉一次）：明文不随资源列表/get 下发
+#[tauri::command]
+pub fn get_resource_remark(
+    state: State<'_, DbState>,
+    resource_id: i64,
+) -> Result<Option<String>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    resource::remark_plaintext(&conn, resource_id).map_err(err_str)
 }
 
 #[tauri::command]
@@ -478,11 +505,11 @@ pub fn reorder_resources_zoned(
     Ok(())
 }
 
-/// 速达网页默认打开方式（panel=内嵌面板 / window=独立窗口，ADR 0011 2026-09-25 拍板）
+/// 速达网页默认打开方式（panel=内嵌面板 / window=独立窗口 / system=系统默认浏览器，ADR 0011 2026-09-25 拍板）
 #[tauri::command]
 pub fn set_suda_web_open_mode(mode: String) -> Result<String, String> {
     let mode = mode.trim().to_string();
-    if !["panel", "window"].contains(&mode.as_str()) {
+    if !["panel", "window", "system"].contains(&mode.as_str()) {
         return Err("无效的打开方式".into());
     }
     let _guard = crate::config::lock();
@@ -502,6 +529,29 @@ pub fn create_note(state: State<'_, DbState>, title: String) -> Result<Note, Str
     Ok(note)
 }
 
+/// 新建笔记（速记视图口径）：一次性落 folder / source_url / 初始正文。
+/// folder_id 传 null = 树根（未选中文件夹时的新建落根，方案 Q13–Q18）。
+#[tauri::command]
+pub fn create_note_in(
+    state: State<'_, DbState>,
+    title: String,
+    content: Option<String>,
+    folder_id: Option<i64>,
+    source_url: Option<String>,
+) -> Result<Note, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let note = note::create_in(
+        &conn,
+        &title,
+        content.as_deref().unwrap_or(""),
+        folder_id,
+        source_url.as_deref().unwrap_or(""),
+    )
+    .map_err(err_str)?;
+    log::info!("新建笔记(带目录): id={} folder={:?}", note.id, note.folder_id);
+    Ok(note)
+}
+
 #[tauri::command]
 pub fn update_note(
     state: State<'_, DbState>,
@@ -510,11 +560,53 @@ pub fn update_note(
     content: String,
 ) -> Result<Note, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let note = note::update(&conn, id, &title, &content).map_err(err_str)?;
+    // 改名感知：标题变化时同事务做全库 [[旧标题]]→[[新标题]] 替换与链索引重建（双链断链防护）
+    let note = note::update_with_link_fixup(&conn, id, &title, &content).map_err(err_str)?;
     log::debug!("更新笔记: id={} 内容 {} 字", id, content.chars().count());
     Ok(note)
 }
 
+/// 移入回收站（软删）。UI 删除按钮与撤销恢复走这里；硬删见 purge_note。
+#[tauri::command]
+pub fn trash_note(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::trash(&conn, id).map_err(err_str)?;
+    log::info!("笔记移入回收站: id={}", id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn restore_note(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::restore(&conn, id).map_err(err_str)?;
+    log::info!("笔记从回收站还原: id={}", id);
+    Ok(())
+}
+
+/// 永久删除（回收站内）：连带 note_tags、note_links 出链。扩展桥 notes.delete 同语义。
+#[tauri::command]
+pub fn purge_note(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::delete(&conn, id).map_err(err_str)?;
+    log::info!("笔记永久删除: id={}", id);
+    Ok(())
+}
+
+/// 按设置的保留天数清理回收站（note_trash_retention_days，0 = 永久保留）。
+/// 启动时与设置变更时各跑一次；也可手动触发。
+#[tauri::command]
+pub fn purge_expired_notes(state: State<'_, DbState>) -> Result<PurgeReport, String> {
+    let days = config::load().note_trash_retention_days;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let purged = note::purge_expired(&conn, days).map_err(err_str)?;
+    if purged > 0 {
+        log::info!("回收站清理: {} 条（保留 {} 天）", purged, days);
+    }
+    Ok(PurgeReport { purged })
+}
+
+/// 删除笔记（硬删语义保持向后兼容：扩展桥 notes.delete 与旧调用方期望「删干净」）。
+/// UI 删除一律走 trash_note（软删进回收站）。
 #[tauri::command]
 pub fn delete_note(state: State<'_, DbState>, id: i64) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -529,6 +621,261 @@ pub fn delete_note(state: State<'_, DbState>, id: i64) -> Result<(), String> {
 pub fn list_notes(state: State<'_, DbState>) -> Result<Vec<Note>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     note::list_meta(&conn).map_err(err_str)
+}
+
+/// 单条笔记全量（含正文）：回收站还原回填活列表、刷新列表补拉外部新建条目用。
+/// 只传 note_id 不存在时返回 None，其余错误照常上报
+#[tauri::command]
+pub fn get_note(state: State<'_, DbState>, note_id: i64) -> Result<Option<Note>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(note::get(&conn, note_id).ok())
+}
+
+/// 回收站列表（含正文，还原/永久删除界面用）
+#[tauri::command]
+pub fn list_trashed_notes(state: State<'_, DbState>) -> Result<Vec<Note>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::list_trashed(&conn).map_err(err_str)
+}
+
+/// 设置/清除笔记自定义树图标（emoji，None = 恢复默认）
+#[tauri::command]
+pub fn set_note_icon(state: State<'_, DbState>, id: i64, icon: Option<String>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::set_icon(&conn, id, icon.as_deref()).map_err(err_str)
+}
+
+/// 一键清空回收站：逐条硬删（不可恢复；调用方负责先向用户确认）。单事务——
+/// 中断（错误/进程退出）要么全清要么全留，不留半截
+#[tauri::command]
+pub fn purge_all_trashed_notes(state: State<'_, DbState>) -> Result<usize, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(err_str)?;
+    let ids: Vec<i64> = {
+        let mut stmt = tx
+            .prepare("SELECT id FROM notes WHERE deleted_at IS NOT NULL")
+            .map_err(err_str)?;
+        let rows = stmt
+            .query_map([], |r| r.get(0))
+            .map_err(err_str)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(err_str)?;
+        rows
+    };
+    for id in &ids {
+        tx.execute("DELETE FROM notes WHERE id = ?1", params![id])
+            .map_err(err_str)?;
+    }
+    tx.commit().map_err(err_str)?;
+    if !ids.is_empty() {
+        log::info!("回收站已清空: {} 条", ids.len());
+    }
+    Ok(ids.len())
+}
+
+// ---------- 笔记文件夹（速记三栏视图左栏，ADR 0015） ----------
+
+#[tauri::command]
+pub fn list_note_folders(state: State<'_, DbState>) -> Result<Vec<NoteFolder>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note_folder::list(&conn).map_err(err_str)
+}
+
+#[tauri::command]
+pub fn create_note_folder(
+    state: State<'_, DbState>,
+    name: String,
+    parent_id: Option<i64>,
+) -> Result<NoteFolder, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("文件夹名不能为空".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let f = note_folder::create(&conn, name, parent_id).map_err(err_str)?;
+    log::info!("新建笔记文件夹: {} (parent={:?})", f.name, f.parent_id);
+    Ok(f)
+}
+
+#[tauri::command]
+pub fn rename_note_folder(state: State<'_, DbState>, id: i64, name: String) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("文件夹名不能为空".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note_folder::rename(&conn, id, name).map_err(err_str)
+}
+
+/// 删除文件夹：笔记与子文件夹上移一级，不级联删（ADR 0015）。
+/// 文件夹本身不进回收站；其成员原样保留。
+#[tauri::command]
+pub fn delete_note_folder(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note_folder::delete(&conn, id).map_err(err_str)?;
+    log::info!("删除笔记文件夹: id={}（成员上移一级）", id);
+    Ok(())
+}
+
+/// 拖拽移动 + 排序的原子写回（环检测在 repo 层：不能拖进自己或自己的后代）。
+/// ⚠️ 字段名按**蛇形**反序列化，与前端 `reorderNoteFolders` 载荷（tauri.ts / store /
+/// NoteFolderTree 的 emit 类型一路都是 `parent_id`/`sort_order`，对齐 NoteFolder 模型）
+/// 一致——嵌套载荷不做 Tauri 的驼峰自动转换，标 `rename_all = "camelCase"` 会让
+/// `sort_order` 读成缺失、整批反序列化失败，表现为文件夹拖拽完全无效果。
+#[derive(serde::Deserialize)]
+pub struct NoteFolderMove {
+    pub id: i64,
+    pub parent_id: Option<i64>,
+    pub sort_order: i64,
+}
+
+#[tauri::command]
+pub fn reorder_note_folders(
+    state: State<'_, DbState>,
+    moves: Vec<NoteFolderMove>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let entries: Vec<note_folder::FolderMove> = moves
+        .into_iter()
+        .map(|m| note_folder::FolderMove {
+            id: m.id,
+            parent_id: m.parent_id,
+            sort_order: m.sort_order,
+        })
+        .collect();
+    note_folder::reorder(&conn, &entries).map_err(err_str)
+}
+
+/// 移动单条笔记到文件夹（folder_id = null 回树根）
+#[tauri::command]
+pub fn set_note_folder(
+    state: State<'_, DbState>,
+    note_id: i64,
+    folder_id: Option<i64>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::set_folder(&conn, note_id, folder_id).map_err(err_str)
+}
+
+// ---------- 笔记图片孤儿 GC（只手动触发；dry_run 先出报告，确认后才真删） ----------
+
+/// 收集 notes/images 下全部图片文件名，与「未永久删除笔记（含回收站）」正文里的
+/// xhub-note 引用做差集——差集即孤儿。回收站内笔记的引用必须算活引用（方案 §10 风险 4）。
+pub fn scan_orphan_note_images(conn: &Connection) -> Result<NoteImageGcReport, String> {
+    use std::collections::HashSet;
+
+    let dir = crate::paths::data_root().join("notes").join("images");
+    let mut files: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                // 文件名严格为 16 位哈希 + 扩展（与 import_note_image 的落盘口径一致）
+                if is_note_image_name(name) {
+                    files.push(name.to_string());
+                }
+            }
+        }
+    }
+    let mut referenced: HashSet<String> = HashSet::new();
+    for content in note::all_contents_including_trashed(conn).map_err(err_str)? {
+        for hash in extract_note_image_hashes(&content) {
+            referenced.insert(hash);
+        }
+    }
+    let orphans: Vec<String> = files
+        .iter()
+        .filter(|f| {
+            let stem = f.split('.').next().unwrap_or("");
+            !referenced.contains(stem)
+        })
+        .cloned()
+        .collect();
+    Ok(NoteImageGcReport {
+        dry_run: true,
+        total_files: files.len(),
+        referenced: referenced.len(),
+        orphan_files: orphans,
+        removed: 0,
+        failed: 0,
+    })
+}
+
+/// 孤儿图片扫描（dry_run=true 恒定：本命令只报告，真删走 gc_orphan_note_images_commit）
+#[tauri::command]
+pub fn gc_orphan_note_images(state: State<'_, DbState>, dry_run: bool) -> Result<NoteImageGcReport, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut report = scan_orphan_note_images(&conn)?;
+    report.dry_run = dry_run;
+    if dry_run {
+        return Ok(report);
+    }
+    let dir = crate::paths::data_root().join("notes").join("images");
+    let mut removed = 0usize;
+    let mut failed = 0usize;
+    for name in &report.orphan_files {
+        if std::fs::remove_file(dir.join(name)).is_ok() {
+            removed += 1;
+        } else {
+            failed += 1;
+        }
+    }
+    report.removed = removed;
+    report.failed = failed;
+    log::info!(
+        "笔记孤儿图片清理: 孤儿 {} 张，删除 {} 张，失败 {} 张",
+        report.orphan_files.len(),
+        removed,
+        failed
+    );
+    Ok(report)
+}
+
+/// 笔记图片文件名口径：16 位十六进制哈希 + 白名单扩展
+fn is_note_image_name(name: &str) -> bool {
+    const EXTS: [&str; 6] = ["png", "jpg", "jpeg", "webp", "bmp", "gif"];
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) => (s, e.to_lowercase()),
+        None => return false,
+    };
+    stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_hexdigit()) && EXTS.contains(&ext.as_str())
+}
+
+/// 从笔记正文里抽取引用的图片哈希（xhub-note.localhost/<hash>.<ext> 两种 host 形态都认）
+fn extract_note_image_hashes(content: &str) -> Vec<String> {
+    const NEEDLE: &str = "xhub-note.localhost/";
+    let mut hashes = Vec::new();
+    let mut rest = content;
+    while let Some(pos) = rest.find(NEEDLE) {
+        let tail = &rest[pos + NEEDLE.len()..];
+        let name: String = tail
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
+            .collect();
+        let stem = name.split('.').next().unwrap_or("");
+        if stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_hexdigit()) {
+            hashes.push(stem.to_string());
+        }
+        rest = tail;
+    }
+    hashes
+}
+
+// ---------- 双链（轻量版：引用键 = 标题） ----------
+
+#[tauri::command]
+pub fn get_note_links(state: State<'_, DbState>, note_id: i64) -> Result<NoteLinks, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let (outgoing, incoming) = note_link::for_note(&conn, note_id).map_err(err_str)?;
+    Ok(NoteLinks { outgoing, incoming })
+}
+
+/// 存量笔记的双链索引重建（升级后首次使用：老笔记没有索引）。幂等。
+#[tauri::command]
+pub fn rebuild_note_links(state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note_link::reindex_all(&conn).map_err(err_str)?;
+    log::info!("笔记双链索引已全量重建");
+    Ok(())
 }
 
 // ---------- 待办清单 ----------
@@ -1594,6 +1941,7 @@ enum ConfiguredShortcut {
     Clipboard,
     Search,
     Chat,
+    Notes,
 }
 
 impl ConfiguredShortcut {
@@ -1603,6 +1951,7 @@ impl ConfiguredShortcut {
             ConfiguredShortcut::Clipboard => &mut cfg.clipboard_shortcut,
             ConfiguredShortcut::Search => &mut cfg.search_shortcut,
             ConfiguredShortcut::Chat => &mut cfg.chat_shortcut,
+            ConfiguredShortcut::Notes => &mut cfg.notes_shortcut,
         }
     }
 
@@ -1612,6 +1961,7 @@ impl ConfiguredShortcut {
             ConfiguredShortcut::Clipboard => "剪贴板",
             ConfiguredShortcut::Search => "搜索",
             ConfiguredShortcut::Chat => "AI 对话",
+            ConfiguredShortcut::Notes => "速记",
         }
     }
 
@@ -1622,6 +1972,7 @@ impl ConfiguredShortcut {
             ConfiguredShortcut::Clipboard => cfg.clipboard_shortcut_enabled,
             ConfiguredShortcut::Search => cfg.search_shortcut_enabled,
             ConfiguredShortcut::Chat => cfg.chat_shortcut_enabled,
+            ConfiguredShortcut::Notes => cfg.notes_shortcut_enabled,
         }
     }
 
@@ -1631,10 +1982,11 @@ impl ConfiguredShortcut {
             ConfiguredShortcut::Clipboard => cfg.clipboard_shortcut_enabled = value,
             ConfiguredShortcut::Search => cfg.search_shortcut_enabled = value,
             ConfiguredShortcut::Chat => cfg.chat_shortcut_enabled = value,
+            ConfiguredShortcut::Notes => cfg.notes_shortcut_enabled = value,
         }
     }
 
-    /// 键值是否与**其它**三个快捷键里某一个相同（物理按键口径，CommandOrControl 与 Ctrl
+    /// 键值是否与**其它**快捷键里某一个相同（物理按键口径，CommandOrControl 与 Ctrl
     /// 视为同键）。改键/启用前的配置层冲突预检用——配置相同而 OS 各自注册必然撞车，
     /// 与其在启用时报一句含糊的「快捷键冲突」，不如在写入配置时就拦下并点名是谁。
     fn conflicts_with_other(
@@ -1655,6 +2007,7 @@ impl ConfiguredShortcut {
             ),
             (ConfiguredShortcut::Search, cfg.search_shortcut.clone(), "搜索"),
             (ConfiguredShortcut::Chat, cfg.chat_shortcut.clone(), "AI 对话"),
+            (ConfiguredShortcut::Notes, cfg.notes_shortcut.clone(), "速记"),
         ];
         others
             .into_iter()
@@ -1685,7 +2038,7 @@ fn set_configured_shortcut(
     if previous == shortcut {
         return Ok(previous);
     }
-    // 改键前先做配置层冲突预检：其它三个快捷键已占用同一物理按键时无论本键是否禁用
+    // 改键前先做配置层冲突预检：其它快捷键已占用同一物理按键时无论本键是否禁用
     // 都拦下（禁用态存进去就是颗雷——重新启用时注册必然撞车，报错还不知所云）
     if let Some((label, _)) = which.conflicts_with_other(&config, shortcut) {
         return Err(format!("与「{label}」快捷键冲突，请换一个组合"));
@@ -1716,6 +2069,7 @@ fn config_field(cfg: &crate::config::AppConfig, which: &ConfiguredShortcut) -> S
         ConfiguredShortcut::Clipboard => cfg.clipboard_shortcut.clone(),
         ConfiguredShortcut::Search => cfg.search_shortcut.clone(),
         ConfiguredShortcut::Chat => cfg.chat_shortcut.clone(),
+        ConfiguredShortcut::Notes => cfg.notes_shortcut.clone(),
     }
 }
 
@@ -1723,6 +2077,12 @@ fn config_field(cfg: &crate::config::AppConfig, which: &ConfiguredShortcut) -> S
 #[tauri::command]
 pub fn set_search_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
     set_configured_shortcut(app, value, ConfiguredShortcut::Search)
+}
+
+/// 更新速记呼出快捷键（唤起主窗 → 切速记视图 → 聚焦新建）
+#[tauri::command]
+pub fn set_notes_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    set_configured_shortcut(app, value, ConfiguredShortcut::Notes)
 }
 
 /// 更新 AI 对话呼出快捷键
@@ -1744,6 +2104,7 @@ pub fn set_shortcut_enabled(
         "clipboard" => ConfiguredShortcut::Clipboard,
         "search" => ConfiguredShortcut::Search,
         "chat" => ConfiguredShortcut::Chat,
+        "notes" => ConfiguredShortcut::Notes,
         _ => return Err("未知的快捷键类型".into()),
     };
     let _guard = crate::config::lock();
@@ -1910,6 +2271,19 @@ pub fn delete_tag(state: State<'_, DbState>, id: i64) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     tag::delete(&conn, id).map_err(err_str)?;
     log::info!("删除标签: id={}", id);
+    Ok(())
+}
+
+/// 笔记标签改名（修缺陷③：归属关系 note_tags 不动，所有引用它的笔记自动跟随新名字）
+#[tauri::command]
+pub fn rename_tag(state: State<'_, DbState>, id: i64, name: String) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("标签名不能为空".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    tag::rename(&conn, id, name).map_err(err_str)?;
+    log::info!("标签改名: id={} → {}", id, name);
     Ok(())
 }
 
@@ -2264,11 +2638,14 @@ fn resolve_lnk_target_and_icon(lnk_path: &str) -> Result<(String, Option<String>
 }
 
 /// 图标缓存判旧阈值（像素）：旧 PowerShell ExtractAssociatedIcon 只能产出 32×32，
-/// 宽度低于此值的缓存视为低清、重新提取（新链路固定提取 256×256）
-const ICON_CACHE_MIN_WIDTH: u32 = 64;
+/// 宽度低于此值的缓存视为低清、重新提取（新链路产出 ≥48 或按帧尺寸的紧凑 PNG）。
+/// 注意 32 档新产物（图标最大帧只有 32 的程序）与本阈值天然「永远判旧」——重提是
+/// 幂等的（结果恒为同一张 32×32），每次扫描只多两次 COM 调用，接受；不能为此把
+/// 阈值降到 32 以下，否则存量旧 32×32 低清缓存永远不升级。
+const ICON_CACHE_MIN_WIDTH: u32 = 48;
 
 /// 图标缓存文件名：DefaultHasher(target) 的 16 位十六进制（沿用旧缓存键，
-/// 老数据直接命中缓存，低清的经宽度判别升级）。
+/// 老数据直接命中缓存，不健康的经宽度+内容判别升级）。
 fn icon_cache_path(target: &str) -> std::path::PathBuf {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -2292,18 +2669,22 @@ fn write_png_atomically(path: &std::path::Path, bytes: &[u8]) -> bool {
     std::fs::rename(&tmp, path).is_ok()
 }
 
-/// 缓存文件存在且足够高清（宽度达标）才可直接复用；非 PNG（历史脏文件）也判旧重提
+/// 缓存文件「健康」才可直接复用：宽度达标（≥48；旧 PowerShell 链路只出 32×32）
+/// **且**解码后非「小帧居中垫图」鬼影产物——v0.7.6 一度的回归产物宽度就是 256、
+/// 字形墨迹却只占中间一小块（Cheat Engine 48 帧垫进 256 画布），按宽度判旧永远
+/// 抓不到，必须解码看墨迹（app_icon::icon_png_padded）。非 PNG（历史脏文件）与
+/// 解码失败同样判旧重提（重提自愈）。
 fn icon_cache_usable(path: &std::path::Path) -> bool {
-    path.exists()
-        && crate::app_icon::png_width(path)
-            .map(|w| w >= ICON_CACHE_MIN_WIDTH)
-            .unwrap_or(false)
+    crate::app_icon::png_width(path)
+        .map(|w| w >= ICON_CACHE_MIN_WIDTH && !crate::app_icon::icon_png_padded(path))
+        .unwrap_or(false)
 }
 
-/// 提取程序图标（Shell IShellItemImageFactory，256×256，进程内无子进程），
-/// 保存 PNG 到数据根 icons/。缓存键 = target 路径哈希；旧 32×32 低清缓存自动
-/// 重提，重提失败保留旧图（宁可糊着不能没图标）。失败且无缓存返回 None
-/// （前端回退到名称首字母）。
+/// 提取程序图标（Shell IShellItemImageFactory，进程内无子进程；有 256 帧得 256、
+/// 最大帧不足得按帧尺寸的紧凑画布，见 app_icon.rs「小帧垫图补偿」），
+/// 保存 PNG 到数据根 icons/。缓存键 = target 路径哈希；不健康缓存（旧 32×32 低清
+/// / 垫图鬼影）自动重提，重提失败保留旧图（宁可糊着不能没图标）。失败且无缓存
+/// 返回 None（前端回退到名称首字母）。
 fn extract_app_icon(source: &str) -> Option<String> {
     let output_path = icon_cache_path(source);
     if icon_cache_usable(&output_path) {
@@ -2314,8 +2695,15 @@ fn extract_app_icon(source: &str) -> Option<String> {
     }
     match crate::app_icon::extract_icon_png(source) {
         Some(png) => {
-            write_png_atomically(&output_path, &png);
-            Some(output_path.to_string_lossy().into_owned())
+            // 写失败时若旧缓存文件还在（原子写 remove 后 rename 失败会连旧文件一起
+            // 丢，此时 exists 为假）就沿用旧图；都不在才回 None，绝不返回指向
+            // 不存在文件的假路径——前端 <img> 会显示破图占位。
+            if write_png_atomically(&output_path, &png) || output_path.exists() {
+                Some(output_path.to_string_lossy().into_owned())
+            } else {
+                log::warn!("图标写入失败且无旧缓存: {}", source);
+                None
+            }
         }
         None => {
             if output_path.exists() {
@@ -2351,8 +2739,8 @@ pub fn import_icon_file(source: String) -> Result<Option<String>, String> {
     let file_name = format!("{:016x}.png", hasher.finish());
     let output_path = dir.join(&file_name);
 
-    // 已导入且足够高清则直接复用（旧 32×32 缓存重导入时升级；
-    // 直接复制的非 PNG 小图重导一次也只是幂等复制，无副作用）
+    // 已导入且健康（宽度达标且非垫图鬼影）则直接复用（旧 32×32 缓存重导入时升级；
+    // 垫图判定对「用户自选的稀疏图片」的解码误报也只是幂等重导一次，无副作用）
     if icon_cache_usable(&output_path) {
         return Ok(Some(output_path.to_string_lossy().into_owned()));
     }
@@ -2665,11 +3053,13 @@ fn batch_extract_icons(apps: &[(String, String)]) -> Result<Vec<Option<String>>,
     Ok(result)
 }
 
-/// 低清图标缓存清扫（启动 15s 后一次性后台跑，见 lib.rs）：
-/// 把旧 PowerShell 链路产出的 32×32 缓存按 target 键就地重提为 256×256。
+/// 图标缓存清扫（启动 15s 后一次性后台跑，见 lib.rs）：
+/// 把不健康的缓存按 target 键就地重提——含旧 PowerShell 链路的 32×32 低清缓存
+/// （宽度判旧），**以及 v0.7.6 一度产出的「小帧居中垫图」鬼影缓存**（宽度是
+/// 256、字形墨迹只占中间一小块，须解码看墨迹，icon_cache_usable 统一判定）。
 /// 只处理「资源图标路径 == target 的缓存键」的条目——用户手动导入的图标
 /// （键 = 图标文件路径哈希）与网页 favicon（fav- 前缀）不越权重置；
-/// 重提失败保留旧图。图标路径不变，前端下次挂载/重启即见高清图。
+/// 重提失败保留旧图。图标路径不变，前端下次挂载/重启即见修复图。
 pub fn sweep_stale_icons(app: &tauri::AppHandle) {
     use tauri::Manager;
 
@@ -2702,24 +3092,21 @@ pub fn sweep_stale_icons(app: &tauri::AppHandle) {
             continue;
         }
         let p = std::path::Path::new(icon);
-        if crate::app_icon::png_width(p)
-            .map(|w| w < ICON_CACHE_MIN_WIDTH)
-            .unwrap_or(true)
-        {
+        if !icon_cache_usable(p) {
             stale.push(r.target.clone());
         }
     }
     if stale.is_empty() {
         return;
     }
-    log::info!("图标清扫：{} 个低清缓存待升级", stale.len());
+    log::info!("图标清扫：{} 个不健康缓存待重提", stale.len());
     let mut ok = 0;
     for target in &stale {
         if extract_app_icon(target).is_some() {
             ok += 1;
         }
     }
-    log::info!("图标清扫完成：{}/{} 升级成功（失败项保留旧图）", ok, stale.len());
+    log::info!("图标清扫完成：{}/{} 重提成功（失败项保留旧图）", ok, stale.len());
 }
 
 // ---------- 扫描桌面 ----------
@@ -3592,6 +3979,67 @@ pub async fn send_chat_message(
     Ok(())
 }
 
+/// 笔记 AI 深度整理：把笔记全文交给对话模型做一次**无会话**的语义重排（分组/标题/清单）。
+/// 与 `send_chat_message` 的区别：不建会话、不落库、不出现在聊天记录里；模型解析**优先平台内置
+/// 额度**（用户明确要求：有平台条目且已登录就固定走平台入口轮询），未登录/未开启平台时回退
+/// 「新会话默认模型」同一套（`default_session_model_name` → `pick_chat_model`）。
+/// 流式增量经 Channel 推送（Chunk），invoke 返回值即完整整理结果；失败返回 Err（前端可保留 partial）。
+/// 注意：整理的提示词把「逐字保留 URL/密钥/账号等技术信息」作为硬约束——这类内容改一个字符就是事故。
+#[tauri::command]
+pub async fn ai_transform_note(
+    content: String,
+    on_event: tauri::ipc::Channel<crate::chat::ChatStreamEvent>,
+) -> Result<String, String> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err("笔记内容为空".into());
+    }
+
+    let models = config::load().chat_models;
+    // 平台额度可用 = 有平台条目且已登录（登录态就是平台请求的真实凭据，未登录时平台必然
+    // 报 401，此时静默回退默认模型而不是把功能卡死在「请先登录」上）
+    let prefer_platform = models.iter().any(|m| crate::chat::is_platform_model(m))
+        && crate::account::session_token().is_some();
+    let session_name = if prefer_platform {
+        crate::chat::PLATFORM_ENTRY_NAME.to_string()
+    } else {
+        default_session_model_name(&models)
+    };
+    let model = pick_chat_model(&models, &session_name)?;
+    if crate::chat::is_platform_model(&model) {
+        log::info!("笔记 AI 整理使用平台模型: {}", model.model);
+    }
+
+    // 指令与正文合进一条 user 消息：stream_chat 的消息层只保证 user/assistant 两角色，
+    // 不依赖各供应商对 system 消息的兼容度
+    let instruction = "\
+你是笔记整理助手。把用户提供的笔记内容重组为清晰、结构化的 Markdown：\
+按主题分组，用标题与列表组织同一条目下的多项信息；\
+必须逐字保留所有 URL、密钥、账号、电话、邮箱、代码等技术信息，不得改写、省略、合并或翻译任何事实内容；\
+原文没有的信息不要编造。只输出整理后的 Markdown 正文，不要任何解释，也不要包代码围栏。";
+    let message = crate::models::ChatMessage {
+        id: 0,
+        session_id: 0,
+        role: "user".into(),
+        content: format!("{instruction}\n\n---\n\n{content}"),
+        created_at: String::new(),
+    };
+
+    let mut reply = String::new();
+    let chunk_sender = on_event.clone();
+    crate::chat::stream_chat(&model, &[message], &mut reply, |delta| {
+        chunk_sender
+            .send(crate::chat::ChatStreamEvent::Chunk { content: delta })
+            .map_err(|e| e.to_string())
+    })
+    .await?;
+
+    if reply.trim().is_empty() {
+        return Err("模型未返回任何内容".into());
+    }
+    Ok(reply)
+}
+
 // ---------- 剪贴板历史 ----------
 
 /// 浮层状态（暂停 / 保留策略 / 总条数），前端底部栏展示
@@ -3905,6 +4353,51 @@ mod tests {
         assert!(api_key_for_ui(None).is_err());
     }
 
+    /// 图标缓存判旧的完整口径（宽度 + 垫图鬼影内容判定）：
+    /// 旧 32×32 产物、v0.7.6 的 256 宽鬼影产物都要判旧重提；满幅 48/256 才可复用。
+    /// 鬼影产物宽度就是 256——宽度判旧永远抓不到，这条测试锁的就是那次回归。
+    #[test]
+    fn icon_cache_usable_checks_width_and_padding() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let save = |name: &str, img: image::RgbaImage| {
+            let p = dir.path().join(name);
+            img.save(&p).unwrap();
+            p
+        };
+        let solid = |size: u32| {
+            let mut v = Vec::with_capacity((size * size * 4) as usize);
+            for _ in 0..size * size {
+                v.extend_from_slice(&[10u8, 20, 30, 255]);
+            }
+            image::RgbaImage::from_raw(size, size, v).unwrap()
+        };
+
+        // 满 48：可复用；旧 PowerShell 的 32×32：判旧
+        assert!(icon_cache_usable(&save("ok48.png", solid(48))));
+        assert!(!icon_cache_usable(&save("old32.png", solid(32))));
+
+        // v0.7.6 鬼影形态：256 画布中间 45px 方块（宽度达标但墨迹只占一小块）→ 判旧
+        let mut ghost = vec![0u8; 256 * 256 * 4];
+        for y in 100..145 {
+            for x in 100..145 {
+                let i = ((y * 256 + x) * 4) as usize;
+                ghost[i..i + 4].copy_from_slice(&[10, 20, 30, 255]);
+            }
+        }
+        let ghost_img = image::RgbaImage::from_raw(256, 256, ghost).unwrap();
+        assert!(!icon_cache_usable(&save("ghost256.png", ghost_img)));
+
+        // 满幅 256：可复用
+        assert!(icon_cache_usable(&save("ok256.png", solid(256))));
+
+        // 非 PNG / 文件不存在：判旧（重提自愈）
+        let bin = dir.path().join("dirty.bin");
+        std::fs::write(&bin, b"not a png").unwrap();
+        assert!(!icon_cache_usable(&bin));
+        assert!(!icon_cache_usable(&dir.path().join("absent.png")));
+    }
+
     /// 平台占位符不许当 Key 发去探测通用 `/models`：占位符不是凭据（真凭据是登录态），
     /// 发出去只会得到 401，报错完全指不到真因（2026-09-17 用户反馈的 404 也是同一条错路：
     /// 平台中转根本没有 `GET /v1/models`，平台列表接口是 `/api/v1/ai/models`）。
@@ -3918,6 +4411,28 @@ mod tests {
         // 未传且钥匙串里也没有 → 明确提示
         assert!(probe_key("", None).is_err());
         assert_eq!(probe_key("", Some("sk-stored".into())).unwrap(), "sk-stored");
+    }
+
+    /// 文件夹拖拽载荷的线上契约：前端 api/tauri.ts 的 reorderNoteFolders 发的是
+    /// 蛇形键（对齐 NoteFolder 模型），serde 侧字段名必须逐字一致——嵌套载荷没有
+    /// Tauri 顶层参数的驼峰自动转换，曾因 `rename_all = "camelCase"` 整批反序列化
+    /// 失败（`sort_order` 无默认值读成缺失），文件夹拖拽完全无效果。
+    #[test]
+    fn note_folder_move_payload_matches_frontend_snake_case() {
+        let moves: Vec<NoteFolderMove> = serde_json::from_value(serde_json::json!([
+            { "id": 3, "parent_id": 7, "sort_order": 0 },
+            { "id": 7, "parent_id": null, "sort_order": 1 },
+        ]))
+        .expect("前端蛇形载荷必须能反序列化");
+        assert_eq!(moves[0].parent_id, Some(7));
+        assert_eq!(moves[0].sort_order, 0);
+        assert_eq!(moves[1].parent_id, None);
+        assert_eq!(moves[1].sort_order, 1);
+        // 驼峰键不是合法载荷（防有人把前端改回驼峰而 Rust 静默吞掉）
+        assert!(serde_json::from_value::<Vec<NoteFolderMove>>(serde_json::json!([
+            { "id": 3, "parentId": 7, "sortOrder": 0 }
+        ]))
+        .is_err());
     }
 
     // ---- 平台额度：一个入口 + 多模型负载切换（自备供应商精确命中照旧）----

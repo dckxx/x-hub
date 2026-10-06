@@ -25,6 +25,16 @@ pub struct Resource {
     /// 与 category（小类）是两个独立维度：小类归各大类的筛选 chips 用，分区只管「全部」的陈列。
     #[serde(default)]
     pub zone_id: Option<i64>,
+    /// 用途说明（非敏感：这个网页/程序/文件是什么），编辑弹窗与卡片悬浮提示展示
+    #[serde(default)]
+    pub description: Option<String>,
+    /// 备注（敏感：可存网页账号密码、文件解压密码等）。DPAPI 加密落盘（secret.rs，
+    /// `dp1:` 前缀密文），内存与 IPC 中为明文；扩展桥载荷一律剥离本字段
+    #[serde(default)]
+    pub remark: Option<String>,
+    /// 备注自定义标签（如「账号密码」「解压密码」）；NULL = 默认「备注」
+    #[serde(default)]
+    pub remark_label: Option<String>,
 }
 
 /// 速达小类（ADR 0012）：大类（resources.kind）下单归属的小类，单归属、非多选标签。
@@ -68,6 +78,72 @@ pub struct Note {
     pub content: String,
     pub created_at: String,
     pub updated_at: String,
+    /// 所在文件夹（NULL = 树根）；速记改造（docs/speednote-plan.md）新增
+    #[serde(default)]
+    pub folder_id: Option<i64>,
+    /// 剪藏来源 URL（普通笔记为空串）；同 URL 落库即去重键
+    #[serde(default)]
+    pub source_url: String,
+    /// 回收站标记（NULL = 正常；有值 = 已移入回收站）
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+    /// 自定义树图标（emoji，用户设置；None = 默认文件图标）
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+/// 笔记文件夹（单归属、可嵌套；builtin=1 的「剪藏」不可改名/删除，ADR 0015）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteFolder {
+    pub id: i64,
+    pub name: String,
+    pub parent_id: Option<i64>,
+    pub sort_order: i64,
+    pub builtin: bool,
+    pub created_at: String,
+}
+
+/// 回收站保留策略下的清理报告（purge_expired_notes）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PurgeReport {
+    pub purged: usize,
+}
+
+/// 双链出链项（to_note_id = None 表示「未链接提及」，引用了不存在的标题）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteLinkOut {
+    pub to_title: String,
+    pub to_note_id: Option<i64>,
+}
+
+/// 双链入链项（谁引用了我）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteLinkIn {
+    pub from_note_id: i64,
+    pub from_title: String,
+}
+
+/// 反链面板数据（get_note_links）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteLinks {
+    pub outgoing: Vec<NoteLinkOut>,
+    pub incoming: Vec<NoteLinkIn>,
+}
+
+/// 孤儿图片清理报告（先 dry_run 出报告，用户确认后再真删）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteImageGcReport {
+    pub dry_run: bool,
+    /// notes/images 下图片总数
+    pub total_files: usize,
+    /// 被活笔记（含回收站）引用的图片数
+    pub referenced: usize,
+    /// 孤儿图片文件名列表（hash.ext）
+    pub orphan_files: Vec<String>,
+    /// 真删模式下的实际删除数（dry_run = 0）
+    pub removed: usize,
+    /// 删除失败的文件数（被占用等）
+    pub failed: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -389,12 +465,14 @@ pub struct ClipboardItem {
     pub updated_at: String,
 }
 
-/// 笔记标签
+/// 笔记标签（builtin=1 的「剪藏」标签不可改名/删除）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tag {
     pub id: i64,
     pub name: String,
     pub created_at: String,
+    #[serde(default)]
+    pub builtin: bool,
 }
 
 /// 倒计时（三种形态统一建模）：

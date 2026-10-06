@@ -1164,6 +1164,12 @@ html[data-wallpaper-clear='1'] .suda-kind.file {
 .field-input { width: 100%; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: var(--input-bg); color: var(--text-1); font-size: 0.8125rem; font-family: inherit; padding: 9px 12px; outline: none; transition: border-color .18s, box-shadow .18s, background .18s; }
 .field-input:focus { border-color: var(--brand-500); box-shadow: var(--shadow-focus); background: color-mix(in srgb, var(--input-bg) 88%, #fff); }
 .field-input::placeholder { color: var(--text-4); }
+/* WebView2（Edge 内核）会在 type=password 输入框右侧自带「显示明文」原装小眼睛（::-ms-reveal），
+   与应用自绘的明文切换重复，全局隐藏；::-ms-clear 是文本框右侧的同源清除叉，一并去掉 */
+input::-ms-reveal,
+input::-ms-clear {
+  display: none;
+}
 /* 原生下拉选项：显式着色，避免暗色下 color-scheme 退化导致白底白字 */
 select option { background: var(--input-bg); color: var(--text-1); }
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 40px 16px; text-align: center; color: var(--text-3); font-size: 0.8125rem; }

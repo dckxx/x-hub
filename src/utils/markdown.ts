@@ -3,6 +3,7 @@
  */
 export function markdownPlainText(md: string, maxLen = 60): string {
   return md
+    .replace(/\u200B/g, '') // 零宽空格（空行占位符，见 NoteEditor.normalizeEmptyParagraphs）：JS \s 不含它，不清掉会派生出隐形标题/摘要
     .replace(/```[\s\S]*?(```|$)/g, ' ') // 围栏代码块（未闭合也算）
     .replace(/`([^`]*)`/g, '$1') // 行内代码保留内容
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ') // 图片整体剔除

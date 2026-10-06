@@ -933,6 +933,13 @@ fn data_todos_list(
     })
 }
 
+/// 扩展桥资源载荷统一剥离 remark：备注里存的是用户密码（secret.rs 加密落盘），
+/// 持有 data:read/write 权限的扩展不该读到明文；说明与备注标签非敏感，保留
+fn strip_resource_remark(mut r: crate::models::Resource) -> crate::models::Resource {
+    r.remark = None;
+    r
+}
+
 fn data_resources_list(
     _app: &tauri::AppHandle,
     state: &DbState,
@@ -940,7 +947,11 @@ fn data_resources_list(
     _args: Value,
 ) -> Result<Value, String> {
     data_read(state, |conn| {
-        let resources = repo::resource::list_all(conn).map_err(|e| e.to_string())?;
+        let resources = repo::resource::list_all(conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(strip_resource_remark)
+            .collect::<Vec<_>>();
         serde_json::to_value(resources).map_err(|e| e.to_string())
     })
 }
@@ -975,7 +986,7 @@ fn data_resources_get(
         .ok_or_else(|| "INVALID_ARGUMENT: 缺少 id".to_string())?;
     data_read(state, |conn| {
         let resource = repo::resource::get(conn, id).map_err(|e| e.to_string())?;
-        serde_json::to_value(resource).map_err(|e| e.to_string())
+        serde_json::to_value(strip_resource_remark(resource)).map_err(|e| e.to_string())
     })
 }
 
@@ -1593,9 +1604,13 @@ fn data_resources_create(
             icon.as_deref(),
             extra.as_deref(),
             zone_id,
+            // 扩展不得写入备注（密码）与说明：一律空
+            None,
+            None,
+            None,
         )
         .map_err(|e| e.to_string())?;
-        serde_json::to_value(resource).map_err(|e| e.to_string())
+        serde_json::to_value(strip_resource_remark(resource)).map_err(|e| e.to_string())
     })
 }
 
@@ -1630,7 +1645,12 @@ fn data_resources_update(
                 return Err(format!("NOT_FOUND: 分区 {zid} 不存在"));
             }
         }
-        let resource = repo::resource::update(
+        // 「全对象写」语义下扩展不知道备注/说明字段：先读现值原样带回，防止扩展
+        // 更新其它字段时把用户的备注（密码）与说明整体抹掉；扩展无路径改写它们。
+        // 备注透传**落盘原值**（密文/旧明文），不做解密→重加密往返
+        let existing = repo::resource::get(conn, id).map_err(|e| e.to_string())?;
+        let remark_stored = repo::resource::remark_raw(conn, id).map_err(|e| e.to_string())?;
+        let resource = repo::resource::update_with_stored_remark(
             conn,
             id,
             kind,
@@ -1640,9 +1660,12 @@ fn data_resources_update(
             icon.as_deref(),
             extra.as_deref(),
             zone_id,
+            existing.description.as_deref(),
+            remark_stored,
+            existing.remark_label.as_deref(),
         )
         .map_err(|e| e.to_string())?;
-        serde_json::to_value(resource).map_err(|e| e.to_string())
+        serde_json::to_value(strip_resource_remark(resource)).map_err(|e| e.to_string())
     })
 }
 

@@ -39,6 +39,9 @@ fn migrate(conn: &Connection) -> Result<()> {
           category TEXT,
           icon TEXT,
           args TEXT,
+          description TEXT,
+          remark TEXT,
+          remark_label TEXT,
           sort_order INTEGER NOT NULL DEFAULT 0,
           last_launched_at TEXT,
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
@@ -371,6 +374,16 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !cols.iter().any(|c| c == "zone_id") {
         conn.execute("ALTER TABLE resources ADD COLUMN zone_id INTEGER", [])?;
     }
+    // 速达「说明 / 备注 / 备注标签」（备注为 DPAPI 密文，见 secret.rs）：幂等补列
+    for (col, def) in [
+        ("description", "TEXT"),
+        ("remark", "TEXT"),
+        ("remark_label", "TEXT"),
+    ] {
+        if !cols.iter().any(|c| c == col) {
+            conn.execute(&format!("ALTER TABLE resources ADD COLUMN {col} {def}"), [])?;
+        }
+    }
 
     // 旧 chat_sessions 表缺 token 累计列：逐列补齐（ALTER TABLE ADD COLUMN 幂等）
     let chat_cols: Vec<String> = conn
@@ -538,6 +551,90 @@ fn migrate(conn: &Connection) -> Result<()> {
     // （周期展开用 `repeat_mode <> 'once'`，SQLite 不走索引），它只让每次写 todos
     // 多维护一棵 B 树。老库在这里顺手删掉。
     conn.execute("DROP INDEX IF EXISTS idx_todos_repeat", [])?;
+
+    // ---- 速记改造（docs/speednote-plan.md）：文件夹树 / 回收站 / 剪藏来源 / 双链 ----
+    // 文件夹树（ADR 0015：单归属、可嵌套不限深度、删除不级联——笔记与子文件夹在
+    // repo 层事务内上移一级，这里的 ON DELETE SET NULL 只是兜底）；builtin=1 不可改名/删除。
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS note_folders (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          parent_id INTEGER REFERENCES note_folders(id) ON DELETE SET NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          builtin INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+        );
+
+        -- 双链轻量版：引用键 = 标题（不落块 id）。to_note_id 解析到已存在标题时补上；
+        -- 引用了不存在的标题保留为「未链接提及」（to_note_id NULL），不算错。
+        CREATE TABLE IF NOT EXISTS note_links (
+          from_note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+          to_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,
+          to_title TEXT NOT NULL,
+          PRIMARY KEY (from_note_id, to_title)
+        );
+        ",
+    )?;
+    // notes 补列（老库幂等）：folder_id=NULL=树根；source_url 剪藏来源兼去重键；deleted_at 有值=在回收站
+    let note_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(notes)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !note_cols.iter().any(|c| c == "folder_id") {
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN folder_id INTEGER REFERENCES note_folders(id) ON DELETE SET NULL",
+            [],
+        )?;
+    }
+    if !note_cols.iter().any(|c| c == "source_url") {
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN source_url TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    if !note_cols.iter().any(|c| c == "deleted_at") {
+        conn.execute("ALTER TABLE notes ADD COLUMN deleted_at TEXT", [])?;
+    }
+    // 笔记自定义树图标（emoji，用户在标题旁设置；NULL = 默认文件图标）
+    if !note_cols.iter().any(|c| c == "icon") {
+        conn.execute("ALTER TABLE notes ADD COLUMN icon TEXT", [])?;
+    }
+    // 标签内置位（「剪藏」标签不可改删；老库无此列）
+    let tag_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(tags)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !tag_cols.iter().any(|c| c == "builtin") {
+        conn.execute(
+            "ALTER TABLE tags ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    // 内置项种子（幂等）：「剪藏」文件夹（树根）+「剪藏」标签。
+    // 标签种子必须先认领同名再插入：tags.name UNIQUE，老用户手动建过「剪藏」时
+    // 只查 builtin 会撞 UNIQUE → 迁移失败 → 启动死循环。
+    conn.execute_batch(
+        "
+        INSERT INTO note_folders (name, parent_id, sort_order, builtin)
+        SELECT '剪藏', NULL, 0, 1
+        WHERE NOT EXISTS (SELECT 1 FROM note_folders WHERE builtin = 1);
+        UPDATE tags SET builtin = 1 WHERE name = '剪藏' AND builtin = 0;
+        INSERT INTO tags (name, builtin)
+        SELECT '剪藏', 1
+        WHERE NOT EXISTS (SELECT 1 FROM tags WHERE name = '剪藏');
+        ",
+    )?;
+    // 索引必须在补列之后创建（老库此时才具备这些列）
+    conn.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_note_links_to ON note_links(to_note_id);
+        CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(folder_id);
+        CREATE INDEX IF NOT EXISTS idx_notes_deleted ON notes(deleted_at);
+        CREATE INDEX IF NOT EXISTS idx_notes_source_url ON notes(source_url);
+        CREATE INDEX IF NOT EXISTS idx_notes_title ON notes(title);
+        ",
+    )?;
 
     Ok(())
 }
@@ -794,6 +891,77 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM todos WHERE id IN (?1, ?2)", params![parent.id, child.id], |r| r.get(0))
             .unwrap();
         assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn legacy_notes_schema_migrates_and_seeds_builtin() {
+        // 速记改造迁移：老库（notes/tags 无新列、无 note_folders/note_links）补列 + 内置种子 +
+        // 索引，连跑两次幂等；业务层 SELECT 引用新列能通过（迁移不完整会在此暴露）。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE notes (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              title TEXT NOT NULL DEFAULT '',
+              content TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+            );
+            CREATE TABLE tags (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL UNIQUE,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+            );
+            CREATE TABLE note_tags (
+              note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+              tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+              PRIMARY KEY (note_id, tag_id)
+            );
+            INSERT INTO notes (title, content) VALUES ('老笔记', '正文');
+            INSERT INTO tags (name) VALUES ('工作');
+            ",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(notes)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap();
+        for col in ["folder_id", "source_url", "deleted_at"] {
+            assert!(cols.iter().any(|c| c == col), "notes 缺列 {col}");
+        }
+        assert!(table_exists(&conn, "note_folders"));
+        assert!(table_exists(&conn, "note_links"));
+
+        // 内置种子只一份
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM note_folders WHERE builtin = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "内置文件夹应只有一条");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tags WHERE builtin = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "内置标签应只有一条");
+
+        // 老数据无损 + 新列默认值
+        let notes = crate::repo::note::list(&conn).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].folder_id, None);
+        assert_eq!(notes[0].source_url, "");
+        assert_eq!(notes[0].deleted_at, None);
+
+        // 新能力可用：建文件夹 + 移笔记进去（外键生效）
+        let f = crate::repo::note_folder::create(&conn, "项目", None).unwrap();
+        crate::repo::note::set_folder(&conn, notes[0].id, Some(f.id)).unwrap();
+        let got = crate::repo::note::get(&conn, notes[0].id).unwrap();
+        assert_eq!(got.folder_id, Some(f.id));
     }
 
     #[test]

@@ -160,6 +160,9 @@ pub struct AppConfig {
     /// AI 对话呼出快捷键（默认 Ctrl+Shift+K，可配置，全局注册）
     #[serde(default = "default_chat_shortcut")]
     pub chat_shortcut: String,
+    /// 速记呼出快捷键（默认 Ctrl+Shift+N，可配置，全局注册；唤起主窗→切速记→聚焦新建）
+    #[serde(default = "default_notes_shortcut")]
+    pub notes_shortcut: String,
     /// 各全局快捷键是否启用（默认开）。关掉 = 注销该热键且不再注册，但**保留已录的键值**，
     /// 重新打开即恢复——比「清空键值」更明确，也不会因录错删空而悄悄失效。
     #[serde(default = "default_true")]
@@ -170,6 +173,8 @@ pub struct AppConfig {
     pub search_shortcut_enabled: bool,
     #[serde(default = "default_true")]
     pub chat_shortcut_enabled: bool,
+    #[serde(default = "default_true")]
+    pub notes_shortcut_enabled: bool,
     /// 剪贴板历史最大条数（含置顶；置顶豁免自动清理但计入上限）
     pub clipboard_max_items: i64,
     /// 非置顶记录的保留天数
@@ -179,7 +184,7 @@ pub struct AppConfig {
     /// 粘贴快捷键方式：auto(自动检测终端) / ctrl_v / ctrl_shift_v / shift_insert
     #[serde(default = "default_paste_method")]
     pub clipboard_paste_method: String,
-    /// 速达网页条目默认打开方式：panel(主窗内嵌面板) / window(独立应用内浏览器窗口)
+    /// 速达网页条目默认打开方式：panel(主窗内嵌面板) / window(独立应用内浏览器窗口) / system(系统默认浏览器)
     #[serde(default = "default_suda_web_open_mode")]
     pub suda_web_open_mode: String,
     /// 工作台「自定义速达」槽位内容配置（suda1..suda4，见 struct 注释）
@@ -204,6 +209,9 @@ pub struct AppConfig {
     /// 速记模块字体缩放系数（默认 1.0）
     #[serde(default = "one")]
     pub font_notes: f64,
+    /// 速记回收站保留天数（0 = 永久保留，默认）。启动时与设置变更时按此清理回收站
+    #[serde(default)]
+    pub note_trash_retention_days: i64,
     /// 提示词模块字体缩放系数（默认 1.0）
     #[serde(default = "one")]
     pub font_prompt: f64,
@@ -332,6 +340,11 @@ fn default_search_shortcut() -> String {
 /// AI 对话呼出快捷键默认值（与 shortcut.rs 的 DEFAULT_CHAT_SHORTCUT 同源）
 fn default_chat_shortcut() -> String {
     crate::shortcut::DEFAULT_CHAT_SHORTCUT.to_string()
+}
+
+/// 速记呼出快捷键默认值（与 shortcut.rs 的 DEFAULT_NOTES_SHORTCUT 同源）
+fn default_notes_shortcut() -> String {
+    crate::shortcut::DEFAULT_NOTES_SHORTCUT.to_string()
 }
 
 /// 通知驻留时长默认 5 秒
@@ -469,10 +482,12 @@ impl Default for AppConfig {
             clipboard_shortcut: crate::shortcut::DEFAULT_CLIPBOARD_SHORTCUT.to_string(),
             search_shortcut: crate::shortcut::DEFAULT_SEARCH_SHORTCUT.to_string(),
             chat_shortcut: crate::shortcut::DEFAULT_CHAT_SHORTCUT.to_string(),
+            notes_shortcut: crate::shortcut::DEFAULT_NOTES_SHORTCUT.to_string(),
             global_shortcut_enabled: true,
             clipboard_shortcut_enabled: true,
             search_shortcut_enabled: true,
             chat_shortcut_enabled: true,
+            notes_shortcut_enabled: true,
             clipboard_max_items: 500,
             clipboard_ttl_days: 7,
             clipboard_paused: false,
@@ -485,6 +500,7 @@ impl Default for AppConfig {
             font_scale: 1.0,
             font_sticky: 1.0,
             font_notes: 1.0,
+            note_trash_retention_days: 0,
             font_prompt: 1.0,
             font_todo: 1.0,
             note_editor_mode: default_note_editor_mode(),

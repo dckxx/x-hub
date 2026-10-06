@@ -257,6 +257,10 @@
   font-weight: 700;
   color: var(--text-1);
 }
+/* 与上一节拉开更大间距的分区标题（如「速记维护」跟在导入导出之后） */
+.settings-view .sv-sec-title.gap-above{
+  margin-top: 28px;
+}
 .settings-view .sv-sec-title::before{
   content: '';
   width: 3px;

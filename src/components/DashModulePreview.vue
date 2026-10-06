@@ -497,9 +497,8 @@ const kind = computed(() => {
 
     <!-- ===== 最近使用 ===== -->
     <template v-else-if="kind === 'recent'">
-      <header class="hd hd-split" :class="{ 'hd-float': hideTitle }">
-        <h3 v-if="!hideTitle" class="hd-title"><Flame class="ic" /><span>{{ title ?? '最近使用' }}</span></h3>
-        <span class="hd-btn"><ArrowRight class="ic" /></span>
+      <header v-if="!hideTitle" class="hd">
+        <h3 class="hd-title"><Flame class="ic" /><span>{{ title ?? '最近使用' }}</span></h3>
       </header>
       <div v-if="recentList.length" class="rb-body">
         <div v-for="r in recentList" :key="r.id" class="rb-card">
@@ -1534,20 +1533,18 @@ html[data-theme='dark'] .dpv {
   color: var(--brand-500);
 }
 
-/* ---- 最近使用 ---- */
+/* ---- 最近使用（与真卡同款 grid：minmax 下限计列、1fr 均摊富余宽，整行铺满） ---- */
 .rb-body {
   flex: 1;
   min-height: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-content: flex-start;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(calc(72 * var(--u)), 1fr));
+  grid-auto-rows: calc(80 * var(--u));
   gap: calc(10 * var(--u));
   overflow: hidden;
-  align-items: flex-start;
 }
 .rb-card {
-  width: calc(72 * var(--u));
-  flex-shrink: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;

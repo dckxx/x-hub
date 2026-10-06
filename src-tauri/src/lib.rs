@@ -20,6 +20,7 @@ mod float_window;
 pub mod market;
 mod models;
 mod net;
+mod note_io;
 mod notify;
 mod online;
 mod paths;
@@ -29,6 +30,7 @@ mod proxy;
 mod publisher;
 mod repo;
 mod runtime;
+mod secret;
 mod service;
 mod shortcut;
 pub mod signing;
@@ -517,6 +519,29 @@ pub fn run() {
             // 本机源码目录重放：资产作用域放行不落盘，重启必须按配置重新放行
             extension::apply_dev_extensions(app.handle());
 
+            // 速记改造启动维护（幂等、轻量）：按保留天数清回收站 + 存量笔记补建双链索引。
+            // 延后 15s：避开启动期 DB 锁争抢（与图标清扫同节奏）。
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    let state = handle.state::<DbState>();
+                    let lock = state.0.lock();
+                    let Ok(conn) = lock else {
+                        return;
+                    };
+                    let days = config::load().note_trash_retention_days;
+                    match crate::repo::note::purge_expired(&conn, days) {
+                        Ok(n) if n > 0 => log::info!("回收站启动清理: {n} 条（保留 {days} 天）"),
+                        Ok(_) => {}
+                        Err(e) => log::warn!("回收站启动清理失败: {e}"),
+                    }
+                    if let Err(e) = crate::repo::note_link::reindex_all(&conn) {
+                        log::warn!("笔记双链索引重建失败: {e}");
+                    }
+                });
+            }
+
             // 账号会话启动校验（异步，不阻塞窗口创建）：token 失效则静默清理
             let account_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -691,6 +716,12 @@ pub fn run() {
                 crate::tray::show_window(&app_handle);
             });
 
+            // 速记快捷键事件：唤起主窗（切速记视图 + 聚焦新建由主窗前端收到同名事件后做）
+            let app_handle = app.handle().clone();
+            app.listen("notes-shortcut", move |_| {
+                crate::tray::show_window(&app_handle);
+            });
+
             // AI 对话快捷键事件：抽屉形态先唤起主窗（面板在主窗里）；
             // 独立窗口形态不弹主窗，由主窗前端收到事件后直接唤起对话小窗
             let app_handle = app.handle().clone();
@@ -740,6 +771,7 @@ pub fn run() {
             commands::get_initial_data,
             commands::create_resource,
             commands::update_resource,
+            commands::get_resource_remark,
             commands::delete_resource,
             commands::reorder_resources,
             commands::launch_resource,
@@ -747,9 +779,32 @@ pub fn run() {
             commands::list_installed_browsers,
             commands::open_url_with_browser,
             commands::create_note,
+            commands::create_note_in,
             commands::update_note,
             commands::delete_note,
             commands::list_notes,
+            commands::get_note,
+            // 速记改造：回收站 / 文件夹树 / 图片 GC / 双链（docs/speednote-plan.md）
+            commands::trash_note,
+            commands::restore_note,
+            commands::purge_note,
+            commands::purge_expired_notes,
+            commands::list_trashed_notes,
+            commands::list_note_folders,
+            commands::create_note_folder,
+            commands::rename_note_folder,
+            commands::delete_note_folder,
+            commands::reorder_note_folders,
+            commands::set_note_folder,
+            commands::set_note_icon,
+            commands::purge_all_trashed_notes,
+            commands::gc_orphan_note_images,
+            commands::get_note_links,
+            commands::rebuild_note_links,
+            // 速记导出/导入（docs/speednote-plan.md §8，限定自有产物）
+            note_io::export_notes,
+            note_io::import_notes,
+            note_io::import_notes_cancel,
             commands::list_todos,
             commands::create_todo,
             commands::toggle_todo,
@@ -805,6 +860,7 @@ pub fn run() {
             commands::set_global_shortcut,
             commands::set_search_shortcut,
             commands::set_chat_shortcut,
+            commands::set_notes_shortcut,
             commands::set_shortcut_enabled,
             commands::get_run_at_startup,
             commands::set_run_at_startup,
@@ -830,6 +886,7 @@ pub fn run() {
             commands::get_running_processes,
             commands::list_tags,
             commands::create_tag,
+            commands::rename_tag,
             commands::delete_tag,
             commands::get_note_tags,
             commands::set_note_tags,
@@ -846,6 +903,7 @@ pub fn run() {
             commands::set_chat_session_model,
             commands::list_chat_messages,
             commands::send_chat_message,
+            commands::ai_transform_note,
             commands::get_chat_models,
             commands::save_chat_models,
             commands::fetch_chat_provider_models,

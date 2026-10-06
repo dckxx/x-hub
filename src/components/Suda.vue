@@ -988,7 +988,7 @@ function openAddForm() {
   formVisible.value = true
 }
 
-function onFormSubmit(payload: {
+async function onFormSubmit(payload: {
   id?: number
   kind: 'app' | 'web' | 'file'
   name: string
@@ -997,18 +997,27 @@ function onFormSubmit(payload: {
   icon?: string | null
   args?: string | null
   zoneId?: number | null
+  description?: string | null
+  remark?: string | null
+  remarkLabel?: string | null
 }) {
-  if (payload.id != null) {
-    void store.editResource({ ...payload, id: payload.id })
-    showToast(`已更新「${payload.name}」`)
-  } else {
-    void store.addResource(payload).then((r) => {
+  try {
+    if (payload.id != null) {
+      await store.editResource({ ...payload, id: payload.id })
+      showToast(`已更新「${payload.name}」`)
+    } else {
+      const r = await store.addResource(payload)
       showToast(`已添加「${payload.name}」`)
       // 新增网页且没配图标：后台抓 favicon 自动补齐（远程协议 smb/ftp 无站点图标）
       if (r.kind === 'web' && !r.icon && isHttpWebTarget(r.target)) void fillWebFavicons([r])
-    })
+    }
+    // 保存成功才关窗：失败时（如备注加密失败/库忙）输入保留在弹窗里可重试，
+    // 弹窗自己的关闭按钮仍走 @close
+    formVisible.value = false
+    prefill.value = null
+  } catch (e) {
+    showToast(`保存「${payload.name}」失败：${e instanceof Error ? e.message : String(e)}`)
   }
-  prefill.value = null
 }
 
 // ---- 扫描导入（已安装应用 / 桌面 / 浏览器书签）----
@@ -1411,7 +1420,7 @@ function cardAccentStyle(r: Resource) {
                     selected: batchMode && batchChecked.has(r.id),
                   }"
                   :data-id="r.id"
-                  :title="r.target"
+                  :title="r.description ? `${r.name}\n${r.description}\n${r.target}` : r.target"
                   role="button"
                   tabindex="0"
                   :aria-pressed="batchMode ? batchChecked.has(r.id) : undefined"

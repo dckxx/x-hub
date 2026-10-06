@@ -127,12 +127,10 @@ function shift(delta: number, e: MouseEvent) {
   cursor.value = d
 }
 
-/** 每格最多渲染的 chip 数（真实条目优先，剩余额度给虚拟实例） */
-const MAX_CHIPS = 2
+/** 横排只显示一条标题，真实条目优先，其余合并为 +N。 */
+const MAX_CHIPS = 1
 
-/** 每格要渲染的 chip 与「还有几条」：真实 + 虚拟合计口径，
- *  余数必须按**实际渲染条数**算——真实 2 条 + 虚拟 2 条时只画 2 条、显示 +2，
- *  不能按「各自截断」算成画 4 条还显示 +2。 */
+/** 每格的标题与余数：真实、虚拟合计减去实际渲染条数。 */
 const chipsByDay = computed(() => {
   const map = new Map<string, { real: Todo[]; virtual: TodoOccurrence[]; more: number }>()
   for (const c of cells.value) {
@@ -145,6 +143,20 @@ const chipsByDay = computed(() => {
       virtual: virtualShown,
       more: real.length + virtual.length - realShown.length - virtualShown.length,
     })
+  }
+  return map
+})
+
+const summaryByDay = computed(() => {
+  const map = new Map<string, string>()
+  for (const c of cells.value) {
+    const titles = (realByDay.value.get(c.key) ?? []).map((t) =>
+      `${t.title}${t.done ? '（已完成）' : isOverdue(t) ? '（逾期）' : ''}`,
+    )
+    titles.push(...(virtualByDay.value.get(c.key) ?? []).map((o) =>
+      `${titleOf.value.get(o.todo_id) ?? '周期待办'}（周期实例）`,
+    ))
+    if (titles.length) map.set(c.key, `${c.key}\n${titles.join('\n')}`)
   }
   return map
 })
@@ -175,6 +187,7 @@ const chipsByDay = computed(() => {
         :key="c.key"
         class="tc-cell"
         :class="{ out: c.out, today: c.today, 'has-overdue': overdueByDay.has(c.key) }"
+        :title="summaryByDay.get(c.key)"
       >
         <span class="tc-day">{{ c.day }}</span>
         <div class="tc-chips">
@@ -183,13 +196,11 @@ const chipsByDay = computed(() => {
             :key="'r' + t.id"
             class="tc-chip real"
             :class="{ done: t.done, late: isOverdue(t) }"
-            :title="t.done ? `${t.title}（已完成）` : t.title"
           >{{ t.title }}</span>
           <span
             v-for="o in (chipsByDay.get(c.key)?.virtual ?? [])"
             :key="'v' + o.todo_id + o.at_ms"
             class="tc-chip virtual"
-            :title="`${titleOf.get(o.todo_id) ?? '周期待办'}（虚拟实例）`"
           >{{ titleOf.get(o.todo_id) ?? '周期待办' }}</span>
           <span v-if="(chipsByDay.get(c.key)?.more ?? 0) > 0" class="tc-more-cnt">
             +{{ chipsByDay.get(c.key)?.more }}
@@ -279,6 +290,9 @@ const chipsByDay = computed(() => {
   text-align: center;
 }
 .tc-cell {
+  display: flex;
+  align-items: center;
+  gap: 3px;
   min-width: 0;
   min-height: 0;
   padding: 2px 3px;
@@ -300,6 +314,7 @@ const chipsByDay = computed(() => {
   background: color-mix(in srgb, var(--c-red-soft) 50%, var(--bg-card-soft));
 }
 .tc-day {
+  flex-shrink: 0;
   /* 独立行盒避免继承正文行高，紧凑格子也能容纳完整日期。 */
   display: block;
   font-size: 0.5625rem;
@@ -309,14 +324,18 @@ const chipsByDay = computed(() => {
 }
 .tc-chips {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
 }
 .tc-chip {
+  flex: 1;
+  min-width: 0;
   display: block;
   padding: 0 3px;
-  font-size: 0.5rem;
-  line-height: 1.5;
+  font-size: 0.6875rem;
+  line-height: 14px;
   border-radius: 3px;
   border: 1px solid var(--brand-500);
   background: var(--brand-50);
@@ -342,6 +361,7 @@ const chipsByDay = computed(() => {
   text-decoration: line-through;
 }
 .tc-more-cnt {
+  flex-shrink: 0;
   font-size: 0.5rem;
   color: var(--text-4);
 }

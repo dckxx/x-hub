@@ -3985,6 +3985,9 @@ pub async fn send_chat_message(
 /// 「新会话默认模型」同一套（`default_session_model_name` → `pick_chat_model`）。
 /// 流式增量经 Channel 推送（Chunk），invoke 返回值即完整整理结果；失败返回 Err（前端可保留 partial）。
 /// 注意：整理的提示词把「逐字保留 URL/密钥/账号等技术信息」作为硬约束——这类内容改一个字符就是事故。
+/// 图片语法 `![说明](地址)` 同样列入硬约束：模型曾把图片压成裸地址（URL 一字不差但图片不再显示，
+/// 因为 Crepe 只认 `![...](...)` 才渲染成图片），前端 `noteImageSyntax.ts` 另有按原稿的回收兜底——
+/// 两层是**互补**的：提示词管「尽量别写坏」，回收管「已经写坏了也救回来」，缺一个都会复发。
 #[tauri::command]
 pub async fn ai_transform_note(
     content: String,
@@ -4016,6 +4019,9 @@ pub async fn ai_transform_note(
 你是笔记整理助手。把用户提供的笔记内容重组为清晰、结构化的 Markdown：\
 按主题分组，用标题与列表组织同一条目下的多项信息；\
 必须逐字保留所有 URL、密钥、账号、电话、邮箱、代码等技术信息，不得改写、省略、合并或翻译任何事实内容；\
+图片必须原样保留 Markdown 图片语法 ![说明](地址)，不得改写成链接、纯地址或直接省略，也不要改动其中的地址——\
+语法一改图片就不显示（笔记图片地址形如 http://xhub-note.localhost/xxx.png，把它写成裸地址同样是错的）；\
+说明文字没有就留空写成 ![](地址)；\
 原文没有的信息不要编造。只输出整理后的 Markdown 正文，不要任何解释，也不要包代码围栏。";
     let message = crate::models::ChatMessage {
         id: 0,

@@ -567,10 +567,14 @@ function onTreeKeydown(e: KeyboardEvent) {
 
 // ---- 指针拖拽（非 HTML5 DnD，见组件头注释） ----
 type DragItem = { kind: 'note'; id: number } | { kind: 'folder'; id: number }
+type DropHint = { rowKey: string; mode: 'into' | 'before' | 'after' | 'root' }
 interface DropPlan {
   kind: 'into' | 'before' | 'after' | 'root'
   targetFolderId: number | null
   targetId: number | null
+  /** 落点提示的渲染目标行：必须跟着光标命中的行走——提示打在别处
+   *  （如父文件夹行/树头）时目标行一滚出可视区，落点指示就整体消失（实测反馈） */
+  hint: DropHint
 }
 let dragItem: DragItem | null = null
 let dragStart: { x: number; y: number } | null = null
@@ -578,7 +582,9 @@ let dragPlan: DropPlan | null = null
 const dragActive = ref(false)
 const dragPos = ref({ x: 0, y: 0 })
 const dragLabel = ref('')
-const dropHint = ref<{ rowKey: string; mode: DropPlan['kind'] } | null>(null)
+const dropHint = ref<DropHint | null>(null)
+/** ghost 浮签上的落点名（「→ 个人」）：唯一保证任何滚动位置都可见的落点反馈 */
+const dragTargetName = ref('')
 
 function folderRowKey(id: number) {
   return `folder:${id}`
@@ -626,13 +632,15 @@ function onDragMove(e: PointerEvent) {
   }
   dragPos.value = { x: e.clientX, y: e.clientY }
   dragPlan = hitTest(e)
-  dropHint.value = dragPlan ? hintFor(dragPlan) : null
+  dropHint.value = dragPlan?.hint ?? null
+  dragTargetName.value = planTargetName(dragPlan)
 }
 
-function hintFor(plan: DropPlan): { rowKey: string; mode: DropPlan['kind'] } {
-  if (plan.kind === 'root') return { rowKey: 'root', mode: 'root' }
-  const isFolder = props.folders.some((f) => f.id === plan.targetId)
-  return { rowKey: isFolder ? folderRowKey(plan.targetId!) : noteRowKey(plan.targetId!), mode: plan.kind }
+/** ghost 浮签的落点名：into/before/after = 目标文件夹名，root = 根目录 */
+function planTargetName(plan: DropPlan | null): string {
+  if (!plan) return ''
+  if (plan.kind === 'root') return '根目录'
+  return props.folders.find((f) => f.id === plan.targetId)?.name ?? ''
 }
 
 /** 拖拽会话内的行顶距缓存：hitTest 行间隙命中时按缓存取「上方最近行」，
@@ -653,7 +661,9 @@ function hitTest(e: PointerEvent): DropPlan | null {
   const el = document.elementFromPoint(e.clientX, e.clientY)
   if (!el) return null
   // 树头（速记标题区）= 树根
-  if (el.closest('.nft-header')) return { kind: 'root', targetFolderId: null, targetId: null }
+  if (el.closest('.nft-header')) {
+    return { kind: 'root', targetFolderId: null, targetId: null, hint: { rowKey: 'root', mode: 'root' } }
+  }
   const row = el.closest<HTMLElement>('[data-drop-folder]')
   if (row) {
     const fid = Number(row.dataset.dropFolder)
@@ -662,10 +672,10 @@ function hitTest(e: PointerEvent): DropPlan | null {
     if (dragItem?.kind === 'folder') {
       if (fid === dragItem.id) return null
       // 文件夹拖文件夹：整行默认「移入子目录」，贴近行上/下边缘（15%）才是同层排序
-      if (rel < 0.15) return { kind: 'before', targetFolderId: null, targetId: fid }
-      if (rel > 0.85) return { kind: 'after', targetFolderId: null, targetId: fid }
+      if (rel < 0.15) return { kind: 'before', targetFolderId: null, targetId: fid, hint: { rowKey: folderRowKey(fid), mode: 'before' } }
+      if (rel > 0.85) return { kind: 'after', targetFolderId: null, targetId: fid, hint: { rowKey: folderRowKey(fid), mode: 'after' } }
     }
-    return { kind: 'into', targetFolderId: fid, targetId: fid }
+    return { kind: 'into', targetFolderId: fid, targetId: fid, hint: { rowKey: folderRowKey(fid), mode: 'into' } }
   }
   // 行外（行间隙/树体空白）：取「鼠标上方最近的行」判落点——
   //  - 文件夹行 = 移入该文件夹（「拖到目录下面就应该进目录」，用户口径，实测反馈）
@@ -687,14 +697,22 @@ function hitTest(e: PointerEvent): DropPlan | null {
   }
   if (nearest?.hasAttribute('data-drop-folder')) {
     const fid = Number(nearest.dataset.dropFolder)
-    return { kind: 'into', targetFolderId: fid, targetId: fid }
+    return { kind: 'into', targetFolderId: fid, targetId: fid, hint: { rowKey: folderRowKey(fid), mode: 'into' } }
   }
-  if (nearest?.hasAttribute('data-note-folder')) {
-    const fid = Number(nearest.dataset.noteFolder)
-    return { kind: 'into', targetFolderId: fid, targetId: fid }
+  if (nearest?.hasAttribute('data-note-id')) {
+    // 笔记行的 data-note-folder 在树根笔记上为 null → Vue 移除该属性，故以 data-note-id
+    // 认定笔记行、再读 folder 值：'' / 缺值 = 树根落点
+    const raw = nearest.dataset.noteFolder
+    const nid = Number(nearest.dataset.noteId)
+    const fid = raw == null || raw === '' ? null : Number(raw)
+    const hint = { rowKey: noteRowKey(nid), mode: 'into' as const }
+    // 根目录笔记行 = 树根落点：提示打在该笔记行上。树头（另一处 root 提示）在树体之外、
+    // 长树滚到底时不在光标附近，光靠它等于「底部拖拽看不到落点」（实测反馈）
+    if (fid == null || Number.isNaN(fid)) return { kind: 'root', targetFolderId: null, targetId: null, hint }
+    return { kind: 'into', targetFolderId: fid, targetId: fid, hint }
   }
-  // 根目录笔记行 / 树体最顶部 / 底部空白 = 树根
-  return { kind: 'root', targetFolderId: null, targetId: null }
+  // 无邻近行（树体最顶部/底部空白）= 树根：提示打树头（此时树头就在光标上方不远处）
+  return { kind: 'root', targetFolderId: null, targetId: null, hint: { rowKey: 'root', mode: 'root' } }
 }
 
 function onDragUp() {
@@ -764,12 +782,17 @@ function finishDrag() {
   dragPlan = null
   dragActive.value = false
   dropHint.value = null
+  dragTargetName.value = ''
 }
 
 function hintClass(row: Row): string {
   const hint = dropHint.value
-  if (!hint || hint.mode === 'root' || row.kind !== 'folder') return ''
-  return hint.rowKey === folderRowKey(row.folder.id) ? `nft-drop-${hint.mode}` : ''
+  if (!hint || row.kind === 'create') return ''
+  const key = row.kind === 'folder' ? folderRowKey(row.folder.id) : noteRowKey(row.note.id)
+  if (hint.rowKey !== key) return ''
+  // root 落点（回根目录）落在笔记行上时用「移入」同款高亮反馈：树头虚线框在树体之外，
+  // 长树滚到底时光标附近什么都没有，等于「看不到落点」（实测反馈）
+  return `nft-drop-${hint.mode === 'root' ? 'into' : hint.mode}`
 }
 
 function onRowKeydownRow(e: KeyboardEvent, row: Row) {
@@ -805,7 +828,7 @@ export default { name: 'NoteFolderTree' }
   >
     <header
       class="nft-header"
-      :class="{ 'nft-drop-root': dropHint?.mode === 'root' && !trashMode && !filterActive }"
+      :class="{ 'nft-drop-root': dropHint?.mode === 'root' && dropHint.rowKey === 'root' && !trashMode && !filterActive }"
       title="根目录：未归入文件夹的笔记都在这里"
       @click="emit('select-folder', null)"
       @contextmenu="openBodyMenu"
@@ -1097,7 +1120,7 @@ export default { name: 'NoteFolderTree' }
           <div
             v-else
             class="nft-row nft-note-row"
-            :class="{ active: row.note.id === activeNoteId }"
+            :class="[{ active: row.note.id === activeNoteId }, hintClass(row)]"
             :style="{ paddingLeft: `${row.depth * 14 + 22}px` }"
             :data-note-id="row.note.id"
             :data-note-folder="row.note.folder_id"
@@ -1123,7 +1146,7 @@ export default { name: 'NoteFolderTree' }
       </template>
     </div>
 
-    <!-- 拖拽幽灵 -->
+    <!-- 拖拽幽灵：落点名跟随显示（长树滚到底时行内高亮可能不在光标附近，浮签是兜底反馈） -->
     <Teleport to="body">
       <div
         v-if="dragActive"
@@ -1131,6 +1154,7 @@ export default { name: 'NoteFolderTree' }
         :style="{ left: `${dragPos.x + 10}px`, top: `${dragPos.y + 8}px` }"
       >
         {{ dragLabel }}
+        <span v-if="dragTargetName" class="nft-ghost-target">→ {{ dragTargetName }}</span>
       </div>
     </Teleport>
 
@@ -1518,6 +1542,11 @@ button.nft-sp-act:hover {
   font-size: 12px;
   border: 1px solid var(--brand-500);
   box-shadow: var(--shadow-card);
+}
+.nft-ghost-target {
+  margin-left: 6px;
+  color: var(--brand-500);
+  font-weight: 600;
 }
 </style>
 

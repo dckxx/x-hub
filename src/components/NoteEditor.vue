@@ -17,6 +17,7 @@ import { useStore } from '../stores/workbench'
 import { normalizeShortcutDisplay } from '../composables/useShortcutRecorder'
 import { attachBlockDrag } from '../utils/blockDrag'
 import { beautifyNoteMarkdown } from '../utils/markdownBeautify'
+import { restoreNoteImageSyntax } from '../utils/noteImageSyntax'
 import { expandOnEnter, matchWysiwygLine, type LineShortcut } from '../utils/markdownEnter'
 import { loosenHtmlBreaks, renderNoteMarkdown, restoreCrepeMarkdown } from '../utils/markdownHtml'
 import { deriveNoteTitle } from '../utils/markdown'
@@ -831,12 +832,23 @@ type AiTransformState = 'idle' | 'streaming' | 'done' | 'error'
 const aiState = ref<AiTransformState>('idle')
 const aiResult = ref('')
 const aiError = ref('')
+/** 发起整理时的原稿：模型输出会把图片压成裸地址，回收图片语法要按原稿比对（见 utils/noteImageSyntax） */
+const aiSource = ref('')
 /** 关闭弹层即放弃：迟到的流式增量与返回值一律丢弃（后端那次请求自然跑完，与对话面板同语义）。
  *  用自增请求序号而非共享布尔：关闭后立刻重开时旧请求的闭包还活着，共享布尔被重开
  *  置回 false 会让旧请求的增量与返回值串进新流（旧结果覆盖新结果） */
 let aiRequestSeq = 0
 
-const aiMarkdown = computed(() => unwrapModelMarkdown(aiResult.value))
+/** 弹层展示与应用共用这一份口径：先剥模型自加的外层围栏，再按原稿回收被压扁的图片语法。
+ *  少任何一步都会让「预览看着对、应用下去图片没了」或反之 */
+const aiMarkdown = computed(() =>
+  restoreNoteImageSyntax(aiSource.value, unwrapModelMarkdown(aiResult.value)),
+)
+/** 回收确实改动了模型输出 = 模型又写坏了图片语法（提示词没拦住），应用时给用户一句交代，
+ *  而不是悄悄改掉他要应用的内容 */
+const aiImagesRestored = computed(
+  () => aiState.value === 'done' && aiMarkdown.value !== unwrapModelMarkdown(aiResult.value),
+)
 const aiPreviewHtml = computed(() => renderNoteMarkdown(aiMarkdown.value))
 
 /** 模型偶尔无视指令把结果包进 ```markdown 围栏，应用前剥掉。白名单只收
@@ -852,6 +864,7 @@ async function openAiTransform() {
   if (!props.note || !canBeautify.value || aiState.value === 'streaming') return
   const current = collectContentForSave()
   const seq = ++aiRequestSeq
+  aiSource.value = current
   aiResult.value = ''
   aiError.value = ''
   aiState.value = 'streaming'
@@ -878,11 +891,14 @@ function closeAiDialog() {
   // 序号自增即作废在途请求的增量与返回值
   aiRequestSeq++
   aiState.value = 'idle'
+  // 原稿可能很长（上限 3000 条笔记里最长的那篇），关闭后没有留存价值——下次发起会重取
+  aiSource.value = ''
 }
 
 function applyAiResult() {
   const md = aiMarkdown.value
   if (!md) return
+  const restored = aiImagesRestored.value
   if (mode.value === 'wysiwyg') {
     // 整篇单事务替换（一步撤销）；失败不落任何改动
     if (!replaceWholeDocWithMarkdown(md)) {
@@ -898,6 +914,7 @@ function applyAiResult() {
       el?.setSelectionRange(0, 0)
     })
   }
+  if (restored) showToast?.('已自动修回被改写掉的图片，应用后请确认图片显示正常')
   closeAiDialog()
 }
 
@@ -1904,6 +1921,9 @@ function onEditorAreaMouseDown(e: MouseEvent) {
           <div class="ai-body" aria-live="polite">
             <p v-if="aiState === 'streaming' && !aiResult" class="ai-status">正在整理…</p>
             <div v-else class="ai-preview md-preview" v-html="aiPreviewHtml"></div>
+            <p v-if="aiImagesRestored" class="ai-restored">
+              模型把图片改写成了纯网址，上方预览已按原样修回图片。
+            </p>
             <p v-if="aiState === 'error'" class="ai-error">整理失败：{{ aiError }}（上面是已生成的部分，可关闭后重试）</p>
           </div>
           <footer class="ai-foot">
@@ -2653,6 +2673,13 @@ function onEditorAreaMouseDown(e: MouseEvent) {
   font-size: 12px;
   line-height: 1.6;
   color: var(--c-red);
+}
+/* 图片语法被模型改写、已自动修回：中性提示（不是错误，用弱化字色 + 警示橙图标语义靠文案表达） */
+.ai-restored {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--c-orange);
 }
 .ai-foot {
   display: flex;

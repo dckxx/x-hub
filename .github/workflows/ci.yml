@@ -17,7 +17,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 24：下面的 test:utils 用 node --test 直接加载 .ts 源码（原生类型剥离），
+          # Node 20 不支持、会 ERR_UNKNOWN_FILE_EXTENSION。构建产物不受影响（release.yml 仍走 20）
+          node-version: 24
           cache: npm
 
       - name: Setup Rust
@@ -35,6 +37,10 @@ jobs:
       # 安全回归（tests/security.test.mjs）：此前只存在于 package.json，CI 从未执行
       - name: Frontend security tests
         run: npm run test:security
+
+      # 纯函数单测（图片语法回收 / 一键美化）：同为「零依赖 TS 源码直接加载」，不依赖构建产物
+      - name: Frontend util tests
+        run: npm run test:utils
 
       - name: Rust check
         run: cargo check --manifest-path src-tauri/Cargo.toml

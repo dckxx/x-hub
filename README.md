@@ -156,7 +156,7 @@ src-tauri/
 
 使用中遇到问题、有功能建议，或想交流效率工具心得，欢迎加入 **x-hub 交流群**：
 
-<img width="360" height="544" alt="image" src="https://github.com/user-attachments/assets/40bdd42e-6bba-49bb-b8ba-292f12e04cc2" />
+<img width="360" height="544" alt="群聊：x-hub交流 ② 群" src="assets/wechat-group-qr.png" />
 
 
 

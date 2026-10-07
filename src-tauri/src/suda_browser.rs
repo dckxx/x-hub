@@ -163,7 +163,7 @@ fn init_panel(app: &AppHandle) {
             {
                 // 收缩对象必须精确到「新加入的面板」：setup 阶段主 webview 同样处于
                 // 未可见状态，按可见性过滤会误伤主视图（实测整窗空白，2026-10-07）。
-                let before = vbox_webview_ptrs(main);
+                let before = vbox_webview_ptrs(&main);
                 shrink_hidden_panel_out_of_layout(&main, &before);
             }
             log::info!("速达网页面板 webview 预创建完成");

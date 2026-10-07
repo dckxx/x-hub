@@ -809,6 +809,10 @@ function onEditorClick(e: MouseEvent) {
   if (previewSrc.value) return
   const target = e.target
   if (!(target instanceof Element)) return
+  // 代码块 Copy 按钮：点击后补「已复制」提示（剪贴板写入由 Crepe 完成）
+  if (target.closest('.milkdown-code-block .tools-button-group button')) {
+    showToast?.('已复制')
+  }
   const block = target.closest<HTMLElement>('.milkdown-image-block')
   if (block) {
     // caption 输入框、右上角操作按钮（说明开关）不触发预览
@@ -964,17 +968,6 @@ const EDITOR_FLOAT_UI_SELECTOR =
   '.milkdown-block-handle, .milkdown-slash-menu, .milkdown-toolbar, .milkdown-link-edit, ' +
   '.milkdown-link-preview, .milkdown-image-block, .crepe-image-block, .ProseMirror-gapcursor'
 
-// 代码块工具条上的 Copy 按钮（Crepe 内建）只改按钮态、无成功提示；这里委托点击
-// 补一个应用内 toast。剪贴板写入由 Crepe 自己完成（Linux/Windows 实测可用），
-// toast 采用乐观提示，与提示词卡片的「已复制」同口径。
-const showToast = inject<((msg: string) => void) | null>('showToast', null)
-function onEditorClick(e: MouseEvent) {
-  const target = e.target
-  if (!(target instanceof Element)) return
-  if (target.closest('.milkdown-code-block .tools-button-group button')) {
-    showToast?.('已复制')
-  }
-}
 
 function onEditorAreaMouseDown(e: MouseEvent) {
   if (e.button !== 0) return

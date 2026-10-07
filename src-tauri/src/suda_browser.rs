@@ -152,6 +152,10 @@ fn init_panel(app: &AppHandle) {
             let _ = nw_app.emit_to("main", "suda-panel-newwindow", url.as_str());
             NewWindowResponse::Deny
         });
+    // 收缩对象必须精确到「新加入的面板」：快照须在 add_child 之前采集——
+    // setup 阶段主 webview 同样未可见，按可见性过滤会误伤主视图（实测整窗空白）。
+    #[cfg(target_os = "linux")]
+    let before = vbox_webview_ptrs(&main);
     match main.add_child(
         builder,
         LogicalPosition::new(0.0, 0.0),
@@ -160,12 +164,7 @@ fn init_panel(app: &AppHandle) {
         Ok(wv) => {
             let _ = wv.hide();
             #[cfg(target_os = "linux")]
-            {
-                // 收缩对象必须精确到「新加入的面板」：setup 阶段主 webview 同样处于
-                // 未可见状态，按可见性过滤会误伤主视图（实测整窗空白，2026-10-07）。
-                let before = vbox_webview_ptrs(&main);
-                shrink_hidden_panel_out_of_layout(&main, &before);
-            }
+            shrink_hidden_panel_out_of_layout(&main, &before);
             log::info!("速达网页面板 webview 预创建完成");
         }
         Err(e) => log::warn!("速达网页面板 webview 预创建失败: {e}"),

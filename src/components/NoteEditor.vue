@@ -1658,7 +1658,7 @@ html[data-wallpaper-clear='1'] .crepe-root .milkdown {
 
 /* 透底态：代码块跟随浮层换深玻璃实底（覆盖上面的 --bg-code 卡片底） */
 html[data-wallpaper-clear='1'] .crepe-root .milkdown .milkdown-code-block {
-  background: rgba(28, 29, 41, 0.92);
+  background: var(--crepe-color-surface);
   border-color: transparent;
 }
 

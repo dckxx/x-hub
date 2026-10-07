@@ -2827,6 +2827,31 @@ html[data-wallpaper-clear='1'] .crepe-root .milkdown {
   min-width: 0;
 }
 
+/* 代码块卡片化：对齐分屏预览 .md-code 的观感。surface 默认映射 --input-bg，
+   与 .crepe-root 背景同色，亮色下代码块「白底叠白底」整块隐形（只剩行号）；
+   这里直接给卡片底/描边/圆角，CodeMirror 主体与行号槽改透出卡片底色。 */
+.crepe-root .milkdown .milkdown-code-block {
+  background: var(--bg-code);
+  border: 1px solid var(--code-border);
+  border-radius: 8px;
+}
+
+.crepe-root .milkdown .milkdown-code-block .cm-editor,
+.crepe-root .milkdown .milkdown-code-block .cm-gutters {
+  background: transparent;
+}
+
+/* 语言芯片与分屏预览的语言头同口径：常显（Crepe 默认 hover 才出现） */
+.crepe-root .milkdown .milkdown-code-block .tools .language-button {
+  opacity: 1;
+}
+
+/* 透底态：代码块跟随浮层换深玻璃实底（覆盖上面的 --bg-code 卡片底） */
+html[data-wallpaper-clear='1'] .crepe-root .milkdown .milkdown-code-block {
+  background: rgba(28, 29, 41, 0.92);
+  border-color: transparent;
+}
+
 .crepe-root .milkdown .cm-editor,
 .crepe-root .milkdown .cm-scroller {
   max-width: 100%;

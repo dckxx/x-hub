@@ -804,6 +804,8 @@ function onResizeUp() {
 
 // ---- 点击图片预览（lightbox）----
 const previewSrc = ref('')
+// Copy 按钮提示用（showToast 由应用壳 provide）
+const showToast = inject<((msg: string) => void) | null>('showToast', null)
 
 function onEditorClick(e: MouseEvent) {
   if (previewSrc.value) return

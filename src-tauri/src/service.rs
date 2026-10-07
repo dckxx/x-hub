@@ -256,7 +256,7 @@ pub fn start_service(
         }
     };
 
-    // 先以 ready=false 入库并立即返回端口：netsh 放行（可 1s+）与探活（最长 10s）
+    // 先以 ready=false 入库并立即返回端口：防火墙放行与探活（最长 10s）
     // 都不占用命令线程（read_extension_entry 懒启动路径），后台线程完成后回填 ready
     {
         let mut map = state.0.lock().map_err(|e| e.to_string())?;
@@ -380,32 +380,94 @@ fn firewall_rule_name(ext_id: &str) -> String {
     format!("x-hub extension {ext_id}")
 }
 
+/// Windows 防火墙「入站放行」规则管理：走 COM（`INetFwPolicy2`），不再拉起 `netsh.exe`。
+///
+/// 2026-09-30 改：旧实现 `Command::new("netsh")` 增删规则，开机自启 / 关机退出时恰好赶上
+/// 控制台子系统尚未就绪或正在拆除，`netsh.exe` 以 `0xC0000142`（初始化失败）弹系统错误框；
+/// 且非管理员时 netsh 加规则必然失败。改 COM 后：无子进程、无控制台、不再有该弹窗。
+#[cfg(target_os = "windows")]
+mod firewall_com {
+    use windows::core::{BSTR, IUnknown};
+    use windows::Win32::Foundation::VARIANT_TRUE;
+    use windows::Win32::NetworkManagement::WindowsFirewall::{
+        INetFwPolicy2, INetFwRule, NetFwPolicy2, NetFwRule, NET_FW_ACTION_ALLOW,
+        NET_FW_IP_PROTOCOL_TCP, NET_FW_PROFILE2_PRIVATE, NET_FW_RULE_DIR_IN,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+
+    /// 规则不存在时 `Remove` 会报 HRESULT `0x80070002`（ERROR_FILE_NOT_FOUND）——与删成功同义
+    const HRESULT_FILE_NOT_FOUND: i32 = 0x8007_0002u32 as i32;
+
+    /// 进入本线程的 COM 单元；返回是否需要配对 `CoUninitialize`。
+    /// `RPC_E_CHANGED_MODE`（线程已在别的单元，如 MTA）复用现成单元、不配对。
+    fn enter_com() -> bool {
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() }
+    }
+
+    fn with_policy<T>(
+        f: impl FnOnce(&INetFwPolicy2) -> windows::core::Result<T>,
+    ) -> windows::core::Result<T> {
+        let entered = enter_com();
+        let result = (|| {
+            let policy: INetFwPolicy2 =
+                unsafe { CoCreateInstance(&NetFwPolicy2, None::<&IUnknown>, CLSCTX_INPROC_SERVER)? };
+            f(&policy)
+        })();
+        if entered {
+            unsafe { CoUninitialize() };
+        }
+        result
+    }
+
+    pub fn add_rule(rule_name: &str, port: u16, program: &str) -> windows::core::Result<()> {
+        with_policy(|policy| {
+            let rules = unsafe { policy.Rules()? };
+            let name = BSTR::from(rule_name);
+            // 幂等：同名先删后加（动态端口每次启动都新增会无限累积）
+            let _ = unsafe { rules.Remove(&name) };
+            let rule: INetFwRule =
+                unsafe { CoCreateInstance(&NetFwRule, None::<&IUnknown>, CLSCTX_INPROC_SERVER)? };
+            unsafe {
+                rule.SetName(&name)?;
+                rule.SetDescription(&BSTR::from(
+                    "x-hub service 扩展对外监听放行（自动管理，可随时删除）",
+                ))?;
+                rule.SetDirection(NET_FW_RULE_DIR_IN)?;
+                rule.SetAction(NET_FW_ACTION_ALLOW)?;
+                rule.SetProtocol(NET_FW_IP_PROTOCOL_TCP.0)?;
+                rule.SetLocalPorts(&BSTR::from(port.to_string()))?;
+                rule.SetApplicationName(&BSTR::from(program))?;
+                rule.SetProfiles(NET_FW_PROFILE2_PRIVATE.0)?;
+                rule.SetEnabled(VARIANT_TRUE)?;
+                rules.Add(&rule)?;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn remove_rule(rule_name: &str) -> windows::core::Result<()> {
+        with_policy(|policy| {
+            let rules = unsafe { policy.Rules()? };
+            match unsafe { rules.Remove(&BSTR::from(rule_name)) } {
+                Ok(()) => Ok(()),
+                Err(e) if e.code().0 == HRESULT_FILE_NOT_FOUND => Ok(()),
+                Err(e) => Err(e),
+            }
+        })
+    }
+}
+
 /// 移除扩展的防火墙放行规则（停止/卸载/启动失败时调用），失败仅记录日志
 pub(crate) fn remove_firewall_rule(ext_id: &str) {
     #[cfg(target_os = "windows")]
     {
         let rule_name = firewall_rule_name(ext_id);
-        let out = std::process::Command::new("netsh")
-            .args([
-                "advfirewall",
-                "firewall",
-                "delete",
-                "rule",
-                &format!("name={rule_name}"),
-            ])
-            .no_console_window()
-            .output();
-        match out {
-            Ok(o) if o.status.success() => {
-                log::info!("已移除防火墙规则: {rule_name}");
-            }
-            Ok(o) => {
-                let msg = String::from_utf8_lossy(&o.stderr);
-                log::warn!("移除防火墙规则失败（{rule_name}）：{msg}");
-            }
-            Err(e) => {
-                log::warn!("调用 netsh 失败（{rule_name}）：{e}");
-            }
+        match firewall_com::remove_rule(&rule_name) {
+            Ok(()) => log::info!("已移除防火墙规则: {rule_name}"),
+            Err(e) => log::warn!("移除防火墙规则失败（{rule_name}）：{e}"),
         }
     }
     #[cfg(not(target_os = "windows"))]
@@ -420,47 +482,11 @@ fn ensure_firewall_rule(ext_id: &str, port: u16, program: &str) {
     #[cfg(target_os = "windows")]
     {
         let rule_name = firewall_rule_name(ext_id);
-        // netsh add rule 对同名规则是「叠加」而非覆盖：先删后加保证幂等，
-        // 避免动态端口每次启动都新增一条规则无限累积
-        let _ = std::process::Command::new("netsh")
-            .args([
-                "advfirewall",
-                "firewall",
-                "delete",
-                "rule",
-                &format!("name={rule_name}"),
-            ])
-            .no_console_window()
-            .output();
-        let out = std::process::Command::new("netsh")
-            .args([
-                "advfirewall",
-                "firewall",
-                "add",
-                "rule",
-                &format!("name={rule_name}"),
-                "dir=in",
-                "action=allow",
-                "protocol=TCP",
-                &format!("localport={port}"),
-                &format!("program={program}"),
-                "profile=private",
-            ])
-            .no_console_window()
-            .output();
-        match out {
-            Ok(o) if o.status.success() => {
-                log::info!("已放行防火墙: {rule_name} (tcp {port}, program={program})");
-            }
-            Ok(o) => {
-                let msg = String::from_utf8_lossy(&o.stderr);
-                log::warn!(
-                    "防火墙放行失败（{ext_id} 端口 {port}）：{msg}。如需局域网访问请手动放行该端口。"
-                );
-            }
-            Err(e) => {
-                log::warn!("调用 netsh 失败（{ext_id} 端口 {port}）：{e}");
-            }
+        match firewall_com::add_rule(&rule_name, port, program) {
+            Ok(()) => log::info!("已放行防火墙: {rule_name} (tcp {port}, program={program})"),
+            Err(e) => log::warn!(
+                "防火墙放行失败（{ext_id} 端口 {port}）：{e}。如需局域网访问请手动放行该端口。"
+            ),
         }
     }
     #[cfg(not(target_os = "windows"))]

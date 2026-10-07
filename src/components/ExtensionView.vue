@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, inject } from 'vue'
 import { Puzzle } from 'lucide-vue-next'
-import { useExtensionFrame } from '../composables/useExtensionFrame'
+import {
+  isUnauthorizedMessage,
+  requestOpenExtensionSettings,
+  useExtensionFrame,
+} from '../composables/useExtensionFrame'
 
 const props = defineProps<{
   extId: string
@@ -42,6 +46,10 @@ const { frameRef, loading, error } = useExtensionFrame(
 )
 // frameRef 仅用于模板 ref 绑定（vue-tsc 不把模板 ref 计为读取，此处显式保留引用通过 noUnusedLocals）
 void frameRef
+
+// service 后端未授权时宿主直接拦截入口加载（扩展页面不会运行）：
+// 错误态给「去授权」直达权限设置，用户不必自己找入口
+const unauthorized = computed(() => isUnauthorizedMessage(error.value))
 </script>
 
 <template>
@@ -58,7 +66,12 @@ void frameRef
     </div>
     <div v-else-if="error" class="ev-state">
       <p class="ev-error">{{ error }}</p>
-      <button class="ghost-btn" type="button" @click="emit('close')">返回</button>
+      <div class="ev-actions">
+        <button v-if="unauthorized" class="ghost-btn" type="button" @click="requestOpenExtensionSettings(extId)">
+          去授权
+        </button>
+        <button class="ghost-btn" type="button" @click="emit('close')">返回</button>
+      </div>
     </div>
     <iframe
       v-show="!loading && !error"
@@ -132,6 +145,11 @@ void frameRef
   gap: 12px;
   color: var(--text-3);
   font-size: 0.8125rem;
+}
+.ev-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .ev-error {
   color: var(--c-red);

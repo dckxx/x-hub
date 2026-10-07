@@ -189,7 +189,10 @@ pub fn launch_resource(state: State<'_, DbState>, id: i64) -> Result<(), String>
     let res = resource::get(&conn, id).map_err(err_str)?;
     match res.kind {
         ResourceKind::App => {
-            // 程序已在运行 → 只把已有窗口调度到前台，不再拉起第二个实例。
+            // 程序已在运行且有可见（含最小化）窗口 → 只把已有窗口调度到前台，不再拉起第二个
+            // 实例。窗口全隐藏（托盘挂后台，如微信/WorkBuddy）时 activate_existing 返回 false，
+            // 照常启动 exe——应用自带的单实例逻辑会把主窗正规唤起（外部 SW_SHOW 隐藏窗只会
+            // 得到点不动/不重绘的空壳，实测记录见 process.rs）。
             // 带参数的资源仍按原样启动：参数往往就是「这次要打开的东西」（如 --incognito、
             // 要打开的文件夹），忽略它会丢语义。
             let no_args = res.args.as_deref().map(|a| a.trim().is_empty()).unwrap_or(true);
@@ -232,6 +235,24 @@ pub fn launch_resource(state: State<'_, DbState>, id: i64) -> Result<(), String>
                 Err(e)
             }
         },
+    }
+}
+
+/// 以管理员身份启动速达「程序」资源（触发 UAC 确认）。仅 App 类型支持——
+/// 网页/文件没有「提权运行」的语义。不走 launch_program 的 740 自动提权路径：
+/// 这里是用户显式要求提权，直接 Start-Process -Verb RunAs。
+#[tauri::command]
+pub fn launch_resource_as_admin(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let res = resource::get(&conn, id).map_err(err_str)?;
+    match res.kind {
+        ResourceKind::App => {
+            process::launch_elevated(&res.target, res.args.as_deref())?;
+            let _ = resource::touch(&conn, id);
+            log::info!("以管理员身份启动程序: {} ({})", res.name, res.target);
+            Ok(())
+        }
+        _ => Err("只有「程序」类型的资源支持以管理员身份运行".into()),
     }
 }
 
@@ -474,6 +495,29 @@ pub fn reorder_todo_orders(
     let _ = app.emit("todos-changed", ());
     log::debug!("待办排序更新: {} 条", ids.len());
     Ok(())
+}
+
+/// 跨父拖拽：把子待办改挂到另一个顶级父待办下，并按传入顺序重写目标父下的子项排序。
+/// `ordered_ids` 为目标落点后的完整子项顺序（含被移动项）。
+#[tauri::command]
+pub fn move_todo_child(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    id: i64,
+    new_parent_id: i64,
+    ordered_ids: Vec<i64>,
+) -> Result<Todo, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let t = todo::move_child(&conn, id, new_parent_id, &ordered_ids)?;
+    drop(conn);
+    let _ = app.emit("todos-changed", ());
+    log::info!(
+        "子待办改挂父级: id={} -> parent={} (目标下 {} 条)",
+        id,
+        new_parent_id,
+        ordered_ids.len()
+    );
+    Ok(t)
 }
 
 // ---------- 待办升级：描述 / 置顶 / 周期 / 标签 ----------
@@ -758,12 +802,23 @@ pub async fn detach_sticky(
     if !(1..=2).contains(&slot) {
         return Err("便签槽位取值 1-2".into());
     }
-    // 已存在浮窗：聚焦并直接返回
+    // 已存在浮窗记录：窗口在 → 聚焦；窗口不在（上次创建失败/被异常销毁）→ 原位重建，
+    // 否则记录永远在而窗口永远不在，用户再点「脱离」只会走本分支静默聚焦，卡死到重启
     if let Some(existing) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         detached_sticky::get_by_slot(&conn, slot).map_err(err_str)?
     } {
-        crate::sticky_window::focus(&app, slot);
+        if !crate::sticky_window::focus(&app, slot) {
+            log::warn!("便签浮窗记录存在但窗口缺失，重建自愈: slot={}", slot);
+            crate::sticky_window::create_or_focus(
+                &app,
+                slot,
+                existing.x,
+                existing.y,
+                existing.always_on_top,
+            )
+            .map_err(|e| format!("创建浮窗失败: {}", e))?;
+        }
         return Ok(existing);
     }
 
@@ -776,21 +831,47 @@ pub async fn detach_sticky(
     sticky::upsert(&conn, slot, "").map_err(err_str)?;
     drop(conn);
 
-    let win = crate::sticky_window::create_or_focus(&app, slot, saved.x, saved.y, true)
-        .map_err(|e| format!("创建浮窗失败: {}", e))?;
+    // 创建失败必须回滚（删除浮窗记录 + 恢复原卡内容并广播刷新）：
+    // DB 已写而窗口没建出来，就是「内容从主卡消失 + 再也浮不起来」的根源
+    if let Err(e) = crate::sticky_window::create_or_focus(&app, slot, saved.x, saved.y, true) {
+        log::error!("便签浮窗创建失败，回滚脱离: slot={} err={}", slot, e);
+        let conn = state.0.lock().map_err(|err| err.to_string())?;
+        let _ = detached_sticky::delete_by_slot(&conn, slot);
+        let _ = sticky::upsert(&conn, slot, &content);
+        drop(conn);
+        let _ = app.emit("stickies-changed", ());
+        return Err(format!("创建浮窗失败: {}", e));
+    }
     log::info!("便签脱离浮窗: slot={} 内容 {} 字", slot, content.chars().count());
-    drop(win);
 
     Ok(saved)
 }
 
-/// 再次点击脱离 icon 时聚焦已有浮窗（无浮窗则返回 false）
+/// 再次点击脱离 icon 时聚焦已有浮窗；窗口缺失但记录在 → 原位重建自愈；
+/// 记录也不在 → 返回 false（前端据此走脱离分支）
 #[tauri::command]
-pub async fn focus_detached_sticky(app: tauri::AppHandle, slot: i64) -> Result<bool, String> {
+pub async fn focus_detached_sticky(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    slot: i64,
+) -> Result<bool, String> {
     if !(1..=2).contains(&slot) {
         return Err("便签槽位取值 1-2".into());
     }
-    Ok(crate::sticky_window::focus(&app, slot))
+    if crate::sticky_window::focus(&app, slot) {
+        return Ok(true);
+    }
+    let existing = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        detached_sticky::get_by_slot(&conn, slot).map_err(err_str)?
+    };
+    let Some(existing) = existing else {
+        return Ok(false);
+    };
+    log::warn!("便签浮窗窗口缺失，重建自愈: slot={}", slot);
+    crate::sticky_window::create_or_focus(&app, slot, existing.x, existing.y, existing.always_on_top)
+        .map_err(|e| format!("创建浮窗失败: {}", e))?;
+    Ok(true)
 }
 
 /// 浮窗内容随输入保存（防抖由前端处理）
@@ -875,7 +956,9 @@ pub async fn restore_detached_sticky(
     Ok(target_slot)
 }
 
-/// 删除浮窗便签（浮窗数据彻底删除）
+/// 删除浮窗便签（浮窗数据彻底删除）。
+/// 空内容关闭浮窗也走这里：必须广播 stickies-changed，否则主窗口 state.detached
+/// 留下幻影记录，便签卡的「脱离」按钮停在「已脱离」，再点只走聚焦分支永远浮不起来
 #[tauri::command]
 pub async fn delete_detached_sticky(
     app: tauri::AppHandle,
@@ -891,6 +974,7 @@ pub async fn delete_detached_sticky(
 
     crate::sticky_window::destroy(&app, slot);
     log::info!("删除浮窗便签: slot={}", slot);
+    let _ = app.emit("stickies-changed", ());
     Ok(())
 }
 
@@ -1269,21 +1353,14 @@ pub struct NoteTagRow {
 pub struct AppInfo {
     /// 当前应用版本号（运行时读取打包版本，与 tauri.conf.json 一致）
     pub version: String,
-    /// 完整版本历史 markdown（内置，零网络）
-    pub changelog: String,
-    /// 最新一段版本说明（「What's New」弹窗用）
-    pub latest_section: String,
 }
 
-/// 返回应用版本 + 内置更新日志（版本历史），供「关于」页展示
+/// 返回应用版本号，供「关于」页与扩展市场的最低版本判断使用。
+/// 版本历史不再内置：客户端「关于」页直接跳转 GitHub Releases。
 #[tauri::command]
 pub fn get_app_info(app: tauri::AppHandle) -> Result<AppInfo, String> {
     let version = app.package_info().version.to_string();
-    Ok(AppInfo {
-        version,
-        changelog: crate::about::RELEASE_NOTES.to_string(),
-        latest_section: crate::about::latest_section(),
-    })
+    Ok(AppInfo { version })
 }
 
 // ---------- 配置 ----------
@@ -1359,6 +1436,63 @@ pub fn get_global_shortcut() -> Result<String, String> {
 
 #[tauri::command]
 pub fn set_global_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    set_configured_shortcut(app, value, ConfiguredShortcut::Main)
+}
+
+/// 可自定义快捷键在配置里的落点（set_*_shortcut 命令共用同一套改绑/持久化流程）
+enum ConfiguredShortcut {
+    Main,
+    Clipboard,
+    Search,
+    Chat,
+}
+
+impl ConfiguredShortcut {
+    fn field<'a>(&self, cfg: &'a mut crate::config::AppConfig) -> &'a mut String {
+        match self {
+            ConfiguredShortcut::Main => &mut cfg.global_shortcut,
+            ConfiguredShortcut::Clipboard => &mut cfg.clipboard_shortcut,
+            ConfiguredShortcut::Search => &mut cfg.search_shortcut,
+            ConfiguredShortcut::Chat => &mut cfg.chat_shortcut,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            ConfiguredShortcut::Main => "主窗口",
+            ConfiguredShortcut::Clipboard => "剪贴板",
+            ConfiguredShortcut::Search => "搜索",
+            ConfiguredShortcut::Chat => "AI 对话",
+        }
+    }
+
+    /// 该快捷键当前是否处于启用状态（禁用 = 不注册但保留键值）
+    fn enabled(&self, cfg: &crate::config::AppConfig) -> bool {
+        match self {
+            ConfiguredShortcut::Main => cfg.global_shortcut_enabled,
+            ConfiguredShortcut::Clipboard => cfg.clipboard_shortcut_enabled,
+            ConfiguredShortcut::Search => cfg.search_shortcut_enabled,
+            ConfiguredShortcut::Chat => cfg.chat_shortcut_enabled,
+        }
+    }
+
+    fn set_enabled(&self, cfg: &mut crate::config::AppConfig, value: bool) {
+        match self {
+            ConfiguredShortcut::Main => cfg.global_shortcut_enabled = value,
+            ConfiguredShortcut::Clipboard => cfg.clipboard_shortcut_enabled = value,
+            ConfiguredShortcut::Search => cfg.search_shortcut_enabled = value,
+            ConfiguredShortcut::Chat => cfg.chat_shortcut_enabled = value,
+        }
+    }
+}
+
+/// 更新某个可自定义全局快捷键：改绑（冲突预检/反注册/注册/回滚）+ 配置持久化。
+/// 同一物理按键组合仅换写法（CommandOrControl→Ctrl）时直接改存储字符串，不重新注册。
+fn set_configured_shortcut(
+    app: tauri::AppHandle,
+    value: String,
+    which: ConfiguredShortcut,
+) -> Result<String, String> {
     let _guard = crate::config::lock();
     let shortcut = value.trim();
     if shortcut.is_empty() {
@@ -1366,40 +1500,90 @@ pub fn set_global_shortcut(app: tauri::AppHandle, value: String) -> Result<Strin
     }
 
     let mut config = crate::config::load();
-    let previous = config.global_shortcut.clone();
+    let previous = config_field(&config, &which);
     if previous == shortcut {
-        return Ok(config.global_shortcut);
+        return Ok(previous);
     }
-
-    // 同一物理按键组合仅换了写法（如 Windows 上 CommandOrControl→Ctrl），
-    // 无需重新注册，直接更新存储的字符串
-    if crate::shortcut::same_hotkey(&previous, shortcut) {
-        config.global_shortcut = shortcut.to_string();
+    // 该快捷键处于「禁用」状态（config.*_shortcut_enabled = false）时只改存储值、不注册，
+    // 否则禁用后一改键就又把热键注册上了，开关形同虚设（重新启用时按新值注册）
+    if !which.enabled(&config) {
+        *which.field(&mut config) = shortcut.to_string();
         crate::config::save(&config)?;
-        return Ok(config.global_shortcut);
+        log::info!("[快捷键] {}快捷键（当前已禁用）已改为 {}", which.label(), shortcut);
+        return Ok(shortcut.to_string());
     }
-
-    if crate::shortcut::is_shortcut_registered(&app, shortcut) {
-        return Err("快捷键冲突".into());
+    if crate::shortcut::same_hotkey(&previous, shortcut) {
+        *which.field(&mut config) = shortcut.to_string();
+        crate::config::save(&config)?;
+        return Ok(shortcut.to_string());
     }
-
-    if let Err(e) = crate::shortcut::unregister_toggle_shortcut(&app, &previous) {
-        if !crate::shortcut::is_conflict_error(&e) {
-            return Err(e);
-        }
-        return Err("快捷键冲突".into());
-    }
-
-    if let Err(e) = crate::shortcut::register_toggle_shortcut(&app, shortcut) {
-        let mapped = crate::shortcut::format_shortcut_error(&e);
-        if !mapped.eq(&e) {
-            let _ = crate::shortcut::register_toggle_shortcut(&app, &previous);
-        }
-        return Err(mapped);
-    }
-    config.global_shortcut = shortcut.to_string();
+    crate::shortcut::rebind_shortcut(&app, &previous, shortcut)?;
+    *which.field(&mut config) = shortcut.to_string();
     crate::config::save(&config)?;
-    Ok(config.global_shortcut)
+    log::info!("[快捷键] {}快捷键已改为 {}", which.label(), shortcut);
+    Ok(shortcut.to_string())
+}
+
+fn config_field(cfg: &crate::config::AppConfig, which: &ConfiguredShortcut) -> String {
+    match which {
+        ConfiguredShortcut::Main => cfg.global_shortcut.clone(),
+        ConfiguredShortcut::Clipboard => cfg.clipboard_shortcut.clone(),
+        ConfiguredShortcut::Search => cfg.search_shortcut.clone(),
+        ConfiguredShortcut::Chat => cfg.chat_shortcut.clone(),
+    }
+}
+
+/// 更新全局搜索呼出快捷键
+#[tauri::command]
+pub fn set_search_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    set_configured_shortcut(app, value, ConfiguredShortcut::Search)
+}
+
+/// 更新 AI 对话呼出快捷键
+#[tauri::command]
+pub fn set_chat_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    set_configured_shortcut(app, value, ConfiguredShortcut::Chat)
+}
+
+/// 启用/禁用某个可自定义全局快捷键：禁用 = 注销该热键但保留键值；启用 = 按当前键值重新注册。
+/// 与 set_*_shortcut 分开：这里只切开关，不动键值本身。
+#[tauri::command]
+pub fn set_shortcut_enabled(
+    app: tauri::AppHandle,
+    kind: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let which = match kind.as_str() {
+        "main" => ConfiguredShortcut::Main,
+        "clipboard" => ConfiguredShortcut::Clipboard,
+        "search" => ConfiguredShortcut::Search,
+        "chat" => ConfiguredShortcut::Chat,
+        _ => return Err("未知的快捷键类型".into()),
+    };
+    let _guard = crate::config::lock();
+    let mut config = crate::config::load();
+    let value = config_field(&config, &which);
+    if enabled {
+        if value.trim().is_empty() {
+            return Err("尚未设置快捷键".into());
+        }
+        // 只在实际未注册时注册（已注册则幂等跳过，避免「已注册」冲突）
+        if !crate::shortcut::is_shortcut_registered(&app, &value) {
+            crate::shortcut::register_toggle_shortcut(&app, &value)
+                .map_err(|e| crate::shortcut::format_shortcut_error(&e))?;
+        }
+    } else if crate::shortcut::is_shortcut_registered(&app, &value) {
+        // 未注册时忽略：可能当初注册就被别的程序占用而失败过
+        let _ = crate::shortcut::unregister_toggle_shortcut(&app, &value);
+    }
+    which.set_enabled(&mut config, enabled);
+    crate::config::save(&config)?;
+    log::info!(
+        "[快捷键] {}快捷键已{}",
+        which.label(),
+        if enabled { "启用" } else { "禁用" }
+    );
+    Ok(())
 }
 
 // ---------- 开机自启动 ----------
@@ -1812,7 +1996,8 @@ pub struct DroppedAppInfo {
     pub icon: Option<String>,
 }
 
-/// 解析拖入的文件信息：.exe 直接读取，.lnk 快捷方式解析其目标路径；均尝试提取程序图标
+/// 解析拖入的文件信息。
+/// Windows：.exe / .lnk；Linux：可执行文件 / .desktop。
 #[tauri::command]
 pub fn parse_dropped_path(path: String) -> Result<DroppedAppInfo, String> {
     let p = std::path::Path::new(&path);
@@ -1821,32 +2006,139 @@ pub fn parse_dropped_path(path: String) -> Result<DroppedAppInfo, String> {
         .and_then(|e| e.to_str())
         .map(|s| s.to_lowercase())
         .unwrap_or_default();
-    let (name, target, icon) = match ext.as_str() {
-        "exe" => {
-            let name = p
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("本地应用")
-                .to_string();
-            let target = path.clone();
-            let icon = extract_app_icon(&target);
-            (name, target, icon)
+
+    #[cfg(target_os = "windows")]
+    {
+        let (name, target, icon) = match ext.as_str() {
+            "exe" => {
+                let name = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("本地应用")
+                    .to_string();
+                let target = path.clone();
+                let icon = extract_app_icon(&target);
+                (name, target, icon)
+            }
+            "lnk" => {
+                let name = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("快捷方式")
+                    .to_string();
+                let (target, icon) = resolve_lnk_target_and_icon(&path)?;
+                (name, target, icon)
+            }
+            _ => {
+                log::warn!("拖入文件不支持: {}", path);
+                return Err("仅支持 .exe 文件或 .lnk 快捷方式".into());
+            }
+        };
+        log::info!(
+            "拖入解析成功: {} -> {} (图标: {})",
+            name,
+            target,
+            if icon.is_some() { "有" } else { "无" }
+        );
+        return Ok(DroppedAppInfo {
+            name,
+            target,
+            icon,
+        });
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if ext == "desktop" {
+            let info = parse_desktop_file(&path)?;
+            log::info!(
+                "拖入解析成功: {} -> {} (图标: {})",
+                info.name,
+                info.target,
+                if info.icon.is_some() { "有" } else { "无" }
+            );
+            return Ok(info);
         }
-        "lnk" => {
-            let name = p
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("快捷方式")
-                .to_string();
-            let (target, icon) = resolve_lnk_target_and_icon(&path)?;
-            (name, target, icon)
+        // 无扩展名或任意可执行文件
+        let meta = std::fs::metadata(&path).map_err(|e| format!("无法读取文件: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
+                return Err("仅支持可执行文件或 .desktop 快捷方式".into());
+            }
         }
-        _ => {
-            log::warn!("拖入文件不支持: {}", path);
-            return Err("仅支持 .exe 文件或 .lnk 快捷方式".into());
+        #[cfg(not(unix))]
+        {
+            if !meta.is_file() {
+                return Err("仅支持可执行文件或 .desktop 快捷方式".into());
+            }
         }
+        let name = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("本地应用")
+            .to_string();
+        let icon = extract_app_icon(&path);
+        log::info!(
+            "拖入解析成功: {} -> {} (图标: {})",
+            name,
+            path,
+            if icon.is_some() { "有" } else { "无" }
+        );
+        Ok(DroppedAppInfo {
+            name,
+            target: path,
+            icon,
+        })
+    }
+}
+
+/// 解析 .desktop：取 Name= / Exec= / Icon=
+#[cfg(not(target_os = "windows"))]
+fn parse_desktop_file(path: &str) -> Result<DroppedAppInfo, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| format!("读取 .desktop 失败: {e}"))?;
+    let mut name = String::new();
+    let mut exec = String::new();
+    let mut icon_name = String::new();
+    let mut in_desktop_entry = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_desktop_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_desktop_entry || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(v) = line.strip_prefix("Name=") {
+            if name.is_empty() && !v.contains('[') {
+                name = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("Exec=") {
+            if exec.is_empty() {
+                exec = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("Icon=") {
+            if icon_name.is_empty() {
+                icon_name = v.trim().to_string();
+            }
+        }
+    }
+    if name.is_empty() {
+        name = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("本地应用")
+            .to_string();
+    }
+    let target = desktop_exec_to_target(&exec)
+        .ok_or_else(|| "无法解析 .desktop 的 Exec 字段".to_string())?;
+    let icon = if icon_name.is_empty() {
+        extract_app_icon(&target)
+    } else {
+        resolve_linux_icon(&icon_name).or_else(|| extract_app_icon(&target))
     };
-    log::info!("拖入解析成功: {} -> {} (图标: {})", name, target, if icon.is_some() { "有" } else { "无" });
     Ok(DroppedAppInfo {
         name,
         target,
@@ -1854,7 +2146,108 @@ pub fn parse_dropped_path(path: String) -> Result<DroppedAppInfo, String> {
     })
 }
 
+/// Exec= 字段 → 可执行路径（去掉 %u/%f 等占位与参数）
+#[cfg(not(target_os = "windows"))]
+fn desktop_exec_to_target(exec: &str) -> Option<String> {
+    let trimmed = exec.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let first = if let Some(rest) = trimmed.strip_prefix('"') {
+        let end = rest.find('"')?;
+        &rest[..end]
+    } else {
+        trimmed.split_whitespace().next()?
+    };
+    // 去掉字段码
+    let first = first
+        .trim_end_matches("%u")
+        .trim_end_matches("%U")
+        .trim_end_matches("%f")
+        .trim_end_matches("%F")
+        .trim_end_matches("%i")
+        .trim_end_matches("%c")
+        .trim_end_matches("%k")
+        .trim();
+    if first.is_empty() {
+        return None;
+    }
+    let p = std::path::Path::new(first);
+    if p.is_absolute() {
+        return Some(first.to_string());
+    }
+    // 在 PATH 中查找
+    let path_env = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_env) {
+        let cand = dir.join(first);
+        if cand.is_file() {
+            return Some(cand.to_string_lossy().into_owned());
+        }
+    }
+    Some(first.to_string())
+}
+
+/// 按 Icon= 名称或路径解析图标文件，复制进 icons 缓存
+#[cfg(not(target_os = "windows"))]
+fn resolve_linux_icon(icon: &str) -> Option<String> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let src = if std::path::Path::new(icon).is_file() {
+        std::path::PathBuf::from(icon)
+    } else {
+        // 常见 hicolor / pixmaps 路径
+        let names = [
+            format!("{icon}.png"),
+            format!("{icon}.svg"),
+            format!("{icon}.xpm"),
+        ];
+        let bases = [
+            "/usr/share/pixmaps",
+            "/usr/share/icons/hicolor/48x48/apps",
+            "/usr/share/icons/hicolor/64x64/apps",
+            "/usr/share/icons/hicolor/128x128/apps",
+            "/usr/share/icons/hicolor/scalable/apps",
+        ];
+        let mut found = None;
+        for base in bases {
+            for n in &names {
+                let p = std::path::Path::new(base).join(n);
+                if p.is_file() {
+                    found = Some(p);
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        found?
+    };
+
+    // svg/xpm 前端未必能直接显示，仅复制 png；其它格式也尝试复制
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if ext != "png" && ext != "jpg" && ext != "jpeg" && ext != "webp" {
+        return None;
+    }
+
+    let dir = crate::paths::data_root().join("icons");
+    std::fs::create_dir_all(&dir).ok()?;
+    let mut hasher = DefaultHasher::new();
+    icon.hash(&mut hasher);
+    let out = dir.join(format!("{:016x}.png", hasher.finish()));
+    if !out.exists() {
+        std::fs::copy(&src, &out).ok()?;
+    }
+    Some(out.to_string_lossy().into_owned())
+}
+
 /// 创建隐藏窗口的 powershell 命令：避免 GUI 应用调用时弹出黑色控制台窗口
+#[cfg(target_os = "windows")]
 fn powershell() -> std::process::Command {
     use crate::process::NoConsoleWindow;
     let mut cmd = std::process::Command::new("powershell");
@@ -1865,6 +2258,7 @@ fn powershell() -> std::process::Command {
 /// 单次 PowerShell 进程内解析 .lnk 目标并提取图标
 /// （原两段式需要先后启动两次 PowerShell，合并为一次调用可省约一半耗时）
 /// 图标仍按「目标路径」命名缓存，与 .exe 导入共用缓存键
+#[cfg(target_os = "windows")]
 fn resolve_lnk_target_and_icon(lnk_path: &str) -> Result<(String, Option<String>), String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -1924,8 +2318,8 @@ fn resolve_lnk_target_and_icon(lnk_path: &str) -> Result<(String, Option<String>
     Ok((target, icon))
 }
 
-/// 提取程序图标（System.Drawing.ExtractAssociatedIcon），保存 PNG 到 app_data_dir/icons/
-/// 提取失败或无图标时返回 None（前端回退到名称首字母）
+/// 提取程序图标，保存 PNG 到 app_data_dir/icons/
+/// Windows：System.Drawing；Linux：无关联图标时返回 None（前端回退首字母）
 fn extract_app_icon(source: &str) -> Option<String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -1943,25 +2337,37 @@ fn extract_app_icon(source: &str) -> Option<String> {
         return Some(output_path.to_string_lossy().into_owned());
     }
 
-    let script = "Add-Type -AssemblyName System.Drawing; $i=[System.Drawing.Icon]::ExtractAssociatedIcon($env:XHUB_SRC); if($i -ne $null){$i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'}";
-    let output = match powershell()
-        .args(["-NoProfile", "-Command", script])
-        .env("XHUB_SRC", source)
-        .env("XHUB_OUT", output_path.to_str().unwrap_or(""))
-        .output()
+    #[cfg(target_os = "windows")]
     {
-        Ok(o) => o,
-        Err(e) => {
-            log::warn!("图标提取失败（PowerShell 无法执行）: {} -> {}", source, e);
-            return None;
-        }
-    };
+        let script = "Add-Type -AssemblyName System.Drawing; $i=[System.Drawing.Icon]::ExtractAssociatedIcon($env:XHUB_SRC); if($i -ne $null){$i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'}";
+        let output = match powershell()
+            .args(["-NoProfile", "-Command", script])
+            .env("XHUB_SRC", source)
+            .env("XHUB_OUT", output_path.to_str().unwrap_or(""))
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("图标提取失败（PowerShell 无法执行）: {} -> {}", source, e);
+                return None;
+            }
+        };
 
-    if String::from_utf8_lossy(&output.stdout).contains("OK") {
-        Some(output_path.to_string_lossy().into_owned())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        log::warn!("图标提取失败（程序无图标或提取出错）: {} -> {}", source, stderr.trim());
+        if String::from_utf8_lossy(&output.stdout).contains("OK") {
+            Some(output_path.to_string_lossy().into_owned())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::warn!(
+                "图标提取失败（程序无图标或提取出错）: {} -> {}",
+                source,
+                stderr.trim()
+            );
+            None
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (source, output_path);
         None
     }
 }
@@ -1995,23 +2401,30 @@ pub fn import_icon_file(source: String) -> Result<Option<String>, String> {
     }
 
     if ext == "ico" {
-        let script = "Add-Type -AssemblyName System.Drawing; $i=New-Object System.Drawing.Icon($env:XHUB_SRC); $i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'";
-        let output = powershell()
-            .args(["-NoProfile", "-Command", script])
-            .env("XHUB_SRC", &source)
-            .env("XHUB_OUT", output_path.to_str().unwrap_or(""))
-            .output()
-            .map_err(|e| {
-                log::error!("图标转换失败（PowerShell 无法执行）: {}", e);
-                format!("图标转换失败: {}", e)
-            })?;
-        if String::from_utf8_lossy(&output.stdout).contains("OK") {
-            log::info!("图标导入成功: {} -> {}", source, output_path.display());
-            Ok(Some(output_path.to_string_lossy().into_owned()))
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log::error!("图标转换失败: {} -> {}", source, stderr.trim());
-            Err("图标转换失败".into())
+        #[cfg(target_os = "windows")]
+        {
+            let script = "Add-Type -AssemblyName System.Drawing; $i=New-Object System.Drawing.Icon($env:XHUB_SRC); $i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'";
+            let output = powershell()
+                .args(["-NoProfile", "-Command", script])
+                .env("XHUB_SRC", &source)
+                .env("XHUB_OUT", output_path.to_str().unwrap_or(""))
+                .output()
+                .map_err(|e| {
+                    log::error!("图标转换失败（PowerShell 无法执行）: {}", e);
+                    format!("图标转换失败: {}", e)
+                })?;
+            if String::from_utf8_lossy(&output.stdout).contains("OK") {
+                log::info!("图标导入成功: {} -> {}", source, output_path.display());
+                Ok(Some(output_path.to_string_lossy().into_owned()))
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                log::error!("图标转换失败: {} -> {}", source, stderr.trim());
+                Err("图标转换失败".into())
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err("Linux 上请使用 png/jpg/webp 图标（不支持 .ico 转换）".into())
         }
     } else {
         match std::fs::copy(&source, &output_path) {
@@ -2170,7 +2583,7 @@ pub struct InstalledAppInfo {
     pub icon: Option<String>,
 }
 
-/// 扫描本机已安装应用（注册表卸载项 + 用户/公共开始菜单快捷方式），
+/// 扫描本机已安装应用（Windows：用户/公共开始菜单快捷方式；Linux：`*.desktop`），
 /// 去重、过滤系统噪音后批量提取程序图标（icons/<hash>.png，与拖拽导入共用缓存键）。
 /// 必须 async：扫描 + 图标提取耗时数秒，同步命令会卡死主线程冻结 UI。
 #[tauri::command]
@@ -2187,9 +2600,13 @@ pub async fn scan_installed_apps() -> Result<Vec<InstalledAppInfo>, String> {
         .collect())
 }
 
-/// 单次 PowerShell 扫描注册表卸载项 + 开始菜单快捷方式，
+/// 单次 PowerShell 扫描开始菜单快捷方式（用户 + 公共），
 /// 输出 APP=<json> 行（name/target），Rust 侧解析并二次去重、按名称排序、限量。
-/// 命名/路径等取值一律在 PS 内 Trim + 环境变量展开，中文经 UTF-8 输出。
+/// 命名/路径等取值一律在 PS 内 Trim，中文经 UTF-8 输出。
+///
+/// 已不再扫注册表卸载项（2026-09-30 按需求去掉）：卸载项常把 DisplayIcon 指向
+/// 卸载器/维护程序，图标与名称噪音大。只保留开始菜单 `.lnk`（用户真正点得到的东西）。
+#[cfg(target_os = "windows")]
 fn scan_app_candidates() -> Result<Vec<(String, String)>, String> {
     let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
@@ -2210,46 +2627,6 @@ function Add-App([string]$name, [string]$target) {
   if ($seen.ContainsKey($key)) { return }
   $seen[$key] = $true
   [void]$out.Add(@{ name = $name; target = $target })
-}
-
-# ---- 注册表卸载项（HKLM 32/64 + HKCU）----
-$regRoots = @(
-  'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-  'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
-  'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
-)
-foreach ($root in $regRoots) {
-  Get-ItemProperty $root | ForEach-Object {
-    $dn = $_.DisplayName
-    if (-not $dn) { return }
-    $dn = ([string]$dn).Trim()
-    # 过滤系统组件/运行时/更新类噪音
-    if ($dn -match '^(KB\d+|Update for|Security Update|Hotfix|Microsoft Update Health|Microsoft Edge (Update|WebView)|Microsoft Windows|Windows (SDK|Driver|Update|PowerShell|Terminal|Web Experience|Package Manager|App Runtime|App Certification|Kits)|Microsoft Visual C\+\+|Microsoft \.NET|\.NET (Runtime|Host)|Windows App Runtime|Microsoft Office (ClickToRun|Microsoft 365 Apps for enterprise))') { return }
-    if ($dn -match '(卸载|Uninstall|Update|Updater)$') { return }
-    $target = ''
-    # DisplayIcon 常直接指向主 exe（可能带 ,0 序号或 %环境变量%）
-    if ($_.DisplayIcon) {
-      $di = (([string]$_.DisplayIcon) -split ',')[0].Trim()
-      if ($di) {
-        try { $di = $ExecutionContext.InvokeCommand.ExpandString($di) } catch {}
-        if ($di -and (Test-Path -LiteralPath $di)) { $target = $di }
-      }
-    }
-    # 无 DisplayIcon 时从安装目录挑一个主 exe
-    if (-not $target -and $_.InstallLocation) {
-      $loc = ([string]$_.InstallLocation).Trim()
-      try { $loc = $ExecutionContext.InvokeCommand.ExpandString($loc) } catch {}
-      if ($loc -and (Test-Path -LiteralPath $loc)) {
-        $exe = Get-ChildItem -LiteralPath $loc -Filter *.exe -File -Recurse -Depth 1 -ErrorAction SilentlyContinue |
-          Where-Object { $_.FullName -notmatch '(unins\d*\.exe|uninstall(\.exe|_?[\w-]*\.exe)?|update(\.exe|r\.exe)?)$' } |
-          Select-Object -First 1
-        if ($exe) { $target = $exe.FullName }
-      }
-    }
-    if (-not $target) { return }
-    if ($target -match '\\Windows\\(System32|SysWOW64|servicing|WinSxS)\\' -or $target -match '(unins\d*\.exe|uninstall(\.exe|_?[\w-]*\.exe)?)$') { return }
-    Add-App $dn $target
-  }
 }
 
 # ---- 开始菜单快捷方式（用户 + 公共）----
@@ -2322,9 +2699,82 @@ foreach ($a in $out) {
     Ok(apps)
 }
 
-/// 批量提取程序图标：单次 PowerShell 提取所有未缓存目标图标到临时目录，
-/// 再按 DefaultHasher(target) 重命名为正式缓存键（与 extract_app_icon 共用缓存，
-/// 已缓存的目标直接复用，重复扫描零开销）。
+/// Linux：扫描 applications 目录中的 .desktop（跳过 NoDisplay/Hidden）
+#[cfg(not(target_os = "windows"))]
+fn scan_app_candidates() -> Result<Vec<(String, String)>, String> {
+    let mut dirs = vec![
+        std::path::PathBuf::from("/usr/share/applications"),
+        std::path::PathBuf::from("/usr/local/share/applications"),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".local/share/applications"));
+    }
+    let mut apps: Vec<(String, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                continue;
+            }
+            let Ok(info) = parse_desktop_file(&path.to_string_lossy()) else {
+                continue;
+            };
+            // 再读一遍过滤 NoDisplay/Hidden（parse_desktop_file 未检查）
+            if desktop_is_hidden(&path) {
+                continue;
+            }
+            if !seen.insert(info.target.to_lowercase()) {
+                continue;
+            }
+            apps.push((info.name, info.target));
+        }
+    }
+    apps.sort_by(|a, b| {
+        a.0.to_lowercase()
+            .cmp(&b.0.to_lowercase())
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    const MAX_APPS: usize = 500;
+    if apps.len() > MAX_APPS {
+        apps.truncate(MAX_APPS);
+    }
+    log::info!("扫描已安装应用: 共 {} 个", apps.len());
+    Ok(apps)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn desktop_is_hidden(path: &std::path::Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return true;
+    };
+    let mut in_entry = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_entry {
+            continue;
+        }
+        if line.eq_ignore_ascii_case("NoDisplay=true") || line.eq_ignore_ascii_case("Hidden=true")
+        {
+            return true;
+        }
+        if line.eq_ignore_ascii_case("Type=Link") || line.eq_ignore_ascii_case("Type=Directory") {
+            return true;
+        }
+    }
+    false
+}
+
+/// 批量提取程序图标。
+/// Windows：PowerShell 批量 ExtractAssociatedIcon；
+/// Linux：按图标主题路径解析（无则 None，前端回退首字母）。
 fn batch_extract_icons(
     apps: &[(String, String)],
 ) -> Result<Vec<Option<String>>, String> {
@@ -2352,6 +2802,38 @@ fn batch_extract_icons(
         return Ok(result);
     }
 
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 尝试用 basename 当 Icon 名解析
+        for &i in &missing {
+            let target = &apps[i].1;
+            let icon_key = std::path::Path::new(target)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(target);
+            if let Some(path) = resolve_linux_icon(icon_key) {
+                // 再按 target hash 复制一份，统一缓存键
+                let mut hasher = DefaultHasher::new();
+                target.hash(&mut hasher);
+                let final_path = icons_dir.join(format!("{:016x}.png", hasher.finish()));
+                if !final_path.exists() {
+                    let _ = std::fs::copy(&path, &final_path);
+                }
+                if final_path.exists() {
+                    result[i] = Some(final_path.to_string_lossy().into_owned());
+                }
+            }
+        }
+        log::info!(
+            "应用图标提取完成: {} 个（缺 {} 个）",
+            apps.len(),
+            result.iter().filter(|x| x.is_none()).count()
+        );
+        return Ok(result);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
     let tmp_dir = icons_dir.join(".scan_tmp");
     std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
     let list_path = tmp_dir.join("list.txt");
@@ -2416,6 +2898,527 @@ Get-Content -LiteralPath $listFile -Encoding UTF8 | ForEach-Object {
     let _ = std::fs::remove_dir_all(&tmp_dir);
     log::info!("应用图标提取完成: {} 个（缺 {} 个）", apps.len(), missing.len());
     Ok(result)
+    }
+}
+
+// ---------- 扫描桌面 ----------
+
+#[derive(serde::Serialize)]
+pub struct DesktopEntry {
+    pub name: String,
+    pub target: String,
+    pub icon: Option<String>,
+    /// 展示用分类：`app` | `web` | `file` | `folder`（导入速达时 folder 归入 file 大类）
+    pub kind: String,
+    /// 桌面上的快捷方式原始路径（仅 `.lnk`/`.url` 有；供「导入后清理桌面快捷方式」使用）
+    pub source: Option<String>,
+}
+
+/// 扫描【用户桌面】一层（不递归，只 `%USERPROFILE%\Desktop`，不含公共桌面）：
+/// - `.lnk` 解析目标 → 按目标分类为 应用 / 网页 / 文件 / 文件夹（解析不到目标的 UWP 等跳过）
+/// - `.url` 解析 URL → 网页
+/// - `.exe/.bat/.cmd` → 应用
+/// - 文件夹 → 文件夹；其它文件 → 文件
+/// 图标沿用 batch_extract_icons 批量缓存（与拖拽导入、已安装应用扫描共用 icons/<hash>.png）。
+/// 必须 async：解析快捷方式 + 提取图标耗时数秒，同步命令会冻结 UI。
+#[tauri::command]
+pub async fn scan_desktop() -> Result<Vec<DesktopEntry>, String> {
+    let candidates = scan_desktop_candidates()?;
+    if candidates.is_empty() {
+        return Ok(vec![]);
+    }
+    // 网页（URL）没有可提取的图标资源，跳过图标提取（前端回退到名称首字母）
+    let icon_pairs: Vec<(String, String)> = candidates
+        .iter()
+        .filter(|(_, _, kind, _)| kind != "web")
+        .map(|(name, target, _, _)| (name.clone(), target.clone()))
+        .collect();
+    let icons = batch_extract_icons(&icon_pairs)?;
+    let mut icon_iter = icons.into_iter();
+    let entries = candidates
+        .into_iter()
+        .map(|(name, target, kind, source)| {
+            let icon = if kind == "web" {
+                None
+            } else {
+                icon_iter.next().flatten()
+            };
+            DesktopEntry {
+                name,
+                target,
+                icon,
+                kind,
+                source,
+            }
+        })
+        .collect();
+    Ok(entries)
+}
+
+/// 单次 PowerShell 枚举用户桌面一层并分类，输出 DESK=<json> 行（name/target/kind/src），
+/// Rust 侧解析、二次去重、排序、限量。名称/路径取值一律在 PS 内 Trim，中文经 UTF-8 输出。
+/// `src` = 该条目对应的桌面快捷方式原始路径（仅 `.lnk`/`.url` 非空），供「导入后清理」用。
+#[cfg(target_os = "windows")]
+fn scan_desktop_candidates() -> Result<Vec<(String, String, String, Option<String>)>, String> {
+    let script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$sh = New-Object -ComObject WScript.Shell
+$desktop = [Environment]::GetFolderPath('Desktop')
+if (-not (Test-Path -LiteralPath $desktop)) { return }
+$seen = @{}
+$out = New-Object System.Collections.ArrayList
+
+function Add-Entry([string]$name, [string]$target, [string]$kind, [string]$src) {
+  if (-not $target) { return }
+  $target = $target.Trim()
+  $name = ([string]$name).Trim()
+  if (-not $name) { $name = [System.IO.Path]::GetFileNameWithoutExtension($target) }
+  if (-not $name) { return }
+  $key = $target.ToLower()
+  if ($seen.ContainsKey($key)) { return }
+  $seen[$key] = $true
+  if ($null -eq $src) { $src = '' }
+  [void]$out.Add(@{ name = $name; target = $target; kind = $kind; src = $src })
+}
+
+Get-ChildItem -LiteralPath $desktop | ForEach-Object {
+  $item = $_
+  $full = $item.FullName
+  if ($item.PSIsContainer) {
+    Add-Entry $item.Name $full 'folder' ''
+    return
+  }
+  $ext = [System.IO.Path]::GetExtension($item.Name).ToLower()
+  switch ($ext) {
+    '.lnk' {
+      $t = ''
+      try { $t = $sh.CreateShortcut($full).TargetPath } catch { $t = '' }
+      if (-not $t) { return }   # UWP / 失效快捷方式：没有可启动的路径目标，跳过
+      if ($t -match '^https?://') { Add-Entry $item.BaseName $t 'web' $full }
+      elseif (Test-Path -LiteralPath $t) {
+        if ((Get-Item -LiteralPath $t).PSIsContainer) { Add-Entry $item.BaseName $t 'folder' $full }
+        elseif ($t -match '\.(exe|bat|cmd|msi)$') { Add-Entry $item.BaseName $t 'app' $full }
+        else { Add-Entry $item.BaseName $t 'file' $full }
+      }
+      else { return }           # 目标已不存在：不导出一个死链
+    }
+    '.url' {
+      $line = Get-Content -LiteralPath $full -TotalCount 20 |
+        Where-Object { $_ -match '^URL=' } | Select-Object -First 1
+      if ($line) {
+        $u = (($line -replace '^URL=', '')).Trim()
+        if ($u) { Add-Entry $item.BaseName $u 'web' $full }
+      }
+    }
+    '.exe' { Add-Entry $item.BaseName $full 'app' '' }
+    '.bat' { Add-Entry $item.BaseName $full 'app' '' }
+    '.cmd' { Add-Entry $item.BaseName $full 'app' '' }
+    default { Add-Entry $item.BaseName $full 'file' '' }
+  }
+}
+
+foreach ($e in $out) { Write-Output ('DESK=' + ($e | ConvertTo-Json -Compress)) }
+"#;
+    let output = powershell()
+        .args(["-NoProfile", "-Command", script])
+        .output()
+        .map_err(|e| format!("扫描桌面失败（PowerShell 执行错误）: {}", e))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        log::debug!("扫描桌面 PowerShell stderr: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in stdout.lines() {
+        let Some(json) = line.strip_prefix("DESK=") else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+            continue;
+        };
+        let (Some(name), Some(target)) = (
+            v.get("name").and_then(|x| x.as_str()),
+            v.get("target").and_then(|x| x.as_str()),
+        ) else {
+            continue;
+        };
+        let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("file");
+        let kind = match kind {
+            "app" | "web" | "file" | "folder" => kind,
+            _ => "file",
+        };
+        let source = v
+            .get("src")
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let (name, target) = (name.trim(), target.trim());
+        if name.is_empty() || target.is_empty() {
+            continue;
+        }
+        if !seen.insert(target.to_lowercase()) {
+            continue;
+        }
+        entries.push((name.to_string(), target.to_string(), kind.to_string(), source));
+    }
+    // 分类展示顺序：应用 → 网页 → 文件 → 文件夹，同类别内按名称排序
+    let kind_rank = |k: &str| match k {
+        "app" => 0,
+        "web" => 1,
+        "file" => 2,
+        _ => 3,
+    };
+    entries.sort_by(|a, b| {
+        kind_rank(&a.2)
+            .cmp(&kind_rank(&b.2))
+            .then_with(|| {
+                a.0.to_lowercase()
+                    .cmp(&b.0.to_lowercase())
+                    .then_with(|| a.1.cmp(&b.1))
+            })
+    });
+    const MAX_DESKTOP: usize = 500;
+    if entries.len() > MAX_DESKTOP {
+        entries.truncate(MAX_DESKTOP);
+    }
+    log::info!("扫描桌面: 共 {} 项", entries.len());
+    Ok(entries)
+}
+
+/// Linux：扫描用户桌面（XDG 桌面目录）一层并分类，口径与 Windows 侧一致：
+/// - `.desktop`：Type=Application → 应用（Exec 经 desktop_exec_to_target 解析）；
+///   Type=Link → 网页（URL=）；NoDisplay/Hidden 跳过；Type=Directory 跳过
+/// - 可执行文件 → 应用；目录 → 文件夹；其它文件 → 文件
+/// `source` = .desktop 路径（口径同 .lnk）；清理命令的扩展名护栏只认 `.lnk`/`.url`，
+/// `.desktop` 的「导入后清理」暂不支持，导入后保持只读。
+#[cfg(not(target_os = "windows"))]
+fn scan_desktop_candidates() -> Result<Vec<(String, String, String, Option<String>)>, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(desktop) = dirs::desktop_dir() else {
+        return Ok(vec![]);
+    };
+    let Ok(read) = std::fs::read_dir(&desktop) else {
+        return Ok(vec![]);
+    };
+    let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in read.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            if seen.insert(path.to_string_lossy().to_lowercase()) {
+                entries.push((name, path.to_string_lossy().into_owned(), "folder".into(), None));
+            }
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) == Some("desktop") {
+            if let Some((name, target, kind)) = desktop_entry_from_file(&path) {
+                if seen.insert(target.to_lowercase()) {
+                    entries.push((
+                        name,
+                        target,
+                        kind,
+                        Some(path.to_string_lossy().into_owned()),
+                    ));
+                }
+            }
+            continue;
+        }
+        let is_exec = path
+            .metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+        let kind = if is_exec { "app" } else { "file" };
+        if seen.insert(path.to_string_lossy().to_lowercase()) {
+            entries.push((name, path.to_string_lossy().into_owned(), kind.into(), None));
+        }
+    }
+    // 分类展示顺序：应用 → 网页 → 文件 → 文件夹，同类别内按名称排序（与 Windows 侧一致）
+    let kind_rank = |k: &str| match k {
+        "app" => 0,
+        "web" => 1,
+        "file" => 2,
+        _ => 3,
+    };
+    entries.sort_by(|a, b| {
+        kind_rank(&a.2)
+            .cmp(&kind_rank(&b.2))
+            .then_with(|| {
+                a.0.to_lowercase()
+                    .cmp(&b.0.to_lowercase())
+                    .then_with(|| a.1.cmp(&b.1))
+            })
+    });
+    const MAX_DESKTOP: usize = 500;
+    if entries.len() > MAX_DESKTOP {
+        entries.truncate(MAX_DESKTOP);
+    }
+    log::info!("扫描桌面: 共 {} 项", entries.len());
+    Ok(entries)
+}
+
+/// 解析单个桌面 `.desktop` 文件为 (name, target, kind)；NoDisplay/Hidden、
+/// Type=Directory 或 Exec 解析不出目标的返回 None（不导出死链，口径同 Windows）。
+#[cfg(not(target_os = "windows"))]
+fn desktop_entry_from_file(path: &std::path::Path) -> Option<(String, String, String)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut name = String::new();
+    let mut exec = String::new();
+    let mut url = String::new();
+    let mut is_link = false;
+    let mut hidden = false;
+    let mut in_entry = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_entry || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.eq_ignore_ascii_case("NoDisplay=true") || line.eq_ignore_ascii_case("Hidden=true") {
+            hidden = true;
+        } else if line.eq_ignore_ascii_case("Type=Link") {
+            is_link = true;
+        } else if let Some(v) = line.strip_prefix("Name=") {
+            if name.is_empty() && !v.contains('[') {
+                name = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("Exec=") {
+            if exec.is_empty() {
+                exec = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("URL=") {
+            if url.is_empty() {
+                url = v.trim().to_string();
+            }
+        }
+    }
+    if hidden {
+        return None;
+    }
+    if is_link {
+        if url.is_empty() {
+            return None;
+        }
+        let name = if name.is_empty() {
+            path.file_stem()?.to_str()?.to_string()
+        } else {
+            name
+        };
+        return Some((name, url, "web".into()));
+    }
+    let target = desktop_exec_to_target(&exec)?;
+    if name.is_empty() {
+        name = std::path::Path::new(&target)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("本地应用")
+            .to_string();
+    }
+    Some((name, target, "app".into()))
+}
+
+/// 删除桌面上的快捷方式（仅 `.lnk`/`.url`），供「扫描桌面 → 导入后清理」使用。
+/// 安全护栏（缺一不可）：①扩展名必须是 `.lnk`/`.url` ②必须是普通文件 ③必须是**用户桌面**
+/// 的直接子项。绝不删除文件夹、`.exe` 及其它文件；不在护栏杆内的路径静默跳过。
+#[tauri::command]
+pub fn delete_desktop_shortcuts(paths: Vec<String>) -> Result<usize, String> {
+    let Some(desktop) = dirs::desktop_dir() else {
+        return Err("找不到桌面目录".into());
+    };
+    let desktop = desktop.canonicalize().unwrap_or(desktop);
+    let mut removed = 0usize;
+    for raw in paths {
+        let path = std::path::Path::new(&raw);
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+        if ext != "lnk" && ext != "url" {
+            log::warn!("跳过清理（非快捷方式）: {}", raw);
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let parent = path
+            .parent()
+            .map(|d| d.canonicalize().unwrap_or_else(|_| d.to_path_buf()));
+        if parent.as_deref() != Some(desktop.as_path()) {
+            log::warn!("跳过清理（不在用户桌面）: {}", raw);
+            continue;
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => removed += 1,
+            Err(e) => log::warn!("清理桌面快捷方式失败: {} -> {}", raw, e),
+        }
+    }
+    log::info!("清理桌面快捷方式: {} 个", removed);
+    Ok(removed)
+}
+
+// ---------- 扫描浏览器书签 ----------
+
+#[derive(serde::Serialize)]
+pub struct BrowserBookmark {
+    pub name: String,
+    pub target: String,
+    /// 书签所在文件夹（用 `/` 连接层级；顶层书签栏内为空 → 「书签栏」等根名）
+    pub folder: String,
+    /// 来源浏览器名（Chrome / Edge / Brave / Chromium）
+    pub browser: String,
+}
+
+/// 读取 Chromium 系浏览器书签（Chrome / Edge / Brave / Chromium）。
+/// 纯文件读取（不跑 PowerShell、不读历史），遍历各浏览器 User Data 下所有配置目录的
+/// `Bookmarks` JSON，递归 roots 收集 `type=url` 节点，按 URL 去重。
+/// Firefox 的 places.sqlite 属二期，不在此列。
+#[tauri::command]
+pub fn scan_browser_bookmarks() -> Result<Vec<BrowserBookmark>, String> {
+    const MAX_BOOKMARKS: usize = 2000;
+    let Some(local) = dirs::data_local_dir() else {
+        return Ok(vec![]);
+    };
+    // (展示名, User Data 相对路径)；均为 Chromium 系，Bookmarks 结构一致
+    let vendors: [(&str, &str); 4] = [
+        ("Chrome", r"Google\Chrome\User Data"),
+        ("Edge", r"Microsoft\Edge\User Data"),
+        ("Brave", r"BraveSoftware\Brave-Browser\User Data"),
+        ("Chromium", r"Chromium\User Data"),
+    ];
+
+    let mut found: Vec<BrowserBookmark> = Vec::new();
+    for (browser, rel) in vendors {
+        let user_data = local.join(rel);
+        if !user_data.is_dir() {
+            continue;
+        }
+        let Ok(profiles) = std::fs::read_dir(&user_data) else {
+            continue;
+        };
+        for profile in profiles.flatten() {
+            let path = profile.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let bookmarks = path.join("Bookmarks");
+            if !bookmarks.is_file() {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&bookmarks) else {
+                continue;
+            };
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+                log::warn!("浏览器书签解析失败: {}", bookmarks.display());
+                continue;
+            };
+            let Some(roots) = json.get("roots").and_then(|r| r.as_object()) else {
+                continue;
+            };
+            for (key, node) in roots {
+                // 根节点自身有 name（本地化，如「书签栏」）；没有则按 key 兜底
+                let root_name = node
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| match key.as_str() {
+                        "bookmark_bar" => "书签栏".to_string(),
+                        "other" => "其他书签".to_string(),
+                        "synced" => "移动端".to_string(),
+                        _ => key.to_string(),
+                    });
+                collect_bookmark_children(node, &root_name, browser, &mut found);
+            }
+        }
+    }
+
+    // 按 URL 去重（同一书签可能同时存在于多个浏览器的配置文件）
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    found.retain(|b| seen.insert(b.target.to_lowercase()));
+    found.sort_by(|a, b| {
+        a.browser
+            .cmp(&b.browser)
+            .then_with(|| a.folder.cmp(&b.folder))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    if found.len() > MAX_BOOKMARKS {
+        found.truncate(MAX_BOOKMARKS);
+    }
+    log::info!("扫描浏览器书签: 共 {} 条", found.len());
+    Ok(found)
+}
+
+/// 递归收集 Chromium 书签节点：`type=url` 收下，`type=folder` 带前缀继续下钻。
+fn collect_bookmark_children(
+    node: &serde_json::Value,
+    prefix: &str,
+    browser: &str,
+    out: &mut Vec<BrowserBookmark>,
+) {
+    let Some(children) = node.get("children").and_then(|c| c.as_array()) else {
+        return;
+    };
+    for child in children {
+        let ty = child.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let name = child
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .trim();
+        match ty {
+            "url" => {
+                let url = child
+                    .get("url")
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("")
+                    .trim();
+                if name.is_empty() || url.is_empty() || url.starts_with("javascript:") {
+                    continue;
+                }
+                out.push(BrowserBookmark {
+                    name: name.to_string(),
+                    target: url.to_string(),
+                    folder: if prefix.is_empty() {
+                        "未分类".to_string()
+                    } else {
+                        prefix.to_string()
+                    },
+                    browser: browser.to_string(),
+                });
+            }
+            "folder" => {
+                if name.is_empty() {
+                    continue;
+                }
+                let sub = if prefix.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{}/{}", prefix, name)
+                };
+                collect_bookmark_children(child, &sub, browser, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 批量抓取网页图标（favicon）：书签/网页资源导入后自动补齐站点图标（见 favicon.rs）。
+/// 返回「原样 target → 图标绝对路径」映射（抓不到为 None）；同域名只抓一次，永不整体报错。
+#[tauri::command]
+pub async fn fetch_favicons(
+    targets: Vec<String>,
+) -> Result<std::collections::HashMap<String, Option<String>>, String> {
+    Ok(crate::favicon::fetch_favicons(targets).await)
 }
 
 // ---------- 运行状态检测 ----------
@@ -3098,41 +4101,7 @@ pub fn clipboard_get_info(state: State<'_, DbState>) -> Result<ClipboardInfo, St
 /// 更新剪贴板全局快捷键（注册/反注册与配置持久化）
 #[tauri::command]
 pub fn set_clipboard_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
-    let _guard = crate::config::lock();
-    let shortcut = value.trim();
-    if shortcut.is_empty() {
-        return Err("快捷键不能为空".into());
-    }
-
-    let mut config = crate::config::load();
-    let previous = config.clipboard_shortcut.clone();
-    if previous == shortcut {
-        return Ok(config.clipboard_shortcut);
-    }
-    if crate::shortcut::same_hotkey(&previous, shortcut) {
-        config.clipboard_shortcut = shortcut.to_string();
-        crate::config::save(&config)?;
-        return Ok(config.clipboard_shortcut);
-    }
-    if crate::shortcut::is_shortcut_registered(&app, shortcut) {
-        return Err("快捷键冲突".into());
-    }
-    if let Err(e) = crate::shortcut::unregister_toggle_shortcut(&app, &previous) {
-        if !crate::shortcut::is_conflict_error(&e) {
-            return Err(e);
-        }
-        return Err("快捷键冲突".into());
-    }
-    if let Err(e) = crate::shortcut::register_toggle_shortcut(&app, shortcut) {
-        let mapped = crate::shortcut::format_shortcut_error(&e);
-        if !mapped.eq(&e) {
-            let _ = crate::shortcut::register_toggle_shortcut(&app, &previous);
-        }
-        return Err(mapped);
-    }
-    config.clipboard_shortcut = shortcut.to_string();
-    crate::config::save(&config)?;
-    Ok(config.clipboard_shortcut)
+    set_configured_shortcut(app, value, ConfiguredShortcut::Clipboard)
 }
 
 /// 更新剪贴板保留策略（条数上限 / 保留天数），保存后立即执行一次清理
@@ -3371,5 +4340,51 @@ mod tests {
             crate::chat::PLATFORM_ENTRY_NAME
         );
         assert_eq!(default_session_model_name(&[]), "");
+    }
+
+    // ---- 浏览器书签解析（Chromium Bookmarks JSON）----
+
+    /// 书签树递归：只收 type=url（跳过 javascript: 与空名/空 URL），文件夹拼成 `A/B` 前缀
+    #[test]
+    fn bookmark_tree_walk_collects_urls_with_folder_prefix() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{
+              "name": "书签栏",
+              "type": "folder",
+              "children": [
+                { "type": "url", "name": "GitHub", "url": "https://github.com/" },
+                { "type": "url", "name": "空书签", "url": "" },
+                { "type": "url", "name": "脚本", "url": "javascript:void(0)" },
+                {
+                  "type": "folder",
+                  "name": "前端",
+                  "children": [
+                    { "type": "url", "name": "MDN", "url": "https://developer.mozilla.org/" }
+                  ]
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let mut out = Vec::new();
+        collect_bookmark_children(&json, "书签栏", "Chrome", &mut out);
+
+        assert_eq!(out.len(), 2, "应只保留两条有效 URL");
+        assert_eq!(out[0].name, "GitHub");
+        assert_eq!(out[0].folder, "书签栏");
+        assert_eq!(out[0].browser, "Chrome");
+        assert_eq!(out[1].name, "MDN");
+        assert_eq!(out[1].folder, "书签栏/前端");
+        assert_eq!(out[1].target, "https://developer.mozilla.org/");
+        // 无 children 的节点（如 workspaces_v2）应安全返回空
+        let mut empty = Vec::new();
+        collect_bookmark_children(
+            &serde_json::json!({ "type": "folder", "name": "x" }),
+            "x",
+            "Edge",
+            &mut empty,
+        );
+        assert!(empty.is_empty());
     }
 }

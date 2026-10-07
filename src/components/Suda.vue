@@ -2,8 +2,12 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import {
+  Bookmark,
+  Check,
   FilePlus,
   Globe,
+  Laptop,
+  ListChecks,
   Loader2,
   Pencil,
   Plus,
@@ -11,8 +15,9 @@ import {
   Star,
   Trash2,
   Wrench,
+  X,
 } from 'lucide-vue-next'
-import { isTauri, tauriApi, type InstalledAppInfo, type InstalledBrowser, type Resource } from '../api/tauri'
+import { isTauri, tauriApi, type InstalledBrowser, type Resource } from '../api/tauri'
 import { categorize } from '../utils/categories'
 import { useStore } from '../stores/workbench'
 import { reportClientError } from '../utils/error-report'
@@ -20,8 +25,9 @@ import { accentOf, fileAccentOf, iconSrc, useResourceIcon } from '../composables
 import { useAdaptivePolling } from '../composables/useAdaptivePolling'
 import { useSudaDrag } from '../composables/useSudaDrag'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
 import SudaFormDialog from './SudaFormDialog.vue'
-import SudaScanDialog from './SudaScanDialog.vue'
+import SudaScanDialog, { type ScanItem, type ScanMode } from './SudaScanDialog.vue'
 
 const store = useStore()
 const showToast = inject<(msg: string, action?: { label: string; onClick: () => void }) => void>(
@@ -260,6 +266,11 @@ function dragStyleOf(r: Resource) {
 }
 
 function onCardClick(r: Resource) {
+  // 批量管理模式：点卡片 = 切勾选（不启动资源）
+  if (batchMode.value) {
+    toggleBatch(r.id)
+    return
+  }
   if (swallowClick()) return
   void onOpen(r)
 }
@@ -294,6 +305,94 @@ async function onDeleteResource(r: Resource) {
   })
 }
 
+// ---- 批量管理：勾选 + 批量删除（配合大类/小类筛选形成「筛出一类 → 全选 → 删」的清理流）----
+const batchMode = ref(false)
+const batchChecked = ref<Set<number>>(new Set())
+const batchDeleting = ref(false)
+const batchConfirmVisible = ref(false)
+
+function enterBatchMode() {
+  batchMode.value = true
+  batchChecked.value = new Set()
+}
+
+function exitBatchMode() {
+  batchMode.value = false
+  batchChecked.value = new Set()
+}
+
+function toggleBatch(id: number) {
+  const next = new Set(batchChecked.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  batchChecked.value = next
+}
+
+/** 当前筛选下可见资源是否已全勾（决定「全选/全不选」按钮文案） */
+const batchAllChecked = computed(
+  () =>
+    visibleResources.value.length > 0 &&
+    visibleResources.value.every((r) => batchChecked.value.has(r.id)),
+)
+
+/** 全选/全不选当前筛选下可见的资源（勾选集里可能含被筛走的，全不选一并清掉） */
+function batchToggleAll() {
+  batchChecked.value = batchAllChecked.value
+    ? new Set()
+    : new Set(visibleResources.value.map((r) => r.id))
+}
+
+async function doBatchDelete() {
+  if (batchDeleting.value) return
+  // 先落快照：删除过程会改 store.state.resources，边删边读集合会漏
+  const snapshot = store.state.resources.filter((r) => batchChecked.value.has(r.id))
+  if (snapshot.length === 0) return
+  batchDeleting.value = true
+  // 并行删除（后端命令经 DbState 互斥锁串行落库，前端各续体只做原子状态更新）；
+  // 快照在启动前已落好，不存在边删边读集合的问题
+  const results = await Promise.allSettled(snapshot.map((r) => store.removeResource(r.id)))
+  const deleted = results.filter((x) => x.status === 'fulfilled').length
+  for (const x of results) {
+    if (x.status === 'rejected') void reportClientError('批量删除资源失败', x.reason)
+  }
+  batchDeleting.value = false
+  batchChecked.value = new Set()
+  showToast(`已删除 ${deleted} 个资源`, {
+    label: '撤销',
+    onClick: async () => {
+      let restored = 0
+      for (const r of snapshot) {
+        try {
+          await store.addResource({
+            kind: r.kind,
+            name: r.name,
+            target: r.target,
+            category: r.category,
+            icon: r.icon,
+            args: r.args,
+          })
+          restored++
+        } catch {
+          // 目标已重新存在等，跳过
+        }
+      }
+      showToast(`已恢复 ${restored} 个`)
+    },
+  })
+}
+
+/** 卡片键盘激活（回车/空格）：批量模式切勾选，正常模式打开 */
+function onCardKeyActivate(r: Resource) {
+  if (batchMode.value) toggleBatch(r.id)
+  else void onOpen(r)
+}
+
+/** 批量模式下禁用卡片拖拽排序（拖拽手势与点选冲突），只保留点击选择 */
+function onCardPointer(r: Resource, e: PointerEvent) {
+  if (batchMode.value) return
+  onCardPointerDown(r, e)
+}
+
 // ---- 指定浏览器打开（网页资源）：列表来自本机已安装浏览器（Rust 注册表枚举） ----
 let browserCache: InstalledBrowser[] | null = null
 
@@ -324,9 +423,24 @@ async function onOpenInWindow(r: Resource) {
   }
 }
 
+/** 以管理员身份运行（UAC 确认）：仅「程序」资源有提权语义 */
+async function onOpenAsAdmin(r: Resource) {
+  try {
+    await store.launchResourceAsAdmin(r.id)
+  } catch (e) {
+    showToast(`无法以管理员身份运行「${r.name}」：${String(e)}`)
+  }
+}
+
 async function onResourceContext(e: MouseEvent, r: Resource) {
   e.preventDefault()
+  // 批量管理模式下不弹单条菜单（避免「打开/编辑」在勾选语境里误触）
+  if (batchMode.value) return
   const items: ContextMenuItem[] = [{ label: '打开', onClick: () => onOpen(r) }]
+  const isApp = r.kind === 'app'
+  if (isApp) {
+    items.push({ label: '以管理员身份运行', onClick: () => void onOpenAsAdmin(r) })
+  }
   let isWeb = false
   if (r.kind === 'web') {
     isWeb = true
@@ -366,6 +480,45 @@ async function onOpen(r: Resource) {
   }
 }
 
+/** 后台抓取网页图标（favicon）并回填资源：导入书签 / 新增网页后自动补齐站点图标。
+ *  抓取不阻塞导入（可能几十个域名、每个最长 8s）；回填前先确认资源还在且仍无图标，
+ *  避免覆盖用户这期间的删除/改图标 */
+async function fillWebFavicons(created: Resource[]) {
+  if (!isTauri() || created.length === 0) return
+  let map: Record<string, string | null>
+  try {
+    map = await tauriApi.fetchFavicons(created.map((r) => r.target))
+  } catch (e) {
+    void reportClientError('抓取网页图标失败', e)
+    return
+  }
+  // 回填前先确认资源还在且仍无图标，避免覆盖用户这期间的删除/改图标；
+  // 各任务目标互不相同且守卫在启动前同步完成，并行安全
+  const jobs = created.flatMap((r) => {
+    const icon = map[r.target]
+    if (!icon) return []
+    const cur = store.state.resources.find((x) => x.id === r.id)
+    if (!cur || cur.icon) return []
+    return [
+      store.editResource({
+        id: cur.id,
+        kind: cur.kind,
+        name: cur.name,
+        target: cur.target,
+        category: cur.category,
+        icon,
+        args: cur.args,
+      }),
+    ]
+  })
+  const results = await Promise.allSettled(jobs)
+  const got = results.filter((x) => x.status === 'fulfilled').length
+  for (const x of results) {
+    if (x.status === 'rejected') void reportClientError('回填网页图标失败', x.reason)
+  }
+  if (got > 0) showToast(`已获取 ${got} 个网页图标`)
+}
+
 function onFormSubmit(payload: {
   id?: number
   kind: 'app' | 'web' | 'file'
@@ -379,47 +532,90 @@ function onFormSubmit(payload: {
     void store.editResource({ ...payload, id: payload.id })
     showToast(`已更新「${payload.name}」`)
   } else {
-    void store.addResource(payload)
-    showToast(`已添加「${payload.name}」`)
+    void store.addResource(payload).then((r) => {
+      showToast(`已添加「${payload.name}」`)
+      // 新增网页且没配图标：后台抓 favicon 自动补齐
+      if (r.kind === 'web' && !r.icon) void fillWebFavicons([r])
+    })
   }
   prefill.value = null
 }
 
-// ---- 扫描已安装应用导入 ----
+// ---- 扫描导入（已安装应用 / 桌面 / 浏览器书签）----
 const scanVisible = ref(false)
+const scanMode = ref<ScanMode>('apps')
 const importing = ref(false)
 
-async function onScanImported(apps: InstalledAppInfo[]) {
+function openScan(mode: ScanMode) {
+  scanMode.value = mode
+  scanVisible.value = true
+}
+
+async function onScanImported(items: ScanItem[], cleanShortcuts = false) {
   if (importing.value) return
   importing.value = true
   let added = 0
   let skipped = 0
-  for (const a of apps) {
+  const importedSources: string[] = []
+  // 导入成功的网页类资源（书签 / 桌面 .url）：导入完成后后台补抓站点图标
+  const createdWeb: Resource[] = []
+  // 书签按文件夹归类：小类筛选 chips 以 subcategory 表为准，先补建缺失的 web 小类，
+  // 否则资源挂着表里不存在的小类名，在任何小类 chip 和「未归类」下都筛不出来
+  let createdCats = 0
+  const wantedCats = new Set(
+    items.filter((a) => a.kind === 'web' && a.category).map((a) => a.category as string),
+  )
+  for (const name of wantedCats) {
+    if (store.subcategoriesOf('web').some((s) => s.name === name)) continue
+    try {
+      await store.addSubcategory('web', name)
+      createdCats++
+    } catch (e) {
+      // DUP = 表里已有同名行（列表短暂过期等），归类按名字匹配、无需处理
+      if (!String(e).includes('DUP')) void reportClientError('创建书签小类失败', e)
+    }
+  }
+  for (const a of items) {
     // 二次去重保护：目标路径已存在则跳过（弹窗中已禁用，这里兜底）
-    if (
-      store.state.resources.some(
-        (r) => r.kind === 'app' && r.target.toLowerCase() === a.target.toLowerCase(),
-      )
-    ) {
+    if (store.state.resources.some((r) => r.target.toLowerCase() === a.target.toLowerCase())) {
       skipped++
       continue
     }
     try {
-      await store.addResource({
-        kind: 'app',
+      const r = await store.addResource({
+        // 桌面上的「文件夹」在速达里没有独立大类，归入「文件」
+        kind: a.kind === 'folder' ? 'file' : a.kind,
         name: a.name,
         target: a.target,
-        category: null,
+        // 书签导入可按浏览器文件夹带小类（弹窗里勾选决定）；其余模式保持默认归类
+        category: a.kind === 'web' ? (a.category ?? null) : null,
         icon: a.icon,
         args: null,
       })
       added++
+      if (r.kind === 'web' && !r.icon) createdWeb.push(r)
+      if (a.source) importedSources.push(a.source)
     } catch (e) {
       void reportClientError('速达扫描导入失败', e)
     }
   }
+  // 桌面模式可选：导入成功后清理桌面上的 .lnk/.url（Rust 侧有「仅快捷方式 + 仅用户桌面」护栏）
+  let cleaned = 0
+  if (cleanShortcuts && importedSources.length > 0) {
+    try {
+      cleaned = await tauriApi.deleteDesktopShortcuts(importedSources)
+    } catch (e) {
+      void reportClientError('清理桌面快捷方式失败', e)
+    }
+  }
   importing.value = false
-  showToast(skipped > 0 ? `已添加 ${added} 个应用，跳过 ${skipped} 个已存在` : `已添加 ${added} 个应用`)
+  const parts = [`已添加 ${added} 项`]
+  if (skipped > 0) parts.push(`跳过 ${skipped} 项已存在`)
+  if (createdCats > 0) parts.push(`新建小类 ${createdCats} 个`)
+  if (cleaned > 0) parts.push(`清理桌面快捷方式 ${cleaned} 个`)
+  showToast(parts.join('，'))
+  // 网页类资源后台补抓站点图标（不阻塞上面的导入反馈，抓到后自动刷新卡片）
+  if (createdWeb.length > 0) void fillWebFavicons(createdWeb)
 }
 
 // ---- 图标渲染（统一在 useResourceIcon composable） ----
@@ -452,22 +648,74 @@ function cardAccentStyle(r: Resource) {
     <header class="suda-header">
       <h2 class="suda-title">速达</h2>
       <div class="suda-header-actions">
-        <button
-          v-if="isTauri()"
-          class="icon-btn scan"
-          title="扫描已安装应用"
-          aria-label="扫描已安装应用"
-          @click="scanVisible = true"
-        >
-          <ScanSearch :size="15" :stroke-width="2.2" />
-        </button>
-        <button
-          class="icon-btn add"
-          title="添加"
-          @click="editing = null; prefill = null; formVisible = true"
-        >
-          <Plus :size="15" :stroke-width="2.2" />
-        </button>
+        <!-- 批量管理模式：已选计数 + 全选 + 删除 + 退出 -->
+        <template v-if="batchMode">
+          <span class="suda-batch-count">已选 {{ batchChecked.size }} 项</span>
+          <button class="ghost-btn suda-batch-btn" @click="batchToggleAll">
+            {{ batchAllChecked ? '全不选' : '全选' }}
+          </button>
+          <button
+            class="ghost-btn suda-batch-btn danger"
+            :disabled="batchChecked.size === 0 || batchDeleting"
+            @click="batchConfirmVisible = true"
+          >
+            <Loader2 v-if="batchDeleting" :size="13" :stroke-width="2" class="spin" />
+            删除
+          </button>
+          <button
+            class="icon-btn"
+            title="退出批量管理"
+            aria-label="退出批量管理"
+            @click="exitBatchMode"
+          >
+            <X :size="15" :stroke-width="2.2" />
+          </button>
+        </template>
+        <template v-else>
+          <button
+            v-if="visibleResources.length > 0"
+            class="icon-btn scan"
+            title="批量管理（勾选后可批量删除，配合分类筛选更方便）"
+            aria-label="批量管理"
+            @click="enterBatchMode"
+          >
+            <ListChecks :size="15" :stroke-width="2.2" />
+          </button>
+          <button
+            v-if="isTauri()"
+            class="icon-btn scan"
+            title="扫描已安装应用"
+            aria-label="扫描已安装应用"
+            @click="openScan('apps')"
+          >
+            <ScanSearch :size="15" :stroke-width="2.2" />
+          </button>
+          <button
+            v-if="isTauri()"
+            class="icon-btn scan"
+            title="扫描桌面（用户桌面一层，不递归）"
+            aria-label="扫描桌面"
+            @click="openScan('desktop')"
+          >
+            <Laptop :size="15" :stroke-width="2.2" />
+          </button>
+          <button
+            v-if="isTauri()"
+            class="icon-btn scan"
+            title="导入浏览器书签（Chrome / Edge / Brave / Chromium）"
+            aria-label="导入浏览器书签"
+            @click="openScan('bookmarks')"
+          >
+            <Bookmark :size="15" :stroke-width="2.2" />
+          </button>
+          <button
+            class="icon-btn add"
+            title="添加"
+            @click="editing = null; prefill = null; formVisible = true"
+          >
+            <Plus :size="15" :stroke-width="2.2" />
+          </button>
+        </template>
       </div>
     </header>
 
@@ -526,20 +774,30 @@ function cardAccentStyle(r: Resource) {
           <div v-if="dropBeforeId === r.id" class="suda-drop-slot" aria-hidden="true" />
         <div
           class="suda-card"
-          :class="{ 'is-dragging': draggingId === r.id }"
+          :class="{
+            'is-dragging': draggingId === r.id,
+            'batch-on': batchMode,
+            selected: batchMode && batchChecked.has(r.id),
+          }"
           :data-id="r.id"
           :title="r.target"
           role="button"
           tabindex="0"
+          :aria-pressed="batchMode ? batchChecked.has(r.id) : undefined"
           :style="[cardAccentStyle(r), dragStyleOf(r)]"
           @click="onCardClick(r)"
-          @pointerdown="onCardPointerDown(r, $event)"
+          @pointerdown="onCardPointer(r, $event)"
           @dragstart.prevent
-          @keydown.enter="onOpen(r)"
-          @keydown.space.prevent="onOpen(r)"
+          @keydown.enter="onCardKeyActivate(r)"
+          @keydown.space.prevent="onCardKeyActivate(r)"
           @contextmenu="onResourceContext($event, r)"
         >
-          <span class="suda-kind" :class="r.kind">{{ kindLabel(r) }}</span>
+          <span v-if="batchMode" class="suda-batch-check" :class="{ on: batchChecked.has(r.id) }">
+            <Check v-if="batchChecked.has(r.id)" :size="12" :stroke-width="3" />
+          </span>
+          <span class="suda-kind" :class="r.kind" :title="kindLabel(r)">{{
+            kindLabel(r)
+          }}</span>
           <div class="suda-actions">
             <button
               class="suda-action"
@@ -639,8 +897,20 @@ function cardAccentStyle(r: Resource) {
     />
     <SudaScanDialog
       :visible="scanVisible"
+      :mode="scanMode"
       @close="scanVisible = false"
       @imported="onScanImported"
+    />
+    <!-- 批量删除二次确认（多选的破坏性操作必须有明确的确认步，撤销 toast 只是兜底） -->
+    <ConfirmDialog
+      :visible="batchConfirmVisible"
+      title="批量删除资源"
+      :message="`确定删除选中的 ${batchChecked.size} 个资源吗？`"
+      hint="只删除速达里的条目，不影响磁盘上的文件；删除后可在提示条里撤销恢复。"
+      confirm-text="删除"
+      tone="danger"
+      @confirm="batchConfirmVisible = false; void doBatchDelete()"
+      @cancel="batchConfirmVisible = false"
     />
 
     <!-- 拖拽导入遮罩（dropping = 拖拽中；parsing = 正在识别程序） -->
@@ -761,6 +1031,52 @@ function cardAccentStyle(r: Resource) {
   transform: translateY(-2px);
   box-shadow: var(--shadow-hover);
 }
+/* ---- 批量管理模式：勾选角标占左上（小类标签让位），hover 操作隐藏，选中品牌描边 ---- */
+.suda-card.batch-on .suda-kind,
+.suda-card.batch-on .suda-actions {
+  display: none;
+}
+.suda-card.selected {
+  border-color: var(--brand-500);
+}
+.suda-batch-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-card-solid);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-on-accent);
+  pointer-events: none;
+  z-index: 2;
+}
+.suda-batch-check.on {
+  background: var(--brand-500);
+  border-color: var(--brand-500);
+}
+.suda-batch-count {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-2);
+  white-space: nowrap;
+  margin-right: 2px;
+}
+.suda-batch-btn {
+  padding: 5px 12px;
+  font-size: 0.75rem;
+}
+.suda-batch-btn.danger {
+  color: var(--c-red);
+}
+.suda-batch-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .suda-icon {
   width: 46px;
   height: 46px;
@@ -788,7 +1104,6 @@ function cardAccentStyle(r: Resource) {
   height: 46px;
   border-radius: 14px;
   object-fit: contain;
-  background: var(--bg-card);
 }
 .suda-name {
   display: inline-flex;
@@ -817,13 +1132,16 @@ function cardAccentStyle(r: Resource) {
   position: absolute;
   top: 6px;
   left: 6px;
-  display: inline-flex;
-  align-items: center;
-  min-height: 0;
-  padding: 0;
+  /* 长分类名（书签导入的小类可能很长）封顶省略：不越过居中的图标、不撞右侧 hover 操作钮；
+     text-overflow 需要块级容器，不能挂在 inline-flex 上（完整名靠模板里的 title 提示） */
+  display: block;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 0.625rem;
   font-weight: 600;
-  line-height: 1;
+  line-height: 1.2;
   color: var(--text-3);
 }
 .suda-kind.app {

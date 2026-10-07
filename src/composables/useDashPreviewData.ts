@@ -198,11 +198,11 @@ const countdownList = computed(() =>
 // ---- 提示词（store 已按置顶 → 复制次数 → 最近复制排好序）----
 const snippetList = computed(() => store.state.snippets.slice(0, 12))
 
-// ---- 待办分组（逾期→今天→有日期→无日期，同 TodoCard.pendingGroups）----
+// ---- 待办分组（置顶→逾期→今天→有日期→无日期，同 TodoCard.pendingGroups）----
 export interface PreviewTodoGroup {
   label: string
   /** 渲染用条目（软上限，防超大列表拖垮编辑器 DOM） */
-  items: { id: number; title: string; priority: number; badge: DueBadge | null; due_at: number | null }[]
+  items: { id: number; title: string; priority: number; pinned: boolean; badge: DueBadge | null; due_at: number | null }[]
   /** 该组真实条数：计数徽标必须显全量，否则预览数字与真卡不符 */
   total: number
 }
@@ -220,6 +220,7 @@ const todoGroups = computed<PreviewTodoGroup[]>(() => {
         id: t.id,
         title: t.title,
         priority: t.priority,
+        pinned: t.pinned,
         badge: dueBadge(t, today),
         due_at: t.due_at,
       })),

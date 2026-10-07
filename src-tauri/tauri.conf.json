@@ -2,13 +2,13 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "x-hub",
   "mainBinaryName": "x-hub",
-  "version": "0.7.0",
+  "version": "0.7.6",
   "identifier": "x-hub",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "pnpm run dev",
+    "beforeBuildCommand": "pnpm run build"
   },
   "app": {
     "windows": [
@@ -48,8 +48,8 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": [],
+    "active": true,
+    "targets": ["deb", "rpm"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -57,6 +57,28 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1",
+          "librsvg2-2"
+        ],
+        "section": "utils",
+        "priority": "optional"
+      },
+      "rpm": {
+        "release": "1",
+        "epoch": 0,
+        "depends": [
+          "webkit2gtk4.1",
+          "gtk3",
+          "libayatana-appindicator3-gtk3",
+          "librsvg2"
+        ]
+      }
+    },
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }

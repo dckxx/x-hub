@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, ref, watch } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Trash2, X, FolderOpen } from 'lucide-vue-next'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
@@ -15,6 +15,13 @@ const emit = defineEmits<{
 const cardRef = ref<HTMLElement | null>(null)
 const visible = computed(() => props.extension !== null)
 useFocusTrap(visible, cardRef)
+
+// Esc 关闭：弹窗可见时才响应（同屏多个 Esc 监听互不干扰，各自只管自己的弹窗）
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && visible.value) emit('close')
+}
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 const showToast = inject<(msg: string, action?: { label: string; onClick: () => void }) => void>(
   'showToast',
@@ -109,12 +116,13 @@ function togglePinned() {
   store.setSidebarExtension(ext.value.id, !pinnedSidebar.value)
 }
 
-// 默认打开方式：视图 / 窗口 / 抽屉（侧栏点击等入口按此打开）
+// 默认打开方式：软件内（主区视图）/ 独立窗口 / 抽屉——
+// 扩展中心点开、左栏固定菜单等入口都按此打开（默认「软件内」）
 const openMode = computed(() => store.state.config.extension_open_modes?.[ext.value?.id ?? ''] ?? 'view')
 
 const OPEN_MODES = [
-  { value: 'view', label: '视图' },
-  { value: 'window', label: '窗口' },
+  { value: 'view', label: '软件内' },
+  { value: 'window', label: '独立窗口' },
   { value: 'drawer', label: '抽屉' },
 ] as const
 
@@ -123,6 +131,22 @@ function setOpenMode(mode: (typeof OPEN_MODES)[number]['value']) {
   store.setExtensionOpenMode(ext.value.id, mode)
   const label = OPEN_MODES.find((m) => m.value === mode)?.label ?? mode
   showToast(`已设为默认在「${label}」打开`)
+}
+
+// 链接打开方式：扩展页里的外链（xhub.openExternal）怎么打开——
+// 软件内 = 应用内置浏览器窗口（默认）；浏览器 = 系统默认浏览器
+const linkMode = computed(() => store.state.config.extension_link_modes?.[ext.value?.id ?? ''] ?? 'inapp')
+
+const LINK_MODES = [
+  { value: 'inapp', label: '软件内' },
+  { value: 'browser', label: '浏览器' },
+] as const
+
+function setLinkMode(mode: (typeof LINK_MODES)[number]['value']) {
+  if (!ext.value) return
+  store.setExtensionLinkMode(ext.value.id, mode)
+  const label = LINK_MODES.find((m) => m.value === mode)?.label ?? mode
+  showToast(`扩展内链接已改为用「${label}」打开`)
 }
 
 /** 在系统文件管理器中打开扩展目录（开发调试用） */
@@ -159,7 +183,7 @@ async function confirmUninstall() {
 <template>
   <Teleport to="body">
     <Transition name="mask">
-      <div v-if="ext" class="modal-mask">
+      <div v-if="ext" class="modal-mask" @click.self="emit('close')">
         <div
           ref="cardRef"
           class="modal-card es-card"
@@ -169,7 +193,7 @@ async function confirmUninstall() {
         >
           <header class="es-head">
             <div class="es-head-left">
-              <div class="es-icon" :style="{ background: accent?.soft }">
+              <div class="es-icon" :style="ext.icon ? {} : { background: accent?.soft }">
                 <img
                   v-if="ext.icon"
                   :src="iconSrc(ext.icon)"
@@ -219,7 +243,13 @@ async function confirmUninstall() {
 
             <section class="es-block">
               <h3 class="es-block-title">权限</h3>
-              <p v-if="ext.runtime === 'service'" class="es-empty">本地后端可读取你有权限访问的文件并联网，未受系统沙箱隔离。仅在信任作者与当前版本时开启；更新版本后需重新授权。关闭网络权限也会停止后端。</p>
+              <p v-if="ext.runtime === 'service'" class="es-empty">
+                本地后端可读取你有权限访问的文件并联网，未受系统沙箱隔离。仅在信任作者与当前版本时开启；关闭网络权限也会停止后端。
+                <template v-if="store.state.config.service_auto_trust">
+                  已开启「自动信任 service 扩展」（设置 → 扩展）：新装或更新后无需逐个确认即可运行后端；在此处单独关闭可拒绝该扩展的后端，且优先于全局开关。
+                </template>
+                <template v-else>更新版本后需重新授权。</template>
+              </p>
               <div v-if="Object.keys(perms).length" class="es-perm-list">
                 <div v-for="p in Object.keys(perms)" :key="p" class="es-perm-row" :title="p">
                   <span class="es-perm-name">{{ permissionLabel(p) }}</span>
@@ -258,6 +288,23 @@ async function confirmUninstall() {
                   </div>
                 </dd>
               </div>
+              <div class="es-kv-row es-openmode-row">
+                <dt>链接打开方式</dt>
+                <dd>
+                  <div class="es-seg" role="group" aria-label="链接打开方式">
+                    <button
+                      v-for="m in LINK_MODES"
+                      :key="m.value"
+                      class="es-seg-btn"
+                      :class="{ active: linkMode === m.value }"
+                      type="button"
+                      @click="setLinkMode(m.value)"
+                    >
+                      {{ m.label }}
+                    </button>
+                  </div>
+                </dd>
+              </div>
               <div class="es-perm-row">
                 <span class="es-setting-name">在左侧栏固定此扩展</span>
                 <button
@@ -271,7 +318,7 @@ async function confirmUninstall() {
                   <span class="toggle-knob"></span>
                 </button>
               </div>
-              <p class="es-empty es-openmode-hint">固定后，点击左栏菜单即按上方「打开方式」打开该扩展。</p>
+              <p class="es-empty es-openmode-hint">从扩展中心点开、或点击左栏固定菜单时，都按上方「打开方式」打开该扩展（默认软件内打开）；扩展内的外部链接按「链接打开方式」打开（默认软件内的应用内浏览器）。</p>
             </section>
           </div>
 
@@ -540,8 +587,15 @@ async function confirmUninstall() {
   font-size: 0.8125rem;
   color: var(--text-1);
 }
+/* 打开方式 / 链接打开方式：标签在左、分段控件贴右，与「在左侧栏固定此扩展」那行对齐；
+   dt 不锁 72px（「链接打开方式」六字会折行），改 nowrap 自适应 */
 .es-openmode-row {
   align-items: center;
+  justify-content: space-between;
+}
+.es-openmode-row dt {
+  width: auto;
+  white-space: nowrap;
 }
 .es-seg {
   display: inline-flex;

@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ArrowRight, CalendarDays, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Todo, TodoOccurrence } from '../api/tauri'
-import { calendarGrid, dueBadge, isoKey } from '../utils/todoSchedule'
+import { calendarGrid, dueBadge, isoKey, parseServerDate } from '../utils/todoSchedule'
 
 /**
  * 工作台「日历」模块：月历形态展示待办分布（含周期待办的**虚拟实例**）。
@@ -25,15 +25,20 @@ const monthLabel = computed(() => `${cursor.value.getFullYear()} 年 ${cursor.va
 
 const topTodos = computed(() => store.state.todos.filter((t) => t.parent_id == null))
 
+/** 真实条目落格：未完成按 due_at；**已完成也显示**——有截止落原日期，
+ *  没截止则落在完成当天（completed_at，UTC 字符串需补 Z 解析），用删除线淡显。
+ *  同一格内未完成排在已完成前面（MAX_CHIPS 截断时不至于把待办挤掉）。 */
 const realByDay = computed(() => {
   const map = new Map<string, Todo[]>()
   for (const t of topTodos.value) {
-    if (t.done || t.due_at == null) continue
-    const key = isoKey(new Date(t.due_at))
+    const at = t.due_at ?? (t.done ? parseServerDate(t.completed_at)?.getTime() ?? null : null)
+    if (at == null) continue
+    const key = isoKey(new Date(at))
     const list = map.get(key)
     if (list) list.push(t)
     else map.set(key, [t])
   }
+  for (const list of map.values()) list.sort((a, b) => Number(a.done) - Number(b.done))
   return map
 })
 
@@ -156,8 +161,8 @@ const chipsByDay = computed(() => {
             v-for="t in (chipsByDay.get(c.key)?.real ?? [])"
             :key="'r' + t.id"
             class="tc-chip real"
-            :class="{ late: dueBadge(t, today)?.kind === 'over' }"
-            :title="t.title"
+            :class="{ done: t.done, late: !t.done && dueBadge(t, today)?.kind === 'over' }"
+            :title="t.done ? `${t.title}（已完成）` : t.title"
           >{{ t.title }}</span>
           <span
             v-for="o in (chipsByDay.get(c.key)?.virtual ?? [])"
@@ -287,6 +292,12 @@ const chipsByDay = computed(() => {
   border-color: var(--c-red-ink);
   background: var(--c-red-soft);
   color: var(--c-red-ink);
+}
+.tc-chip.done {
+  border-color: var(--border-soft);
+  background: transparent;
+  color: var(--text-4);
+  text-decoration: line-through;
 }
 .tc-more-cnt {
   font-size: 0.5rem;

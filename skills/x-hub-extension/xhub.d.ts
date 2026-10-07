@@ -579,13 +579,21 @@ interface XHub {
   system: XHubSystem
   events: XHubEvents
   /**
-   * @done 用系统默认浏览器打开外链（**需 manifest 声明 `open-url` 权限**）。只放行 `http(s)://`。
+   * @done 打开外链（**需 manifest 声明 `open-url` 权限**）。只放行 `http(s)://`。
+   * 默认在**应用内置浏览器窗口**打开；用户可在扩展详情弹窗把单个扩展改为
+   * 「浏览器」（系统默认浏览器）。扩展侧代码无需关心区分。
    *
    * 为什么必须用它而不是 `target="_blank"`：宿主用 Tauri/wry 承载扩展 iframe，wry 在宿主
    * 未注册新窗口处理器时对 WebView2 的 NewWindowRequested 直接 SetHandled(true) 拒绝，
    * 于是 `target="_blank"` 与 `window.open()` 在宿主里**静默失效**（点了没反应）。
    */
   openExternal(url: string): Promise<void>
+  /**
+   * @done 请求宿主打开本扩展的设置/授权弹窗（**无需权限**，只能打开自己的设置）。
+   * 典型用途：service 后端未授权（`service.request` 报 PERMISSION_DENIED）时，
+   * 页面展示提示 + 「去授权」按钮，点击调用本方法直接落到权限管理界面。
+   */
+  openPermissions(): Promise<void>
   /**
    * @done 暴露一个方法供其它扩展调用（配合 manifest `expose` 声明）。
    * handler 返回 Promise 或值；返回值需可结构化克隆。

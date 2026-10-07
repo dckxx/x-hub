@@ -159,9 +159,38 @@ fn init_panel(app: &AppHandle) {
     ) {
         Ok(wv) => {
             let _ = wv.hide();
+            #[cfg(target_os = "linux")]
+            shrink_hidden_panel_out_of_layout(&main);
             log::info!("速达网页面板 webview 预创建完成");
         }
         Err(e) => log::warn!("速达网页面板 webview 预创建失败: {e}"),
+    }
+}
+
+/// Linux：隐藏的速达面板 webview 仍参与主窗 vbox 布局——GtkBox 在可见子组件间平分空间，
+/// 且主窗 show 流程的 `show_all` 会把 `hide()` 过的组件重新显示，导致主界面只占窗口上半
+/// （面板占走另一半）。创建后立即把面板从布局中除名：取消 expand、尺寸请求压到 0，
+/// 主 webview 恢复满高。代价：应用内打开网页的面板在 Linux 上暂不可见（已知差异，
+/// 待 wry/tauri 修复子 webview 在 X11 的布局归属后恢复，参见 tauri#15656 一族）。
+#[cfg(target_os = "linux")]
+fn shrink_hidden_panel_out_of_layout(main: &tauri::Window<tauri::Wry>) {
+    use gtk::prelude::*;
+
+    let Ok(gwin) = main.gtk_window() else {
+        return;
+    };
+    for container in gwin.children() {
+        let Some(box_) = container.dynamic_cast::<gtk::Box>().ok() else {
+            continue;
+        };
+        for child in box_.children() {
+            // 只认隐藏态的 WebKitWebView（主 webview 可见，不会误伤）
+            if !child.is_visible() && child.type_().name() == "WebKitWebView" {
+                box_.set_child_packing(&child, false, false, 0, gtk::PackType::Start);
+                child.set_size_request(0, 0);
+                log::info!("已将隐藏的速达面板 webview 移出主窗 vbox 布局");
+            }
+        }
     }
 }
 

@@ -58,6 +58,9 @@ arboard = "3"
 # Linux：悬浮球边缘监视用 XQueryPointer 取光标/左键（与 Windows GetCursorPos/GetAsyncKeyState 对齐）
 [target.'cfg(target_os = "linux")'.dependencies]
 x11-dl = "2.21"
+# 隐藏的速达面板 webview 在主窗 vbox 中仍占一半布局（GtkBox 平分可见子组件），
+# 需直接操作 GtkBox 收起该子组件（见 suda_browser::shrink_hidden_panel_out_of_layout）
+gtk = "0.18"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"

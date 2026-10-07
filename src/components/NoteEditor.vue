@@ -2841,6 +2841,15 @@ html[data-wallpaper-clear='1'] .crepe-root .milkdown {
   background: transparent;
 }
 
+/* 行号槽与内容并排：WebKitGTK 下 CM6 的 flex 布局会丢失，行号被堆到内容上方 */
+.crepe-root .milkdown .milkdown-code-block .cm-scroller {
+  display: flex;
+  align-items: flex-start;
+}
+.crepe-root .milkdown .milkdown-code-block .cm-gutters {
+  flex-shrink: 0;
+}
+
 /* 语言芯片与分屏预览的语言头同口径：常显（Crepe 默认 hover 才出现） */
 .crepe-root .milkdown .milkdown-code-block .tools .language-button {
   opacity: 1;

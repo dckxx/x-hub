@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { Crepe } from '@milkdown/crepe'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
@@ -964,6 +964,18 @@ const EDITOR_FLOAT_UI_SELECTOR =
   '.milkdown-block-handle, .milkdown-slash-menu, .milkdown-toolbar, .milkdown-link-edit, ' +
   '.milkdown-link-preview, .milkdown-image-block, .crepe-image-block, .ProseMirror-gapcursor'
 
+// 代码块工具条上的 Copy 按钮（Crepe 内建）只改按钮态、无成功提示；这里委托点击
+// 补一个应用内 toast。剪贴板写入由 Crepe 自己完成（Linux/Windows 实测可用），
+// toast 采用乐观提示，与提示词卡片的「已复制」同口径。
+const showToast = inject<((msg: string) => void) | null>('showToast', null)
+function onEditorClick(e: MouseEvent) {
+  const target = e.target
+  if (!(target instanceof Element)) return
+  if (target.closest('.milkdown-code-block .tools-button-group button')) {
+    showToast?.('已复制')
+  }
+}
+
 function onEditorAreaMouseDown(e: MouseEvent) {
   if (e.button !== 0) return
   const root = rootEl.value
@@ -1032,7 +1044,7 @@ function onEditorAreaMouseDown(e: MouseEvent) {
         </button>
       </header>
 
-      <div v-if="mode === 'wysiwyg'" ref="rootEl" class="crepe-root" @mousedown.capture="onEditorAreaMouseDown"></div>
+      <div v-if="mode === 'wysiwyg'" ref="rootEl" class="crepe-root" @mousedown.capture="onEditorAreaMouseDown" @click="onEditorClick"></div>
       <textarea
         v-else-if="mode === 'source'"
         class="md-source"

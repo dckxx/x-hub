@@ -1116,6 +1116,11 @@ function onEditorClick(e: MouseEvent) {
   if (previewSrc.value) return
   const target = e.target
   if (!(target instanceof Element)) return
+  // 代码块 Copy 按钮（Crepe 内建）只改按钮态、无成功反馈；这里补应用内 toast
+  // （剪贴板写入由 Crepe 完成，Linux/Windows 实测可用），与提示词卡片「已复制」同口径
+  if (target.closest('.milkdown-code-block .tools-button-group button')) {
+    showToast?.('已复制')
+  }
   // 链接点击跳系统浏览器（编辑态 a 标签默认无反应，这里委托打开；只放行 http(s)）
   const anchor = target.closest<HTMLAnchorElement>('a[href]')
   if (anchor) {
@@ -1585,17 +1590,6 @@ const EDITOR_FLOAT_UI_SELECTOR =
   '.milkdown-block-handle, .milkdown-slash-menu, .milkdown-toolbar, .milkdown-link-edit, ' +
   '.milkdown-link-preview, .milkdown-image-block, .crepe-image-block, .ProseMirror-gapcursor'
 
-// 代码块工具条上的 Copy 按钮（Crepe 内建）只改按钮态、无成功提示；这里委托点击
-// 补一个应用内 toast。剪贴板写入由 Crepe 自己完成（Linux/Windows 实测可用），
-// toast 采用乐观提示，与提示词卡片的「已复制」同口径。
-const showToast = inject<((msg: string) => void) | null>('showToast', null)
-function onEditorClick(e: MouseEvent) {
-  const target = e.target
-  if (!(target instanceof Element)) return
-  if (target.closest('.milkdown-code-block .tools-button-group button')) {
-    showToast?.('已复制')
-  }
-}
 
 function onEditorAreaMouseDown(e: MouseEvent) {
   if (e.button !== 0) return
@@ -1727,7 +1721,7 @@ function onEditorAreaMouseDown(e: MouseEvent) {
       <!-- 编辑区 + 双链侧面板（全高） -->
       <div class="ed-body">
         <div class="ed-main">
-          <div v-if="mode === 'wysiwyg'" ref="rootEl" class="crepe-root" @mousedown.capture="onEditorAreaMouseDown" @click="onEditorClick"></div>
+          <div v-if="mode === 'wysiwyg'" ref="rootEl" class="crepe-root" @mousedown.capture="onEditorAreaMouseDown"></div>
           <textarea
             v-else-if="mode === 'source'"
             ref="sourceEl"

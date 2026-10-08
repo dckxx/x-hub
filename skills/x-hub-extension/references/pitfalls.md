@@ -7,7 +7,7 @@
 3. **npm script 用 `deploy`**，不要叫 `install`（npm 生命周期钩子会误触发）。
 4. **service 端口**：读 `process.env.PORT`，只监听 `127.0.0.1`；`/healthz` 是健康检查路径。
 5. **前端调后端**：走 `window.xhub.service.request`，不直接 fetch 端口。
-6. **桥 API 现状**以 `runtime.info().capabilities` 为准。已实现：`runtime(info/open/callExtension/openPermissions)`、`storage.*`、`config.*`、`sharedStorage.*`、**`data.*` 读写全套**、`fs.saveText/saveFile/saveAs`、`service.request`、`theme.get`、`events.on/emit`、`openExternal`、`expose`。未实现：`clipboard.*`、`net.*`、`system.*`、`ui.*`、`fs.readText/writeText/readDir/exists`。
+6. **桥 API 现状**以 `runtime.info().capabilities` 为准。已实现：`runtime(info/open/callExtension/openPermissions)`、`storage.*`、`config.*`、`sharedStorage.*`、**`data.*` 读写全套**、`fs.saveText/saveFile/saveAs`、`service.request`、`theme.get`、`events.on/emit`、`openExternal`、`ui.notify`、`expose`。未实现：`clipboard.*`、`net.*`、`system.*`、`ui.toast`、`fs.readText/writeText/readDir/exists`。
 6b. **开外链一律用 `window.xhub.openExternal(url)`**：宿主用 Tauri/wry 承载扩展 iframe，wry 在宿主未注册新窗口处理器时对 WebView2 的 `NewWindowRequested` 直接 `SetHandled(true)` 拒绝——`target="_blank"` 和 `window.open()` 在宿主里**静默失效**（点了没反应）。更坑的是浏览器直开预览时它们"看起来正常"，所以这个坑只在宿主内才暴露。只放行 `http(s)://`。
     - **打开位置由用户决定，不由扩展决定**：用户可在扩展详情弹窗给每个扩展配「链接打开方式」——默认**应用内置浏览器窗口**，也可切「浏览器」（系统默认浏览器）。扩展代码只管调 `openExternal`，两种模式都覆盖，别自己写「用哪个浏览器打开」的逻辑。
     - **普通 `<a href="http(s)://…">` 链接宿主会自动接管**（桥在捕获阶段拦截点击 → `openExternal`），直接写链接就能用，不必自己绑 click。反过来：**别在 http(s) 外链的 `<a>` 上绑自己的点击逻辑**（确认弹窗、统计等）——宿主接管会吞掉这些处理器（`stopPropagation`）；确需自定义点击行为，用按钮 + `openExternal`，别用 `<a href=http…>`。

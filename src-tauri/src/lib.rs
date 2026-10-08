@@ -776,6 +776,7 @@ pub fn run() {
             commands::reorder_resources,
             commands::launch_resource,
             commands::launch_resource_as_admin,
+            commands::reveal_resource_in_explorer,
             commands::list_installed_browsers,
             commands::open_url_with_browser,
             commands::create_note,

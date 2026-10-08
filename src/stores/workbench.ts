@@ -413,6 +413,11 @@ export function useStore() {
     if (r) r.last_launched_at = new Date().toISOString()
   }
 
+  /** 在资源管理器中打开资源所在位置并选中（网页资源由后端拒绝） */
+  async function revealResourceInExplorer(id: number) {
+    await tauriApi.revealResourceInExplorer(id)
+  }
+
   // ---- 速达小类（ADR 0012）----
   async function refreshSubcategories() {
     if (!isTauri()) return
@@ -1858,6 +1863,7 @@ export function useStore() {
     reorderResources,
     launchResource,
     launchResourceAsAdmin,
+    revealResourceInExplorer,
     openResourceInBrowser,
     refreshSubcategories,
     subcategoriesOf,

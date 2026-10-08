@@ -151,6 +151,7 @@ skill 的使用者手里通常只有**装好的 x-hub 应用** + 这个 skill �
 | 跨扩展共享存储 | `shared-storage` |
 | 广播事件给其它扩展 | `events` |
 | 打开外链（`xhub.openExternal`，默认应用内浏览器） | `open-url` |
+| 推送右下角通知（`xhub.ui.notify`） | `notify` |
 | service 后端（后端自己发请求、前端走 `service.request`） | **无需权限** |
 | service 后端未授权时给「去授权」入口（`xhub.openPermissions`） | **无需权限** |
 | 后端要**对外**监听（局域网 / `0.0.0.0`） | `network` |

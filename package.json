@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test:security": "node --test tests/security.test.mjs",
-    "test:utils": "node --test tests/noteImageSyntax.test.mjs tests/markdownBeautify.test.mjs",
+    "test:utils": "node --test tests/noteImageSyntax.test.mjs tests/markdownBeautify.test.mjs tests/todoBadge.test.mjs",
     "dev": "vite",
     "prebuild": "node scripts/gen-settings-index.mjs && node scripts/check-settings-css.mjs",
     "check:settings-css": "node scripts/check-settings-css.mjs",

@@ -533,7 +533,10 @@ interface XHubThemeApi {
 interface XHubUi {
   /** @planned 无需权限 */
   toast(message: string, options?: { type?: 'info' | 'success' | 'error' }): Promise<void>
-  /** @planned 需 notify 权限（系统通知） */
+  /**
+   * @done 推送一条右下角通知（**需 manifest 声明 `notify` 权限**）。
+   * 复用宿主的自绘通知窗（跨 Win10/11 一致），`title` 截 80、`body` 截 300 字符。
+   */
   notify(title: string, body: string): Promise<void>
 }
 

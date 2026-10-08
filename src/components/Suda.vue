@@ -870,6 +870,15 @@ async function onOpenAsAdmin(r: Resource) {
   }
 }
 
+/** 在资源管理器中打开该资源所在位置并选中它 */
+async function onRevealInExplorer(r: Resource) {
+  try {
+    await store.revealResourceInExplorer(r.id)
+  } catch (e) {
+    showToast(`无法打开「${r.name}」所在位置：${String(e)}`)
+  }
+}
+
 async function onResourceContext(e: MouseEvent, r: Resource) {
   e.preventDefault()
   // 批量管理模式下不弹单条菜单（避免「打开/编辑」在勾选语境里误触）
@@ -878,6 +887,10 @@ async function onResourceContext(e: MouseEvent, r: Resource) {
   const isApp = r.kind === 'app'
   if (isApp) {
     items.push({ label: '以管理员身份运行', onClick: () => void onOpenAsAdmin(r) })
+  }
+  // 「打开文件所在位置」只对本地路径型资源有意义（程序/文件），网页没有所在目录
+  if (r.kind !== 'web') {
+    items.push({ label: '打开文件所在位置', onClick: () => void onRevealInExplorer(r) })
   }
   // smb/ftp 等远程协议只有系统能打开：内嵌面板/独立窗口/指定浏览器入口只对 http(s) 出
   let isWeb = false

@@ -392,6 +392,12 @@ pub(crate) static CAPABILITIES: &[Capability] = &[
         handler: CapabilityHandler::Sync(config_remove),
     },
     Capability {
+        namespace: "ui",
+        method: "notify",
+        permission: Some("notify"),
+        handler: CapabilityHandler::Sync(ui_notify),
+    },
+    Capability {
         namespace: "events",
         method: "emit",
         permission: Some("events"),
@@ -2171,6 +2177,28 @@ fn fs_save_as(
     })
 }
 
+// ---------- ui（扩展界面与通知；notify 权限校验在 dispatch） ----------
+
+/// ui.notify：扩展推送一条右下角通知（复用宿主的自绘通知窗，需 `notify` 权限）。
+/// 长度上限与前端卡片展示口径一致：标题截 80 字符、正文截 300 字符（正文卡片最多 3 行），
+/// 既不信任扩展输入，也避免超长文本把常驻通知窗撑爆。
+fn ui_notify(
+    app: &tauri::AppHandle,
+    _state: &DbState,
+    _ext_id: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if title.is_empty() && body.is_empty() {
+        return Err("INVALID_ARGUMENT: 通知标题与正文不能都为空".into());
+    }
+    let title: String = title.chars().take(80).collect();
+    let body: String = body.chars().take(300).collect();
+    crate::notify::show_notice(app, "extension", &title, &body);
+    Ok(Value::Null)
+}
+
 // ---------- events（扩展间事件总线；emit 权限校验在 dispatch，广播在前端） ----------
 
 /// events.emit：只做权限校验占位（dispatch 已统一校验 events 权限）。
@@ -2314,6 +2342,17 @@ mod tests {
     }
 
     #[test]
+    fn ui_notify_requires_notify_permission() {
+        // 通知对扩展开放：复用宿主右下角通知窗，须声明窄权限 `notify`
+        // （与 precheck.rs / gate.ts 的 `ui → notify` 同口径）。
+        let cap = CAPABILITIES
+            .iter()
+            .find(|c| c.namespace == "ui" && c.method == "notify")
+            .expect("ui.notify 必须在能力表中");
+        assert_eq!(cap.permission, Some("notify"));
+    }
+
+    #[test]
     fn capabilities_cover_known_methods() {
         let keys: std::collections::HashSet<_> =
             CAPABILITIES.iter().map(|c| (c.namespace, c.method)).collect();
@@ -2360,6 +2399,8 @@ mod tests {
         assert!(keys.contains(&("data", "tags.create")));
         assert!(keys.contains(&("data", "tags.setNoteTags")));
         assert!(keys.contains(&("service", "request")));
+        // 界面与通知：ui.notify 走右下角通知窗，漏登记 = 扩展调不通
+        assert!(keys.contains(&("ui", "notify")));
     }
 
     /// data 读方法（挂 data:read 权限）方法名约定：list / get / ofNote 结尾。

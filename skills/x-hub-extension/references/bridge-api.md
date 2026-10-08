@@ -17,6 +17,7 @@
 | `sharedStorage.*` | `shared-storage` |
 | `fs.saveText` / `saveFile` / `saveAs` | `fs` |
 | `events.emit` | `events` |
+| `ui.notify`（推送右下角通知） | `notify` |
 | `events.on`、`xhub.expose` | 无需权限 |
 | `net.fetch`（**@planned 未实现**） | `network` |
 
@@ -64,6 +65,10 @@ window.xhub.events.on('xhub:variant-changed', fn)  // module 形态切换
 window.xhub.events.on('my-event', fn)       // 订阅其它扩展广播的自定义事件
 window.xhub.events.emit('my-event', data)   // 广播给其它扩展（需 permissions: ["events"]）
 window.xhub.expose('getData', fn)           // 暴露方法给其它扩展（配合 manifest.expose）
+
+// 推送一条右下角通知（需 permissions: ["notify"]）；复用宿主自绘通知窗，
+// title 截 80、body 截 300 字符，正文卡片最多 3 行。适合「后台任务完成」这类非阻塞提示。
+await window.xhub.ui.notify('同步完成', '已更新 12 条记录')
 
 await window.xhub.service.request('/api/x', { method, headers, body })  // 仅 service 扩展
 // → XHubHttpResult { status, headers, text(), json() }
@@ -151,7 +156,7 @@ await window.xhub.data.tags.setNoteTags({ noteId, tagIds })   // 全量替换语
 
 ## 未实现（planned，勿依赖）
 
-`clipboard.*`、`net.*`、`system.*`（`openUrl` / `openPath` / `openApp`）、`ui.*`（含 `ui.toast` / `ui.notify`）；
+`clipboard.*`、`net.*`、`system.*`（`openUrl` / `openPath` / `openApp`）、`ui.toast`；
 `fs.readText` / `fs.writeText` / `fs.readDir` / `fs.exists`（受控读写那一套——**与可用的 `fs.saveText` / `saveFile` / `saveAs` 不是一回事**）；
 `data.usage.*`（已从宿主**移除**，AI 用量现在由扩展 `com.x-hub.token-stats` 自行读数据实现）。
 

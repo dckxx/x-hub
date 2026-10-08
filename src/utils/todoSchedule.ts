@@ -151,13 +151,16 @@ export function compareChildOrder(
 
 /**
  * 截止徽标：逾期(红) → 今天(橙，末尾时段只显「今天」) → 明天(品牌色) → M月D日(灰)
+ * 跨年补年份：截止日不在「当前年」时显示「YYYY年M月D日」，避免跨年条目只看到月日产生歧义。
  */
 export function dueBadge(t: { due_at: number | null }, today: Date): DueBadge | null {
   if (t.due_at == null) return null
   const due = new Date(t.due_at)
   const d = startOfDay(due)
   const today0 = startOfDay(today)
-  if (d.getTime() < today0.getTime()) return { kind: 'over', text: `逾期 ${fmtDay(d)}` }
+  // 「今天/明天」必然是今年（参照日 nearby），只有 over/date 两类可能跨年
+  const y = d.getFullYear() !== today0.getFullYear() ? `${d.getFullYear()}年` : ''
+  if (d.getTime() < today0.getTime()) return { kind: 'over', text: `逾期 ${y}${fmtDay(d)}` }
   const diff = Math.round((d.getTime() - today0.getTime()) / 86_400_000)
   if (diff === 0) {
     // 视为「当天结束」的截止（默认 23:59）不显示具体时间
@@ -165,7 +168,7 @@ export function dueBadge(t: { due_at: number | null }, today: Date): DueBadge | 
     return { kind: 'today', text: endOfDay ? '今天' : `今天 ${fmtHM(t.due_at)}` }
   }
   if (diff === 1) return { kind: 'tmr', text: '明天' }
-  return { kind: 'date', text: fmtDay(d) }
+  return { kind: 'date', text: `${y}${fmtDay(d)}` }
 }
 
 /** 下一个周一：从明天起找（今天恰好是周一时返回下周一，避免「下周一」快捷键选回当天） */

@@ -982,6 +982,10 @@ pub(crate) const XHUB_BRIDGE_SCRIPT: &str = r#"
       window.parent.postMessage({__xhub:true,type:'open-external',url:String(url||'')},'*');
       return Promise.resolve();
     },
+    // 界面与通知：notify 复用宿主右下角通知窗（需 manifest 声明 `notify` 权限）。
+    ui:{
+      notify:function(title,body){return call('ui','notify',{title:String(title||''),body:String(body||'')});}
+    },
     events:{
       on:function(event,handler){
         (listeners[event]=listeners[event]||[]).push(handler);

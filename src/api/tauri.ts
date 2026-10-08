@@ -1035,6 +1035,7 @@ export const tauriApi = {
   reorderResources: (ids: number[]) => invoke<void>('reorder_resources', { ids }),
   launchResource: (id: number) => invoke<void>('launch_resource', { id }),
   launchResourceAsAdmin: (id: number) => invoke<void>('launch_resource_as_admin', { id }),
+  revealResourceInExplorer: (id: number) => invoke<void>('reveal_resource_in_explorer', { id }),
   listInstalledBrowsers: () => invoke<InstalledBrowser[]>('list_installed_browsers'),
   openUrlWithBrowser: (id: number, browserExe: string) =>
     invoke<void>('open_url_with_browser', { id, browserExe }),

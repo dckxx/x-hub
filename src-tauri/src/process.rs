@@ -342,6 +342,32 @@ pub fn open_path(path: &str) -> Result<(), String> {
     opener::open(path).map_err(|e| format!("打开路径失败: {}", e))
 }
 
+/// 在文件资源管理器中打开路径所在目录并选中该项（速达右键「打开文件所在位置」）。
+/// 文件与文件夹通用：`explorer /select,<绝对路径>` 会打开其父目录并把该项高亮选中。
+pub fn reveal_in_explorer(path: &str) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("路径为空".to_string());
+    }
+    let target = std::path::Path::new(path);
+    #[cfg(target_os = "windows")]
+    {
+        // /select 后面必须是绝对路径：相对路径由 explorer 按它自己的当前目录解析，会定位错。
+        // canonicalize 失败（路径暂时不存在/权限）时退回原值，仍能打开所在目录。
+        let abs = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+        Command::new("explorer")
+            .arg(format!("/select,{}", abs.display()))
+            .spawn()
+            .map_err(|e| format!("打开文件所在位置失败: {}", e))?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 非 Windows 无「选中」等价语义：退回打开其所在目录
+        let dir = if target.is_dir() { target } else { target.parent().unwrap_or(target) };
+        opener::open(dir).map_err(|e| format!("打开所在文件夹失败: {}", e))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

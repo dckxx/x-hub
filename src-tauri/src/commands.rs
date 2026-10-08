@@ -297,6 +297,23 @@ pub fn launch_resource_as_admin(state: State<'_, DbState>, id: i64) -> Result<()
     }
 }
 
+/// 在资源管理器中打开速达资源所在位置并选中该项（右键「打开文件所在位置」）。
+/// 仅本地路径型资源（程序 / 文件）有意义；网页资源没有「所在目录」概念，直接拒绝。
+#[tauri::command]
+pub fn reveal_resource_in_explorer(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let res = resource::get(&conn, id).map_err(err_str)?;
+    if matches!(res.kind, ResourceKind::Web) {
+        return Err("网页资源没有所在目录".to_string());
+    }
+    process::reveal_in_explorer(&res.target).map_err(|e| {
+        log::warn!("打开文件所在位置失败: {} ({}) -> {}", res.name, res.target, e);
+        e
+    })?;
+    log::info!("打开文件所在位置: {} ({})", res.name, res.target);
+    Ok(())
+}
+
 // ---------- 速达小类（ADR 0012）----------
 
 /// 小类名（可含「/」层级）的形状校验：全路径 1–60 字符、每段 1–20、分段首尾禁空格。

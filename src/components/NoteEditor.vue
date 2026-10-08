@@ -985,7 +985,9 @@ function onPreviewClick(e: MouseEvent) {
   if (anchor) {
     e.preventDefault()
     const href = anchor.getAttribute('href') ?? ''
-    if (/^https?:\/\//i.test(href)) void tauriApi.openExternal(href)
+    const noteId = noteIdFromHref(href)
+    if (noteId != null) emit('open-note', noteId)
+    else if (/^https?:\/\//i.test(href)) void tauriApi.openExternal(href)
     return
   }
   if (!(target instanceof HTMLImageElement) || !target.src) return
@@ -1173,7 +1175,10 @@ function onEditorClick(e: MouseEvent) {
     e.preventDefault()
     e.stopPropagation()
     const href = anchor.getAttribute('href') ?? ''
-    if (/^https?:\/\//i.test(href)) void tauriApi.openExternal(href)
+    const noteId = noteIdFromHref(href)
+    // 笔记引用链接 note/<id>：打开对应笔记（双链跳转）
+    if (noteId != null) emit('open-note', noteId)
+    else if (/^https?:\/\//i.test(href)) void tauriApi.openExternal(href)
     return
   }
   // [[标题]] 点击跳转（双链轻量版）：命中未解析/无同名笔记时按普通文本处理
@@ -1286,10 +1291,9 @@ watch(
 function candidateNotes(query: string): Note[] {
   const q = query.trim().toLowerCase()
   return store.state.notes
-    .filter((n) => n.id !== props.note?.id && n.title !== '无标题笔记')
+    .filter((n) => n.id !== props.note?.id)
     .filter((n) => (q ? n.title.toLowerCase().includes(q) : true))
     .sort((a, b) => a.title.localeCompare(b.title, 'zh'))
-    .slice(0, 8)
 }
 
 /** 光标前同一文本块内的「[[query」：返回引用起点，无则 null（口径同 slashQueryStart） */
@@ -1414,13 +1418,32 @@ function commitWikiSuggest(item: Note) {
     const view = ctx.get(editorViewCtx)
     const { state } = view
     const end = state.doc.content.size
-    // 自动补出的右括号在此一并替换：光标后紧跟 "]]" 时连它一起换成 [[标题]]，
-    // 避免留下多余的一个 ]（智能括号补出的闭括号属本引用的一部分）
+    // 自动补出的右括号在此一并替换：光标后紧跟 "]]" 时连它一起换掉，避免残留多余的 ]
     const after = state.doc.textBetween(state.selection.from, Math.min(state.selection.from + 2, end), '', '\uFFFC')
     const to = state.selection.from + (after === ']]' ? 2 : 0)
-    view.dispatch(state.tr.insertText(`[[${item.title}]]`, s.from, to))
+    // 引用改写成「链接类型」：正文只留标题（去掉 [[]]），套 link mark 指向 note/<id>，
+    // 渲染为下划线 + 品牌色的可点链接；双链索引按 note/<id> 解析。
+    const text = item.title
+    let tr = state.tr.insertText(text, s.from, to)
+    const linkType = state.schema.marks.link
+    if (linkType) {
+      tr = tr.addMark(s.from, s.from + text.length, linkType.create({ href: noteHref(item.id) }))
+      tr = tr.removeStoredMark(linkType)
+    }
+    view.dispatch(tr)
     view.focus()
   })
+}
+
+/** 笔记引用链接的目标形式：相对 URL `note/<id>`（无 scheme，避开 Milkdown 的链接协议白名单过滤） */
+const NOTE_HREF_PREFIX = 'note/'
+function noteHref(id: number): string {
+  return `${NOTE_HREF_PREFIX}${id}`
+}
+function noteIdFromHref(href: string): number | null {
+  if (!href.startsWith(NOTE_HREF_PREFIX)) return null
+  const id = Number(href.slice(NOTE_HREF_PREFIX.length))
+  return Number.isInteger(id) && id > 0 ? id : null
 }
 
 function onWikiClickItem(item: Note) {
@@ -1834,7 +1857,7 @@ function onEditorAreaMouseDown(e: MouseEvent) {
           </header>
           <div class="elp-body">
             <p v-if="links.incoming.length === 0 && links.outgoing.length === 0" class="elp-empty">
-              正文输入 [[ 可引用其它笔记（按标题），这里会显示互相引用
+              正文输入 [[ 可引用其它笔记（插入为链接），这里会显示互相引用
             </p>
             <template v-else>
               <section v-if="links.incoming.length" class="elp-group">
@@ -2219,6 +2242,13 @@ function onEditorAreaMouseDown(e: MouseEvent) {
   pointer-events: none;
 }
 
+/* 正文链接（含 [[ 引用插入的笔记链接 note/<id>）统一走品牌色 + 下划线 */
+.crepe-root :deep(.milkdown a) {
+  color: var(--brand-500);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .mode-switch {
   display: flex;
   flex-shrink: 0;
@@ -2551,6 +2581,8 @@ function onEditorAreaMouseDown(e: MouseEvent) {
 
 .md-preview :deep(a) {
   color: var(--brand-500);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .md-preview :deep(blockquote) {

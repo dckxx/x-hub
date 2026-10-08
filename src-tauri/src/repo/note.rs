@@ -136,11 +136,17 @@ pub fn update_with_link_fixup(
     let mut touched: Vec<i64> = vec![id];
     if old != title {
         // 全库正文替换（只动引用语法字面量，LIKE 预过滤避免全表盲写），
-        // 与 note_links.to_title 同事务——改名断链防护（方案 §7 坑①）
+        // 与 note_links.to_title 同事务——改名断链防护（方案 §7 坑①）。
+        // 两种引用形态都要跟上：旧式 `[[旧标题]]` 与新式 `[旧标题](note/<id>)`。
         tx.execute(
             "UPDATE notes SET content = replace(content, ?1, ?2)
              WHERE content LIKE '%' || ?1 || '%' AND id <> ?3",
             params![format!("[[{old}]]"), format!("[[{title}]]"), id],
+        )?;
+        tx.execute(
+            "UPDATE notes SET content = replace(content, ?1, ?2)
+             WHERE content LIKE '%' || ?1 || '%' AND id <> ?3",
+            params![format!("[{old}](note/{id})"), format!("[{title}](note/{id})"), id],
         )?;
         tx.execute(
             "UPDATE note_links SET to_title = ?1 WHERE to_title = ?2",
@@ -148,9 +154,13 @@ pub fn update_with_link_fixup(
         )?;
         // 被替换过正文的笔记出链要按新正文重建（此时标题已落库，新标题可解析）
         let mut stmt = tx.prepare(
-            "SELECT id FROM notes WHERE content LIKE '%' || ?1 || '%' AND id <> ?2",
+            "SELECT id FROM notes
+             WHERE (content LIKE '%' || ?1 || '%' OR content LIKE '%' || ?2 || '%') AND id <> ?3",
         )?;
-        let rows = stmt.query_map(params![format!("[[{title}]]"), id], |r| r.get(0))?;
+        let rows = stmt.query_map(
+            params![format!("[[{title}]]"), format!("](note/{id})"), id],
+            |r| r.get(0),
+        )?;
         for nid in rows {
             touched.push(nid?);
         }

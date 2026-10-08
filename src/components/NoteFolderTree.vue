@@ -101,12 +101,15 @@ const tagPickOpen = ref(false)
 const tagPickIndex = ref(0)
 const activeTagId = ref<number | null>(null)
 
+/** 笔记-标签关联索引：`tag_id → 该标签下的笔记 id 列表`。
+ *  tagCount 与标签筛选都按 tag_id 查这张表，键必须是 tag_id——
+ *  若误建成 note_id 为键，get(tagId) 恒取不到值，表现为「按标签搜不到」（已修的缺陷）。 */
 const tagMap = computed(() => {
   const map = new Map<number, number[]>()
   for (const row of store.state.noteTagRows) {
-    const list = map.get(row.note_id) ?? []
-    list.push(row.tag_id)
-    map.set(row.note_id, list)
+    const list = map.get(row.tag_id) ?? []
+    list.push(row.note_id)
+    map.set(row.tag_id, list)
   }
   return map
 })

@@ -23,7 +23,7 @@
         "center": true,
         "visible": false,
         "decorations": false,
-        "shadow": true,
+        "shadow": false,
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --js-flags=--scavenger_max_new_space_capacity_mb=8 --disk-cache-size=33554432"
       }
     ],

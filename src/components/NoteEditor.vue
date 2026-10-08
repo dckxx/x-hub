@@ -708,6 +708,53 @@ function handleBracketKey(key: string): boolean {
   return handled
 }
 
+/**
+ * 智能括号的输入兜底（覆盖中文输入法）：handleBracketKey 走的是 keydown，但中文输入法把
+ * 「[」当组合文本提交时 keydown 的 isComposing 为真会被跳过——字符照样落进文档，只是没补
+ * 「]」。这里在 input/compositionend 之后按实际提交的字符补偿，与 keydown 路径互斥（后者已
+ * preventDefault，不会触发原生 input）。lastBracketFix 用于吸收 input 与 compositionend
+ * 对同一次提交的重复回调。
+ */
+let lastBracketFix: { pos: number; text: string } | null = null
+function syncBracketFromInput(data: string) {
+  const last = data.endsWith('[') ? '[' : data.endsWith(']') ? ']' : ''
+  if (!last) {
+    lastBracketFix = null
+    return
+  }
+  const c = crepe
+  if (!c || mode.value !== 'wysiwyg') return
+  c.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const { state } = view
+    if (!state.selection.empty) return
+    const { $from } = state.selection
+    if ($from.depth === 0 || !$from.parent.inlineContent || $from.parent.type.spec.code) return
+    const from = state.selection.from
+    const end = state.doc.content.size
+    const before = state.doc.textBetween(Math.max(0, from - 1), from, '', '\uFFFC')
+    const after = state.doc.textBetween(from, Math.min(from + 1, end), '', '\uFFFC')
+    if (last === '[') {
+      const text = $from.parent.textContent
+      if (lastBracketFix && lastBracketFix.pos === from && lastBracketFix.text === text) {
+        lastBracketFix = null
+        return
+      }
+      const next = state.tr.insertText(']', from, from)
+      next.setSelection(TextSelection.create(next.doc, from))
+      view.dispatch(next)
+      lastBracketFix = { pos: from, text: next.doc.resolve(from).parent.textContent }
+      return
+    }
+    // 右侧已是自动补出的「]」：删掉刚输入的「]」并把光标移到自动括号之后
+    if (before === ']' && after === ']') {
+      const del = state.tr.delete(from - 1, from)
+      del.setSelection(TextSelection.create(del.doc, from))
+      view.dispatch(del)
+    }
+  })
+}
+
 function shortcutNode(ctx: Ctx, schema: Schema, shortcut: LineShortcut): ProseNode | null {
   if (shortcut.type === 'image') {
     return imageBlockSchema.type(ctx).create({
@@ -1313,10 +1360,14 @@ function onWikiInput(e: Event) {
   // IME 组合期间绝不 dispatch（会炸掉组合、吞掉用户输入的字符）；组合结束后
   // 浏览器会再派发一次 isComposing=false 的 input，fix 在那时正常执行
   if ((e as InputEvent).isComposing) return
+  const data = (e as InputEvent).data ?? ''
   // ⚠️ 必须 setTimeout 延一拍：PM 对 DOM 变更的回读（DOMObserver）是异步 flush 的，
   // input 事件此刻的 state 还不含刚输入的字符，立即跑 fix 会读到旧文档而错过匹配
   // （实测：execCommand 输 / 后段落仍是占位符+/，fix 空跑）
   setTimeout(fixSlashAfterNbsp, 0)
+  // 智能括号的 IME 补偿：中文输入法把「[」作为组合文本提交时，keydown 的 isComposing
+  // 为真、handleBracketKey 被跳过（字符仍会正常落进文档），这里在字符落地后补上「]」
+  setTimeout(() => syncBracketFromInput(data), 0)
   c.editor.action((ctx) => refreshWikiSuggest(ctx.get(editorViewCtx)))
 }
 

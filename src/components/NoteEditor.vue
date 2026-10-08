@@ -95,6 +95,8 @@ interface WikiSuggest {
   index: number
   x: number
   y: number
+  /** 下方空间不足时翻到光标上方显示（避免贴窗口底被截断） */
+  openUp: boolean
 }
 
 const localTitle = ref('')
@@ -540,9 +542,19 @@ function onSourceKeydown(e: KeyboardEvent) {
  * 捕获阶段接住回车，把整行快捷标记换成代码块、公式块、图片块、表格、标题、引用、列表或分隔线。
  */
 function onCrepeKeydown(e: KeyboardEvent) {
-  if (e.key !== 'Enter' || e.shiftKey || e.isComposing || !crepe) return
+  if (e.isComposing || !crepe) return
   const target = e.target
   if (target instanceof HTMLElement && target.closest('input, textarea, .milkdown-slash-menu')) return
+  // 智能括号：「[」自动补「]」、「]」跳过已补的右括号。程序化 dispatch 不触发原生
+  // input，故在此接住按键自行改文档（IME 组合中的按键已在上面放行）
+  if (e.key === '[' || e.key === ']') {
+    if (handleBracketKey(e.key)) {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    return
+  }
+  if (e.key !== 'Enter' || e.shiftKey) return
   let handled = false
   crepe.editor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
@@ -655,6 +667,45 @@ function onCrepeKeydown(e: KeyboardEvent) {
   if (!handled) return
   e.preventDefault()
   e.stopPropagation()
+}
+
+/**
+ * 智能括号（仅实时预览）：输入「[」自动补「]」并把光标落在中间；再输入一个「[」即成「[[」，
+ * 手动刷新 [[ 标题补全浮层（程序化 dispatch 不触发原生 input）。输入「]」时若光标右侧已是补出
+ * 的「]」则跳过，不重复插入。返回是否已接管该按键（接管时调用方需 preventDefault）。
+ */
+function handleBracketKey(key: string): boolean {
+  const c = crepe
+  if (!c || mode.value !== 'wysiwyg') return false
+  let handled = false
+  c.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const { state } = view
+    if (!state.selection.empty) return
+    const { $from } = state.selection
+    if ($from.depth === 0 || !$from.parent.inlineContent || $from.parent.type.spec.code) return
+    const from = state.selection.from
+    const nextChar = state.doc.textBetween(from, Math.min(from + 1, state.doc.content.size), '', '\uFFFC')
+    if (key === ']') {
+      // 光标右侧就是自动补出的右括号 → 跳过它，不重复插入
+      if (nextChar !== ']') return
+      view.dispatch(state.tr.setSelection(TextSelection.create(state.doc, from + 1)))
+      handled = true
+      return
+    }
+    // key === '['：插入一对括号并把光标落到中间
+    const tr = state.tr.insertText('[]', from, from)
+    tr.setSelection(TextSelection.create(tr.doc, from + 1))
+    view.dispatch(tr)
+    handled = true
+    // 延一拍等 ProseMirror 完成 DOM 更新，再按新光标刷新 [[ 补全浮层
+    setTimeout(() => {
+      const cc = crepe
+      if (!cc) return
+      cc.editor.action((ctx2) => refreshWikiSuggest(ctx2.get(editorViewCtx)))
+    }, 0)
+  })
+  return handled
 }
 
 function shortcutNode(ctx: Ctx, schema: Schema, shortcut: LineShortcut): ProseNode | null {
@@ -1262,29 +1313,38 @@ function onWikiInput(e: Event) {
   // input 事件此刻的 state 还不含刚输入的字符，立即跑 fix 会读到旧文档而错过匹配
   // （实测：execCommand 输 / 后段落仍是占位符+/，fix 空跑）
   setTimeout(fixSlashAfterNbsp, 0)
-  c.editor.action((ctx) => {
-    const view = ctx.get(editorViewCtx)
-    const { state } = view
-    const found = wikiQueryStart(state, state.selection.from)
-    if (!found) {
-      wikiSuggest.value = null
-      return
-    }
-    const items = candidateNotes(found.query)
-    if (items.length === 0) {
-      wikiSuggest.value = null
-      return
-    }
-    const coords = view.coordsAtPos(state.selection.from)
-    wikiSuggest.value = {
-      from: found.start,
-      query: found.query,
-      items,
-      index: 0,
-      x: coords.left,
-      y: coords.bottom,
-    }
-  })
+  c.editor.action((ctx) => refreshWikiSuggest(ctx.get(editorViewCtx)))
+}
+
+/**
+ * 依当前光标位置刷新 [[ 标题补全浮层（无匹配则关闭）。
+ * 浮层最高 240px + 间距：光标下方放不下时翻到上方（openUp），避免贴窗口底被截断。
+ * 除原生 input 事件外，「输入第二个 [ 自动配对」是程序化 dispatch（不触发原生 input），
+ * 也需显式调用本函数。
+ */
+function refreshWikiSuggest(view: EditorView) {
+  const found = wikiQueryStart(view.state, view.state.selection.from)
+  if (!found) {
+    wikiSuggest.value = null
+    return
+  }
+  const items = candidateNotes(found.query)
+  if (items.length === 0) {
+    wikiSuggest.value = null
+    return
+  }
+  const coords = view.coordsAtPos(view.state.selection.from)
+  const BELOW_NEED = 260
+  const openUp = window.innerHeight - coords.bottom < BELOW_NEED
+  wikiSuggest.value = {
+    from: found.start,
+    query: found.query,
+    items,
+    index: 0,
+    x: Math.max(8, Math.min(coords.left, window.innerWidth - 200)),
+    y: openUp ? coords.top - 6 : coords.bottom,
+    openUp,
+  }
 }
 
 /**
@@ -1352,8 +1412,13 @@ function commitWikiSuggest(item: Note) {
   if (!s || !c) return
   c.editor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
-    const to = view.state.selection.from
-    view.dispatch(view.state.tr.insertText(`[[${item.title}]]`, s.from, to))
+    const { state } = view
+    const end = state.doc.content.size
+    // 自动补出的右括号在此一并替换：光标后紧跟 "]]" 时连它一起换成 [[标题]]，
+    // 避免留下多余的一个 ]（智能括号补出的闭括号属本引用的一部分）
+    const after = state.doc.textBetween(state.selection.from, Math.min(state.selection.from + 2, end), '', '\uFFFC')
+    const to = state.selection.from + (after === ']]' ? 2 : 0)
+    view.dispatch(state.tr.insertText(`[[${item.title}]]`, s.from, to))
     view.focus()
   })
 }
@@ -1860,6 +1925,7 @@ function onEditorAreaMouseDown(e: MouseEvent) {
       <ul
         v-if="wikiSuggest"
         class="wiki-suggest"
+        :class="{ 'open-up': wikiSuggest.openUp }"
         :style="{ left: `${wikiSuggest.x}px`, top: `${wikiSuggest.y}px` }"
         role="listbox"
         aria-label="笔记标题补全"
@@ -2099,6 +2165,10 @@ function onEditorAreaMouseDown(e: MouseEvent) {
   background: var(--brand-50);
   color: var(--brand-500);
 }
+/* 下方空间不足时翻到光标上方：以光标上沿为基准向上偏移整层高度 */
+.wiki-suggest.open-up {
+  transform: translateY(-100%);
+}
 
 .del:hover {
   color: var(--c-red);
@@ -2138,6 +2208,15 @@ function onEditorAreaMouseDown(e: MouseEvent) {
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
+}
+
+/* 斜杠菜单隐藏态用 visibility 隐藏而非 display:none：Crepe 定位用的 floating-ui
+   flip() 在菜单 display:none 时量到 0 高度 → 判定“放得下”而从不翻转，编辑框贴近
+   窗口底部时菜单就贴着下方被截断。保持元素可测量，flip 才能在下方不足时翻到光标上方。 */
+.crepe-root :deep(.milkdown-slash-menu[data-show='false']) {
+  display: block;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .mode-switch {

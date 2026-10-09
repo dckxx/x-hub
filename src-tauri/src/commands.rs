@@ -3385,7 +3385,7 @@ pub struct BrowserBookmarkScan {
     pub items: Vec<BrowserBookmark>,
     /// 各浏览器各配置文件的原始条数（去重前）
     pub profiles: Vec<BrowserProfileStat>,
-    /// 同一网址（跨配置文件/浏览器/文件夹）被合并掉的条数
+    /// 同一浏览器内相同网址（跨配置文件/文件夹）被合并掉的条数；跨浏览器不合并、各自展示
     pub duplicates: usize,
     /// 空名称 / 空网址 / javascript: 跳过的条数
     pub skipped: usize,
@@ -3395,9 +3395,11 @@ pub struct BrowserBookmarkScan {
 
 /// 读取 Chromium 系浏览器书签（Chrome / Edge / Brave / Chromium）。
 /// 纯文件读取（不跑 PowerShell、不读历史），遍历各浏览器 User Data 下所有配置目录的
-/// `Bookmarks` JSON，递归 roots 收集 `type=url` 节点；`dedupe` 为 true 时按 URL 去重，
-/// false 时原样保留全部条目（前端「按网址去重」勾选框，dckxx 2026-10-09）。
-/// Firefox 的 places.sqlite 属二期，不在此列。
+/// `Bookmarks` JSON，递归 roots 收集 `type=url` 节点；`dedupe` 为 true 时**同一浏览器内**
+/// 按 URL 去重（多配置文件/文件夹的相同网址只留一条），**跨浏览器不合并、各自展示**
+/// （曾按「跨浏览器只留第一条」去重：第二个浏览器的书签若与第一个大量重复会整个被吞、
+/// 前端按浏览器分组后该浏览器直接从列表消失，dckxx 2026-10-09 改口径；导入侧按网址
+/// 只建一条资源，不怕跨浏览器重复展示）。Firefox 的 places.sqlite 属二期，不在此列。
 #[tauri::command]
 pub fn scan_browser_bookmarks(dedupe: bool) -> Result<BrowserBookmarkScan, String> {
     const MAX_BOOKMARKS: usize = 2000;
@@ -3488,15 +3490,10 @@ pub fn scan_browser_bookmarks(dedupe: bool) -> Result<BrowserBookmarkScan, Strin
         }
     }
 
-    // 按 URL 去重（同一书签可能同时存在于多个浏览器的配置文件）；关掉则原样保留
+    // 浏览器内按 URL 去重（同一浏览器多配置文件/文件夹的相同网址只留一条）；
+    // 跨浏览器不合并（各浏览器独立展示）；关掉则原样保留
     let raw_total = found.len();
-    let duplicates = if dedupe {
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        found.retain(|b| seen.insert(b.target.to_lowercase()));
-        raw_total - found.len()
-    } else {
-        0
-    };
+    let duplicates = dedupe_within_browser(&mut found, dedupe);
     found.sort_by(|a, b| {
         a.browser
             .cmp(&b.browser)
@@ -3528,6 +3525,18 @@ pub fn scan_browser_bookmarks(dedupe: bool) -> Result<BrowserBookmarkScan, Strin
 
 /// 递归收集 Chromium 书签节点：`type=url` 收下，`type=folder` 带前缀继续下钻。
 /// `counted` 累计有效条数（按 profile 统计用）、`skipped` 累计无效跳过数（空名/空 URL/javascript:）。
+/// 浏览器内按 URL（小写）去重：同一浏览器的重复条目只留第一条，跨浏览器**不**合并。
+/// 返回被合并掉的条数。抽成纯函数用单测锁口径——「跨浏览器去重」曾把整个浏览器吞掉。
+fn dedupe_within_browser(found: &mut Vec<BrowserBookmark>, dedupe: bool) -> usize {
+    if !dedupe {
+        return 0;
+    }
+    let raw_total = found.len();
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    found.retain(|b| seen.insert((b.browser.clone(), b.target.to_lowercase())));
+    raw_total - found.len()
+}
+
 fn collect_bookmark_children(
     node: &serde_json::Value,
     prefix: &str,
@@ -4703,5 +4712,35 @@ mod tests {
         assert!(empty.is_empty());
         assert_eq!(empty_counted, 0);
         assert_eq!(empty_skipped, 0);
+    }
+
+    #[test]
+    fn dedupe_within_browser_keeps_cross_browser_duplicates() {
+        let mk = |browser: &str, url: &str, name: &str| BrowserBookmark {
+            name: name.to_string(),
+            target: url.to_string(),
+            folder: "书签栏".to_string(),
+            browser: browser.to_string(),
+        };
+        // Chrome 与 Edge 各有一条同网址书签 + Chrome 自己的配置文件里重复一条
+        let mut found = vec![
+            mk("Chrome", "https://a.dev/", "A"),
+            mk("Chrome", "https://A.dev/", "A'"), // 同浏览器同网址（大小写不敏感）
+            mk("Edge", "https://a.dev/", "A"),
+            mk("Edge", "https://b.dev/", "B"),
+        ];
+        let removed = dedupe_within_browser(&mut found, true);
+        // 只合并 Chrome 内部那条；跨浏览器的同网址各自保留（否则整个浏览器会被吞掉消失）
+        assert_eq!(removed, 1);
+        assert_eq!(found.len(), 3);
+        assert!(found.iter().filter(|b| b.browser == "Chrome").count() == 1);
+        assert!(found.iter().filter(|b| b.browser == "Edge").count() == 2);
+        // 关掉去重：原样保留
+        let mut raw = vec![
+            mk("Chrome", "https://a.dev/", "A"),
+            mk("Chrome", "https://a.dev/", "A'"),
+        ];
+        assert_eq!(dedupe_within_browser(&mut raw, false), 0);
+        assert_eq!(raw.len(), 2);
     }
 }

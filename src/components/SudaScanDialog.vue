@@ -60,7 +60,9 @@ const brokenIcons = ref<Set<string>>(new Set())
 const cleanShortcuts = ref(false)
 /** 书签模式：是否按浏览器文件夹设置速达小类（默认开，浏览器里已分好的目录直接沿用） */
 const groupByFolder = ref(true)
-/** 书签模式：按网址去重（默认开；关掉则同一网址在各配置文件/浏览器中原样保留，不去重导入——dckxx 2026-10-09） */
+/** 书签模式：按网址去重（默认开；**浏览器内**去重——同一网址在同一浏览器的多配置文件/文件夹间只算一条，
+ *  跨浏览器各自展示、不互相合并，导入侧按网址只建一条——dckxx 2026-10-09 二次改口径：
+ *  最早的「跨浏览器只留第一条」会把与首个浏览器大量重复的浏览器整个吞掉，分组后直接消失） */
 const dedupeBookmarks = ref(true)
 /** 文件夹 → 小类的手动覆盖（key=文件夹完整路径，原始输入；空 = 归默认小类）。
  *  未覆盖的走 folderToCategory 自动映射；同名覆盖可把多个文件夹合并进同一个小类 */
@@ -375,7 +377,7 @@ function browserRawText(name: string): string | null {
 function browserRowTitle(n: BookmarkNode): string {
   const raw = browserRawText(n.name)
   const base = dedupeBookmarks.value
-    ? `${n.name} 共 ${n.total} 条书签（已按网址去重）`
+    ? `${n.name} 共 ${n.total} 条书签（浏览器内已按网址去重）`
     : `${n.name} 共 ${n.total} 条书签（未按网址去重）`
   return raw ? `${base}；各配置文件原始：${raw}` : base
 }
@@ -385,13 +387,13 @@ const bookmarkNote = computed(() => {
   const m = bookmarkMeta.value
   if (!m) return ''
   const head = dedupeBookmarks.value
-    ? '所有 Edge / Chrome 配置文件合并统计，同一网址跨配置文件、跨浏览器、跨文件夹只算一条'
-    : '所有 Edge / Chrome 配置文件合并统计，未按网址去重，同一网址会重复出现'
+    ? '各浏览器独立展示，同一网址在同一浏览器的多个配置文件、文件夹间只算一条，跨浏览器不互相合并'
+    : '各浏览器独立展示，未按网址去重，同一网址会重复出现'
   const parts: string[] = []
-  if (dedupeBookmarks.value && m.duplicates > 0) parts.push(`已合并重复网址 ${m.duplicates} 条`)
+  if (dedupeBookmarks.value && m.duplicates > 0) parts.push(`已合并浏览器内重复网址 ${m.duplicates} 条`)
   if (m.skipped > 0) parts.push(`跳过空名 / 空网址 / 脚本书签 ${m.skipped} 条`)
   if (m.truncated > 0) parts.push(`超出上限，仅保留前 ${items.value.length} 条`)
-  return `数量口径：${head}${parts.length ? `，${parts.join('，')}` : ''}；悬停浏览器行可看各配置文件的原始条数`
+  return `数量口径：${head}${parts.length ? `，${parts.join('，')}` : ''}；导入时同一网址只建一条`
 })
 
 /** 统一的列表行模型：树浏览时 folder/item 交替，扁平分组时 group/item */
@@ -447,9 +449,11 @@ const stats = computed(() => {
 })
 
 const selectedCount = computed(() => {
+  // 跨浏览器同网址共享勾选键（keyOf=网址）：按唯一网址计数，
+  // 否则按钮显示的条数会大于实际导入条数（confirm 按网址去重传参）
+  const keys = new Set(items.value.map(keyOf))
   let n = 0
-  for (const a of items.value) {
-    const k = keyOf(a)
+  for (const k of keys) {
     if (checked.value.has(k) && !existingTargets.value.has(k)) n++
   }
   return n
@@ -563,10 +567,15 @@ function isExisting(a: ScanItem) {
   return existingTargets.value.has(keyOf(a))
 }
 
-/** 切换「按网址去重」：重扫书签刷新列表与数量口径（保留小类设置；勾选/展开按新列表回默认） */
-async function toggleDedupe() {
+/** 切换「按网址去重」：重扫书签刷新列表与数量口径（保留小类设置；勾选/展开按新列表回默认）。
+ *  守卫先于翻开关：扫描进行中/非 Tauri 环境不切口径，并把勾选框视觉态拨回去——
+ *  否则开关已翻、列表还是旧口径，两边对不上直到下次重扫 */
+async function toggleDedupe(e: Event) {
+  if (loading.value || !isTauri()) {
+    ;(e.target as HTMLInputElement).checked = dedupeBookmarks.value
+    return
+  }
   dedupeBookmarks.value = !dedupeBookmarks.value
-  if (loading.value || !isTauri()) return
   loading.value = true
   error.value = ''
   try {
@@ -611,10 +620,16 @@ function toggleAll() {
 }
 
 function confirm() {
-  const selected = items.value.filter((a) => {
+  // 跨浏览器同网址共享勾选键：按唯一网址取第一条（排序在前浏览器的文件夹决定小类），
+  // 否则同网址会传两条给 Suda.vue 重复建资源
+  const selected: ScanItem[] = []
+  const seenKeys = new Set<string>()
+  for (const a of items.value) {
     const k = keyOf(a)
-    return checked.value.has(k) && !existingTargets.value.has(k)
-  })
+    if (seenKeys.has(k)) continue
+    seenKeys.add(k)
+    if (checked.value.has(k) && !existingTargets.value.has(k)) selected.push(a)
+  }
   if (selected.length === 0) return
   // 书签按文件夹归类时把小类名随条目带回（Suda.vue 负责补建缺失的小类再落库）；
   // 小类取「手动覆盖 ?? 自动映射」，覆盖可改名/合并/清空（清空 = 归默认小类）
@@ -695,7 +710,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 :checked="dedupeBookmarks"
                 @change="toggleDedupe"
               />
-              <span>按<b>网址去重</b>：同一网址跨配置文件、跨浏览器、跨文件夹只算一条；取消勾选则原样保留，<b>不去重导入</b></span>
+              <span>按<b>网址去重</b>：同一网址在同一浏览器的多个配置文件、文件夹间只算一条；各浏览器独立展示，<b>导入时同一网址只建一条</b>；取消勾选则完全原样展示</span>
             </label>
             <p v-if="bookmarkNote" class="scan-note">{{ bookmarkNote }}</p>
           </template>

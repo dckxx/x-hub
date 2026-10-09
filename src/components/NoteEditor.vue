@@ -1554,6 +1554,8 @@ function syncLinkPreviewPath() {
   if (!display) return
   const href = display.getAttribute('href') ?? ''
   const id = noteIdFromHref(href)
+  // 笔记引用链接隐藏「编辑」按钮（手改 href 会把双链指向改坏）；外链保留编辑能力
+  display.closest('.milkdown-link-preview')?.classList.toggle('xh-note-link', id != null)
   if (id == null) return
   const path = noteTreePath(id)
   const node = display.firstChild
@@ -1575,6 +1577,17 @@ function onWikiClickItem(item: Note) {
 function onEditorCaptureClick(e: MouseEvent) {
   const target = e.target
   if (!(target instanceof Element)) return
+  // 笔记链接的「编辑」按钮直接拦下（即使样式被覆盖仍可见也不响应）：手改 href 会破坏双链
+  const editBtn = target.closest('.milkdown-link-preview .link-edit-button')
+  if (editBtn) {
+    const href =
+      editBtn.closest('.milkdown-link-preview')?.querySelector('.link-display')?.getAttribute('href') ?? ''
+    if (noteIdFromHref(href) != null) {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    return
+  }
   const copyBtn = target.closest('.milkdown-link-preview .link-icon')
   if (!copyBtn) return
   const display = copyBtn.closest('.milkdown-link-preview')?.querySelector('.link-display')
@@ -2427,6 +2440,12 @@ function onEditorAreaMouseDown(e: MouseEvent) {
 /* 悬停链接弹出的气泡里那行地址同样能手型点击 */
 .crepe-root :deep(.milkdown-link-preview .link-display) {
   cursor: pointer;
+}
+
+/* 笔记引用链接（note/<id>）的气泡隐藏「编辑」按钮：手动改 href 会把双链指向改坏；
+   复制按钮（已改走目录路径）与删除按钮（取消引用，正文保留）不受影响；外链仍可编辑 */
+.crepe-root :deep(.milkdown-link-preview.xh-note-link .link-edit-button) {
+  display: none;
 }
 
 .mode-switch {

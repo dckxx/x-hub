@@ -1,7 +1,7 @@
 {
   "name": "x-hub",
   "private": true,
-  "version": "0.8.0",
+  "version": "0.8.1",
   "type": "module",
   "scripts": {
     "test:security": "node --test tests/security.test.mjs",

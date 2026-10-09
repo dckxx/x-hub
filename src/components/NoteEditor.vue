@@ -1497,6 +1497,46 @@ function noteIdFromHref(href: string): number | null {
   return Number.isInteger(id) && id > 0 ? id : null
 }
 
+/** 笔记在目录树里的完整路径（文件夹逐级 + 标题），用于链接气泡显示目标位置而非裸 id */
+function noteTreePath(id: number): string {
+  const note = store.state.notes.find((n) => n.id === id)
+  if (!note) return `已删除的笔记（${id}）`
+  const byId = new Map(store.state.noteFolders.map((f) => [f.id, f]))
+  const names: string[] = []
+  const seen = new Set<number>()
+  let fid = note.folder_id
+  while (fid != null && byId.has(fid) && !seen.has(fid)) {
+    seen.add(fid)
+    const f = byId.get(fid)!
+    names.unshift(f.name)
+    fid = f.parent_id
+  }
+  names.push(note.title.trim() || '无标题笔记')
+  return names.join(' / ')
+}
+
+/**
+ * 链接气泡里显示的地址默认是 href（`note/<id>`）。这里把它换成目录树里的实际路径。
+ * Crepe 用 Vue 渲染气泡，text 变化会改写同一个文本节点；观察该节点并原地改 nodeValue
+ * （不动节点本身，Vue 后续仍能正常 patch），只在值不同时写，避免观察者自触发死循环。
+ */
+function syncLinkPreviewPath() {
+  const root = rootEl.value
+  if (!root) return
+  const display = root.querySelector<HTMLAnchorElement>('.milkdown-link-preview .link-display')
+  if (!display) return
+  const href = display.getAttribute('href') ?? ''
+  const id = noteIdFromHref(href)
+  if (id == null) return
+  const path = noteTreePath(id)
+  const node = display.firstChild
+  if (node && node.nodeType === Node.TEXT_NODE) {
+    if (node.nodeValue !== path) node.nodeValue = path
+  } else if (!node) {
+    display.textContent = path
+  }
+}
+
 function onWikiClickItem(item: Note) {
   commitWikiSuggest(item)
 }
@@ -1520,6 +1560,8 @@ function wikiTitleAt(state: EditorState, pos: number): string | null {
   return inner.trim()
 }
 
+let linkPreviewObserver: MutationObserver | null = null
+
 function attachWikiListeners() {
   const root = rootEl.value
   if (!root) return
@@ -1529,6 +1571,10 @@ function attachWikiListeners() {
   root.addEventListener('input', onWikiInput)
   root.addEventListener('compositionend', onWikiInput)
   root.addEventListener('keydown', onWikiKeydown, true)
+  // 链接气泡的地址显示改成目录树路径（见 syncLinkPreviewPath）；气泡元素由 Crepe 懒建，
+  // 用 MutationObserver 观察编辑区子树，出现/更新时改写文本
+  linkPreviewObserver = new MutationObserver(() => syncLinkPreviewPath())
+  linkPreviewObserver.observe(root, { subtree: true, childList: true, characterData: true })
   // 光标进入占位行时静默清掉占位符（prunePlaceholderAtCursor）：让「/」走 Crepe 原生
   // 触发路径——占位行被清空后输 / 不再需要 fix 的重建事务，那会与菜单项执行时内部
   // 记录的位置错位（点「一级标题」出现 // 段落、光标跳到下一段，实测）。selectionchange
@@ -1539,6 +1585,8 @@ function attachWikiListeners() {
     root.removeEventListener('compositionend', onWikiInput)
     root.removeEventListener('keydown', onWikiKeydown, true)
     document.removeEventListener('selectionchange', prunePlaceholderAtCursor)
+    linkPreviewObserver?.disconnect()
+    linkPreviewObserver = null
     detachWikiListeners = () => {}
   }
 }
@@ -2293,11 +2341,17 @@ function onEditorAreaMouseDown(e: MouseEvent) {
   pointer-events: none;
 }
 
-/* 正文链接（含 [[ 引用插入的笔记链接 note/<id>）统一走品牌色 + 下划线 */
+/* 正文链接（含 [[ 引用插入的笔记链接 note/<id>）统一走品牌色 + 下划线 + 手型光标 */
 .crepe-root :deep(.milkdown a) {
   color: var(--brand-500);
   text-decoration: underline;
   text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* 悬停链接弹出的气泡里那行地址同样能手型点击 */
+.crepe-root :deep(.milkdown-link-preview .link-display) {
+  cursor: pointer;
 }
 
 .mode-switch {
@@ -2634,6 +2688,7 @@ function onEditorAreaMouseDown(e: MouseEvent) {
   color: var(--brand-500);
   text-decoration: underline;
   text-underline-offset: 2px;
+  cursor: pointer;
 }
 
 .md-preview :deep(blockquote) {

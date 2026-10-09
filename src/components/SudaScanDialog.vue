@@ -10,6 +10,8 @@ export interface ScanItem {
   kind: 'app' | 'web' | 'file' | 'folder'
   /** 书签来源文件夹（按 folder 分组展示） */
   folder?: string
+  /** 书签来源浏览器（Chrome/Edge/Brave/Chromium）；书签树顶层按浏览器分组勾选 */
+  browser?: string
   /** 导入时归入的速达小类名（书签按文件夹归类时填；null = 默认归类/未归类） */
   category?: string | null
   /** 桌面快捷方式原始路径（仅 .lnk/.url 有），供「导入后清理桌面快捷方式」用 */
@@ -19,7 +21,7 @@ export interface ScanItem {
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
-import { AlertTriangle, Check, ChevronRight, Loader2, Minus, Search } from 'lucide-vue-next'
+import { AlertTriangle, Check, ChevronRight, Globe, Loader2, Minus, Search } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useFocusTrap } from '../composables/useFocusTrap'
@@ -129,7 +131,7 @@ const CONF = {
   },
   bookmarks: {
     title: '导入浏览器书签',
-    sub: 'Chrome / Edge / Brave / Chromium 书签；点文件夹勾选整组，点行展开逐级挑选，也可搜索',
+    sub: '检测到的浏览器默认全部勾选，点浏览器行整组取消/恢复；展开目录可逐级挑选，也可搜索',
     placeholder: '搜索书签…',
     loading: '正在读取浏览器书签…',
     loadingHint: '正在解析各浏览器配置目录',
@@ -191,9 +193,9 @@ const groups = computed(() => {
   return [{ key: 'all', label: '', items: list }]
 })
 
-// ---- 书签文件夹树（大书签库逐条滚不现实：按真实目录层级折叠浏览，文件夹勾选框整组选入）----
+// ---- 书签文件夹树（大书签库逐条滚不现实：顶层 = 浏览器（勾选整组导入），其下按真实目录层级折叠浏览）----
 interface BookmarkNode {
-  /** 完整路径（= folder 口径，如「书签栏/前端」） */
+  /** 完整路径（顶层 = 浏览器名；其下带浏览器前缀，如「Edge/书签栏/前端」，保证跨浏览器同名目录各自独立） */
   path: string
   name: string
   depth: number
@@ -202,21 +204,40 @@ interface BookmarkNode {
   items: ScanItem[]
   /** 子树书签总数（含直挂） */
   total: number
+  /** 不带浏览器前缀的原始目录路径（供小类映射 folderToCategory 剥根名的口径不变；顶层浏览器节点为空） */
+  rawFolder: string
+}
+
+/** 浏览器展示排序（检测不到的排在后面），顶层浏览器节点按此排序 */
+const BROWSER_ORDER = ['Chrome', 'Edge', 'Brave', 'Chromium']
+
+/** 条目在树中的路径分段：顶层 = 浏览器，其后为原始目录分段（空目录归「未分类」） */
+function treeSegments(it: ScanItem): string[] {
+  const rest = folderSegments(it.folder)
+  if (rest.length === 0) rest.push('未分类')
+  return [it.browser || '其他', ...rest]
 }
 
 function buildTree(list: ScanItem[]): BookmarkNode[] {
   const roots: BookmarkNode[] = []
   const byPath = new Map<string, BookmarkNode>()
   for (const it of list) {
-    const segs = folderSegments(it.folder)
-    if (segs.length === 0) segs.push('未分类')
+    const segs = treeSegments(it)
     let path = ''
     let parent: BookmarkNode | null = null
     for (let d = 0; d < segs.length; d++) {
       path = d === 0 ? segs[0] : `${path}/${segs[d]}`
       let node = byPath.get(path)
       if (!node) {
-        node = { path, name: segs[d], depth: d, children: [], items: [], total: 0 }
+        node = {
+          path,
+          name: segs[d],
+          depth: d,
+          children: [],
+          items: [],
+          total: 0,
+          rawFolder: segs.slice(1, d + 1).join('/'),
+        }
         byPath.set(path, node)
         if (parent) parent.children.push(node)
         else roots.push(node)
@@ -231,6 +252,11 @@ function buildTree(list: ScanItem[]): BookmarkNode[] {
     return n.total
   }
   roots.forEach(calcTotal)
+  const rank = (browser: string) => {
+    const i = BROWSER_ORDER.indexOf(browser)
+    return i === -1 ? BROWSER_ORDER.length : i
+  }
+  roots.sort((a, b) => rank(a.name) - rank(b.name))
   return roots
 }
 
@@ -435,17 +461,17 @@ async function runScan(mode: ScanMode): Promise<ScanItem[]> {
       icon: null,
       kind: 'web' as const,
       folder: b.folder,
+      browser: b.browser,
     }))
   }
   const apps = await tauriApi.scanInstalledApps()
   return apps.map((a) => ({ ...a, kind: 'app' as const }))
 }
 
-/** 默认勾选规则：桌面模式下文件/文件夹噪音大，默认不勾；书签超过 100 条也默认不勾
- *  （大书签库「全选再挑」一次误点就导入上千条，改为按文件夹整组挑更安全，要全选仍有工具栏按钮）；其余全勾 */
+/** 默认勾选规则：桌面模式下文件/文件夹噪音大，默认不勾；书签默认全部勾选
+ *  （顶层浏览器整组亮勾，不要的浏览器/目录再手动取消——dckxx 2026-10-09 拍板的口径）；其余全勾 */
 function defaultChecked(list: ScanItem[]): Set<string> {
   const s = new Set<string>()
-  if (props.mode === 'bookmarks' && list.length > 100) return s
   for (const it of list) {
     if (props.mode === 'desktop' && (it.kind === 'file' || it.kind === 'folder')) continue
     s.add(keyOf(it))
@@ -453,13 +479,10 @@ function defaultChecked(list: ScanItem[]): Set<string> {
   return s
 }
 
-/** 书签树初始展开：只展开第一层（浏览器根），让大书签库先呈现结构总览，按需逐级展开 */
+/** 书签树初始展开：只展开浏览器层（其下根目录行可见但收起），先看「哪些浏览器、各多少条」 */
 function defaultExpanded(list: ScanItem[]): Set<string> {
   const s = new Set<string>()
-  for (const it of list) {
-    const segs = folderSegments(it.folder)
-    if (segs.length > 0) s.add(segs[0])
-  }
+  for (const it of list) s.add(treeSegments(it)[0])
   return s
 }
 
@@ -653,11 +676,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                   >→ 小类「{{ row.cat }}」</span
                 >
               </p>
-              <!-- 文件夹行：点行展开/收起，勾选框三态整组选入 -->
+              <!-- 文件夹行：点行展开/收起，勾选框三态整组选入；顶层行 = 浏览器（整组勾选/取消） -->
               <div
                 v-else-if="row.type === 'folder'"
                 class="scan-folder"
-                :class="{ disabled: !hasSelectable(row.node) }"
+                :class="{ disabled: !hasSelectable(row.node), browser: row.node.depth === 0 }"
                 :style="{ paddingLeft: 10 + row.node.depth * 16 + 'px' }"
                 :title="row.node.path"
                 role="button"
@@ -677,7 +700,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                   class="scan-tri"
                   :class="folderCheckState(row.node)"
                   :title="
-                    folderCheckState(row.node) === 'all' ? '取消整组（含子目录）' : '勾选整组（含子目录）'
+                    folderCheckState(row.node) === 'all'
+                      ? row.node.depth === 0
+                        ? `取消 ${row.node.name} 全部书签`
+                        : '取消整组（含子目录）'
+                      : row.node.depth === 0
+                        ? `勾选 ${row.node.name} 全部书签`
+                        : '勾选整组（含子目录）'
                   "
                   @click.stop="toggleFolderCheck(row.node)"
                 >
@@ -688,28 +717,39 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                     :stroke-width="3"
                   />
                 </span>
+                <Globe
+                  v-if="row.node.depth === 0"
+                  :size="13"
+                  :stroke-width="2"
+                  class="scan-browser-ico"
+                  aria-hidden="true"
+                />
                 <span class="scan-folder-name">{{ row.node.name }}</span>
-                <!-- 小类映射：默认自动推导，可直接改（留空=归默认小类，改同名=合并多个文件夹） -->
-                <span v-if="groupByFolder" class="scan-cat-wrap" @click.stop>
+                <!-- 小类映射：默认自动推导，可直接改（留空=归默认小类，改同名=合并多个文件夹）；浏览器顶层行不参与 -->
+                <span v-if="groupByFolder && row.node.depth > 0" class="scan-cat-wrap" @click.stop>
                   <span class="scan-cat-label">小类</span>
                   <input
                     class="scan-cat-input"
                     type="text"
                     maxlength="60"
                     :value="
-                      categoryOverrides.get(row.node.path) ??
-                      folderToCategory(row.node.path) ??
+                      categoryOverrides.get(row.node.rawFolder) ??
+                      folderToCategory(row.node.rawFolder) ??
                       ''
                     "
                     placeholder="默认"
                     title="导入时归入的速达小类（可用 / 分层级，如「开发/前端」），可修改；留空 = 按默认小类归档；多个文件夹改成同名会合并进同一个小类"
                     @keydown.stop
-                    @input="onCatInput(row.node.path, $event)"
+                    @input="onCatInput(row.node.rawFolder, $event)"
                   />
                 </span>
                 <span
                   class="scan-folder-count"
-                  :title="`直挂 ${row.node.items.length} · 子目录共 ${row.node.total}`"
+                  :title="
+                    row.node.depth === 0
+                      ? `${row.node.name} 共 ${row.node.total} 条书签`
+                      : `直挂 ${row.node.items.length} · 子目录共 ${row.node.total}`
+                  "
                   >{{ folderCountText(row.node) }}</span
                 >
               </div>
@@ -954,6 +994,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .scan-folder.disabled:hover {
   background: transparent;
+}
+/* 顶层浏览器行：整组勾选的宿主，名称略强于目录行 */
+.scan-folder.browser {
+  font-weight: 700;
+}
+.scan-browser-ico {
+  flex-shrink: 0;
+  color: var(--text-3);
 }
 .scan-chev {
   flex-shrink: 0;

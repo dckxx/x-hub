@@ -3395,10 +3395,11 @@ pub struct BrowserBookmarkScan {
 
 /// 读取 Chromium 系浏览器书签（Chrome / Edge / Brave / Chromium）。
 /// 纯文件读取（不跑 PowerShell、不读历史），遍历各浏览器 User Data 下所有配置目录的
-/// `Bookmarks` JSON，递归 roots 收集 `type=url` 节点；`dedupe` 为 true 时**同一浏览器内**
-/// 按 URL 去重（多配置文件/文件夹的相同网址只留一条），**跨浏览器不合并、各自展示**
-/// （曾按「跨浏览器只留第一条」去重：第二个浏览器的书签若与第一个大量重复会整个被吞、
-/// 前端按浏览器分组后该浏览器直接从列表消失，dckxx 2026-10-09 改口径；导入侧按网址
+/// `Bookmarks` **与 `AccountBookmarks`**（后者是登录 Google 账号后的账号存储，存在只写
+/// 它而无本地 Bookmarks 的机器），递归 roots 收集 `type=url` 节点；`dedupe` 为 true 时
+/// **同一浏览器内**按 URL 去重（多配置文件/文件夹的相同网址只留一条），**跨浏览器不合并、
+/// 各自展示**（曾按「跨浏览器只留第一条」去重：第二个浏览器的书签若与第一个大量重复会整个
+/// 被吞、前端按浏览器分组后该浏览器直接从列表消失，dckxx 2026-10-09 改口径；导入侧按网址
 /// 只建一条资源，不怕跨浏览器重复展示）。Firefox 的 places.sqlite 属二期，不在此列。
 #[tauri::command]
 pub fn scan_browser_bookmarks(dedupe: bool) -> Result<BrowserBookmarkScan, String> {
@@ -3436,20 +3437,6 @@ pub fn scan_browser_bookmarks(dedupe: bool) -> Result<BrowserBookmarkScan, Strin
             if !path.is_dir() {
                 continue;
             }
-            let bookmarks = path.join("Bookmarks");
-            if !bookmarks.is_file() {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&bookmarks) else {
-                continue;
-            };
-            let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-                log::warn!("浏览器书签解析失败: {}", bookmarks.display());
-                continue;
-            };
-            let Some(roots) = json.get("roots").and_then(|r| r.as_object()) else {
-                continue;
-            };
             // profile 目录名（Default / Profile 3…），用于数量口径展示
             let profile_name = path
                 .file_name()
@@ -3457,28 +3444,48 @@ pub fn scan_browser_bookmarks(dedupe: bool) -> Result<BrowserBookmarkScan, Strin
                 .unwrap_or("")
                 .to_string();
             let mut counted = 0usize;
-            for (key, node) in roots {
-                // 根节点自身有 name（本地化，如「书签栏」）；没有则按 key 兜底
-                let root_name = node
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| match key.as_str() {
-                        "bookmark_bar" => "书签栏".to_string(),
-                        "other" => "其他书签".to_string(),
-                        "synced" => "移动端".to_string(),
-                        _ => key.to_string(),
-                    });
-                collect_bookmark_children(
-                    node,
-                    &root_name,
-                    browser,
-                    &mut found,
-                    &mut counted,
-                    &mut skipped,
-                );
+            // 书签文件有两个来源：经典本地存储 `Bookmarks` + 登录 Google 账号后的账号存储
+            // `AccountBookmarks`（结构与 Bookmarks 完全同构；实测存在只写后者的机器——本地
+            // Bookmarks 根本不存在，2026-10-09 用户 Chrome 书签「消失」即漏读它）。两文件
+            // 都读：同一网址同时落在两文件时由浏览器内去重合并，原始条数照实计入 counted
+            for file_name in ["Bookmarks", "AccountBookmarks"] {
+                let bookmarks = path.join(file_name);
+                if !bookmarks.is_file() {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&bookmarks) else {
+                    continue;
+                };
+                let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+                    log::warn!("浏览器书签解析失败: {}", bookmarks.display());
+                    continue;
+                };
+                let Some(roots) = json.get("roots").and_then(|r| r.as_object()) else {
+                    continue;
+                };
+                for (key, node) in roots {
+                    // 根节点自身有 name（本地化，如「书签栏」）；没有则按 key 兜底
+                    let root_name = node
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| match key.as_str() {
+                            "bookmark_bar" => "书签栏".to_string(),
+                            "other" => "其他书签".to_string(),
+                            "synced" => "移动端".to_string(),
+                            _ => key.to_string(),
+                        });
+                    collect_bookmark_children(
+                        node,
+                        &root_name,
+                        browser,
+                        &mut found,
+                        &mut counted,
+                        &mut skipped,
+                    );
+                }
             }
             if counted > 0 {
                 profiles.push(BrowserProfileStat {

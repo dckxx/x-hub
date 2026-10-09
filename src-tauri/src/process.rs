@@ -354,7 +354,12 @@ pub fn reveal_in_explorer(path: &str) -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         // /select 后面必须是绝对路径：相对路径由 explorer 按它自己的当前目录解析，会定位错。
         // canonicalize 失败（路径暂时不存在/权限）时退回原值，仍能打开所在目录。
-        let abs = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+        // canonicalize 给的是 `\\?\` verbatim 形式：Rust 自己的 fs 认，但交给外部进程不行——
+        // explorer 的 /select 不剥该前缀，定位失败退回「文档」目录，故按约定 45 过
+        // paths::simplify_path 归一（UNC 的 `\\?\UNC\` 也一并还原成 `\\server\share`）。
+        let abs = std::fs::canonicalize(target)
+            .map(|p| crate::paths::simplify_path(&p))
+            .unwrap_or_else(|_| target.to_path_buf());
         // explorer 的 /select, 不按 CommandLineToArgvW 解析：路径含空格时若不加引号会被截断，
         // 定位失败即回退打开「文档」目录；而按常规交给 Rust 给整段参数加引号，又会把 `/select,`
         // 一起包进引号同样失效。故用 raw_arg 原样传入 `/select,"<绝对路径>"`（路径自带引号），

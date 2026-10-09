@@ -1515,18 +1515,23 @@ function noteIdFromHref(href: string): number | null {
   return Number.isInteger(id) && id > 0 ? id : null
 }
 
+/** 笔记 id → 笔记、文件夹 id → 文件夹 的常驻索引：[[ 补全列表渲染全部笔记，模板里每项
+ *  都要查一次路径，逐项 find/新建 Map 是 O(条目×(笔记数+文件夹数))，大库下每次按键都卡 */
+const notesById = computed(() => new Map(store.state.notes.map((n) => [n.id, n])))
+const foldersById = computed(() => new Map(store.state.noteFolders.map((f) => [f.id, f])))
+
 /** 笔记所在的目录路径（文件夹逐级 name，用「 / 」连接；根目录返回空串）。
  * 用于 [[ 补全列表右侧标注、链接气泡与复制按钮（需求：走 name，不暴露 note/<id>） */
 function noteFolderPath(id: number): string {
-  const note = store.state.notes.find((n) => n.id === id)
+  const note = notesById.value.get(id)
   if (!note) return ''
-  const byId = new Map(store.state.noteFolders.map((f) => [f.id, f]))
   const names: string[] = []
   const seen = new Set<number>()
   let fid = note.folder_id
-  while (fid != null && byId.has(fid) && !seen.has(fid)) {
+  while (fid != null) {
+    const f = foldersById.value.get(fid)
+    if (!f || seen.has(fid)) break
     seen.add(fid)
-    const f = byId.get(fid)!
     names.unshift(f.name)
     fid = f.parent_id
   }
@@ -1535,7 +1540,7 @@ function noteFolderPath(id: number): string {
 
 /** 笔记在目录树里的完整路径（文件夹逐级 + 标题），用于链接气泡显示目标位置而非裸 id */
 function noteTreePath(id: number): string {
-  const note = store.state.notes.find((n) => n.id === id)
+  const note = notesById.value.get(id)
   if (!note) return `已删除的笔记（${id}）`
   const dir = noteFolderPath(id)
   const title = note.title.trim() || '无标题笔记'

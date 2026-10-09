@@ -86,6 +86,8 @@ let detachImageListeners: () => void = () => {}
  * destroyEditor 触达，后置声明 = ReferenceError: Cannot access ... before initialization，实测踩过） */
 let detachWikiListeners: () => void = () => {}
 const wikiSuggest = ref<WikiSuggest | null>(null)
+/** [[ 补全浮层的 <ul>（Teleport 到 body）；键盘上下键时用它把选中项滚进可视区 */
+const wikiListEl = ref<HTMLUListElement | null>(null)
 
 interface WikiSuggest {
   /** 「[[」起点（文档位置） */
@@ -1445,10 +1447,12 @@ function onWikiKeydown(e: KeyboardEvent) {
     e.preventDefault()
     e.stopPropagation()
     s.index = (s.index + 1) % s.items.length
+    scrollWikiIntoView()
   } else if (e.key === 'ArrowUp') {
     e.preventDefault()
     e.stopPropagation()
     s.index = (s.index - 1 + s.items.length) % s.items.length
+    scrollWikiIntoView()
   } else if (e.key === 'Enter' || e.key === 'Tab') {
     e.preventDefault()
     e.stopPropagation()
@@ -1458,6 +1462,20 @@ function onWikiKeydown(e: KeyboardEvent) {
     e.stopPropagation()
     wikiSuggest.value = null
   }
+}
+
+/** 键盘上下切换选中项后，把该项滚进浮层可视区（列表超出 max-height 时）。
+ * 不用 scrollIntoView：它可能连带滚动页面；这里只调浮层自身的 scrollTop。 */
+function scrollWikiIntoView() {
+  const el = wikiListEl.value
+  const s = wikiSuggest.value
+  if (!el || !s) return
+  const active = el.children[s.index] as HTMLElement | undefined
+  if (!active) return
+  const top = active.offsetTop
+  const bottom = top + active.offsetHeight
+  if (top < el.scrollTop) el.scrollTop = top
+  else if (bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom - el.clientHeight
 }
 
 function commitWikiSuggest(item: Note) {
@@ -1497,10 +1515,11 @@ function noteIdFromHref(href: string): number | null {
   return Number.isInteger(id) && id > 0 ? id : null
 }
 
-/** 笔记在目录树里的完整路径（文件夹逐级 + 标题），用于链接气泡显示目标位置而非裸 id */
-function noteTreePath(id: number): string {
+/** 笔记所在的目录路径（文件夹逐级 name，用「 / 」连接；根目录返回空串）。
+ * 用于 [[ 补全列表右侧标注、链接气泡与复制按钮（需求：走 name，不暴露 note/<id>） */
+function noteFolderPath(id: number): string {
   const note = store.state.notes.find((n) => n.id === id)
-  if (!note) return `已删除的笔记（${id}）`
+  if (!note) return ''
   const byId = new Map(store.state.noteFolders.map((f) => [f.id, f]))
   const names: string[] = []
   const seen = new Set<number>()
@@ -1511,8 +1530,16 @@ function noteTreePath(id: number): string {
     names.unshift(f.name)
     fid = f.parent_id
   }
-  names.push(note.title.trim() || '无标题笔记')
   return names.join(' / ')
+}
+
+/** 笔记在目录树里的完整路径（文件夹逐级 + 标题），用于链接气泡显示目标位置而非裸 id */
+function noteTreePath(id: number): string {
+  const note = store.state.notes.find((n) => n.id === id)
+  if (!note) return `已删除的笔记（${id}）`
+  const dir = noteFolderPath(id)
+  const title = note.title.trim() || '无标题笔记'
+  return dir ? `${dir} / ${title}` : title
 }
 
 /**
@@ -1539,6 +1566,28 @@ function syncLinkPreviewPath() {
 
 function onWikiClickItem(item: Note) {
   commitWikiSuggest(item)
+}
+
+/**
+ * 链接气泡左侧的「复制」图标默认复制 href（`note/<id>`）。捕获阶段先于 Crepe 自身的
+ * onClick 接住，对笔记链接改写为目录树完整路径（走 name）；非笔记链接不拦截，交回原生复制。
+ */
+function onEditorCaptureClick(e: MouseEvent) {
+  const target = e.target
+  if (!(target instanceof Element)) return
+  const copyBtn = target.closest('.milkdown-link-preview .link-icon')
+  if (!copyBtn) return
+  const display = copyBtn.closest('.milkdown-link-preview')?.querySelector('.link-display')
+  const href = display?.getAttribute('href') ?? ''
+  const id = noteIdFromHref(href)
+  if (id == null) return
+  e.preventDefault()
+  e.stopPropagation()
+  const path = noteTreePath(id)
+  navigator.clipboard?.writeText(path).then(
+    () => showToast?.('已复制笔记路径'),
+    () => showToast?.('复制失败'),
+  )
 }
 
 /** 点击位置落在 [[标题]] 内时返回该标题（同一文本块内扫描，索引 1:1 对应） */
@@ -1571,6 +1620,8 @@ function attachWikiListeners() {
   root.addEventListener('input', onWikiInput)
   root.addEventListener('compositionend', onWikiInput)
   root.addEventListener('keydown', onWikiKeydown, true)
+  // 链接气泡「复制」按钮改写（见 onEditorCaptureClick）：捕获阶段先于 Crepe 自身 onClick
+  root.addEventListener('click', onEditorCaptureClick, true)
   // 链接气泡的地址显示改成目录树路径（见 syncLinkPreviewPath）；气泡元素由 Crepe 懒建，
   // 用 MutationObserver 观察编辑区子树，出现/更新时改写文本
   linkPreviewObserver = new MutationObserver(() => syncLinkPreviewPath())
@@ -1584,6 +1635,7 @@ function attachWikiListeners() {
     root.removeEventListener('input', onWikiInput)
     root.removeEventListener('compositionend', onWikiInput)
     root.removeEventListener('keydown', onWikiKeydown, true)
+    root.removeEventListener('click', onEditorCaptureClick, true)
     document.removeEventListener('selectionchange', prunePlaceholderAtCursor)
     linkPreviewObserver?.disconnect()
     linkPreviewObserver = null
@@ -2046,6 +2098,7 @@ function onEditorAreaMouseDown(e: MouseEvent) {
     <Teleport to="body">
       <ul
         v-if="wikiSuggest"
+        ref="wikiListEl"
         class="wiki-suggest"
         :class="{ 'open-up': wikiSuggest.openUp }"
         :style="{ left: `${wikiSuggest.x}px`, top: `${wikiSuggest.y}px` }"
@@ -2061,7 +2114,10 @@ function onEditorAreaMouseDown(e: MouseEvent) {
           @mousedown.prevent="onWikiClickItem(item)"
           @mouseenter="wikiSuggest && (wikiSuggest.index = i)"
         >
-          {{ item.title }}
+          <span class="wiki-suggest-title" :title="item.title">{{ item.title }}</span>
+          <span class="wiki-suggest-dir" :title="noteFolderPath(item.id) || '根目录'">
+            {{ noteFolderPath(item.id) || '根目录' }}
+          </span>
         </li>
       </ul>
     </Teleport>
@@ -2274,14 +2330,33 @@ function onEditorAreaMouseDown(e: MouseEvent) {
   backdrop-filter: blur(10px);
 }
 .wiki-suggest li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 6px 10px;
   border-radius: var(--radius-sm);
   font-size: 0.75em;
   color: var(--text-1);
   cursor: pointer;
   overflow: hidden;
+}
+.wiki-suggest-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 右侧标注笔记所在目录（走 name，不显示 note/<id>）；根目录显示「根目录」 */
+.wiki-suggest-dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-4);
+  font-size: 0.9em;
 }
 .wiki-suggest li.on {
   background: var(--brand-50);

@@ -1263,6 +1263,9 @@ html[data-wallpaper='1'] .title-bar [data-tip]::after {
 .sidebar.collapsed .sidebar-ext {
   align-items: center;
   gap: 6px;
+  /* 收起态需让 hover 名称气泡溢出扩展组显示：overflow-y:auto 会把右侧 ::after 气泡裁掉
+     （导航项无滚动容器所以正常，扩展组此前因此不显示名称） */
+  overflow: visible;
 }
 .sidebar.collapsed .sidebar-ext-label {
   display: none;

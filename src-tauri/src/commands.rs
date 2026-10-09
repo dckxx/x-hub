@@ -3368,15 +3368,46 @@ pub struct BrowserBookmark {
     pub browser: String,
 }
 
+/// 单个浏览器配置文件（profile 目录）的原始书签条数（去重前）。
+/// 用来解释「x-hub 计数 ≠ 浏览器收藏夹管理器计数」：所有 profile 合并 + 同网址去重。
+#[derive(serde::Serialize)]
+pub struct BrowserProfileStat {
+    pub browser: String,
+    /// 配置目录名（Default / Profile 3…），不是 Edge 里显示的「个人资料名称」
+    pub profile: String,
+    /// 该配置文件里 type=url 的条数（去重前）
+    pub count: usize,
+}
+
+/// 扫描浏览器书签的完整结果：条目 + 数量口径（前端弹窗展示，用户可自查差异来源）
+#[derive(serde::Serialize)]
+pub struct BrowserBookmarkScan {
+    pub items: Vec<BrowserBookmark>,
+    /// 各浏览器各配置文件的原始条数（去重前）
+    pub profiles: Vec<BrowserProfileStat>,
+    /// 同一网址（跨配置文件/浏览器/文件夹）被合并掉的条数
+    pub duplicates: usize,
+    /// 空名称 / 空网址 / javascript: 跳过的条数
+    pub skipped: usize,
+    /// 超过单次上限被截断的条数
+    pub truncated: usize,
+}
+
 /// 读取 Chromium 系浏览器书签（Chrome / Edge / Brave / Chromium）。
 /// 纯文件读取（不跑 PowerShell、不读历史），遍历各浏览器 User Data 下所有配置目录的
 /// `Bookmarks` JSON，递归 roots 收集 `type=url` 节点，按 URL 去重。
 /// Firefox 的 places.sqlite 属二期，不在此列。
 #[tauri::command]
-pub fn scan_browser_bookmarks() -> Result<Vec<BrowserBookmark>, String> {
+pub fn scan_browser_bookmarks() -> Result<BrowserBookmarkScan, String> {
     const MAX_BOOKMARKS: usize = 2000;
     let Some(local) = dirs::data_local_dir() else {
-        return Ok(vec![]);
+        return Ok(BrowserBookmarkScan {
+            items: vec![],
+            profiles: vec![],
+            duplicates: 0,
+            skipped: 0,
+            truncated: 0,
+        });
     };
     // (展示名, User Data 相对路径)；均为 Chromium 系，Bookmarks 结构一致
     let vendors: [(&str, &str); 4] = [
@@ -3387,15 +3418,17 @@ pub fn scan_browser_bookmarks() -> Result<Vec<BrowserBookmark>, String> {
     ];
 
     let mut found: Vec<BrowserBookmark> = Vec::new();
+    let mut profiles: Vec<BrowserProfileStat> = Vec::new();
+    let mut skipped: usize = 0;
     for (browser, rel) in vendors {
         let user_data = local.join(rel);
         if !user_data.is_dir() {
             continue;
         }
-        let Ok(profiles) = std::fs::read_dir(&user_data) else {
+        let Ok(dirs) = std::fs::read_dir(&user_data) else {
             continue;
         };
-        for profile in profiles.flatten() {
+        for profile in dirs.flatten() {
             let path = profile.path();
             if !path.is_dir() {
                 continue;
@@ -3414,6 +3447,13 @@ pub fn scan_browser_bookmarks() -> Result<Vec<BrowserBookmark>, String> {
             let Some(roots) = json.get("roots").and_then(|r| r.as_object()) else {
                 continue;
             };
+            // profile 目录名（Default / Profile 3…），用于数量口径展示
+            let profile_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let mut counted = 0usize;
             for (key, node) in roots {
                 // 根节点自身有 name（本地化，如「书签栏」）；没有则按 key 兜底
                 let root_name = node
@@ -3428,33 +3468,67 @@ pub fn scan_browser_bookmarks() -> Result<Vec<BrowserBookmark>, String> {
                         "synced" => "移动端".to_string(),
                         _ => key.to_string(),
                     });
-                collect_bookmark_children(node, &root_name, browser, &mut found);
+                collect_bookmark_children(
+                    node,
+                    &root_name,
+                    browser,
+                    &mut found,
+                    &mut counted,
+                    &mut skipped,
+                );
+            }
+            if counted > 0 {
+                profiles.push(BrowserProfileStat {
+                    browser: browser.to_string(),
+                    profile: profile_name,
+                    count: counted,
+                });
             }
         }
     }
 
     // 按 URL 去重（同一书签可能同时存在于多个浏览器的配置文件）
+    let raw_total = found.len();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     found.retain(|b| seen.insert(b.target.to_lowercase()));
+    let duplicates = raw_total - found.len();
     found.sort_by(|a, b| {
         a.browser
             .cmp(&b.browser)
             .then_with(|| a.folder.cmp(&b.folder))
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
-    if found.len() > MAX_BOOKMARKS {
+    let truncated = found.len().saturating_sub(MAX_BOOKMARKS);
+    if truncated > 0 {
         found.truncate(MAX_BOOKMARKS);
     }
-    log::info!("扫描浏览器书签: 共 {} 条", found.len());
-    Ok(found)
+    log::info!(
+        "扫描浏览器书签: 原始 {} 条（配置文件 {} 个），去重合并 {}、跳过无效 {}、截断 {}，保留 {} 条",
+        raw_total,
+        profiles.len(),
+        duplicates,
+        skipped,
+        truncated,
+        found.len()
+    );
+    Ok(BrowserBookmarkScan {
+        items: found,
+        profiles,
+        duplicates,
+        skipped,
+        truncated,
+    })
 }
 
 /// 递归收集 Chromium 书签节点：`type=url` 收下，`type=folder` 带前缀继续下钻。
+/// `counted` 累计有效条数（按 profile 统计用）、`skipped` 累计无效跳过数（空名/空 URL/javascript:）。
 fn collect_bookmark_children(
     node: &serde_json::Value,
     prefix: &str,
     browser: &str,
     out: &mut Vec<BrowserBookmark>,
+    counted: &mut usize,
+    skipped: &mut usize,
 ) {
     let Some(children) = node.get("children").and_then(|c| c.as_array()) else {
         return;
@@ -3474,8 +3548,10 @@ fn collect_bookmark_children(
                     .unwrap_or("")
                     .trim();
                 if name.is_empty() || url.is_empty() || url.starts_with("javascript:") {
+                    *skipped += 1;
                     continue;
                 }
+                *counted += 1;
                 out.push(BrowserBookmark {
                     name: name.to_string(),
                     target: url.to_string(),
@@ -3496,7 +3572,7 @@ fn collect_bookmark_children(
                 } else {
                     format!("{}/{}", prefix, name)
                 };
-                collect_bookmark_children(child, &sub, browser, out);
+                collect_bookmark_children(child, &sub, browser, out, counted, skipped);
             }
             _ => {}
         }
@@ -4593,9 +4669,13 @@ mod tests {
         .unwrap();
 
         let mut out = Vec::new();
-        collect_bookmark_children(&json, "书签栏", "Chrome", &mut out);
+        let mut counted = 0usize;
+        let mut skipped = 0usize;
+        collect_bookmark_children(&json, "书签栏", "Chrome", &mut out, &mut counted, &mut skipped);
 
         assert_eq!(out.len(), 2, "应只保留两条有效 URL");
+        assert_eq!(counted, 2, "有效条数与保留数一致");
+        assert_eq!(skipped, 2, "空 URL 与 javascript: 各计一条跳过");
         assert_eq!(out[0].name, "GitHub");
         assert_eq!(out[0].folder, "书签栏");
         assert_eq!(out[0].browser, "Chrome");
@@ -4604,12 +4684,18 @@ mod tests {
         assert_eq!(out[1].target, "https://developer.mozilla.org/");
         // 无 children 的节点（如 workspaces_v2）应安全返回空
         let mut empty = Vec::new();
+        let mut empty_counted = 0usize;
+        let mut empty_skipped = 0usize;
         collect_bookmark_children(
             &serde_json::json!({ "type": "folder", "name": "x" }),
             "x",
             "Edge",
             &mut empty,
+            &mut empty_counted,
+            &mut empty_skipped,
         );
         assert!(empty.is_empty());
+        assert_eq!(empty_counted, 0);
+        assert_eq!(empty_skipped, 0);
     }
 }

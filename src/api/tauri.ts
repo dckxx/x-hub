@@ -921,6 +921,23 @@ export interface BrowserBookmark {
   browser: string
 }
 
+/** 各浏览器配置文件（profile 目录）的原始书签条数（去重前），解释「x-hub 计数 ≠ 浏览器收藏夹计数」 */
+export interface BrowserProfileStat {
+  browser: string
+  /** 配置目录名（Default / Profile 3…） */
+  profile: string
+  count: number
+}
+
+/** 书签扫描结果：条目 + 数量口径（重复合并 / 无效跳过 / 超限截断） */
+export interface BrowserBookmarkScan {
+  items: BrowserBookmark[]
+  profiles: BrowserProfileStat[]
+  duplicates: number
+  skipped: number
+  truncated: number
+}
+
 export interface SystemInfo {
   cpuUsage: number
   memUsedMb: number
@@ -1224,7 +1241,7 @@ export const tauriApi = {
   deleteDesktopShortcuts: (paths: string[]) =>
     invoke<number>('delete_desktop_shortcuts', { paths }),
   /** 读取 Chromium 系浏览器书签（Chrome/Edge/Brave/Chromium），不读历史 */
-  scanBrowserBookmarks: () => invoke<BrowserBookmark[]>('scan_browser_bookmarks'),
+  scanBrowserBookmarks: () => invoke<BrowserBookmarkScan>('scan_browser_bookmarks'),
   /** 批量抓取网页图标（favicon）：返回 原样 target → 图标绝对路径（抓不到为 null）；同域名只抓一次 */
   fetchFavicons: (targets: string[]) =>
     invoke<Record<string, string | null>>('fetch_favicons', { targets }),

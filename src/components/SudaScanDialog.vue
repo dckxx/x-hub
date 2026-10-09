@@ -23,6 +23,7 @@ export interface ScanItem {
 import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
 import { AlertTriangle, Check, ChevronRight, Globe, Loader2, Minus, Search } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
+import type { BrowserProfileStat } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
@@ -45,6 +46,13 @@ useFocusTrap(toRef(props, 'visible'), cardRef, searchRef)
 const loading = ref(false)
 const error = ref('')
 const items = ref<ScanItem[]>([])
+/** 书签模式：数量口径（各配置文件原始条数 / 去重合并 / 无效跳过 / 超限截断），解释「x-hub 计数 ≠ 浏览器收藏夹计数」 */
+const bookmarkMeta = ref<{
+  profiles: BrowserProfileStat[]
+  duplicates: number
+  skipped: number
+  truncated: number
+} | null>(null)
 const checked = ref<Set<string>>(new Set())
 const keyword = ref('')
 const brokenIcons = ref<Set<string>>(new Set())
@@ -354,6 +362,31 @@ function folderCountText(n: BookmarkNode): string {
   return n.children.length > 0 ? `共 ${n.total}` : `${n.items.length}`
 }
 
+/** 浏览器行的配置文件原始条数（去重前），如「Default 612 · Profile 3 238」；无数据返回 null */
+function browserRawText(name: string): string | null {
+  const rows = bookmarkMeta.value?.profiles.filter((p) => p.browser === name) ?? []
+  if (rows.length === 0) return null
+  return rows.map((p) => `${p.profile} ${p.count}`).join(' · ')
+}
+
+/** 浏览器行悬浮提示：x-hub 显示的是去重后条数，配置文件原始数供与浏览器收藏夹管理器对账 */
+function browserRowTitle(n: BookmarkNode): string {
+  const raw = browserRawText(n.name)
+  const base = `${n.name} 共 ${n.total} 条书签（已按网址去重）`
+  return raw ? `${base}；各配置文件原始：${raw}` : base
+}
+
+/** 数量口径说明文案（有合并 / 跳过 / 截断才显示） */
+const bookmarkNote = computed(() => {
+  const m = bookmarkMeta.value
+  if (!m) return ''
+  const parts: string[] = []
+  if (m.duplicates > 0) parts.push(`已合并重复网址 ${m.duplicates} 条`)
+  if (m.skipped > 0) parts.push(`跳过空名 / 空网址 / 脚本书签 ${m.skipped} 条`)
+  if (m.truncated > 0) parts.push(`超出上限，仅保留前 ${items.value.length} 条`)
+  return parts.join('，')
+})
+
 /** 统一的列表行模型：树浏览时 folder/item 交替，扁平分组时 group/item */
 type ListRow =
   | { type: 'group'; key: string; label: string; count: number; cat: string | null }
@@ -454,8 +487,14 @@ async function runScan(mode: ScanMode): Promise<ScanItem[]> {
     return list.map((d) => ({ ...d, kind: d.kind }))
   }
   if (mode === 'bookmarks') {
-    const list = await tauriApi.scanBrowserBookmarks()
-    return list.map((b) => ({
+    const scan = await tauriApi.scanBrowserBookmarks()
+    bookmarkMeta.value = {
+      profiles: scan.profiles,
+      duplicates: scan.duplicates,
+      skipped: scan.skipped,
+      truncated: scan.truncated,
+    }
+    return scan.items.map((b) => ({
       name: b.name,
       target: b.target,
       icon: null,
@@ -491,6 +530,7 @@ async function startScan() {
   loading.value = true
   error.value = ''
   items.value = []
+  bookmarkMeta.value = null
   checked.value = new Set()
   keyword.value = ''
   brokenIcons.value = new Set()
@@ -622,6 +662,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 按<b>浏览器文件夹</b>设置速达小类，目录层级原样保留（如「书签栏/开发/前端」→ 小类「开发/前端」，在速达中逐级嵌套选择）；各文件夹的小类可在列表中直接修改，留空归默认，改同名即合并；缺的小类自动创建<template v-if="newCategoryCount > 0">，本次将新建 {{ newCategoryCount }} 个</template>
               </span>
             </label>
+            <!-- 数量口径：解释「x-hub 计数 ≠ 浏览器收藏夹管理器计数」（所有配置文件合并 + 同网址只算一条） -->
+            <p v-if="bookmarkNote" class="scan-note">
+              数量口径：所有 Edge / Chrome 配置文件合并统计，同一网址跨配置文件、跨浏览器、跨文件夹只算一条，{{ bookmarkNote }}；悬停浏览器行可看各配置文件的原始条数
+            </p>
           </template>
 
           <!-- 搜索 + 全选 -->
@@ -747,7 +791,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                   class="scan-folder-count"
                   :title="
                     row.node.depth === 0
-                      ? `${row.node.name} 共 ${row.node.total} 条书签`
+                      ? browserRowTitle(row.node)
                       : `直挂 ${row.node.items.length} · 子目录共 ${row.node.total}`
                   "
                   >{{ folderCountText(row.node) }}</span
@@ -837,6 +881,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-2);
+}
+/* 书签数量口径说明（合并/跳过/截断非零才出现） */
+.scan-note {
+  margin-top: 6px;
+  padding: 0 2px;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--text-3);
 }
 .scan-warn {
   display: flex;

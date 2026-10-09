@@ -60,6 +60,8 @@ const brokenIcons = ref<Set<string>>(new Set())
 const cleanShortcuts = ref(false)
 /** 书签模式：是否按浏览器文件夹设置速达小类（默认开，浏览器里已分好的目录直接沿用） */
 const groupByFolder = ref(true)
+/** 书签模式：按网址去重（默认开；关掉则同一网址在各配置文件/浏览器中原样保留，不去重导入——dckxx 2026-10-09） */
+const dedupeBookmarks = ref(true)
 /** 文件夹 → 小类的手动覆盖（key=文件夹完整路径，原始输入；空 = 归默认小类）。
  *  未覆盖的走 folderToCategory 自动映射；同名覆盖可把多个文件夹合并进同一个小类 */
 const categoryOverrides = ref<Map<string, string>>(new Map())
@@ -369,22 +371,27 @@ function browserRawText(name: string): string | null {
   return rows.map((p) => `${p.profile} ${p.count}`).join(' · ')
 }
 
-/** 浏览器行悬浮提示：x-hub 显示的是去重后条数，配置文件原始数供与浏览器收藏夹管理器对账 */
+/** 浏览器行悬浮提示：x-hub 显示条数随「按网址去重」开关变化，配置文件原始数供与浏览器收藏夹管理器对账 */
 function browserRowTitle(n: BookmarkNode): string {
   const raw = browserRawText(n.name)
-  const base = `${n.name} 共 ${n.total} 条书签（已按网址去重）`
+  const base = dedupeBookmarks.value
+    ? `${n.name} 共 ${n.total} 条书签（已按网址去重）`
+    : `${n.name} 共 ${n.total} 条书签（未按网址去重）`
   return raw ? `${base}；各配置文件原始：${raw}` : base
 }
 
-/** 数量口径说明文案（有合并 / 跳过 / 截断才显示） */
+/** 数量口径说明文案：开头说明去重开关状态，其后列出合并 / 跳过 / 截断明细 */
 const bookmarkNote = computed(() => {
   const m = bookmarkMeta.value
   if (!m) return ''
+  const head = dedupeBookmarks.value
+    ? '所有 Edge / Chrome 配置文件合并统计，同一网址跨配置文件、跨浏览器、跨文件夹只算一条'
+    : '所有 Edge / Chrome 配置文件合并统计，未按网址去重，同一网址会重复出现'
   const parts: string[] = []
-  if (m.duplicates > 0) parts.push(`已合并重复网址 ${m.duplicates} 条`)
+  if (dedupeBookmarks.value && m.duplicates > 0) parts.push(`已合并重复网址 ${m.duplicates} 条`)
   if (m.skipped > 0) parts.push(`跳过空名 / 空网址 / 脚本书签 ${m.skipped} 条`)
   if (m.truncated > 0) parts.push(`超出上限，仅保留前 ${items.value.length} 条`)
-  return parts.join('，')
+  return `数量口径：${head}${parts.length ? `，${parts.join('，')}` : ''}；悬停浏览器行可看各配置文件的原始条数`
 })
 
 /** 统一的列表行模型：树浏览时 folder/item 交替，扁平分组时 group/item */
@@ -487,7 +494,7 @@ async function runScan(mode: ScanMode): Promise<ScanItem[]> {
     return list.map((d) => ({ ...d, kind: d.kind }))
   }
   if (mode === 'bookmarks') {
-    const scan = await tauriApi.scanBrowserBookmarks()
+    const scan = await tauriApi.scanBrowserBookmarks(dedupeBookmarks.value)
     bookmarkMeta.value = {
       profiles: scan.profiles,
       duplicates: scan.duplicates,
@@ -536,6 +543,7 @@ async function startScan() {
   brokenIcons.value = new Set()
   cleanShortcuts.value = false
   groupByFolder.value = true
+  dedupeBookmarks.value = true
   categoryOverrides.value = new Map()
   try {
     const list = await runScan(props.mode)
@@ -553,6 +561,24 @@ async function startScan() {
 
 function isExisting(a: ScanItem) {
   return existingTargets.value.has(keyOf(a))
+}
+
+/** 切换「按网址去重」：重扫书签刷新列表与数量口径（保留小类设置；勾选/展开按新列表回默认） */
+async function toggleDedupe() {
+  dedupeBookmarks.value = !dedupeBookmarks.value
+  if (loading.value || !isTauri()) return
+  loading.value = true
+  error.value = ''
+  try {
+    const list = await runScan(props.mode)
+    items.value = list
+    checked.value = defaultChecked(list)
+    expandedFolders.value = defaultExpanded(list)
+  } catch (e) {
+    error.value = String(e)
+  } finally {
+    loading.value = false
+  }
 }
 
 function showImg(a: ScanItem) {
@@ -663,9 +689,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               </span>
             </label>
             <!-- 数量口径：解释「x-hub 计数 ≠ 浏览器收藏夹管理器计数」（所有配置文件合并 + 同网址只算一条） -->
-            <p v-if="bookmarkNote" class="scan-note">
-              数量口径：所有 Edge / Chrome 配置文件合并统计，同一网址跨配置文件、跨浏览器、跨文件夹只算一条，{{ bookmarkNote }}；悬停浏览器行可看各配置文件的原始条数
-            </p>
+            <label class="scan-clean">
+              <input
+                type="checkbox"
+                :checked="dedupeBookmarks"
+                @change="toggleDedupe"
+              />
+              <span>按<b>网址去重</b>：同一网址跨配置文件、跨浏览器、跨文件夹只算一条；取消勾选则原样保留，<b>不去重导入</b></span>
+            </label>
+            <p v-if="bookmarkNote" class="scan-note">{{ bookmarkNote }}</p>
           </template>
 
           <!-- 搜索 + 全选 -->

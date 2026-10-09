@@ -1240,8 +1240,9 @@ export const tauriApi = {
   /** 删除桌面上的快捷方式（仅 .lnk/.url，且必须是用户桌面直接子项）；返回删除数量 */
   deleteDesktopShortcuts: (paths: string[]) =>
     invoke<number>('delete_desktop_shortcuts', { paths }),
-  /** 读取 Chromium 系浏览器书签（Chrome/Edge/Brave/Chromium），不读历史 */
-  scanBrowserBookmarks: () => invoke<BrowserBookmarkScan>('scan_browser_bookmarks'),
+  /** 读取 Chromium 系浏览器书签（Chrome/Edge/Brave/Chromium），不读历史；dedupe=false 保留同一网址的重复条目 */
+  scanBrowserBookmarks: (dedupe: boolean) =>
+    invoke<BrowserBookmarkScan>('scan_browser_bookmarks', { dedupe }),
   /** 批量抓取网页图标（favicon）：返回 原样 target → 图标绝对路径（抓不到为 null）；同域名只抓一次 */
   fetchFavicons: (targets: string[]) =>
     invoke<Record<string, string | null>>('fetch_favicons', { targets }),

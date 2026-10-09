@@ -3395,10 +3395,11 @@ pub struct BrowserBookmarkScan {
 
 /// 读取 Chromium 系浏览器书签（Chrome / Edge / Brave / Chromium）。
 /// 纯文件读取（不跑 PowerShell、不读历史），遍历各浏览器 User Data 下所有配置目录的
-/// `Bookmarks` JSON，递归 roots 收集 `type=url` 节点，按 URL 去重。
+/// `Bookmarks` JSON，递归 roots 收集 `type=url` 节点；`dedupe` 为 true 时按 URL 去重，
+/// false 时原样保留全部条目（前端「按网址去重」勾选框，dckxx 2026-10-09）。
 /// Firefox 的 places.sqlite 属二期，不在此列。
 #[tauri::command]
-pub fn scan_browser_bookmarks() -> Result<BrowserBookmarkScan, String> {
+pub fn scan_browser_bookmarks(dedupe: bool) -> Result<BrowserBookmarkScan, String> {
     const MAX_BOOKMARKS: usize = 2000;
     let Some(local) = dirs::data_local_dir() else {
         return Ok(BrowserBookmarkScan {
@@ -3487,11 +3488,15 @@ pub fn scan_browser_bookmarks() -> Result<BrowserBookmarkScan, String> {
         }
     }
 
-    // 按 URL 去重（同一书签可能同时存在于多个浏览器的配置文件）
+    // 按 URL 去重（同一书签可能同时存在于多个浏览器的配置文件）；关掉则原样保留
     let raw_total = found.len();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    found.retain(|b| seen.insert(b.target.to_lowercase()));
-    let duplicates = raw_total - found.len();
+    let duplicates = if dedupe {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        found.retain(|b| seen.insert(b.target.to_lowercase()));
+        raw_total - found.len()
+    } else {
+        0
+    };
     found.sort_by(|a, b| {
         a.browser
             .cmp(&b.browser)
@@ -3503,9 +3508,10 @@ pub fn scan_browser_bookmarks() -> Result<BrowserBookmarkScan, String> {
         found.truncate(MAX_BOOKMARKS);
     }
     log::info!(
-        "扫描浏览器书签: 原始 {} 条（配置文件 {} 个），去重合并 {}、跳过无效 {}、截断 {}，保留 {} 条",
+        "扫描浏览器书签: 原始 {} 条（配置文件 {} 个），去重{}、合并 {}、跳过无效 {}、截断 {}，保留 {} 条",
         raw_total,
         profiles.len(),
+        if dedupe { "开" } else { "关" },
         duplicates,
         skipped,
         truncated,

@@ -18,6 +18,8 @@ interface ProviderEdit {
   expanded: boolean
   fetched: string[]
   selected: Set<string>
+  /** 手动添加模型输入框的草稿（与在线拉取并存，见 addManualModel） */
+  manualModel: string
   busy: boolean
   msg: string
   savedKey: string
@@ -155,6 +157,7 @@ function toProvider(m: ChatModelConfig): ProviderEdit {
     expanded: false,
     fetched: [],
     selected: new Set(),
+    manualModel: '',
     busy: false,
     msg: '',
     savedKey: '',
@@ -196,6 +199,7 @@ async function loadProviders(opts: { silent?: boolean } = {}) {
         expanded: old.expanded,
         fetched: old.fetched,
         selected: old.selected,
+        manualModel: old.manualModel,
         msg: old.msg,
         savedKey: old.savedKey,
         keyVisible: old.keyVisible,
@@ -219,6 +223,7 @@ function addProvider() {
     expanded: true,
     fetched: [],
     selected: new Set(),
+    manualModel: '',
     busy: false,
     msg: '',
     savedKey: '',
@@ -404,6 +409,40 @@ function addSelected(p: ProviderEdit) {
   p.msg = `已添加 ${ids.length} 个模型`
 }
 
+// 手动添加模型：不少 OpenAI 兼容中转不实现 /models 接口或返回空列表，在线拉取
+// 一个模型都拿不到、原来就没有任何添加入口。这里直接按模型名加入当前供应商，
+// 与「获取模型」在线拉取并存（勾选流程照旧可用）。
+function addManualModel(p: ProviderEdit) {
+  const id = p.manualModel.trim()
+  if (!id) {
+    p.msg = '请输入模型名称'
+    return
+  }
+  const name = p.providerName.trim()
+  if (!name) {
+    p.msg = '请先填写供应商名称，再添加模型'
+    return
+  }
+  if (p.models.some((m) => m.model === id)) {
+    p.msg = `模型「${id}」已在列表中`
+    p.manualModel = ''
+    return
+  }
+  p.models.push({
+    id: 'm' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+    name: id,
+    provider_name: name,
+    base_url: p.baseUrl.trim(),
+    model: id,
+    api_key: '',
+    is_default: false,
+    has_api_key: p.hasApiKey,
+  })
+  if (p.models.length === 1) p.models[0].is_default = true
+  p.manualModel = ''
+  p.msg = `已添加模型「${id}」`
+}
+
 function removeModel(p: ProviderEdit, id: string) {
   const i = p.models.findIndex((m) => m.id === id)
   if (i >= 0) {
@@ -435,7 +474,7 @@ async function saveAll() {
   for (const p of providers.value) {
     if (p.models.length === 0) {
       const label = p.providerName.trim() || p.baseUrl.trim() || '未命名供应商'
-      showToast(`供应商「${label}」还没有模型：填好 Base URL 与 API Key 后点「获取模型」勾选添加；不要这个供应商就点右上角删除`)
+      showToast(`供应商「${label}」还没有模型：点「获取模型」在线拉取，或直接输入模型名手动添加；不要这个供应商就点右上角删除`)
       return
     }
   }
@@ -457,7 +496,7 @@ async function saveAll() {
   // 空配置会让 AI 对话里没有任何可选模型
   const all = collectAll()
   if (all.length === 0) {
-    showToast('还没有可用的模型：填好 Base URL 与 API Key 后点「获取模型」勾选添加，或开启上方的「x-hub 平台免费额度」')
+    showToast('还没有可用的模型：点「获取模型」在线拉取，或直接输入模型名手动添加；也可开启上方的「x-hub 平台免费额度」')
     return
   }
   saving.value = true
@@ -599,10 +638,25 @@ defineExpose({ reload: () => void loadProviders() })
             </button>
           </div>
 
+          <!-- 手动添加模型：中转不实现 /models 或返回空时，直接填模型名加入（回车或点按钮） -->
+          <div class="manual-model-row">
+            <input
+              v-model="p.manualModel"
+              class="field-input"
+              placeholder="手动添加模型名（如 gpt-4o-mini），回车确认"
+              aria-label="手动添加模型名"
+              @keydown.enter.prevent="addManualModel(p)"
+            />
+            <button class="ghost-btn manual-add" :disabled="!p.manualModel.trim()" @click="addManualModel(p)">
+              <Plus :size="13" />
+              添加
+            </button>
+          </div>
+
           <!-- 当前供应商下已配置的模型：tag 形式并排展示，可复制名称/删除 -->
           <div class="models-block">
             <div class="models-head">已配置模型</div>
-            <div v-if="p.models.length === 0" class="models-empty">暂无模型，点击「获取模型」拉取后添加</div>
+            <div v-if="p.models.length === 0" class="models-empty">暂无模型：点「获取模型」在线拉取，或在上方输入模型名手动添加</div>
             <div v-else class="model-tags">
               <span
                 v-for="m in p.models"
@@ -802,6 +856,29 @@ defineExpose({ reload: () => void loadProviders() })
   border-color: color-mix(in srgb, var(--brand-500) 35%, transparent);
 }
 .prov-fetch:hover {
+  background: var(--brand-500);
+  color: var(--text-on-accent);
+  border-color: var(--brand-500);
+}
+/* 手动添加模型行：与 ai-key-row 同款 flex 布局 */
+.manual-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.manual-model-row .field-input {
+  flex: 1;
+}
+.manual-add {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  font-size: 0.75rem;
+  background: var(--brand-50);
+  color: var(--brand-500);
+  border-color: color-mix(in srgb, var(--brand-500) 35%, transparent);
+}
+.manual-add:hover:not(:disabled) {
   background: var(--brand-500);
   color: var(--text-on-accent);
   border-color: var(--brand-500);

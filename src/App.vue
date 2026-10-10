@@ -19,6 +19,7 @@ import ChatWindow from './components/ChatWindow.vue'
 import NoticeOverlay from './components/NoticeOverlay.vue'
 import BrowserChrome from './components/BrowserChrome.vue'
 import UpdateCheckDialog from './components/UpdateCheckDialog.vue'
+import WindowResizeEdges from './components/WindowResizeEdges.vue'
 import { isTauri } from './api/tauri'
 
 const label = isTauri() ? getCurrentWebview().label : ''
@@ -177,5 +178,8 @@ onBeforeUnmount(() => {
   <BrowserChrome v-else-if="isSudaBrowserChrome" />
   <div v-else-if="isSudaBrowserContent" class="suda-content-blank" />
   <Index v-else />
+  <!-- 主窗 8 方向隐形缩放边缘：0.8.1 起 shadow=false 后宿主收不到边缘命中，拖边调大小失效， -->
+  <!-- 用透明覆盖条 + startResizeDragging 补回（最大化/全屏自动隐藏，见组件注释） -->
+  <WindowResizeEdges v-if="isMainWindow" />
   <UpdateCheckDialog v-if="isMainWindow" />
 </template>

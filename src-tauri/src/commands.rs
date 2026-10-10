@@ -2566,9 +2566,11 @@ pub fn change_data_dir(state: State<'_, DbState>, new_dir: String) -> Result<(),
 /// `RunEvent::Exit` 事件循环分支，而 x-hub 在 `.run()` 回调里对 Exit 直接
 /// `std::process::exit(0)`（为保证托盘退出生效），会先杀死进程导致 restart
 /// 永不执行——表现为「点了立即重启却只退出不重启」。显式 spawn 规避该路径。
+/// strip_hidden_arg=true：这是用户主动点的重启，剥掉 `--autostart-hidden`
+/// （开机自启静默实例装完更新重启后应直接弹出主窗口，而不是隐回托盘）。
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
-    crate::updater::relaunch_app(&app);
+    crate::updater::relaunch_app(&app, true);
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {

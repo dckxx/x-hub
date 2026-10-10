@@ -867,12 +867,21 @@ pub fn apply_pending_update(app: &tauri::AppHandle, current_version: &str) {
     //    注意：新实例插件 setup（CreateMutexW）前必须释放 single-instance
     //    互斥与隐藏窗口，否则被判第二实例自杀退出——升级后「没有自动重启」
     //    的根因（relaunch_app 内部「先 spawn 成功再 destroy」保证顺序）。
-    relaunch_app(app);
+    //    参数原样透传（strip_hidden_arg=false）：开机自启静默实例装完更新仍驻托盘。
+    relaunch_app(app, false);
 }
 
 /// 重启当前进程（以磁盘上的 exe 重新拉起后退出当前进程）。
-/// 供三处共用：① updater 自替换成功后接管启动；② 「立即重启」按钮
+/// 供两处共用：① updater 自替换成功后接管启动；② 「立即重启」按钮
 /// （restart_app 命令，数据目录迁移/更新就绪后重启）。
+///
+/// `strip_hidden_arg` = 是否剥掉 `--autostart-hidden` 再拉起：
+/// - 「立即重启」（用户主动点）传 **true**：开机自启的实例带该参数静默驻托盘，用户
+///   从托盘打开使用后点「立即重启」装更新，若原样透传该参数，新进程装完直接隐回
+///   托盘——表现为「更新后自动最小化，还得手动再开一次」。剥掉后新进程正常启动，
+///   前端 main.ts 的启动逻辑会直接显示主窗口并抢焦点。
+/// - 启动期自替换（apply_pending_update）传 **false** 原样透传：开机静默升级的
+///   场景下新进程保持静默驻托盘，不弹窗打扰。
 ///
 /// single-instance 插件的 mutex（`x-hub-sim`）与隐藏窗口在插件 setup 时创建，
 /// 正常由插件的 `RunEvent::Exit` on_event 销毁。但这里是用 `std::process::exit(0)`
@@ -889,7 +898,7 @@ pub fn apply_pending_update(app: &tauri::AppHandle, current_version: &str) {
 ///   继续运行但互斥与窗口已释放：插件判定第二实例依赖「mutex 存在 + 能找到隐藏
 ///   窗口」，两者都没了之后再手动开一个实例不会被拦截——出现双实例（明确不接受）。
 ///   所以失败路径绝不触碰 destroy，本进程仍是受保护的唯一主实例。
-pub fn relaunch_app(app: &tauri::AppHandle) {
+pub fn relaunch_app(app: &tauri::AppHandle, strip_hidden_arg: bool) {
     // 直接 exit(0) 不会触发 RunEvent::Exit，service 后端子进程需在此手动停掉，
     // 否则 Node 子进程残留（标准退出路径由 lib.rs RunEvent::Exit → stop_all 兜底）。
     // setup 早期（apply_pending_update 路径）ServiceState 尚未 manage：try_state 判空跳过。
@@ -900,8 +909,17 @@ pub fn relaunch_app(app: &tauri::AppHandle) {
         log::error!("重启失败：无法定位当前 exe");
         return;
     };
+    // 当前进程的启动参数原样带给新进程；strip_hidden_arg 时剥掉自启动静默参数
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if strip_hidden_arg {
+        let before = args.len();
+        args.retain(|a| a.as_os_str() != std::ffi::OsStr::new(crate::autostart::HIDDEN_ARG));
+        if args.len() != before {
+            log::info!("重启已剥掉自启动静默参数，新进程将直接显示主窗口");
+        }
+    }
     match std::process::Command::new(&exe)
-        .args(std::env::args_os().skip(1))
+        .args(&args)
         .spawn()
     {
         Ok(_) => {

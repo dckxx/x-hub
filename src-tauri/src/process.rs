@@ -324,11 +324,22 @@ pub fn open_external(url: String) -> Result<(), String> {
 /// 打开本地路径：文件用系统默认程序打开，文件夹由资源管理器/文件管理器打开
 pub fn open_path(path: &str) -> Result<(), String> {
     let target = std::path::Path::new(path);
+    if !target.exists() {
+        // 明确报错而不是静默开错窗口：explorer 拿到残缺路径会回退打开「此电脑」，
+        // 用户看到的是「点了没反应/开了个我的电脑」，完全无从排查
+        return Err(format!("路径不存在: {path}"));
+    }
     if target.is_dir() {
         #[cfg(target_os = "windows")]
         {
+            // explorer 的参数按 Windows 规则解析：路径含空格时 Rust 会加引号包裹，
+            // 尾部 `\` 会把收尾引号转义掉（`"C:\Program Files\xx\"` → 解析出
+            // `C:\Program Files\xx"` 残缺路径），explorer 静默回退打开「此电脑」。
+            // 先剥尾部分隔符再传（盘根 `C:\` 特判保留：剥成 `C:` explorer 会打开
+            // 该盘的当前目录而非根目录）。无空格路径本不受影响，统一归一化无害。
+            let normalized = normalize_dir_for_explorer(path);
             Command::new("explorer")
-                .arg(path)
+                .arg(normalized.as_ref())
                 .spawn()
                 .map_err(|e| format!("打开文件夹失败: {}", e))?;
             return Ok(());
@@ -340,6 +351,25 @@ pub fn open_path(path: &str) -> Result<(), String> {
         }
     }
     opener::open(path).map_err(|e| format!("打开路径失败: {}", e))
+}
+
+/// 剥掉交给 explorer 的目录路径尾部分隔符（Windows）。
+/// 盘根「C:\」是唯一必须保留尾部反斜杠的形式；其余一律剥掉，
+/// 顺手把 `/` 结尾（用户手动粘贴正斜路径）也归一。
+#[cfg(target_os = "windows")]
+fn normalize_dir_for_explorer(path: &str) -> std::borrow::Cow<'_, str> {
+    let trimmed = path.trim_end_matches(['\\', '/']);
+    if trimmed.len() == path.len() {
+        // 本就没有尾部分隔符：原样返回，零拷贝
+        return std::borrow::Cow::Borrowed(path);
+    }
+    // 盘根「C:\」：剥成「C:」explorer 会打开该盘的当前目录而非根目录，必须保留
+    let drive_root = trimmed.len() == 2 && trimmed.as_bytes()[1] == b':';
+    if drive_root || trimmed.is_empty() {
+        std::borrow::Cow::Borrowed(path)
+    } else {
+        std::borrow::Cow::Owned(trimmed.to_string())
+    }
 }
 
 /// 在文件资源管理器中打开路径所在目录并选中该项（速达右键「打开文件所在位置」）。
@@ -429,6 +459,26 @@ mod tests {
             explorer_select_arg(std::path::Path::new(r"C:\app\app.exe")),
             r#"/select,"C:\app\app.exe""#
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalize_dir_for_explorer_strips_trailing_separator() {
+        // 含空格 + 尾部反斜杠：正是 explorer 残缺路径回退「此电脑」的成灾写法
+        assert_eq!(
+            &*normalize_dir_for_explorer(r"C:\Program Files\Some App\"),
+            r"C:\Program Files\Some App"
+        );
+        // 普通尾部反斜杠
+        assert_eq!(&*normalize_dir_for_explorer(r"C:\Tools\"), r"C:\Tools");
+        // 正斜杠结尾（手动粘贴）也归一（只剥尾部，内部路径形态不动）
+        assert_eq!(&*normalize_dir_for_explorer("C:/Tools/"), "C:/Tools");
+        // 无尾部分隔符：原样返回
+        assert_eq!(&*normalize_dir_for_explorer(r"C:\Tools"), r"C:\Tools");
+        // 盘根「C:\」必须保留：剥成「C:」explorer 会打开该盘当前目录而非根目录
+        assert_eq!(&*normalize_dir_for_explorer(r"C:\"), r"C:\");
+        // 多个尾部分隔符一起剥
+        assert_eq!(&*normalize_dir_for_explorer(r"C:\a\\\\"), r"C:\a");
     }
 
     #[test]

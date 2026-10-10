@@ -37,23 +37,35 @@ const blocked = ref(false)
 
 async function refreshBlocked() {
   try {
-    blocked.value = (await appWindow.isMaximized()) || (await appWindow.isFullscreen())
+    const [maximized, fullscreen] = await Promise.all([
+      appWindow.isMaximized(),
+      appWindow.isFullscreen(),
+    ])
+    blocked.value = maximized || fullscreen
   } catch {
     blocked.value = false
   }
 }
 
 let unlisten: (() => void) | null = null
+let resizeDebounce: ReturnType<typeof setTimeout> | null = null
 
 onMounted(async () => {
   await refreshBlocked()
-  // 尺寸变化（最大化/还原/全屏切换）都会触发 Resized，按当前状态显隐边缘条
+  // 尺寸变化（最大化/还原/全屏切换）都会触发 Resized，按当前状态显隐边缘条。
+  // 尾随防抖：拖边缩放期间 Resized 以帧率连发，而最大化/全屏态只在切换那一刻变，
+  // 逐事件查询是每次 2 个 IPC 的纯浪费——静止 150ms 后查一次即可。
   unlisten = await appWindow.onResized(() => {
-    void refreshBlocked()
+    if (resizeDebounce) clearTimeout(resizeDebounce)
+    resizeDebounce = setTimeout(() => {
+      resizeDebounce = null
+      void refreshBlocked()
+    }, 150)
   })
 })
 
 onBeforeUnmount(() => {
+  if (resizeDebounce) clearTimeout(resizeDebounce)
   unlisten?.()
 })
 

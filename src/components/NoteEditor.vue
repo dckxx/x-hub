@@ -1218,6 +1218,11 @@ function onEditorClick(e: MouseEvent) {
   if (previewSrc.value) return
   const target = e.target
   if (!(target instanceof Element)) return
+  // 代码块 Copy 按钮（Crepe 内建）只改按钮态、无成功反馈；这里补应用内 toast
+  // （剪贴板写入由 Crepe 完成，Linux/Windows 实测可用），与提示词卡片「已复制」同口径
+  if (target.closest('.milkdown-code-block .tools-button-group button')) {
+    showToast?.('已复制')
+  }
   // 链接点击跳系统浏览器（编辑态 a 标签默认无反应，这里委托打开；只放行 http(s)）
   const anchor = target.closest<HTMLAnchorElement>('a[href]')
   if (anchor) {
@@ -1842,6 +1847,7 @@ const EDITOR_FLOAT_UI_SELECTOR =
   '.milkdown-block-handle, .milkdown-slash-menu, .milkdown-toolbar, .milkdown-link-edit, ' +
   '.milkdown-link-preview, .milkdown-image-block, .crepe-image-block, .ProseMirror-gapcursor'
 
+
 function onEditorAreaMouseDown(e: MouseEvent) {
   if (e.button !== 0) return
   const root = rootEl.value
@@ -2062,6 +2068,7 @@ function onEditorAreaMouseDown(e: MouseEvent) {
             </template>
           </div>
         </aside>
+(feat(notes): 代码块 Copy 按钮补「已复制」应用内提示)
       </div>
 
       <!-- 底栏：左标签行 + 右保存状态 -->
@@ -3141,6 +3148,40 @@ html[data-wallpaper-clear='1'] .crepe-root .milkdown {
 .crepe-root .milkdown .milkdown-table-block {
   max-width: 100%;
   min-width: 0;
+}
+
+/* 代码块卡片化：对齐分屏预览 .md-code 的观感。surface 默认映射 --input-bg，
+   与 .crepe-root 背景同色，亮色下代码块「白底叠白底」整块隐形（只剩行号）；
+   这里直接给卡片底/描边/圆角，CodeMirror 主体与行号槽改透出卡片底色。 */
+.crepe-root .milkdown .milkdown-code-block {
+  background: var(--bg-code);
+  border: 1px solid var(--code-border);
+  border-radius: 8px;
+}
+
+.crepe-root .milkdown .milkdown-code-block .cm-editor,
+.crepe-root .milkdown .milkdown-code-block .cm-gutters {
+  background: transparent;
+}
+
+/* 行号槽与内容并排：WebKitGTK 下 CM6 的 flex 布局会丢失，行号被堆到内容上方 */
+.crepe-root .milkdown .milkdown-code-block .cm-scroller {
+  display: flex;
+  align-items: flex-start;
+}
+.crepe-root .milkdown .milkdown-code-block .cm-gutters {
+  flex-shrink: 0;
+}
+
+/* 语言芯片与分屏预览的语言头同口径：常显（Crepe 默认 hover 才出现） */
+.crepe-root .milkdown .milkdown-code-block .tools .language-button {
+  opacity: 1;
+}
+
+/* 透底态：代码块跟随浮层换深玻璃实底（覆盖上面的 --bg-code 卡片底） */
+html[data-wallpaper-clear='1'] .crepe-root .milkdown .milkdown-code-block {
+  background: var(--crepe-color-surface);
+  border-color: transparent;
 }
 
 .crepe-root .milkdown .cm-editor,

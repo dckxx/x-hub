@@ -17,7 +17,7 @@ import { useStore } from '../stores/workbench'
 import { normalizeShortcutDisplay } from '../composables/useShortcutRecorder'
 import { attachBlockDrag } from '../utils/blockDrag'
 import { beautifyNoteMarkdown } from '../utils/markdownBeautify'
-import { fragmentToPlainText } from '../utils/clipboardPlainText'
+import { copyPlainText } from '../utils/clipboardPlainText'
 import { restoreNoteImageSyntax } from '../utils/noteImageSyntax'
 import { expandOnEnter, matchWysiwygLine, type LineShortcut } from '../utils/markdownEnter'
 import { loosenHtmlBreaks, renderNoteMarkdown, restoreCrepeMarkdown } from '../utils/markdownHtml'
@@ -304,7 +304,9 @@ async function mountEditor(content: string) {
       view.setProps({
         // 仅预览与实时预览共用实例：只读态在此一并挂上（切换时 applyEditable 再显式刷新）
         editable: () => mode.value === 'wysiwyg',
-        clipboardTextSerializer: (slice) => fragmentToPlainText(slice.content),
+        // 段内选区（复制账号/密码等单个内容）→ 纯文本不带列表圆点等块级标记；
+        // 跨块选区（拖多行 / Ctrl+A 整体复制）→ 保留列表结构，见 copyPlainText
+        clipboardTextSerializer: (slice, view) => copyPlainText(slice, view.state.selection),
       })
       detachBlockDrag = attachBlockDrag(() => view)
     })
@@ -375,9 +377,9 @@ async function mountSplitPreview(content: string) {
     c.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx)
       view.setProps({
-        // 只读预览；复制序列化与主编辑区同款所见即所得口径
+        // 只读预览；复制序列化与主编辑区同款所见即所得口径（段内无标记 / 跨块保留结构）
         editable: () => false,
-        clipboardTextSerializer: (slice) => fragmentToPlainText(slice.content),
+        clipboardTextSerializer: (slice, view) => copyPlainText(slice, view.state.selection),
       })
     })
     // 链接点击（外链/笔记双链）与图片灯箱与主编辑区同一套委托；[[跳转分支自带 mode 守卫

@@ -1,4 +1,4 @@
-import type { Fragment, Node as ProseNode } from '@milkdown/kit/prose/model'
+import type { Fragment, Node as ProseNode, ResolvedPos, Slice } from '@milkdown/kit/prose/model'
 
 /**
  * 所见即所得复制的纯文本序列化（速记编辑器 Ctrl+C / Ctrl+X 用）。
@@ -209,4 +209,25 @@ export function fragmentToPlainText(fragment: Fragment): string {
     plain.push(toPlainNode(child))
   })
   return blocksToPlainText(plain)
+}
+
+/**
+ * 复制序列化总入口（clipboardTextSerializer 直接挂这个）。
+ *
+ * 按选区跨不跨块分流，对应「整体复制保持结构、单个内容复制不带格式」：
+ * - 段内选区（起止在同一文本块，双击/拖选一个词一段字）=「只复制这一个内容」：
+ *   只输出该块的行内文本，不带列表圆点/序号/勾选等任何块级标记——复制账号密码
+ *   粘进登录框不能带上「• 」。⚠️ 不能直接序列化 slice：本工程 prosemirror-state 的
+ *   TextSelection.content() 走基类 doc.slice(from, to, true)，slice 从文档层连着
+ *   bullet_list → list_item → 段落整条祖先链，按结构走必带列表标记。
+ * - 跨块选区（拖过多行、Ctrl+A 整体复制）=「复制一段/整篇」：保留块级结构
+ *   （圆点、勾选态、嵌套缩进、表格制表符），粘出去仍是列表的样子。
+ */
+export function copyPlainText(slice: Slice, selection: { $from: ResolvedPos; $to: ResolvedPos }): string {
+  const { $from, $to } = selection
+  if ($from.sameParent($to) && $from.parent.isTextblock) {
+    // parent.cut 只留选中那截行内内容（代码块 textblock 也走这里，按字面输出）
+    return blocksToPlainText([toPlainNode($from.parent.cut($from.parentOffset, $to.parentOffset))])
+  }
+  return fragmentToPlainText(slice.content)
 }

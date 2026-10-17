@@ -5,7 +5,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { blocksToPlainText } from '../src/utils/clipboardPlainText.ts'
+import { blocksToPlainText, copyPlainText } from '../src/utils/clipboardPlainText.ts'
 
 const ZWSP = '\u200B'
 
@@ -131,4 +131,81 @@ test('引用块退化为内部内容，分隔线与无说明图片各占一个�
 test('图片块带说明时保留说明文字', () => {
   const out = blocksToPlainText([{ name: 'image-block', attrs: { caption: '截图说明' } }])
   assert.equal(out, '截图说明')
+})
+
+// ---- copyPlainText（按选区分流：段内无标记 / 跨块保留结构）----
+// 最小 PM 形状 mock：toPlainNode 只认 isText/isLeaf/isTextblock/type.spec.code/
+// attrs/textContent/content.forEach；ResolvedPos 只认 sameParent/parent/parentOffset。
+
+function pmTextblock(name, text, { code = false, attrs = {} } = {}) {
+  return {
+    isText: false,
+    isLeaf: false,
+    isBlock: true,
+    isTextblock: true,
+    type: { name, spec: { code } },
+    attrs,
+    textContent: text,
+    content: {
+      forEach(cb) {
+        Array.from(text).forEach((ch, i) => cb({ isText: true, isLeaf: false, text: ch }, i, i))
+      },
+    },
+    cut(from, to) {
+      return pmTextblock(name, text.slice(from, to), { code, attrs })
+    },
+  }
+}
+
+function pmBlock(name, children, attrs = {}) {
+  return {
+    isText: false,
+    isLeaf: false,
+    isBlock: true,
+    isTextblock: false,
+    type: { name, spec: {} },
+    attrs,
+    textContent: children.map((c) => c.textContent ?? '').join(''),
+    content: { forEach(cb) { children.forEach((c, i) => cb(c, i, i)) } },
+  }
+}
+
+function pmSel(parent, from, to) {
+  const pos = (offset) => ({
+    parent,
+    parentOffset: offset,
+    depth: 1,
+    sameParent(o) {
+      return o.parent === this.parent && o.depth === this.depth
+    },
+  })
+  return { $from: pos(from), $to: pos(to) }
+}
+
+const sliceWith = (...nodes) => ({ content: { forEach(cb) { nodes.forEach((n, i) => cb(n, 0, i)) } } })
+
+test('段内选区（列表项里的一个词）不带圆点——复制账号密码直接可用', () => {
+  // 真实场景：TextSelection.content() 的 slice 连着 bullet_list 整条祖先链，
+  // copyPlainText 必须改走 parent.cut 的行内内容，绝不看列表祖先
+  const para = pmTextblock('paragraph', '用户名 admin 密码 123456')
+  assert.equal(copyPlainText(sliceWith(pmBlock('bullet_list', [])), pmSel(para, 4, 9)), 'admin')
+})
+
+test('段内选区在代码块内按字面输出', () => {
+  const code = pmTextblock('code_block', 'const a = "x"', { code: true })
+  assert.equal(copyPlainText(sliceWith(), pmSel(code, 6, 13)), 'a = "x"')
+})
+
+test('跨块选区（拖过多行 / Ctrl+A 整体复制）保留列表结构', () => {
+  const list = pmBlock('bullet_list', [
+    pmBlock('list_item', [pmTextblock('paragraph', '账号 admin')]),
+    pmBlock('list_item', [pmTextblock('paragraph', '密码 123456')]),
+  ])
+  const doc = pmBlock('doc', [list])
+  // 起止不在同一文本块：sameParent 恒 false
+  const sel = {
+    $from: { parent: doc, parentOffset: 0, depth: 0, sameParent: () => false },
+    $to: { parent: doc, parentOffset: 99, depth: 0, sameParent: () => false },
+  }
+  assert.equal(copyPlainText(sliceWith(list), sel), '• 账号 admin\n• 密码 123456')
 })

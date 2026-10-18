@@ -18,6 +18,7 @@
 | `fs.saveText` / `saveFile` / `saveAs` | `fs` |
 | `events.emit` | `events` |
 | `ui.notify`（推送右下角通知） | `notify` |
+| `clipboard.readText` / `clipboard.writeText`（系统剪贴板） | `clipboard` |
 | `events.on`、`xhub.expose` | 无需权限 |
 | `net.fetch`（**@planned 未实现**） | `network` |
 
@@ -50,9 +51,14 @@ await window.xhub.storage.set(key, value) // value 需可 JSON 序列化
 await window.xhub.storage.remove(key)
 await window.xhub.storage.clear()
 
-await window.xhub.sharedStorage.get(key)     // 跨扩展共享（需 shared-storage 权限）
+// 扩展共享存储（需 shared-storage 权限）。key 由宿主自动加 `ext:<本扩展 id>:`
+// 命名空间，代码里只写业务 key——不要自己拼前缀。
+await window.xhub.sharedStorage.get(key)     // 本扩展命名空间；无则 null
 await window.xhub.sharedStorage.set(key, value)
-await window.xhub.sharedStorage.remove(key)
+await window.xhub.sharedStorage.remove(key)  // 同时清掉同名的旧版平铺 key
+// 显式跨扩展读取（B 方案）：读 ownerId 命名空间里的值，无则 null。
+// ⚠️ 老宿主没有 getFrom，调用前先特性探测，不可用时降级
+await window.xhub.sharedStorage.getFrom('com.example.producer', key)
 
 await window.xhub.config.all()            // 合并后的完整配置对象
 await window.xhub.config.get(key)         // 用户覆盖值 ?? manifest.config 默认 ?? null
@@ -70,6 +76,13 @@ window.xhub.expose('getData', fn)           // 暴露方法给其它扩展（配
 // title 截 80、body 截 300 字符，正文卡片最多 3 行。适合「后台任务完成」这类非阻塞提示。
 await window.xhub.ui.notify('同步完成', '已更新 12 条记录')
 
+// 剪贴板（需 permissions: ["clipboard"]）。writeText 写入纯文本并进宿主剪贴板历史
+// （用户 Ctrl+` 能看到，≤10MB）；readText 读当前剪贴板文本，剪贴板是图片/文件时返回空串。
+// ⚠️ readText 能读到用户复制的一切文本（含密码），宿主会在权限弹窗里向用户交代清楚，
+// 扩展应在界面文案里同样说明用途，不要静默轮询剪贴板。
+await window.xhub.clipboard.writeText('要复制的内容')
+const text = await window.xhub.clipboard.readText()
+
 await window.xhub.service.request('/api/x', { method, headers, body })  // 仅 service 扩展
 // → XHubHttpResult { status, headers, text(), json() }
 
@@ -78,6 +91,25 @@ await window.xhub.fs.saveText({ name, content })   // 文本 → { path, name }
 await window.xhub.fs.saveFile({ name, base64 })    // 二进制 → { path, name }
 await window.xhub.fs.saveAs({ name, base64 })      // 弹系统「保存到…」对话框；取消返回 { canceled: true }
 ```
+
+### 共享存储 `sharedStorage.*`（命名空间 + 显式跨扩展读取）
+
+物理上是一个全局文件 `<数据根>/extensions/.shared-storage.json`，但**宿主会按扩展自动隔离**，作者按下面的规则用即可：
+
+| 操作 | 落地 key | 说明 |
+|---|---|---|
+| `get/set/remove(key)` | `ext:<本扩展 id>:<key>` | 只碰自己的命名空间。同名业务 key 在 A、B 两个扩展之间互不影响 |
+| `getFrom(ownerId, key)` | `ext:<ownerId>:<key>` | 显式读别家数据；`ownerId` 只能是反向域名（字母数字与 `._-`），含 `:` 直接 `INVALID_ARGUMENT` |
+
+约定与兼容性：
+
+- **业务 key 写裸名**（`apiKey` / `lastData`），别自己拼 `ext:...` 前缀——宿主会再包一层；也**不要用 `ext:` 开头命名业务 key**（该前缀保留给命名空间，旧键迁移兜底不会认它）。跨扩展共享一律用 `getFrom`，不要靠"猜别人的 key"。
+- **共享是 opt-in 的语义**：对方扩展必须把数据写在它自己的 `get/set` 命名空间里，`getFrom` 才有东西可读；读不到返回 `null`，不是报错。
+- **卸载清理**：卸载扩展时宿主删除 `ext:<该扩展 id>:` 前缀下的全部键，`storage` / `config` / `.permissions` 随扩展目录一起删除。
+- **旧数据迁移（老版本升级到本版本）**：升级前写入的平铺 key 没有扩展归属。首次 `get(key)` 时若自己的命名空间为空，会回退读同名平铺 key 并复制一份到命名空间（"认领"），旧键保留——降级回老宿主/旧扩展版本仍能读到迁移前的值。`remove(key)` 会连同名平铺键一起删（否则删完重读会「复活」已删除的凭据）。
+- **降级边界**：本版本写入的数据都在 `ext:<id>:` 命名空间里，老版本 x-hub 不会解析前缀，读不到（无报错）。过渡期旧平铺键仍在，迁移前的值可读。
+- **老宿主没有 `getFrom`**：调用前特性探测 `typeof window.xhub.sharedStorage.getFrom === 'function'`；不可用时降级为不共享，或改走 `runtime.callExtension`。
+- 有 `shared-storage` 权限的扩展**仍然可以读取任意命名空间**（`getFrom` 不额外加权限）——它是显式共享通道，不是 ACL；不要在里面放不该被别的扩展看到的数据。
 
 ### 宿主数据 `data.*`（读写两套都已实装）
 
@@ -156,7 +188,7 @@ await window.xhub.data.tags.setNoteTags({ noteId, tagIds })   // 全量替换语
 
 ## 未实现（planned，勿依赖）
 
-`clipboard.*`、`net.*`、`system.*`（`openUrl` / `openPath` / `openApp`）、`ui.toast`；
+`net.*`、`system.*`（`openUrl` / `openPath` / `openApp`）、`ui.toast`；
 `fs.readText` / `fs.writeText` / `fs.readDir` / `fs.exists`（受控读写那一套——**与可用的 `fs.saveText` / `saveFile` / `saveAs` 不是一回事**）；
 `data.usage.*`（已从宿主**移除**，AI 用量现在由扩展 `com.x-hub.token-stats` 自行读数据实现）。
 

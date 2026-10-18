@@ -148,7 +148,7 @@ skill 的使用者手里通常只有**装好的 x-hub 应用** + 这个 skill �
 | 读笔记 / 待办 / 便签 / 速达 / 提示词 | `data:read` |
 | 创建或修改上述数据 | `data:write` |
 | 存文件到系统下载目录 | `fs` |
-| 跨扩展共享存储 | `shared-storage` |
+| 扩展共享存储（`get/set` 自动按扩展隔离；读别家用 `getFrom`） | `shared-storage` |
 | 广播事件给其它扩展 | `events` |
 | 打开外链（`xhub.openExternal`，默认应用内浏览器） | `open-url` |
 | 推送右下角通知（`xhub.ui.notify`） | `notify` |
@@ -164,7 +164,7 @@ skill 的使用者手里通常只有**装好的 x-hub 应用** + 这个 skill �
 
 **只声明真正用到的**。声明了不用是安全负担，用了没声明会直接 reject `PERMISSION_DENIED`。
 
-若用到不确定的 API，先读 `bridge-api.md` 的「未实现（planned）」清单——`clipboard.*` / `net.*` / `system.*` / `ui.*` / `fs.readText` 那一套目前**都不可用**，遇到就改设计，别写进去等运行时炸。
+若用到不确定的 API，先读 `bridge-api.md` 的「未实现（planned）」清单——`net.*` / `system.*` / `ui.toast` / `fs.readText` 那一套目前**都不可用**，遇到就改设计，别写进去等运行时炸。剪贴板 `clipboard.readText/writeText` 已可用（需 `clipboard` 权限）。
 
 ### Step 5 · 生成骨架
 

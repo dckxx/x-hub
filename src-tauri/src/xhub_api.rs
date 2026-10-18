@@ -398,6 +398,18 @@ pub(crate) static CAPABILITIES: &[Capability] = &[
         handler: CapabilityHandler::Sync(ui_notify),
     },
     Capability {
+        namespace: "clipboard",
+        method: "readText",
+        permission: Some("clipboard"),
+        handler: CapabilityHandler::Sync(clipboard_read_text),
+    },
+    Capability {
+        namespace: "clipboard",
+        method: "writeText",
+        permission: Some("clipboard"),
+        handler: CapabilityHandler::Sync(clipboard_write_text),
+    },
+    Capability {
         namespace: "events",
         method: "emit",
         permission: Some("events"),
@@ -420,6 +432,12 @@ pub(crate) static CAPABILITIES: &[Capability] = &[
         method: "remove",
         permission: Some("shared-storage"),
         handler: CapabilityHandler::Sync(shared_storage_remove),
+    },
+    Capability {
+        namespace: "sharedStorage",
+        method: "getFrom",
+        permission: Some("shared-storage"),
+        handler: CapabilityHandler::Sync(shared_storage_get_from),
     },
     Capability {
         namespace: "fs",
@@ -577,26 +595,173 @@ fn shared_storage_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(extensions_root(app)?.join(".shared-storage.json"))
 }
 
-fn read_shared_storage(app: &tauri::AppHandle) -> Result<Map<String, Value>, String> {
-    let path = shared_storage_path(app)?;
-    if !path.exists() {
-        return Ok(Map::new());
+/// 共享存储串行锁：`get` 的「旧键认领」与 set/remove/卸载清理都是读-改-写，
+/// Tauri 命令跑在线程池里，无锁会互相覆盖（丢键）。锁只在同步文件 IO 期间持有，
+/// 不跨 await。
+static SHARED_STORAGE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn shared_storage_guard() -> std::sync::MutexGuard<'static, ()> {
+    SHARED_STORAGE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// 扩展在共享存储里的命名空间前缀：`ext:<扩展 id>:`。
+///
+/// **A（宿主自动命名空间）**：扩展代码仍调 `sharedStorage.get('apiKey')`，宿主物理上
+/// 存成 `ext:<id>:apiKey`——老扩展零改动即隔离，卸载时按前缀精确清理。
+/// **B（显式跨扩展读取）**：别家数据走 `getFrom(ownerId, key)` 落到对方命名空间，
+/// 不需要扩展自己拼字符串前缀（拼错/双前缀/越权构造都在宿主侧堵死）。
+fn shared_key_prefix(ext_id: &str) -> String {
+    format!("ext:{ext_id}:")
+}
+
+fn shared_key(ext_id: &str, key: &str) -> String {
+    format!("{}{key}", shared_key_prefix(ext_id))
+}
+
+/// 是否可能是「迁移前的旧版平铺键」。`ext:` 是所有命名空间的保留前缀：
+/// 业务 key 若以它开头，旧键兜底会把手伸进别人（或自己）的命名空间——
+/// `get('ext:com.a:apiKey')` 在自身命名空间缺失时会读到 A 的值并复制过来，
+/// `remove` 同款写法会直接删掉 A 的键。一律不当作旧键。
+fn is_legacy_flat_key(key: &str) -> bool {
+    !key.starts_with("ext:")
+}
+
+/// `getFrom` 的 ownerId 来自扩展输入，不可信：反向域名只允许字母数字与 `.`/`_`/`-`。
+/// **不得含 `:`**——冒号是命名空间分隔符，放进来就能越权构造别人/更深的 key。
+fn valid_shared_ext_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// 共享存储读写核心。路径由调用方给出：运行期是数据根下的
+/// `.shared-storage.json`，单测用临时文件（`data_root` 是进程级 OnceLock，测试不能碰）。
+struct SharedStorage {
+    path: PathBuf,
+}
+
+impl SharedStorage {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
     }
-    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    match serde_json::from_str::<Value>(&content) {
-        Ok(Value::Object(map)) => Ok(map),
-        _ => Ok(Map::new()),
+
+    fn read(&self) -> Map<String, Value> {
+        if !self.path.exists() {
+            return Map::new();
+        }
+        std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<Value>(&c).ok())
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default()
+    }
+
+    fn write(&self, map: &Map<String, Value>) -> Result<(), String> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let content =
+            serde_json::to_string_pretty(&Value::Object(map.clone())).map_err(|e| e.to_string())?;
+        std::fs::write(&self.path, content).map_err(|e| e.to_string())
+    }
+
+    /// 读当前扩展自己的值。迁移兜底：命名空间里没有时回退读旧版**平铺 key**
+    /// （升级前 sharedStorage 是全局限定名），命中即复制进本扩展命名空间（认领），
+    /// 旧键保留——降级回老宿主/旧扩展版本时仍能读到迁移前的值。多个扩展读同一个
+    /// 旧键时各自认领一份，之后互不影响。
+    fn get(&self, ext_id: &str, key: &str) -> Value {
+        let mut map = self.read();
+        let own = shared_key(ext_id, key);
+        if let Some(v) = map.get(&own) {
+            return v.clone();
+        }
+        if !is_legacy_flat_key(key) {
+            return Value::Null;
+        }
+        let Some(legacy) = map.get(key).cloned() else {
+            return Value::Null;
+        };
+        map.insert(own, legacy.clone());
+        if let Err(e) = self.write(&map) {
+            // 认领失败不让读取失败：本次照常返回值，下次读再试
+            log::warn!("sharedStorage 旧键认领写盘失败（{ext_id}/{key}）: {e}");
+        }
+        legacy
+    }
+
+    fn set(&self, ext_id: &str, key: &str, value: Value) -> Result<(), String> {
+        let mut map = self.read();
+        map.insert(shared_key(ext_id, key), value);
+        self.write(&map)
+    }
+
+    /// 删除当前扩展的值。**同时删旧版平铺键**：否则删完再读会从残留旧键「复活」
+    /// 已删除的凭据（重装/重开扩展即触发）。旧平铺键没有归属信息，跨扩展共用
+    /// 同名旧键时可能一并删掉对方尚未认领的迁移数据——这是迁移期的一次性代价，
+    /// 新写入永远走各自命名空间。
+    fn remove(&self, ext_id: &str, key: &str) -> Result<(), String> {
+        let mut map = self.read();
+        let mut changed = map.remove(&shared_key(ext_id, key)).is_some();
+        if is_legacy_flat_key(key) {
+            changed |= map.remove(key).is_some();
+        }
+        if changed {
+            self.write(&map)?;
+        }
+        Ok(())
+    }
+
+    /// B 方案：显式读取指定扩展命名空间里的值（跨扩展共享）。旧版平铺键不参与
+    /// ——它没有归属，无法判断属于 ownerId。
+    fn get_from(&self, owner_id: &str, key: &str) -> Value {
+        self.read()
+            .get(&shared_key(owner_id, key))
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    /// 卸载清理：删除该扩展命名空间下的全部键，返回删除数。
+    /// 旧版平铺键无归属，保持原样（文档已注明）。
+    fn purge_extension(&self, ext_id: &str) -> Result<usize, String> {
+        let mut map = self.read();
+        let prefix = shared_key_prefix(ext_id);
+        let before = map.len();
+        map.retain(|k, _| !k.starts_with(&prefix));
+        let removed = before - map.len();
+        if removed > 0 {
+            self.write(&map)?;
+        }
+        Ok(removed)
     }
 }
 
-fn write_shared_storage(app: &tauri::AppHandle, map: &Map<String, Value>) -> Result<(), String> {
-    let path = shared_storage_path(app)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+/// 按数据根路径打开共享存储（运行期入口）
+fn shared_store(app: &tauri::AppHandle) -> Result<SharedStorage, String> {
+    Ok(SharedStorage::new(shared_storage_path(app)?))
+}
+
+/// 卸载扩展时清理其共享存储命名空间（`extension::uninstall_extension` 调用）。
+/// 返回删除的键数；失败只记日志，不阻断卸载（目录已删，残留键不影响使用）。
+pub(crate) fn purge_extension_shared_storage(app: &tauri::AppHandle, ext_id: &str) -> usize {
+    let _guard = shared_storage_guard();
+    let store = match shared_store(app) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("共享存储路径解析失败（跳过卸载清理）: {e}");
+            return 0;
+        }
+    };
+    match store.purge_extension(ext_id) {
+        Ok(n) => n,
+        Err(e) => {
+            log::warn!("卸载清理共享存储失败 {ext_id}: {e}");
+            0
+        }
     }
-    let content =
-        serde_json::to_string_pretty(&Value::Object(map.clone())).map_err(|e| e.to_string())?;
-    std::fs::write(&path, content).map_err(|e| e.to_string())
 }
 
 /// 桥 API 统一分发命令（Tauri 命令；参数由主窗口以 camelCase 转发：extId/namespace/method/args）
@@ -1902,52 +2067,72 @@ fn config_remove(
 }
 
 // ---------- sharedStorage（跨扩展共享键值，opt-in 需 shared-storage 权限） ----------
+//
+// 物理 key 一律带 `ext:<扩展 id>:` 命名空间（见 `shared_key`）：
+// - `get/set/remove` 自动加/剥前缀，老扩展代码零改动即完成隔离；
+// - `getFrom(extId, key)` 是显式跨扩展读取（B），替代"扩展自己拼前缀"的约定；
+// - 卸载扩展时按前缀清空（`purge_extension_shared_storage`）。
+
+fn shared_key_arg(args: &Value) -> Result<&str, String> {
+    args.get("key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "INVALID_ARGUMENT: 缺少 key".to_string())
+}
 
 fn shared_storage_get(
     app: &tauri::AppHandle,
     _state: &DbState,
-    _ext_id: &str,
+    ext_id: &str,
     args: Value,
 ) -> Result<Value, String> {
-    let key = args
-        .get("key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "INVALID_ARGUMENT: 缺少 key".to_string())?;
-    let map = read_shared_storage(app)?;
-    Ok(map.get(key).cloned().unwrap_or(Value::Null))
+    let key = shared_key_arg(&args)?;
+    let _guard = shared_storage_guard();
+    Ok(shared_store(app)?.get(ext_id, key))
 }
 
 fn shared_storage_set(
     app: &tauri::AppHandle,
     _state: &DbState,
-    _ext_id: &str,
+    ext_id: &str,
     args: Value,
 ) -> Result<Value, String> {
-    let key = args
-        .get("key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "INVALID_ARGUMENT: 缺少 key".to_string())?;
+    let key = shared_key_arg(&args)?;
     let value = args.get("value").cloned().unwrap_or(Value::Null);
-    let mut map = read_shared_storage(app)?;
-    map.insert(key.to_string(), value);
-    write_shared_storage(app, &map)?;
+    let _guard = shared_storage_guard();
+    shared_store(app)?.set(ext_id, key, value)?;
     Ok(Value::Null)
 }
 
 fn shared_storage_remove(
     app: &tauri::AppHandle,
     _state: &DbState,
+    ext_id: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let key = shared_key_arg(&args)?;
+    let _guard = shared_storage_guard();
+    shared_store(app)?.remove(ext_id, key)?;
+    Ok(Value::Null)
+}
+
+/// 跨扩展读取：`getFrom(extId, key)` 读指定扩展命名空间里的值。
+/// extId 来自扩展输入，先过 [`valid_shared_ext_id`] 防命名空间越界构造。
+fn shared_storage_get_from(
+    app: &tauri::AppHandle,
+    _state: &DbState,
     _ext_id: &str,
     args: Value,
 ) -> Result<Value, String> {
-    let key = args
-        .get("key")
+    let key = shared_key_arg(&args)?;
+    let owner = args
+        .get("extId")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "INVALID_ARGUMENT: 缺少 key".to_string())?;
-    let mut map = read_shared_storage(app)?;
-    map.remove(key);
-    write_shared_storage(app, &map)?;
-    Ok(Value::Null)
+        .map(str::trim)
+        .filter(|s| valid_shared_ext_id(s))
+        .ok_or_else(|| "INVALID_ARGUMENT: extId 缺失或非法".to_string())?;
+    let _guard = shared_storage_guard();
+    Ok(shared_store(app)?.get_from(owner, key))
 }
 
 // ---------- fs（受控文件保存：写入系统下载目录，需 fs 权限） ----------
@@ -2199,6 +2384,48 @@ fn ui_notify(
     Ok(Value::Null)
 }
 
+// ---------- clipboard（系统剪贴板；clipboard 权限校验在 dispatch） ----------
+
+/// clipboard.writeText 单次写入上限。剪贴板是全局单槽资源，超长文本没有意义，
+/// 还会让宿主剪贴板历史 / 粘贴注入跟着处理一大坨内存——10MB 纯文本已远超任何合理用途。
+const CLIPBOARD_WRITE_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+/// clipboard.writeText：写系统剪贴板纯文本（需 `clipboard` 权限）。
+/// 写完清自写指纹，让监听线程把这次写入正常收进宿主剪贴板历史——
+/// 与 copy_note_image 同口径：只有历史项自身回写才需要抑制回声。
+fn clipboard_write_text(
+    _app: &tauri::AppHandle,
+    _state: &DbState,
+    _ext_id: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let text = args
+        .get("text")
+        .and_then(|v| v.as_str())
+        .ok_or("INVALID_ARGUMENT: 缺少 text（须为字符串）")?;
+    if text.len() > CLIPBOARD_WRITE_MAX_BYTES {
+        return Err("INVALID_ARGUMENT: 剪贴板内容超过 10MB 上限".into());
+    }
+    crate::clipboard::set_clipboard(text, None)?;
+    crate::clipboard::clear_self_set_fingerprint();
+    Ok(Value::Null)
+}
+
+/// clipboard.readText：读系统剪贴板文本（需 `clipboard` 权限）。
+/// 当前剪贴板是图片/文件等非文本内容时返回空串——类型承诺 string（与 xhub.d.ts 一致），
+/// 调用方免判空。带重试的读取：与监听线程等其它 OpenClipboard 持有者竞争时让一让。
+fn clipboard_read_text(
+    _app: &tauri::AppHandle,
+    _state: &DbState,
+    _ext_id: &str,
+    _args: Value,
+) -> Result<Value, String> {
+    let text = crate::clipboard::read_clipboard_with_retry()
+        .map(|(t, _)| t)
+        .unwrap_or_default();
+    Ok(json!(text))
+}
+
 // ---------- events（扩展间事件总线；emit 权限校验在 dispatch，广播在前端） ----------
 
 /// events.emit：只做权限校验占位（dispatch 已统一校验 events 权限）。
@@ -2319,6 +2546,123 @@ mod tests {
         }
     }
 
+    fn shared_store_at(dir: &std::path::Path) -> SharedStorage {
+        SharedStorage::new(dir.join(".shared-storage.json"))
+    }
+
+    /// A 方案：同名业务 key 按扩展命名空间隔离，物理 key 带 `ext:<id>:` 前缀
+    #[test]
+    fn shared_storage_namespaces_by_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = shared_store_at(dir.path());
+        store.set("com.a", "apiKey", json!("a-key")).unwrap();
+        store.set("com.b", "apiKey", json!("b-key")).unwrap();
+        assert_eq!(store.get("com.a", "apiKey"), json!("a-key"));
+        assert_eq!(store.get("com.b", "apiKey"), json!("b-key"));
+        let raw = store.read();
+        assert!(raw.contains_key("ext:com.a:apiKey"));
+        assert!(raw.contains_key("ext:com.b:apiKey"));
+        // B 方案：显式跨扩展读取落到对方命名空间
+        assert_eq!(store.get_from("com.a", "apiKey"), json!("a-key"));
+        assert_eq!(store.get_from("com.b", "apiKey"), json!("b-key"));
+        assert_eq!(store.get_from("com.missing", "apiKey"), Value::Null);
+    }
+
+    /// 迁移兜底：旧版全局限定名的平铺键在首次读取时被认领进命名空间，旧键保留
+    #[test]
+    fn shared_storage_claims_legacy_flat_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".shared-storage.json");
+        std::fs::write(&path, r#"{"apiKey":"legacy"}"#).unwrap();
+        let store = SharedStorage::new(path);
+
+        assert_eq!(store.get("com.a", "apiKey"), json!("legacy"));
+        let raw = store.read();
+        assert_eq!(raw.get("apiKey"), Some(&json!("legacy")), "旧键保留作降级兜底");
+        assert_eq!(raw.get("ext:com.a:apiKey"), Some(&json!("legacy")));
+
+        // 另一扩展读同一个旧键：各自认领一份，互不串值
+        assert_eq!(store.get("com.b", "apiKey"), json!("legacy"));
+        store.set("com.a", "apiKey", json!("new")).unwrap();
+        assert_eq!(store.get("com.a", "apiKey"), json!("new"));
+        assert_eq!(store.get("com.b", "apiKey"), json!("legacy"));
+    }
+
+    /// remove 必须连旧平铺键一起删，否则重读/重装会从残留旧键「复活」已删除的值
+    #[test]
+    fn shared_storage_remove_drops_legacy_flat_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".shared-storage.json");
+        std::fs::write(&path, r#"{"apiKey":"legacy","other":1}"#).unwrap();
+        let store = SharedStorage::new(path);
+
+        store.remove("com.a", "apiKey").unwrap();
+        assert_eq!(store.get("com.a", "apiKey"), Value::Null);
+        let raw = store.read();
+        assert!(!raw.contains_key("apiKey"));
+        assert!(raw.contains_key("other"), "无关键不受影响");
+    }
+
+    /// 卸载清理只删自己的命名空间，别家键与无归属旧键原样保留
+    #[test]
+    fn shared_storage_purge_removes_only_own_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = shared_store_at(dir.path());
+        store.set("com.a", "k1", json!(1)).unwrap();
+        store.set("com.a", "k2", json!(2)).unwrap();
+        store.set("com.b", "k1", json!(3)).unwrap();
+        {
+            let mut raw = store.read();
+            raw.insert("legacy".into(), json!("untouched"));
+            store.write(&raw).unwrap();
+        }
+
+        assert_eq!(store.purge_extension("com.a").unwrap(), 2);
+        let raw = store.read();
+        assert!(!raw.contains_key("ext:com.a:k1"));
+        assert!(!raw.contains_key("ext:com.a:k2"));
+        assert_eq!(raw.get("ext:com.b:k1"), Some(&json!(3)));
+        assert_eq!(raw.get("legacy"), Some(&json!("untouched")));
+        // 再清一次幂等
+        assert_eq!(store.purge_extension("com.a").unwrap(), 0);
+    }
+
+    /// 旧键兜底不得把 `ext:` 开头的业务 key 当旧平铺键：否则 `get('ext:com.a:k')`
+    /// 会读走 A 的值，`remove` 同款写法会删掉 A 的键（命名空间逃逸）
+    #[test]
+    fn legacy_fallback_cannot_target_namespaced_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = shared_store_at(dir.path());
+        store.set("com.a", "apiKey", json!("a-key")).unwrap();
+
+        assert_eq!(store.get("com.b", "ext:com.a:apiKey"), Value::Null);
+        assert!(!store.read().contains_key("ext:com.b:ext:com.a:apiKey"));
+
+        store.remove("com.b", "ext:com.a:apiKey").unwrap();
+        assert_eq!(store.get("com.a", "apiKey"), json!("a-key"), "别人命名空间的键不能被删");
+    }
+
+    /// getFrom 的 extId 来自扩展输入：必须挡住冒号等命名空间越界构造
+    #[test]
+    fn shared_ext_id_validation_rejects_namespace_escapes() {
+        assert!(valid_shared_ext_id("com.x-hub.calendar"));
+        assert!(valid_shared_ext_id("bert0224.agent-usage"));
+        assert!(!valid_shared_ext_id(""));
+        assert!(!valid_shared_ext_id("com.a:b"));
+        assert!(!valid_shared_ext_id("ext:com.a"));
+        assert!(!valid_shared_ext_id("com a"));
+        assert!(!valid_shared_ext_id(&"a".repeat(129)));
+    }
+
+    #[test]
+    fn get_from_capability_requires_shared_storage_permission() {
+        let cap = CAPABILITIES
+            .iter()
+            .find(|c| c.namespace == "sharedStorage" && c.method == "getFrom")
+            .expect("sharedStorage.getFrom 必须在能力表中");
+        assert_eq!(cap.permission, Some("shared-storage"));
+    }
+
     #[test]
     fn open_external_requires_open_url_permission() {
         // 语义对齐：打开外链归**窄权限 `open-url`**，不归「network：访问网络」
@@ -2352,6 +2696,19 @@ mod tests {
             .find(|c| c.namespace == "ui" && c.method == "notify")
             .expect("ui.notify 必须在能力表中");
         assert_eq!(cap.permission, Some("notify"));
+    }
+
+    #[test]
+    fn clipboard_methods_require_clipboard_permission() {
+        // 剪贴板对扩展开放：读/写都必须声明窄权限 `clipboard`
+        // （与 precheck.rs / gate.ts 的 `clipboard.* → clipboard` 同口径）。
+        for method in ["readText", "writeText"] {
+            let cap = CAPABILITIES
+                .iter()
+                .find(|c| c.namespace == "clipboard" && c.method == method)
+                .unwrap_or_else(|| panic!("clipboard.{method} 必须在能力表中"));
+            assert_eq!(cap.permission, Some("clipboard"));
+        }
     }
 
     #[test]
@@ -2403,6 +2760,9 @@ mod tests {
         assert!(keys.contains(&("service", "request")));
         // 界面与通知：ui.notify 走右下角通知窗，漏登记 = 扩展调不通
         assert!(keys.contains(&("ui", "notify")));
+        // 剪贴板：readText/writeText 挂 clipboard 权限，漏登记 = 扩展调不通
+        assert!(keys.contains(&("clipboard", "readText")));
+        assert!(keys.contains(&("clipboard", "writeText")));
     }
 
     /// data 读方法（挂 data:read 权限）方法名约定：list / get / ofNote 结尾。

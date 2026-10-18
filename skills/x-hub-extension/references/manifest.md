@@ -35,7 +35,7 @@
 
 ## 权限 `permissions`
 
-可选值：`data:read`、`data:write`、`fs`、`clipboard`、`network`、`open-url`（用默认浏览器打开外链）、`system`（保留，宿主暂无对应能力）、`notify`、`events`（广播自定义事件）、`shared-storage`（跨扩展共享存储）。
+可选值：`data:read`、`data:write`、`fs`、`clipboard`（读写系统剪贴板文本）、`network`、`open-url`（用默认浏览器打开外链）、`system`（保留，宿主暂无对应能力）、`notify`（推送右下角通知）、`events`（广播自定义事件）、`shared-storage`（扩展共享存储：`get/set/remove` 由宿主自动放进 `ext:<扩展 id>:` 命名空间，跨扩展读取用 `getFrom(ownerId, key)`，见 bridge-api.md）。
 
 没声明就调用会被拒（`PERMISSION_DENIED`）。各权限与桥 API 的对应关系见 `bridge-api.md`。
 

@@ -982,9 +982,12 @@ pub(crate) const XHUB_BRIDGE_SCRIPT: &str = r#"
       all:function(){return call('config','all',{});}
     },
     sharedStorage:{
+      // A：get/set/remove 由宿主自动放进本扩展的 ext:<id>: 命名空间，代码不用改；
+      // B：读别家数据走 getFrom(ownerId, key)，别自己拼前缀（老宿主没有此方法，先特性探测）
       get:function(k){return call('sharedStorage','get',{key:k});},
       set:function(k,v){return call('sharedStorage','set',{key:k,value:v});},
-      remove:function(k){return call('sharedStorage','remove',{key:k});}
+      remove:function(k){return call('sharedStorage','remove',{key:k});},
+      getFrom:function(id,k){return call('sharedStorage','getFrom',{extId:id,key:k});}
     },
     // data 命名空间：与 Rust CAPABILITIES 的 data.* 能力一一对应（读方法带明确参数，
     // 写方法整包透传 opts——expectedVersion 等可选字段原样传递）。新增能力必须同步此表
@@ -1084,6 +1087,12 @@ pub(crate) const XHUB_BRIDGE_SCRIPT: &str = r#"
     // 界面与通知：notify 复用宿主右下角通知窗（需 manifest 声明 `notify` 权限）。
     ui:{
       notify:function(title,body){return call('ui','notify',{title:String(title||''),body:String(body||'')});}
+    },
+    // 剪贴板读写（需 manifest 声明 `clipboard` 权限）。readText 在剪贴板为图片/文件等
+    // 非文本内容时返回空串；writeText 写入后进宿主剪贴板历史，超 10MB 拒绝。
+    clipboard:{
+      readText:function(){return call('clipboard','readText',{});},
+      writeText:function(text){return call('clipboard','writeText',{text:String(text==null?'':text)});}
     },
     events:{
       on:function(event,handler){
@@ -1286,6 +1295,12 @@ pub fn uninstall_extension(app: tauri::AppHandle, id: String) -> Result<(), Stri
         return Err(format!("NOT_FOUND: 扩展 {id} 未安装"));
     }
     std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    // 共享存储按命名空间 `ext:<id>:` 精确清理（storage/config/permissions 都在扩展
+    // 目录内，已随 remove_dir_all 删除；旧版平铺键无归属，保持原样）
+    let purged = crate::xhub_api::purge_extension_shared_storage(&app, &id);
+    if purged > 0 {
+        log::info!("已清理扩展共享存储: {id}（{purged} 键）");
+    }
     log::info!("扩展已卸载: {id}");
     Ok(())
 }
@@ -1495,6 +1510,39 @@ mod tests {
                 XHUB_BRIDGE_SCRIPT.contains(&needle),
                 "桥脚本缺少 data 能力封装: {}.{}",
                 cap.namespace,
+                cap.method
+            );
+        }
+    }
+
+    #[test]
+    fn bridge_script_covers_clipboard_capabilities() {
+        // 剪贴板同 data 的契约：扩展按 window.xhub.clipboard.* 编程，桥漏方法 = 能力形同虚设
+        for cap in crate::xhub_api::CAPABILITIES.iter() {
+            if cap.namespace != "clipboard" {
+                continue;
+            }
+            let needle = format!("'{}','{}'", cap.namespace, cap.method);
+            assert!(
+                XHUB_BRIDGE_SCRIPT.contains(&needle),
+                "桥脚本缺少 clipboard 能力封装: {}",
+                cap.method
+            );
+        }
+    }
+
+    #[test]
+    fn bridge_script_covers_shared_storage_capabilities() {
+        // 共享存储同 data/clipboard 的契约：新增能力（如 getFrom）必须同步桥脚本，
+        // 否则能力表里有、扩展调不到（`window.xhub.sharedStorage.getFrom is not a function`）
+        for cap in crate::xhub_api::CAPABILITIES.iter() {
+            if cap.namespace != "sharedStorage" {
+                continue;
+            }
+            let needle = format!("'{}','{}'", cap.namespace, cap.method);
+            assert!(
+                XHUB_BRIDGE_SCRIPT.contains(&needle),
+                "桥脚本缺少 sharedStorage 能力封装: {}",
                 cap.method
             );
         }

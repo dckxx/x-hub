@@ -421,11 +421,32 @@ interface XHubConfig {
   remove(key: string): Promise<void>
 }
 
-/** @done 跨扩展共享键值存储（需 manifest 声明 `shared-storage` 权限） */
+/**
+ * @done 扩展共享键值存储（需 manifest 声明 `shared-storage` 权限）。
+ *
+ * 物理上所有扩展共用 `<数据根>/extensions/.shared-storage.json`，但 key 由**宿主**
+ * 自动加上 `ext:<本扩展 id>:` 命名空间，扩展代码只写业务 key（如 `apiKey`）即可：
+ * - 不会与其它扩展撞名；
+ * - 卸载本扩展时宿主按命名空间精确清理（storage/config/permissions 随扩展目录删除）；
+ * - 升级/装回旧版本 x-hub 时，旧版平铺 key 会在首次读取时被认领（过渡期兼容）。
+ */
 interface XHubSharedStorage {
+  /** 读本扩展命名空间里的值。无则 null；首次读会认领旧版平铺 key（如有） */
   get(key: string): Promise<unknown>
+  /** 写本扩展命名空间（value 需可 JSON 序列化；不会写到其它扩展的空间） */
   set(key: string, value: unknown): Promise<void>
+  /** 删除本扩展命名空间里的值（同时清掉同名的旧版平铺 key，防止重读「复活」） */
   remove(key: string): Promise<void>
+  /**
+   * @done 显式跨扩展读取：读 `ownerId` 命名空间里的 `key`，无则 null。
+   *
+   * 这是「共享」的唯一正确姿势——**不要自己拼 key 前缀**（宿主会再包一层，且会被
+   * 命名空间校验挡住）。作者需保证对端扩展也把数据写在它的 `get/set` 命名空间里。
+   * ⚠️ 老宿主没有 `getFrom`：调用前先特性探测
+   * （`typeof window.xhub.sharedStorage.getFrom === 'function'`），不可用时降级为
+   * 不共享或走 `runtime.callExtension`。
+   */
+  getFrom(ownerId: string, key: string): Promise<unknown>
 }
 
 /**
@@ -452,9 +473,15 @@ interface XHubFs {
   exists(path: string): Promise<boolean>
 }
 
-/** @planned 剪贴板（需 clipboard 权限） */
+/** 剪贴板（**需 manifest 声明 `clipboard` 权限**） */
 interface XHubClipboard {
+  /**
+   * @done 读系统剪贴板文本。剪贴板当前是图片/文件等非文本内容时返回空串
+   * （类型承诺 string，调用方免判空）。
+   * ⚠️ 能读到用户复制的一切文本（含密码）——在界面文案里向用户说明用途，别静默轮询。
+   */
   readText(): Promise<string>
+  /** @done 写系统剪贴板纯文本（≤10MB，超限报 INVALID_ARGUMENT）；写入会进宿主剪贴板历史 */
   writeText(text: string): Promise<void>
 }
 

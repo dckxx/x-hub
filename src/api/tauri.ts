@@ -609,6 +609,15 @@ export interface AccountDevice {
   current?: boolean
 }
 
+/** 发布配额（服务端只回剩余次数与每日重置时刻，不回上限） */
+export interface PublishQuota {
+  drafts_remaining?: number
+  published_remaining?: number
+  daily_submits_remaining?: number
+  /** 每日提交额度的重置时刻（epoch ms，服务端本地自然日 0 点）；旧服务端没有该字段 */
+  daily_reset_at?: number
+}
+
 /** 发布提交结果（关卡逐项结论；客户端只展示服务端结论，不内置任何审核规则） */
 export interface SubmitResult {
   id: number
@@ -619,7 +628,7 @@ export interface SubmitResult {
   extId: string
   version: string
   /** 剩余配额（服务端只回剩余次数，不回上限） */
-  quota: { drafts_remaining?: number; published_remaining?: number; daily_submits_remaining?: number } | null
+  quota: PublishQuota | null
 }
 
 /** 我的一条提交记录 */
@@ -646,7 +655,7 @@ export interface DevSubmissionDetail extends DevSubmissionRow {
 export interface DevSubmissionList {
   submissions: DevSubmissionRow[]
   total: number
-  quota: { drafts_remaining?: number; published_remaining?: number; daily_submits_remaining?: number }
+  quota: PublishQuota
 }
 
 /** 平台账号状态（后端 account.rs::AccountStatus） */

@@ -11,8 +11,10 @@ import {
   type DevSubmissionRow,
   type ExtensionEntry,
   type PrecheckResult,
+  type PublishQuota,
   type SubmitResult,
 } from '../api/tauri'
+import { useQuotaReset } from '../composables/useQuotaReset'
 
 // 发布扩展：打包(客户端) → 上传(平台) → 展示服务端返回的关卡逐项结论。
 // 客户端不内置任何审核规则，只负责"把包送上去 + 把结论如实展示出来"（红线：客户端只问不判）。
@@ -58,7 +60,16 @@ const visibleCount = ref(PAGE_SIZE)
 const allLoading = ref(false)
 /** 全量是否已拉到（阻塞判定与配额明细必须基于全量，只看第 1 页会出现「有待审却放行」「数字对不上明细」） */
 const allLoaded = ref(false)
-const quota = ref<{ drafts_remaining?: number; published_remaining?: number; daily_submits_remaining?: number } | null>(null)
+const quota = ref<PublishQuota | null>(null)
+
+/** 每日额度重置时刻：只在「弹窗打开且今日次数已用完」时启动倒计时（配额正常/弹窗关闭时零定时器）。
+ *  到点自动重拉配额，弹窗开着跨过 0 点后按钮与倒计时必须自己恢复，不能停在「0 次」 */
+const dailyResetAt = computed(() =>
+  visible.value && quota.value?.daily_submits_remaining === 0
+    ? quota.value.daily_reset_at ?? null
+    : null,
+)
+const { countdown: resetCountdown, resetClock } = useQuotaReset(dailyResetAt, () => void loadAllSubmissions())
 
 /** 当前扩展的提交记录（列表只显示这一份：看版本历史不该被别的扩展刷屏） */
 const extSubmissions = computed(() => submissions.value.filter((s) => s.ext_id === props.extension?.id))
@@ -142,7 +153,15 @@ const blockReason = computed<{ kind: 'reviewing' | 'gate_failed' | 'quota'; text
       }
     }
     if (quota.value?.daily_submits_remaining === 0) {
-      return { kind: 'quota', text: '今日提交次数已用完', hint: '明天再来，或先在下方撤回不需要的提交。' }
+      return {
+        kind: 'quota',
+        text: '今日提交次数已用完',
+        // 倒计时直接放在阻塞提示里：按钮置灰时用户第一眼要看到「还要等多久」。
+        // 旧服务端没有 daily_reset_at 时退回原文案，不显示假倒计时。
+        hint: quota.value.daily_reset_at
+          ? `${resetClock.value} 重置（${resetCountdown.value}），期间可先在下方撤回不需要的提交。`
+          : '明天再来，或先在下方撤回不需要的提交。',
+      }
     }
     return null
   },
@@ -490,6 +509,9 @@ async function submit() {
     await loadAllSubmissions()
   } catch (e) {
     errorText.value = String(e)
+    // 前置检查恰好过期（服务端 429 DAILY_QUOTA_EXCEEDED）：重拉配额让倒计时与剩余数立刻出现，
+    // 别让用户对着提交前的旧数字猜「为什么被拦」。
+    if (String(e).includes('DAILY_QUOTA_EXCEEDED')) void loadAllSubmissions()
   } finally {
     submitting.value = false
   }

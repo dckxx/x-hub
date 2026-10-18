@@ -30,10 +30,12 @@ import {
   type MarketExtension,
   type MarketStatus,
   type ExtensionEntry,
+  type PublishQuota,
 } from '../api/tauri'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
 import { loadExtensionModules } from '../composables/useDashboardLayout'
 import { useAdaptivePolling } from '../composables/useAdaptivePolling'
+import { useQuotaReset } from '../composables/useQuotaReset'
 import { useStore } from '../stores/workbench'
 import {
   CATEGORY_ALL,
@@ -284,9 +286,7 @@ async function openDir(e: ExtensionEntry) {
 }
 
 /** 发布配额（账号级）：展示在扩展管理页，供发布前心里有数；取不到就不显示，不打扰 */
-const quota = ref<{ drafts_remaining?: number; published_remaining?: number; daily_submits_remaining?: number } | null>(
-  null,
-)
+const quota = ref<PublishQuota | null>(null)
 
 async function loadQuota() {
   if (!isTauri()) return
@@ -298,6 +298,13 @@ async function loadQuota() {
     // 未登录 / 服务不可达：静默（配额只是参考信息，不挡任何操作）
   }
 }
+
+/** 每日额度重置时刻：只在「今日次数已用完」时才需要倒计时。
+ *  没耗尽时不启动 1s tick，配额正常时零定时器开销；到点自动重拉配额。 */
+const dailyResetAt = computed(() =>
+  quota.value?.daily_submits_remaining === 0 ? quota.value.daily_reset_at ?? null : null,
+)
+const { countdown: resetCountdown, resetClock } = useQuotaReset(dailyResetAt, () => void loadQuota())
 
 async function load() {
   loading.value = true
@@ -1149,6 +1156,14 @@ function onMore(e: ExtensionEntry) {
           <b :class="{ full: quota.drafts_remaining === 0 }">{{ quota.drafts_remaining ?? '—' }}</b> 条 · 今日还可提交
           <b :class="{ full: quota.daily_submits_remaining === 0 }">{{ quota.daily_submits_remaining ?? '—' }}</b> 次 · 在架还可新增
           <b :class="{ full: quota.published_remaining === 0 }">{{ quota.published_remaining ?? '—' }}</b> 个
+          <!-- 每日额度用尽时给倒计时：服务端只在配额视图里回 daily_reset_at（旧服务端没有该字段，
+               此时不显示，退回「今天不能再发」的原文案）。到点由 useQuotaReset 自动重拉配额。 -->
+          <span
+            v-if="quota.daily_submits_remaining === 0 && quota.daily_reset_at"
+            class="ec-quota-reset"
+          >
+            今日提交次数已用完 · 重置于 {{ resetClock }}（{{ resetCountdown }}）
+          </span>
         </p>
       </div>
 
@@ -1526,6 +1541,14 @@ function onMore(e: ExtensionEntry) {
 }
 .ec-quota b.full {
   color: var(--c-red-ink);
+}
+/* 每日额度用尽后的重置倒计时：单独一行，不与「剩余数量」混排 */
+.ec-quota-reset {
+  display: block;
+  margin-top: 2px;
+  font-weight: 600;
+  color: var(--c-red-ink);
+  font-variant-numeric: tabular-nums;
 }
 
 .ec-empty {

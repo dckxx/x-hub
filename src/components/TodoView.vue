@@ -11,6 +11,8 @@ import {
   calendarGrid,
   compareByOrder,
   compareChildOrder,
+  doneAtLabel,
+  doneMetaLabel,
   dueBadge,
   fmtHM,
   inHorizon,
@@ -212,6 +214,34 @@ const selectedDayLabel = computed(() => {
   return `${y} 年 ${m} 月 ${d} 日`
 })
 const selectedTodos = computed<Todo[]>(() => realByDay.value.get(selectedDay.value) ?? [])
+
+/** 当天明细拆两段：未完成在前、已完成在后。完成时间只出现在已完成段里，
+ *  不和「几点截止」混排——两段时间各占自己的名分。 */
+const selectedDayParts = computed(() => {
+  const list = selectedTodos.value
+  return {
+    undone: list.filter((t) => !t.done),
+    done: list.filter((t) => t.done),
+  }
+})
+
+/**
+ * 已完成行的时间文案：完成日 = 选中日时只给时刻；跨天完成给相对日期，
+ * 避免把「另一天做完的」误读成当天完成。有原截止的补「原定 HH:MM」。
+ */
+function doneRowTime(t: Todo): string {
+  const doneDate = parseServerDate(t.completed_at)
+  const doneLabel = doneAtLabel(t.completed_at, today.value)
+  const doneText = !doneDate
+    ? '已完成'
+    : isoKey(doneDate) === selectedDay.value
+      ? `完成于 ${fmtHM(doneDate.getTime())}`
+      : `完成于 ${doneLabel?.text ?? ''}`
+  if (t.due_at == null) return doneText
+  const due = new Date(t.due_at)
+  const endOfDay = due.getHours() === 23 && due.getMinutes() > 50
+  return `${endOfDay ? '' : `原定 ${fmtHM(t.due_at)} · `}${doneText}`
+}
 
 const cells = computed(() => calendarGrid(cursor.value, today.value))
 
@@ -612,10 +642,10 @@ function onVirtualDown(e: PointerEvent) {
         </div>
 
         <div class="tv-legend">
-          <span><i class="swatch solid"></i>库里的条目（拖到其他日期可改期）</span>
+          <span><i class="swatch solid"></i>未完成条目（拖到其他日期可改期）</span>
           <span><i class="swatch dashed"></i>周期规则算出的虚拟实例（不落库，不能拖）</span>
           <span><i class="swatch late"></i>逾期</span>
-          <span><i class="swatch done"></i>已完成</span>
+          <span><i class="swatch done"></i>✓ 已完成（无截止的落完成日）</span>
         </div>
 
         <div v-if="calUnit === 'month'" class="tv-grid">
@@ -637,12 +667,13 @@ function onVirtualDown(e: PointerEvent) {
                 type="button"
                 class="tv-chip real"
                 :class="{ done: t.done, late: badgeOf(t)?.kind === 'over', dragging: dragId === t.id }"
-                :title="t.done ? `${t.title}（已完成）` : `${t.title}（拖动到其他日期可改期）`"
+                :title="t.done ? `${t.title}（${doneMetaLabel(t, today)}）` : `${t.title}（拖动到其他日期可改期）`"
                 @pointerdown="onChipPointerDown(t, $event)"
                 @click="onChipClick(t)"
                 @dblclick.stop
               >
-                {{ t.title }}
+                <Check v-if="t.done" class="tv-chip-check" :size="9" :stroke-width="3" aria-hidden="true" />
+                <span class="tv-chip-title">{{ t.title }}</span>
               </button>
               <span
                 v-for="o in chipsOf(c.key).virtual"
@@ -651,7 +682,7 @@ function onVirtualDown(e: PointerEvent) {
                 :title="`${titleOf.get(o.todo_id) ?? '周期待办'}（周期规则算出的未来实例，不能拖动）`"
                 @pointerdown="onVirtualDown"
               >
-                {{ titleOf.get(o.todo_id) ?? '周期待办' }}
+                <span class="tv-chip-title">{{ titleOf.get(o.todo_id) ?? '周期待办' }}</span>
               </span>
               <!-- 折叠尾巴：只提示数量，点击落到格子上选中当天，完整清单看下方明细 -->
               <span
@@ -682,12 +713,13 @@ function onVirtualDown(e: PointerEvent) {
                 type="button"
                 class="tv-chip real"
                 :class="{ done: t.done, late: badgeOf(t)?.kind === 'over', dragging: dragId === t.id }"
-                :title="t.done ? `${t.title}（已完成）` : `${t.title}（拖动到其他日期可改期）`"
+                :title="t.done ? `${t.title}（${doneMetaLabel(t, today)}）` : `${t.title}（拖动到其他日期可改期）`"
                 @pointerdown="onChipPointerDown(t, $event)"
                 @click="onChipClick(t)"
                 @dblclick.stop
               >
-                {{ t.title }}
+                <Check v-if="t.done" class="tv-chip-check" :size="9" :stroke-width="3" aria-hidden="true" />
+                <span class="tv-chip-title">{{ t.title }}</span>
                 <i v-if="t.due_at" class="time">{{ fmtHM(t.due_at) }}</i>
               </button>
               <span
@@ -697,7 +729,7 @@ function onVirtualDown(e: PointerEvent) {
                 :title="`${titleOf.get(o.todo_id) ?? '周期待办'}（周期规则算出的未来实例，不能拖动）`"
                 @pointerdown="onVirtualDown"
               >
-                {{ titleOf.get(o.todo_id) ?? '周期待办' }}
+                <span class="tv-chip-title">{{ titleOf.get(o.todo_id) ?? '周期待办' }}</span>
               </span>
               <span
                 v-if="chipsOf(c.key).extra > 0"
@@ -724,21 +756,42 @@ function onVirtualDown(e: PointerEvent) {
           </div>
           <p v-if="!selectedTodos.length" class="tv-dayview-empty">这天没有待办</p>
           <div v-else class="tv-dayview-list">
-            <button
-              v-for="t in selectedTodos"
-              :key="t.id"
-              type="button"
-              class="tv-dayview-row"
-              :class="{ done: t.done }"
-              :title="t.done ? `${t.title}（已完成）` : t.title"
-              @click="openEdit(t)"
-            >
-              <span class="tv-dv-mark" :class="{ on: t.done }">
-                <Check v-if="t.done" :size="11" :stroke-width="3" />
-              </span>
-              <span class="tv-dv-title">{{ t.title }}</span>
-              <span class="tv-dv-time">{{ t.done ? '已完成' : (t.due_at ? fmtHM(t.due_at) : '') }}</span>
-            </button>
+            <template v-if="selectedDayParts.undone.length">
+              <p class="tv-dv-sub">
+                未完成 <span class="cnt">{{ selectedDayParts.undone.length }}</span>
+              </p>
+              <button
+                v-for="t in selectedDayParts.undone"
+                :key="t.id"
+                type="button"
+                class="tv-dayview-row"
+                :title="t.title"
+                @click="openEdit(t)"
+              >
+                <span class="tv-dv-mark"></span>
+                <span class="tv-dv-title">{{ t.title }}</span>
+                <span class="tv-dv-time">{{ t.due_at ? fmtHM(t.due_at) : '' }}</span>
+              </button>
+            </template>
+            <template v-if="selectedDayParts.done.length">
+              <p class="tv-dv-sub">
+                已完成 <span class="cnt">{{ selectedDayParts.done.length }}</span>
+              </p>
+              <button
+                v-for="t in selectedDayParts.done"
+                :key="t.id"
+                type="button"
+                class="tv-dayview-row done"
+                :title="`${t.title}（${doneMetaLabel(t, today)}）`"
+                @click="openEdit(t)"
+              >
+                <span class="tv-dv-mark on">
+                  <Check :size="11" :stroke-width="3" />
+                </span>
+                <span class="tv-dv-title">{{ t.title }}</span>
+                <span class="tv-dv-time">{{ doneRowTime(t) }}</span>
+              </button>
+            </template>
           </div>
         </div>
       </section>
@@ -1145,6 +1198,7 @@ function onVirtualDown(e: PointerEvent) {
 }
 /* 折叠尾巴「…+N」：不可交互的纯提示，点击落在日历格上选中当天（完整清单看下方明细） */
 .tv-chip.more {
+  justify-content: center;
   background: transparent;
   border: 1px dashed var(--border-soft);
   color: var(--text-4);
@@ -1152,7 +1206,9 @@ function onVirtualDown(e: PointerEvent) {
   cursor: default;
 }
 .tv-chip {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 3px;
   width: 100%;
   padding: 1px 5px;
   font-size: 0.6rem;
@@ -1163,8 +1219,17 @@ function onVirtualDown(e: PointerEvent) {
   color: var(--text-1);
   cursor: pointer;
   overflow: hidden;
+  white-space: nowrap;
+}
+.tv-chip-title {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 已完成的 ✓：小字号下删除线太弱，图标才是第一眼的「做完了」信号 */
+.tv-chip-check {
+  flex-shrink: 0;
 }
 .tv-chip.virtual {
   border-style: dashed;
@@ -1289,7 +1354,30 @@ function onVirtualDown(e: PointerEvent) {
   font-size: 0.68rem;
   color: var(--text-4);
 }
+/* 当天明细的分段标题：未完成 / 已完成各占一段，完成时间不与截止时间混排 */
+.tv-dv-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 5px 0 1px;
+  padding: 0 6px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--text-4);
+}
+.tv-dv-sub:first-child {
+  margin-top: 0;
+}
+.tv-dv-sub .cnt {
+  padding: 0 5px;
+  font-weight: 600;
+  line-height: 14px;
+  color: var(--text-4);
+  background: var(--bg-card-soft);
+  border-radius: var(--radius-pill);
+}
 .tv-chip .time {
+  flex-shrink: 0;
   margin-left: 4px;
   font-style: normal;
   color: var(--text-4);

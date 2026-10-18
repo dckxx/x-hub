@@ -6,6 +6,7 @@ import {
   ArrowRight,
   Boxes,
   CalendarDays,
+  Check,
   Clock,
   Cloud,
   CloudDrizzle,
@@ -39,7 +40,7 @@ import { dashModuleTitle } from '../composables/useDashboardLayout'
 import { dashPreviewData } from '../composables/useDashPreviewData'
 import { SUDA_CUSTOM_IDS } from '../utils/sudaCustom'
 import { calendarGrid } from '../utils/todoSchedule'
-import type { Resource } from '../api/tauri'
+import type { Resource, Todo } from '../api/tauri'
 
 /**
  * 布局编辑器 / 形态浮层里的「模块预览」：非 live 模块（clock / weather 在画布内挂真实卡片）
@@ -181,6 +182,26 @@ const calCells = computed(() => calendarGrid(previewDate.value, previewDate.valu
 const calTitles = calendarTodosByDay
 /** 含未完成逾期的日期：格子淡红底，与真卡 `.tc-cell.has-overdue` 同口径同色 */
 const calOverdue = todoOverdueMarks
+
+/**
+ * 格子内容与真卡 `.tc-cell` 同一口径：未完成优先占 chip 位，已完成只在「这天没有未完成」
+ * 时占位；隐藏的已完成不进 +N，改走尾部 ✓N（预览沿用「不含周期虚拟实例」的现有限制）。
+ */
+const calDayChips = computed(() => {
+  const map = new Map<string, { chip: Todo | null; more: number; done: number }>()
+  for (const c of calCells.value) {
+    const list = calTitles.value.get(c.key) ?? []
+    const undone = list.filter((t) => !t.done)
+    const done = list.filter((t) => t.done)
+    const chip = undone[0] ?? done[0] ?? null
+    map.set(c.key, {
+      chip,
+      more: Math.max(0, undone.length - (chip && !chip.done ? 1 : 0)),
+      done: Math.max(0, done.length - (chip && chip.done ? 1 : 0)),
+    })
+  }
+  return map
+})
 const kind = computed(() => {
   const id = props.modId
   if (id.startsWith('ext:')) return 'ext'
@@ -500,8 +521,12 @@ const kind = computed(() => {
         <div v-for="d in ['一', '二', '三', '四', '五', '六', '日']" :key="d" class="cal-dow">{{ d }}</div>
         <div v-for="c in calCells" :key="c.key" class="cal-cell" :class="{ out: c.out, today: c.today, 'has-overdue': calOverdue.has(c.key) }">
           <span class="cal-day">{{ c.day }}</span>
-          <span v-if="calTitles.get(c.key)?.length" class="cal-label" :class="{ done: calTitles.get(c.key)?.[0]?.done, late: !calTitles.get(c.key)?.[0]?.done && calOverdue.has(c.key) }">{{ calTitles.get(c.key)?.[0]?.title }}</span>
-          <span v-if="(calTitles.get(c.key)?.length ?? 0) > 1" class="cal-count">+{{ (calTitles.get(c.key)?.length ?? 0) - 1 }}</span>
+          <span v-if="calDayChips.get(c.key)?.chip" class="cal-label" :class="{ done: calDayChips.get(c.key)?.chip?.done, late: !calDayChips.get(c.key)?.chip?.done && calOverdue.has(c.key) }">
+            <Check v-if="calDayChips.get(c.key)?.chip?.done" class="cal-check" />
+            <span class="cal-label-title">{{ calDayChips.get(c.key)?.chip?.title }}</span>
+          </span>
+          <span v-if="(calDayChips.get(c.key)?.more ?? 0) > 0" class="cal-count">+{{ calDayChips.get(c.key)?.more }}</span>
+          <span v-if="(calDayChips.get(c.key)?.done ?? 0) > 0" class="cal-done-count">✓{{ calDayChips.get(c.key)?.done }}</span>
         </div>
       </div>
     </template>
@@ -644,9 +669,10 @@ const kind = computed(() => {
 .cal-label {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: calc(2 * var(--u));
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   padding: 0 calc(3 * var(--u));
   font-size: calc(11 * var(--u));
   line-height: calc(14 * var(--u));
@@ -654,10 +680,24 @@ const kind = computed(() => {
   border-radius: calc(3 * var(--u));
   background: var(--brand-50);
   color: var(--text-1);
+  white-space: nowrap;
+}
+.cal-label-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 已完成 ✓ 与真卡 .tc-chip-check 同口径：图标是主识别信号，删除线只是辅助 */
+.cal-check {
+  flex-shrink: 0;
+  width: calc(9 * var(--u));
+  height: calc(9 * var(--u));
 }
 .cal-label.late { border-color: var(--c-red-ink); background: var(--c-red-soft); color: var(--c-red-ink); }
 .cal-label.done { border-color: var(--border-soft); background: transparent; color: var(--text-4); text-decoration: line-through; }
 .cal-count { flex-shrink: 0; font-size: calc(8 * var(--u)); color: var(--text-4); }
+.cal-done-count { flex-shrink: 0; font-size: calc(8 * var(--u)); color: var(--text-4); }
 html[data-theme='dark'] .dpv {
   --todo-pri-default: #52525f;
 }

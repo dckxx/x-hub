@@ -86,6 +86,33 @@ export function doneAtLabel(
   return { text, full: `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日${hm}` }
 }
 
+/**
+ * 完整截止文案（悬停提示/明细用）：`YYYY年M月D日 HH:MM`。
+ * 当天结束（23:5x，日期型截止的约定时刻）不显示时间，避免把「今天做完就行」说成 23:59。
+ */
+export function fmtDueFull(ts: number): string {
+  const d = new Date(ts)
+  const base = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
+  const endOfDay = d.getHours() === 23 && d.getMinutes() > 50
+  return endOfDay ? base : `${base} ${fmtHM(ts)}`
+}
+
+/**
+ * 已完成条目的时间说明（日历 chip / 明细悬停共用）——完成时间与截止时间各占一个名分：
+ *   有截止：`截止 2026年10月16日 18:00 · 完成于 2026年10月17日 14:32`
+ *   无截止：`完成于 2026年10月17日 14:32（原无截止）`
+ * 完成时间缺失（旧数据）时只留「已完成」，不编造时间。
+ */
+export function doneMetaLabel(
+  t: { due_at: number | null; completed_at: string | null },
+  now: Date,
+): string {
+  const done = doneAtLabel(t.completed_at, now)
+  const doneText = done ? `完成于 ${done.full}` : '已完成'
+  if (t.due_at == null) return done ? `${doneText}（原无截止）` : doneText
+  return `截止 ${fmtDueFull(t.due_at)} · ${doneText}`
+}
+
 export function groupOf(
   t: { pinned?: boolean; due_at: number | null },
   today: Date,

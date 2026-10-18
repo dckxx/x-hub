@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ArrowRight, CalendarDays, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { ArrowRight, CalendarDays, Check, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Todo, TodoOccurrence } from '../api/tauri'
-import { calendarGrid, dueBadge, isoKey, parseServerDate } from '../utils/todoSchedule'
+import { calendarGrid, doneMetaLabel, dueBadge, isoKey, parseServerDate } from '../utils/todoSchedule'
 
 /**
  * 工作台「日历」模块：月历形态展示待办分布（含周期待办的**虚拟实例**）。
@@ -29,7 +29,7 @@ const topTodos = computed(() => store.state.todos.filter((t) => t.parent_id == n
 const isOverdue = (t: Todo) => !t.done && dueBadge(t, today.value)?.kind === 'over'
 
 /** 真实条目落格：未完成按 due_at；**已完成也显示**——有截止落原日期，
- *  没截止则落在完成当天（completed_at，UTC 字符串需补 Z 解析），用删除线淡显。
+ *  没截止则落在完成当天（completed_at，UTC 字符串需补 Z 解析），用删除线 + ✓ 淡显。
  *  同一格内未完成排在已完成前面，未完成内部**逾期优先**——MAX_CHIPS 截断时
  *  红色 chip 不会被正常条目挤进「+N」（同天混合逾期与正常时的唯一诚实显示方式）。 */
 const realByDay = computed(() => {
@@ -130,18 +130,30 @@ function shift(delta: number, e: MouseEvent) {
 /** 横排只显示一条标题，真实条目优先，其余合并为 +N。 */
 const MAX_CHIPS = 1
 
-/** 每格的标题与余数：真实、虚拟合计减去实际渲染条数。 */
+/**
+ * 每格的 chip：**未完成永远优先占位**，已完成只在「这天没有未完成」时占位一条；
+ * 其余已完成不进 `+N`，而是降级成尾部 `✓N` 计数——计划条目不能被完成记录挤掉，
+ * 但「这天完成了 N 件」仍然可感知（悬停 tooltip 给完整清单与完成时刻）。
+ */
 const chipsByDay = computed(() => {
-  const map = new Map<string, { real: Todo[]; virtual: TodoOccurrence[]; more: number }>()
+  const map = new Map<string, { real: Todo[]; virtual: TodoOccurrence[]; more: number; done: number }>()
   for (const c of cells.value) {
-    const real = realByDay.value.get(c.key) ?? []
+    const all = realByDay.value.get(c.key) ?? []
+    const undone = all.filter((t) => !t.done)
+    const doneList = all.filter((t) => t.done)
+    const realShown = undone.slice(0, MAX_CHIPS)
+    const doneShown =
+      realShown.length < MAX_CHIPS ? doneList.slice(0, MAX_CHIPS - realShown.length) : []
     const virtual = virtualByDay.value.get(c.key) ?? []
-    const realShown = real.slice(0, MAX_CHIPS)
-    const virtualShown = virtual.slice(0, Math.max(0, MAX_CHIPS - realShown.length))
+    const virtualShown = virtual.slice(
+      0,
+      Math.max(0, MAX_CHIPS - realShown.length - doneShown.length),
+    )
     map.set(c.key, {
-      real: realShown,
+      real: [...realShown, ...doneShown],
       virtual: virtualShown,
-      more: real.length + virtual.length - realShown.length - virtualShown.length,
+      more: undone.length - realShown.length + (virtual.length - virtualShown.length),
+      done: doneList.length - doneShown.length,
     })
   }
   return map
@@ -150,8 +162,12 @@ const chipsByDay = computed(() => {
 const summaryByDay = computed(() => {
   const map = new Map<string, string>()
   for (const c of cells.value) {
+    // 已完成条目写清「截止 … · 完成于 …」或「完成于 …（原无截止）」：
+    // 同一个格子里，这两种落格原因必须能分辨（有截止的落原日期，没截止的落完成当天）。
     const titles = (realByDay.value.get(c.key) ?? []).map((t) =>
-      `${t.title}${t.done ? '（已完成）' : isOverdue(t) ? '（逾期）' : ''}`,
+      t.done
+        ? `${t.title}（${doneMetaLabel(t, today.value)}）`
+        : `${t.title}${isOverdue(t) ? '（逾期）' : ''}`,
     )
     titles.push(...(virtualByDay.value.get(c.key) ?? []).map((o) =>
       `${titleOf.value.get(o.todo_id) ?? '周期待办'}（周期实例）`,
@@ -196,15 +212,30 @@ const summaryByDay = computed(() => {
             :key="'r' + t.id"
             class="tc-chip real"
             :class="{ done: t.done, late: isOverdue(t) }"
-          >{{ t.title }}</span>
+            :title="t.done ? doneMetaLabel(t, today) : undefined"
+          >
+            <Check
+              v-if="t.done"
+              class="tc-chip-check"
+              :size="9"
+              :stroke-width="3"
+              aria-hidden="true"
+            />
+            <span class="tc-chip-title">{{ t.title }}</span>
+          </span>
           <span
             v-for="o in (chipsByDay.get(c.key)?.virtual ?? [])"
             :key="'v' + o.todo_id + o.at_ms"
             class="tc-chip virtual"
-          >{{ titleOf.get(o.todo_id) ?? '周期待办' }}</span>
+          ><span class="tc-chip-title">{{ titleOf.get(o.todo_id) ?? '周期待办' }}</span></span>
           <span v-if="(chipsByDay.get(c.key)?.more ?? 0) > 0" class="tc-more-cnt">
             +{{ chipsByDay.get(c.key)?.more }}
           </span>
+          <span
+            v-if="(chipsByDay.get(c.key)?.done ?? 0) > 0"
+            class="tc-done-cnt"
+            :title="summaryByDay.get(c.key)"
+          >✓{{ chipsByDay.get(c.key)?.done }}</span>
         </div>
       </div>
     </div>
@@ -332,7 +363,9 @@ const summaryByDay = computed(() => {
 .tc-chip {
   flex: 1;
   min-width: 0;
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 2px;
   padding: 0 3px;
   font-size: 0.6875rem;
   line-height: 14px;
@@ -341,8 +374,17 @@ const summaryByDay = computed(() => {
   background: var(--brand-50);
   color: var(--text-1);
   overflow: hidden;
+  white-space: nowrap;
+}
+.tc-chip-title {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 已完成的 ✓ 是主识别信号：11px 字号下删除线太弱，单靠它分不清「完成」与「普通灰字」 */
+.tc-chip-check {
+  flex-shrink: 0;
 }
 .tc-chip.virtual {
   border-style: dashed;
@@ -364,6 +406,13 @@ const summaryByDay = computed(() => {
   flex-shrink: 0;
   font-size: 0.5rem;
   color: var(--text-4);
+}
+/* 已完成的计数尾巴（不占 chip 位）：+N = 还有未完成/周期实例，✓N = 这天完成了 N 件 */
+.tc-done-cnt {
+  flex-shrink: 0;
+  font-size: 0.5rem;
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
 }
 /* 宿主 .dash-cell 已提供尺寸容器；窄卡片将月份放到第二行。
  * 隐藏标题时沿用悬浮工具栏，避免改变其定位与交互。 */

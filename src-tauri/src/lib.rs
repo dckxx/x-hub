@@ -148,21 +148,124 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
     Ok(())
 }
 
-/// 将数据库中旧目录（com.workbench.desktop）的图标路径替换为当前目录（x-hub）
-/// 幂等：重复执行无副作用，每次启动调用
+/// 修复数据库里的图标绝对路径（幂等，每次启动调用）：
+/// 1. 旧版应用标识 `com.workbench.desktop` 的数据根 → 当前数据根（历史迁移）；
+/// 2. 仍指向**其它**数据根（`change_data_dir` 迁移前遗留的旧路径）的图标：当前
+///    `icons/` 有同名文件就直接改写，没有而旧文件还在就搬过来。asset 协议作用域
+///    只放行当前数据根，旧路径的 `<img>` 一律 403，前端回退成名称首字母——用户
+///    看到的就是「图标全没了」。两处都拿不到文件时保持原值（前端照常回退，不做
+///    清零，避免误删用户手工指定的路径）。
 fn fix_icon_paths(conn: &Connection) {
     let new_dir = crate::paths::data_root();
-    let Some(old_dir) = dirs::data_dir().map(|d| d.join("com.workbench.desktop")) else {
+    if let Some(old_dir) = dirs::data_dir().map(|d| d.join("com.workbench.desktop")) {
+        let old = old_dir.to_string_lossy().into_owned();
+        let new = new_dir.to_string_lossy().into_owned();
+        match conn.execute(
+            "UPDATE resources SET icon = replace(icon, ?1, ?2) WHERE icon LIKE ?1 || '%'",
+            rusqlite::params![old, new],
+        ) {
+            Ok(n) if n > 0 => log::info!("已修复 {} 条图标路径为 x-hub 目录", n),
+            _ => {}
+        }
+    }
+    heal_out_of_root_icon_paths(conn, new_dir);
+}
+
+/// 迁移后自愈（见 [`fix_icon_paths`] 第 2 条）：把指向数据根之外的图标文件搬回
+/// 当前 `icons/` 并改写路径。当前根 `icons/` 已有同名文件时直接复用、**不要求
+/// 旧路径文件仍在**——这条同时兜住「备份从另一台机器/另一路径恢复」：图标文件已由
+/// `restore_icons` 落到 `icons/`，库里路径却还是备份机器的旧根（图标缓存按内容/
+/// 目标哈希命名，同名即同一张图）。
+fn heal_out_of_root_icon_paths(conn: &Connection, root: &std::path::Path) {
+    let mut stmt = match conn.prepare("SELECT id, icon FROM resources WHERE icon IS NOT NULL") {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("读取资源图标路径失败（跳过自愈）: {e}");
+            return;
+        }
+    };
+    let rows: Vec<(i64, String)> = match stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .and_then(|it| it.collect::<Result<_, _>>())
+    {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("读取资源图标路径失败（跳过自愈）: {e}");
+            return;
+        }
+    };
+    drop(stmt);
+    let icons_dir = root.join("icons");
+    let mut healed = 0;
+    for (id, icon) in rows {
+        // 只看绝对本地路径：当前根下、远程地址（http/https）都不归这里管
+        let lower = icon.to_ascii_lowercase();
+        if crate::paths::path_within_root(&icon, root)
+            || lower.starts_with("http://")
+            || lower.starts_with("https://")
+        {
+            continue;
+        }
+        let src = std::path::Path::new(&icon);
+        let Some(name) = src.file_name() else {
+            continue;
+        };
+        let dst = icons_dir.join(name);
+        if !dst.is_file()
+            && (!src.is_file()
+                || std::fs::create_dir_all(&icons_dir).is_err()
+                || std::fs::copy(src, &dst).is_err())
+        {
+            continue;
+        }
+        let target = dst.to_string_lossy().into_owned();
+        if conn
+            .execute(
+                "UPDATE resources SET icon = ?1 WHERE id = ?2",
+                rusqlite::params![target, id],
+            )
+            .is_ok()
+        {
+            healed += 1;
+        }
+    }
+    if healed > 0 {
+        log::info!("已自愈 {healed} 条指向旧数据目录的图标路径");
+    }
+}
+
+/// 启动自愈：`wallpaper_path` 若仍指旧数据根（`change_data_dir` 迁移前遗留），
+/// 把文件搬进当前根 `wallpapers/` 并改写配置。壁纸只由 `import_wallpaper` 生成，
+/// 合法值必然位于数据根内，故「不在当前根下」即可判定为迁移残留。
+fn repair_config_paths() {
+    let root = crate::paths::data_root();
+    let path = crate::config::config_file();
+    let Ok(content) = std::fs::read_to_string(&path) else {
         return;
     };
-    let old = old_dir.to_string_lossy().into_owned();
-    let new = new_dir.to_string_lossy().into_owned();
-    match conn.execute(
-        "UPDATE resources SET icon = replace(icon, ?1, ?2) WHERE icon LIKE ?1 || '%'",
-        rusqlite::params![old, new],
-    ) {
-        Ok(n) if n > 0 => log::info!("已修复 {} 条图标路径为 x-hub 目录", n),
-        _ => {}
+    let Ok(mut cfg) = serde_json::from_str::<crate::config::AppConfig>(&content) else {
+        return;
+    };
+    if cfg.wallpaper_path.is_empty() || crate::paths::path_within_root(&cfg.wallpaper_path, root) {
+        return;
+    }
+    let src = std::path::PathBuf::from(&cfg.wallpaper_path);
+    let Some(name) = src.file_name() else {
+        return;
+    };
+    let dir = root.join("wallpapers");
+    let dst = dir.join(name);
+    if !dst.is_file()
+        && (!src.is_file()
+            || std::fs::create_dir_all(&dir).is_err()
+            || std::fs::copy(&src, &dst).is_err())
+    {
+        return;
+    }
+    cfg.wallpaper_path = dst.to_string_lossy().into_owned();
+    match crate::config::save_to(&cfg, &path) {
+        Ok(_) => log::info!("已将壁纸路径自愈到当前数据目录: {}", dst.display()),
+        Err(e) => log::warn!("壁纸路径自愈落盘失败: {e}"),
     }
 }
 
@@ -543,6 +646,8 @@ pub fn run() {
 
             let conn = init_database()?;
             fix_icon_paths(&conn);
+            // 迁移后配置自愈（壁纸等绝对路径）：与图标自愈同批，须在首次读取配置前
+            repair_config_paths();
             app.manage(DbState(std::sync::Mutex::new(conn)));
     // Agent 运行时状态（#t44）：审批挂起表 / 会话级授权 / 中断旗标
     app.manage(std::sync::Arc::new(agent::state::AgentState::new()));

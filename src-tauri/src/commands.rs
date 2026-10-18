@@ -295,6 +295,11 @@ pub fn launch_resource_as_admin(state: State<'_, DbState>, id: i64) -> Result<()
     let res = resource::get(&conn, id).map_err(err_str)?;
     match res.kind {
         ResourceKind::App => {
+            // 打包应用（shell:AppsFolder\<AUMID>）没有提权语义：Start-Process -Verb RunAs
+            // 对 shell: URI 直接失败且 PS 子进程照常 spawn 成功，会「报成功但没反应」
+            if process::is_shell_app_target(&res.target) {
+                return Err("MSIX 打包应用不支持以管理员身份运行".into());
+            }
             process::launch_elevated(&res.target, res.args.as_deref())?;
             let _ = resource::touch(&conn, id);
             log::info!("以管理员身份启动程序: {} ({})", res.name, res.target);
@@ -2524,10 +2529,16 @@ pub fn get_data_path() -> Result<DataPathInfo, String> {
     })
 }
 
-/// 更改数据存储目录：把现有数据（数据库 / 图标 / 剪贴板图片 / 配置 / 密钥）复制到新目录，
-/// 写引导文件指向新目录，重启后生效。旧目录保留（安全起见不删除，由用户自行清理）。
+/// 更改数据存储目录：把**整个数据根**迁移到新目录（数据库走 SQLite 在线备份，
+/// 其余条目原样复制，见 [`copy_data_root`]），并把库内与配置里的绝对路径从旧根
+/// 改写为新根（见 [`rewrite_migrated_db_paths`] / [`rewrite_migrated_config_paths`]），
+/// 最后写引导文件指向新目录，重启后生效。旧目录保留（安全起见不删除，由用户自行清理）。
 #[tauri::command]
-pub fn change_data_dir(state: State<'_, DbState>, new_dir: String) -> Result<(), String> {
+pub fn change_data_dir(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    new_dir: String,
+) -> Result<(), String> {
     // 便携版数据固定跟随程序目录（exe\data），不支持更改
     if crate::paths::is_portable() {
         return Err("便携版数据跟随程序目录，不支持更改".into());
@@ -2539,9 +2550,22 @@ pub fn change_data_dir(state: State<'_, DbState>, new_dir: String) -> Result<(),
     std::fs::create_dir_all(target).map_err(|e| format!("创建数据目录失败: {}", e))?;
 
     let src = crate::paths::data_root();
-    if src.canonicalize().ok() == target.canonicalize().ok() {
+    // 互相包含会把「复制数据根」变成递归复制（目标在源内时现场建目录并读到自己），
+    // 也会让「目标已含旧根」产生不可预期的嵌套数据，直接拒绝
+    let src_c = src.canonicalize().unwrap_or_else(|_| src.to_path_buf());
+    let target_c = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.to_path_buf());
+    if src_c == target_c {
         return Err("新路径与当前路径相同".into());
     }
+    if target_c.starts_with(&src_c) || src_c.starts_with(&target_c) {
+        return Err("新目录不能与当前数据目录相同或互相包含".into());
+    }
+
+    // 0. 先停掉 service 扩展后端：它们可能在扩展目录里持有打开的文件（扩展自带
+    //    SQLite 等），复制会因共享冲突失败。迁移后本就立即重启，提前停止无副作用
+    crate::service::stop_all(&app);
 
     // 1. 数据库在线备份到新目录（运行中数据库被占用，不能直接复制文件；WAL 安全）
     {
@@ -2549,25 +2573,26 @@ pub fn change_data_dir(state: State<'_, DbState>, new_dir: String) -> Result<(),
         conn.backup("main", &target.join("app.db"), None)
             .map_err(|e| format!("迁移数据库失败: {}", e))?;
     }
-
-    // 2. 复制图标 / 剪贴板图片目录
-    for name in ["icons", "clipboard"] {
-        let s = src.join(name);
-        let d = target.join(name);
-        if s.exists() {
-            let _ = copy_dir_recursive(&s, &d);
-        }
+    // 目标目录若以前就是数据根（迁移回来 / 复用过），残留的 -wal/-shm 属于旧库，
+    // 下次启动会被 SQLite 当作本次快照的 WAL 回放——直接清掉，让备份库干净打开
+    for suffix in ["app.db-wal", "app.db-shm", "app.db-journal"] {
+        let _ = std::fs::remove_file(target.join(suffix));
     }
 
-    // 3. 复制配置与密钥文件（app.json 随数据走，实现 U 盘换机配置一并继承）
-    for name in ["app.json", "chat_keys.json"] {
-        let s = src.join(name);
-        if s.exists() {
-            let _ = std::fs::copy(&s, target.join(name));
-        }
-    }
+    // 2. 数据库之外的整个数据根原样复制：扩展（代码 + `.storage.json` /
+    //    `.config.json` / `.shared-storage.json`）、笔记图片、壁纸、市场缓存、
+    //    剪贴板图片、安装标识、配置与密钥……漏掉任一目录，重启后都表现为
+    //    「数据消失」（扩展全没了 / 速达图标要重新指定 / 笔记配图裂图）
+    copy_data_root(src, target)?;
 
-    // 4. 写引导文件指向新目录（重启后 init_database 读它）
+    // 3. 库内绝对路径改写：resources.icon 与 clipboard_history.image_path 都存旧根
+    //    绝对路径，而 asset 协议作用域只放行当前数据根——不改写就是图标全丢
+    rewrite_migrated_db_paths(&target.join("app.db"), src, target)?;
+
+    // 4. app.json 内的绝对路径（壁纸 / 「我的扩展」源码目录 / Skills 根目录）
+    rewrite_migrated_config_paths(&target.join("app.json"), src, target);
+
+    // 5. 写引导文件指向新目录（重启后 init_database 读它）
     crate::paths::set_data_root(target)?;
 
     log::info!(
@@ -2576,6 +2601,184 @@ pub fn change_data_dir(state: State<'_, DbState>, new_dir: String) -> Result<(),
         target.display()
     );
     Ok(())
+}
+
+/// 数据目录迁移时不需要跟着走的顶层条目：
+/// - `app.db*`：数据库走 `conn.backup` 在线快照；直接复制运行中的 `app.db` /
+///   `-wal` / `-shm` 会把不一致状态带到新目录；
+/// - `restore.db` / `restore_icons` / `.restore_pending`：待恢复的一次性中间态；
+/// - `logs` / `updates`：日志与已下载/待应用的更新包，可重建；
+///   （`runtime/` 内置 Node **要复制**：没有系统 Node 的用户迁移后 service 扩展
+///   仍需它才能启动，跳过会变成一次隐性下载）
+/// - `data_path.json`：引导文件锚点（固定放 `%APPDATA%\x-hub`），不属于数据本身。
+fn data_root_entry_skipped(name: &str) -> bool {
+    name.starts_with("app.db")
+        || matches!(
+            name,
+            "restore.db"
+                | "restore_icons"
+                | ".restore_pending"
+                | "logs"
+                | "updates"
+                | "data_path.json"
+        )
+}
+
+/// 复制数据根的**全部业务条目**（[`data_root_entry_skipped`] 之外的目录与文件），
+/// 覆盖目标同名文件。收集逐项失败而不是遇到第一个错误就中止：把能复制的都复制过去，
+/// 最后一次性报错（此时不写引导文件，重启仍回旧目录，不会半迁半丢）。
+fn copy_data_root(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| format!("创建数据目录失败: {e}"))?;
+    let entries = std::fs::read_dir(src).map_err(|e| format!("读取当前数据目录失败: {e}"))?;
+    let mut failures: Vec<String> = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                failures.push(format!("读取数据目录项失败: {e}"));
+                continue;
+            }
+        };
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if data_root_entry_skipped(&name_str) {
+            continue;
+        }
+        copy_entry(&entry.path(), &dst.join(&name), &mut failures);
+    }
+    if failures.is_empty() {
+        return Ok(());
+    }
+    let first = &failures[0];
+    Err(format!(
+        "有 {} 项数据复制失败（首个：{}）；已复制的内容保留在新目录，旧目录未改动。请关闭占用文件的程序并重启应用后重试",
+        failures.len(),
+        first
+    ))
+}
+
+/// 单个文件/目录的递归复制（失败只记录不中断，交给 [`copy_data_root`] 汇总）
+fn copy_entry(src: &std::path::Path, dst: &std::path::Path, failures: &mut Vec<String>) {
+    if src.is_dir() {
+        if let Err(e) = std::fs::create_dir_all(dst) {
+            failures.push(format!("{}: {e}", dst.display()));
+            return;
+        }
+        match std::fs::read_dir(src) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => {
+                            copy_entry(&entry.path(), &dst.join(entry.file_name()), failures)
+                        }
+                        Err(e) => failures.push(format!("{}: {e}", src.display())),
+                    }
+                }
+            }
+            Err(e) => failures.push(format!("{}: {e}", src.display())),
+        }
+    } else if let Err(e) = std::fs::copy(src, dst) {
+        failures.push(format!("{}: {e}", src.display()));
+    }
+}
+
+/// 把迁移后数据库里指向旧数据根的绝对路径改写为新根。
+///
+/// 两处需要改：`resources.icon`（速达图标缓存绝对路径）与
+/// `clipboard_history.image_path`（剪贴板图片快照绝对路径）。asset 协议作用域
+/// 启动时只放行**当前**数据根下的 icons/wallpapers/clipboard-images，旧根路径的
+/// `<img>`/缩略图一律 403——用户看到的就是「迁移后图标全没了，得重新指定」。
+fn rewrite_migrated_db_paths(
+    db: &std::path::Path,
+    old_root: &std::path::Path,
+    new_root: &std::path::Path,
+) -> Result<(), String> {
+    let mut conn =
+        Connection::open(db).map_err(|e| format!("打开迁移后的数据库失败: {e}"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("开启迁移路径改写事务失败: {e}"))?;
+    let icons = rewrite_table_root_paths(&tx, "resources", "icon", old_root, new_root)?;
+    let clipboard = rewrite_table_root_paths(
+        &tx,
+        "clipboard_history",
+        "image_path",
+        old_root,
+        new_root,
+    )?;
+    tx.commit().map_err(|e| e.to_string())?;
+    if icons + clipboard > 0 {
+        log::info!("已改写库内旧数据目录路径：图标 {icons} 条 / 剪贴板图片 {clipboard} 条");
+    }
+    Ok(())
+}
+
+/// 表内某一列（存绝对路径）批量换根；返回改写的行数。
+fn rewrite_table_root_paths(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    column: &str,
+    old_root: &std::path::Path,
+    new_root: &std::path::Path,
+) -> Result<usize, String> {
+    let select = format!("SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL AND {column} <> ''");
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = tx.prepare(&select).map_err(|e| e.to_string())?;
+        let collected = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        collected
+    };
+    let update = format!("UPDATE {table} SET {column} = ?1 WHERE id = ?2");
+    let mut changed = 0;
+    for (id, path) in rows {
+        let Some(relinked) = crate::paths::relink_root_path(&path, old_root, new_root) else {
+            continue;
+        };
+        tx.execute(&update, params![relinked, id])
+            .map_err(|e| e.to_string())?;
+        changed += 1;
+    }
+    Ok(changed)
+}
+
+/// 改写迁移后 app.json 里指向旧数据根的绝对路径（当前字段集：壁纸、
+/// 「我的扩展」源码目录、Skills 自定义根目录）。解析/写盘失败只记日志不阻断迁移：
+/// 这些路径最坏是暂时失效，可再选一次，而阻断迁移会留下半套数据。
+fn rewrite_migrated_config_paths(
+    path: &std::path::Path,
+    old_root: &std::path::Path,
+    new_root: &std::path::Path,
+) {
+    if !path.exists() {
+        return;
+    }
+    let Ok(content) = std::fs::read_to_string(path) else {
+        log::warn!("迁移后读取 app.json 失败，跳过配置路径改写");
+        return;
+    };
+    let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&content) else {
+        log::warn!("迁移后解析 app.json 失败，跳过配置路径改写");
+        return;
+    };
+    let mut changed = false;
+    if let Some(p) = crate::paths::relink_root_path(&cfg.wallpaper_path, old_root, new_root) {
+        cfg.wallpaper_path = p;
+        changed = true;
+    }
+    for dir in cfg.dev_extensions.iter_mut().chain(cfg.skill_roots.iter_mut()) {
+        if let Some(p) = crate::paths::relink_root_path(dir, old_root, new_root) {
+            *dir = p;
+            changed = true;
+        }
+    }
+    if changed {
+        if let Err(e) = config::save_to(&cfg, path) {
+            log::warn!("迁移后配置路径改写落盘失败: {e}");
+        }
+    }
 }
 
 /// 重启应用（更改数据目录 / 恢复数据 / 更新就绪后前端调用）。
@@ -2589,21 +2792,6 @@ pub fn change_data_dir(state: State<'_, DbState>, new_dir: String) -> Result<(),
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
     crate::updater::relaunch_app(&app, true);
-}
-
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let s = entry.path();
-        let d = dst.join(entry.file_name());
-        if s.is_dir() {
-            copy_dir_recursive(&s, &d)?;
-        } else {
-            std::fs::copy(&s, &d)?;
-        }
-    }
-    Ok(())
 }
 
 // ---------- 拖拽导入 ----------
@@ -2717,20 +2905,42 @@ fn icon_cache_usable(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// 提取程序图标：缓存键 = target 哈希，位图默认也从 target 提取。
+/// 打包应用（target = shell:AppsFolder\<AUMID>）走 with_source 现查包内主程序。
+fn extract_app_icon(source: &str) -> Option<String> {
+    extract_app_icon_with_source(source, None)
+}
+
 /// 提取程序图标（Shell IShellItemImageFactory，进程内无子进程；有 256 帧得 256、
 /// 最大帧不足得按帧尺寸的紧凑画布，见 app_icon.rs「小帧垫图补偿」），
 /// 保存 PNG 到数据根 icons/。缓存键 = target 路径哈希；不健康缓存（旧 32×32 低清
 /// / 垫图鬼影）自动重提，重提失败保留旧图（宁可糊着不能没图标）。失败且无缓存
 /// 返回 None（前端回退到名称首字母）。
-fn extract_app_icon(source: &str) -> Option<String> {
-    let output_path = icon_cache_path(source);
+///
+/// icon_source：位图的实际来源，缓存键不受影响——打包应用的 shell: 目标不是磁盘
+/// 文件，位图从包安装目录的主程序 exe 提取（批量扫描随单直传；手动录入/图标清扫
+/// 等零星场合传 None，这里现查一次 PS）。现查失败按提取失败处理，走旧缓存兜底。
+fn extract_app_icon_with_source(target: &str, icon_source: Option<&str>) -> Option<String> {
+    let output_path = icon_cache_path(target);
     if icon_cache_usable(&output_path) {
         return Some(output_path.to_string_lossy().into_owned());
     }
     if let Some(dir) = output_path.parent() {
         std::fs::create_dir_all(dir).ok()?;
     }
-    match crate::app_icon::extract_icon_png(source) {
+    let resolved;
+    let bmp_source: &str = if let Some(s) = icon_source {
+        s
+    } else if process::is_shell_app_target(target) {
+        resolved = match resolve_packaged_icon_source(target) {
+            Some(s) => s,
+            None => return old_cache_fallback(&output_path, target),
+        };
+        &resolved
+    } else {
+        target
+    };
+    match crate::app_icon::extract_icon_png(bmp_source) {
         Some(png) => {
             // 写失败时若旧缓存文件还在（原子写 remove 后 rename 失败会连旧文件一起
             // 丢，此时 exists 为假）就沿用旧图；都不在才回 None，绝不返回指向
@@ -2738,19 +2948,60 @@ fn extract_app_icon(source: &str) -> Option<String> {
             if write_png_atomically(&output_path, &png) || output_path.exists() {
                 Some(output_path.to_string_lossy().into_owned())
             } else {
-                log::warn!("图标写入失败且无旧缓存: {}", source);
+                log::warn!("图标写入失败且无旧缓存: {}", target);
                 None
             }
         }
-        None => {
-            if output_path.exists() {
-                log::warn!("图标高清重提失败，沿用旧缓存: {}", source);
-                Some(output_path.to_string_lossy().into_owned())
-            } else {
-                None
+        None => old_cache_fallback(&output_path, target),
+    }
+}
+
+/// 提取失败时的旧缓存兜底：有旧图沿用（宁可糊着不能没图标），都没有才返回 None。
+fn old_cache_fallback(output_path: &std::path::Path, target: &str) -> Option<String> {
+    if output_path.exists() {
+        log::warn!("图标高清重提失败，沿用旧缓存: {}", target);
+        Some(output_path.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
+/// 解析打包应用（shell:AppsFolder\<AUMID>）的图标源 exe：按包系列名找安装目录，
+/// 从 AppxManifest.xml 取目标应用（Id 对不上取第一个）的 Executable 拼绝对路径。
+/// 单次 PowerShell 现查，环境变量传参（约定 15）；拿不到返回 None。
+#[cfg(target_os = "windows")]
+fn resolve_packaged_icon_source(target: &str) -> Option<String> {
+    let (family, app_id) = process::split_shell_aumid(target)?;
+    let script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$pkg = Get-AppxPackage -PackageTypeFilter Main | Where-Object { $_.PackageFamilyName -eq $env:XHUB_PKG_FAMILY } | Select-Object -First 1
+if ($pkg -and $pkg.InstallLocation) {
+  try {
+    [xml]$mx = Get-Content -LiteralPath (Join-Path $pkg.InstallLocation 'AppxManifest.xml')
+    $app = $mx.Package.Applications.Application | Where-Object { $_.Id -eq $env:XHUB_APP_ID } | Select-Object -First 1
+    if (-not $app) { $app = @($mx.Package.Applications.Application)[0] }
+    if ($app -and $app.Executable) {
+      Write-Output ('ICONSRC=' + (Join-Path $pkg.InstallLocation $app.Executable))
+    }
+  } catch {}
+}
+"#;
+    let output = powershell()
+        .args(["-NoProfile", "-Command", script])
+        .env("XHUB_PKG_FAMILY", family)
+        .env("XHUB_APP_ID", app_id)
+        .output()
+        .ok()?;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Some(src) = line.strip_prefix("ICONSRC=") {
+            let src = src.trim();
+            if !src.is_empty() {
+                return Some(src.to_string());
             }
         }
     }
+    None
 }
 
 /// 导入用户选择的图标文件到 icons 目录：
@@ -2987,7 +3238,17 @@ pub struct InstalledAppInfo {
     pub icon: Option<String>,
 }
 
-/// 扫描本机已安装应用（用户/公共开始菜单快捷方式），
+/// 扫描出的单条候选。`icon_source` 仅打包应用（target = shell:AppsFolder\<AUMID>）有值：
+/// shell: 目标不是磁盘文件，提取位图须从包安装目录的主程序 exe 取；缓存键仍按
+/// target 哈希，与普通应用、图标清扫共用一套口径。
+#[derive(Debug, Clone)]
+struct ScanCandidate {
+    name: String,
+    target: String,
+    icon_source: Option<String>,
+}
+
+/// 扫描本机已安装应用（用户/公共开始菜单快捷方式 + MSIX 打包应用），
 /// 去重、过滤系统噪音后批量提取程序图标（icons/<hash>.png，与拖拽导入共用缓存键）。
 /// 必须 async：扫描 + 图标提取耗时数秒，同步命令会卡死主线程冻结 UI。
 #[tauri::command]
@@ -2996,26 +3257,40 @@ pub async fn scan_installed_apps() -> Result<Vec<InstalledAppInfo>, String> {
     if candidates.is_empty() {
         return Ok(vec![]);
     }
+    let pairs: Vec<(String, Option<String>)> = candidates
+        .iter()
+        .map(|c| (c.target.clone(), c.icon_source.clone()))
+        .collect();
     let icons = {
-        let cs = candidates.clone();
-        tauri::async_runtime::spawn_blocking(move || batch_extract_icons(&cs))
+        tauri::async_runtime::spawn_blocking(move || batch_extract_icons(&pairs))
             .await
             .map_err(|e| format!("应用图标提取失败: {}", e))??
     };
     Ok(candidates
         .into_iter()
         .zip(icons)
-        .map(|((name, target), icon)| InstalledAppInfo { name, target, icon })
+        .map(|(c, icon)| InstalledAppInfo {
+            name: c.name,
+            target: c.target,
+            icon,
+        })
         .collect())
 }
 
-/// 单次 PowerShell 扫描开始菜单快捷方式（用户 + 公共），
-/// 输出 APP=<json> 行（name/target），Rust 侧解析并二次去重、按名称排序、限量。
-/// 命名/路径等取值一律在 PS 内 Trim，中文经 UTF-8 输出。
+/// 单次 PowerShell 扫描开始菜单快捷方式（用户 + 公共）与 MSIX 打包应用，
+/// 输出 APP=<json> 行（name/target/iconSource），Rust 侧解析并二次去重、按名称排序、限量。
+/// 命名/路径等取值一律在 PS 内 Trim，中文经 UTF8 输出。
 ///
 /// 已不再扫注册表卸载项（2026-09-30 按需求去掉）：卸载项常把 DisplayIcon 指向
 /// 卸载器/维护程序，图标与名称噪音大。只保留开始菜单 `.lnk`（用户真正点得到的东西）。
-fn scan_app_candidates() -> Result<Vec<(String, String)>, String> {
+///
+/// 打包应用段（issue #20/#32，2026-10-18 起）：`Get-StartApps` 里 AppID 含「!」
+/// 即 MSIX/Store 打包应用，target 存 `shell:AppsFolder\<AUMID>`（包路径带版本号、
+/// WindowsApps 受保护，AUMID 是唯一稳定引用）；iconSource 顺带按包系列名查安装
+/// 目录、从 AppxManifest.xml 解析主程序 exe，供图标提取。开始菜单列表会自动排除
+/// 不上开始菜单的包内辅助程序；AppID 不允许含路径分隔符，防桌面 .lnk 路径撞「!」
+/// 误入。`Get-StartApps`/`Get-AppxPackage` 失败时该段静默为空，退化成原有行为。
+fn scan_app_candidates() -> Result<Vec<ScanCandidate>, String> {
     let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -3056,6 +3331,34 @@ foreach ($dir in $lnkDirs) {
   }
 }
 
+# ---- MSIX/Store 打包应用（issue #20）：target 存 shell:AppsFolder\<AUMID>，
+# iconSource = 包安装目录下清单主程序 exe（提取位图用，缓存键仍是 target）----
+$pkgByFam = @{}
+Get-AppxPackage -PackageTypeFilter Main | ForEach-Object { $pkgByFam[$_.PackageFamilyName] = $_ }
+Get-StartApps | ForEach-Object {
+  $id = '' + $_.AppID
+  $nm = ('' + $_.Name).Trim()
+  if (-not $id -or -not $nm) { return }
+  # 只收「包系列名!应用 ID」形态（不含路径分隔符）；桌面 .lnk 的 AppID 是路径，天然排除
+  if ($id -notmatch '^[^\\/]+![^\\/]+$') { return }
+  $target = 'shell:AppsFolder\' + $id
+  $key = $target.ToLower()
+  if ($seen.ContainsKey($key)) { return }
+  $seen[$key] = $true
+  $iconSource = ''
+  $parts = $id.Split('!')
+  $pkg = $pkgByFam[$parts[0]]
+  if ($pkg -and $pkg.InstallLocation) {
+    try {
+      [xml]$mx = Get-Content -LiteralPath (Join-Path $pkg.InstallLocation 'AppxManifest.xml')
+      $app = $mx.Package.Applications.Application | Where-Object { $_.Id -eq $parts[1] } | Select-Object -First 1
+      if (-not $app) { $app = @($mx.Package.Applications.Application)[0] }
+      if ($app -and $app.Executable) { $iconSource = Join-Path $pkg.InstallLocation $app.Executable }
+    } catch {}
+  }
+  [void]$out.Add(@{ name = $nm; target = $target; iconSource = $iconSource })
+}
+
 foreach ($a in $out) {
   Write-Output ('APP=' + ($a | ConvertTo-Json -Compress))
 }
@@ -3070,7 +3373,7 @@ foreach ($a in $out) {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut apps: Vec<(String, String)> = Vec::new();
+    let mut apps: Vec<ScanCandidate> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for line in stdout.lines() {
         let Some(json) = line.strip_prefix("APP=") else {
@@ -3092,12 +3395,22 @@ foreach ($a in $out) {
         if !seen.insert(target.to_lowercase()) {
             continue;
         }
-        apps.push((name.to_string(), target.to_string()));
+        let icon_source = v
+            .get("iconSource")
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        apps.push(ScanCandidate {
+            name: name.to_string(),
+            target: target.to_string(),
+            icon_source,
+        });
     }
     apps.sort_by(|a, b| {
-        a.0.to_lowercase()
-            .cmp(&b.0.to_lowercase())
-            .then_with(|| a.1.cmp(&b.1))
+        a.name.to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.target.cmp(&b.target))
     });
     const MAX_APPS: usize = 500;
     if apps.len() > MAX_APPS {
@@ -3107,14 +3420,17 @@ foreach ($a in $out) {
     Ok(apps)
 }
 
-/// 批量提取程序图标：逐个复用 extract_app_icon（Shell COM 进程内提取，
-/// 免去旧方案的 PowerShell 子进程 + 临时目录周转）。已缓存且高清的目标直接
-/// 复用、低清旧缓存就地升级，重复扫描零开销。调用方须在阻塞线程上执行
+/// 批量提取程序图标：逐个复用 extract_app_icon_with_source（Shell COM 进程内提取，
+/// 免去旧方案的 PowerShell 子进程 + 临时目录周转）。入参 = (target, icon_source)，
+/// icon_source 仅打包应用有值（见 ScanCandidate）。已缓存且高清的目标直接复用、
+/// 低清旧缓存就地升级，重复扫描零开销。调用方须在阻塞线程上执行
 /// （scan_installed_apps / scan_desktop 均经 spawn_blocking 调入）。
-fn batch_extract_icons(apps: &[(String, String)]) -> Result<Vec<Option<String>>, String> {
+fn batch_extract_icons(apps: &[(String, Option<String>)]) -> Result<Vec<Option<String>>, String> {
     let result: Vec<Option<String>> = apps
         .iter()
-        .map(|(_, target)| extract_app_icon(target))
+        .map(|(target, icon_source)| {
+            extract_app_icon_with_source(target, icon_source.as_deref())
+        })
         .collect();
     log::info!("应用图标提取完成: 共 {} 个", apps.len());
     Ok(result)
@@ -3206,10 +3522,10 @@ pub async fn scan_desktop() -> Result<Vec<DesktopEntry>, String> {
         return Ok(vec![]);
     }
     // 网页（URL）没有可提取的图标资源，跳过图标提取（前端回退到名称首字母）
-    let icon_pairs: Vec<(String, String)> = candidates
+    let icon_pairs: Vec<(String, Option<String>)> = candidates
         .iter()
         .filter(|(_, _, kind, _)| kind != "web")
-        .map(|(name, target, _, _)| (name.clone(), target.clone()))
+        .map(|(_, target, _, _)| (target.clone(), None))
         .collect();
     let icons =
         tauri::async_runtime::spawn_blocking(move || batch_extract_icons(&icon_pairs))
@@ -4882,6 +5198,159 @@ fn parse_kind(kind: &str) -> Result<ResourceKind, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 迁移时只跳过可重建/一次性/会带来不一致的条目，业务数据一律跟着走
+    /// （扩展/笔记图片/壁纸/市场缓存漏掉一个，用户就看到「数据消失」）
+    #[test]
+    fn data_root_copy_skips_only_transient_entries() {
+        for skipped in [
+            "app.db",
+            "app.db-wal",
+            "app.db-shm",
+            "app.db.bak-pre-migration",
+            "restore.db",
+            "restore_icons",
+            ".restore_pending",
+            "logs",
+            "updates",
+            "data_path.json",
+        ] {
+            assert!(data_root_entry_skipped(skipped), "{skipped} 不应被复制");
+        }
+        for copied in [
+            "extensions",
+            "notes",
+            "wallpapers",
+            "market",
+            "icons",
+            "clipboard",
+            "runtime",
+            "app.json",
+            "chat_keys.json",
+            "install.mid",
+        ] {
+            assert!(!data_root_entry_skipped(copied), "{copied} 必须随迁移复制");
+        }
+    }
+
+    /// 数据根复制要带走扩展（含各扩展的 storage/config 与跨扩展共享存储）、
+    /// 笔记图片、壁纸、安装标识，同时不搬运行中的 db/wal 与日志
+    #[test]
+    fn copy_data_root_brings_extension_and_note_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("old");
+        let dst = dir.path().join("new");
+        std::fs::create_dir_all(src.join("extensions/com.demo/ext")).unwrap();
+        std::fs::write(src.join("extensions/com.demo/manifest.json"), "{}").unwrap();
+        std::fs::write(src.join("extensions/com.demo/.storage.json"), "{\"k\":1}").unwrap();
+        std::fs::write(src.join("extensions/.shared-storage.json"), "{}").unwrap();
+        std::fs::create_dir_all(src.join("notes/images")).unwrap();
+        std::fs::write(src.join("notes/images/a.png"), b"png").unwrap();
+        std::fs::create_dir_all(src.join("wallpapers")).unwrap();
+        std::fs::write(src.join("wallpapers/w.jpg"), b"jpg").unwrap();
+        std::fs::write(src.join("install.mid"), "0123456789abcdef0123456789abcdef").unwrap();
+        std::fs::write(src.join("app.json"), "{}").unwrap();
+        std::fs::write(src.join("app.db"), b"db").unwrap();
+        std::fs::write(src.join("app.db-wal"), b"wal").unwrap();
+        std::fs::create_dir_all(src.join("logs")).unwrap();
+        std::fs::write(src.join("logs/x.log"), b"log").unwrap();
+
+        copy_data_root(&src, &dst).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dst.join("extensions/com.demo/.storage.json")).unwrap(),
+            "{\"k\":1}"
+        );
+        assert!(dst.join("extensions/com.demo/manifest.json").is_file());
+        assert!(dst.join("extensions/.shared-storage.json").is_file());
+        assert!(dst.join("notes/images/a.png").is_file());
+        assert!(dst.join("wallpapers/w.jpg").is_file());
+        assert!(dst.join("app.json").is_file());
+        assert!(dst.join("install.mid").is_file());
+        // 运行中的数据库走在线备份，绝不直接复制；日志不随数据走
+        assert!(!dst.join("app.db").exists());
+        assert!(!dst.join("app.db-wal").exists());
+        assert!(!dst.join("logs").exists());
+    }
+
+    /// 迁移后库内绝对路径换根：资源图标与剪贴板图片要改，根外路径原样保留
+    #[test]
+    fn migration_rewrites_icon_and_clipboard_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("app.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE resources (id INTEGER PRIMARY KEY, icon TEXT);
+                 CREATE TABLE clipboard_history (id INTEGER PRIMARY KEY, image_path TEXT);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO resources (id, icon) VALUES (1, ?1)",
+                params![r"C:\old\icons\aaaa.png"],
+            )
+            .unwrap();
+            // 根外路径（用户自选的外部图标）与空值都不该动
+            conn.execute(
+                "INSERT INTO resources (id, icon) VALUES (2, ?1)",
+                params![r"E:\custom\bbbb.png"],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO resources (id, icon) VALUES (3, NULL)", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO clipboard_history (id, image_path) VALUES (1, ?1)",
+                params![r"C:\old\clipboard\images\cccc.png"],
+            )
+            .unwrap();
+        }
+        rewrite_migrated_db_paths(
+            &db,
+            std::path::Path::new(r"C:\old"),
+            std::path::Path::new(r"D:\new"),
+        )
+        .unwrap();
+
+        let conn = Connection::open(&db).unwrap();
+        let icon = |id: i64| -> Option<String> {
+            conn.query_row(
+                "SELECT icon FROM resources WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(icon(1).as_deref(), Some(r"D:\new\icons\aaaa.png"));
+        assert_eq!(icon(2).as_deref(), Some(r"E:\custom\bbbb.png"));
+        assert_eq!(icon(3), None);
+        let clip: String = conn
+            .query_row(
+                "SELECT image_path FROM clipboard_history WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(clip, r"D:\new\clipboard\images\cccc.png");
+    }
+
+    /// 迁移后配置里的绝对路径换根：壁纸/开发扩展/Skills 根目录改，外部路径不动
+    #[test]
+    fn migration_rewrites_config_root_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.json");
+        let mut cfg = AppConfig::default();
+        cfg.wallpaper_path = r"C:\old\wallpapers\a.jpg".into();
+        cfg.dev_extensions = vec![r"C:\old\my-ext".into(), r"E:\dev\other".into()];
+        cfg.skill_roots = vec![r"C:\old\skills".into()];
+        config::save_to(&cfg, &path).unwrap();
+
+        rewrite_migrated_config_paths(&path, std::path::Path::new(r"C:\old"), std::path::Path::new(r"D:\new"));
+
+        let loaded = config::load_from(&path);
+        assert_eq!(loaded.wallpaper_path, r"D:\new\wallpapers\a.jpg");
+        assert_eq!(loaded.dev_extensions, vec![r"D:\new\my-ext", r"E:\dev\other"]);
+        assert_eq!(loaded.skill_roots, vec![r"D:\new\skills"]);
+    }
 
     /// copy_note_image 的 URL 入口校验：合法 xhub-note URL 放行，
     /// 外站地址 / 尾随 query / 哈希长度不符 / 越权扩展 / 路径穿越一律拒绝

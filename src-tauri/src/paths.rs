@@ -166,6 +166,54 @@ pub fn simplify_existing(p: &Path) -> PathBuf {
     }
 }
 
+/// `p` 是否位于 `root` 之下（`root` 本身不算）。
+///
+/// 只认 `root` 后紧跟目录分隔符，防止 `C:\data` 误判 `C:\data2`；
+/// Windows 上前缀按 ASCII 大小写不敏感比较，`/` 与 `\` 视为同一分隔符。
+/// 用于「数据目录迁移后，库/配置里的绝对路径是否还指着旧根」的判定。
+pub fn path_within_root(p: &str, root: &Path) -> bool {
+    let root_s = trimmed_root(root);
+    if p.len() <= root_s.len() {
+        return false;
+    }
+    let Some(head) = p.get(..root_s.len()) else {
+        return false;
+    };
+    if !head
+        .replace('/', "\\")
+        .eq_ignore_ascii_case(&root_s.replace('/', "\\"))
+    {
+        return false;
+    }
+    matches!(
+        p.as_bytes().get(root_s.len()).copied(),
+        Some(b'\\' | b'/')
+    )
+}
+
+/// 把位于 `old_root` 下的绝对路径改写为 `new_root` 下的同相对路径；
+/// 不在 `old_root` 下（或等于根本身）时返回 `None`，调用方保持原值。
+pub fn relink_root_path(p: &str, old_root: &Path, new_root: &Path) -> Option<String> {
+    if !path_within_root(p, old_root) {
+        return None;
+    }
+    let old_len = trimmed_root(old_root).len();
+    let rest = p.get(old_len..)?;
+    Some(format!("{}{}", trimmed_root(new_root), rest))
+}
+
+/// 根路径去掉尾部分隔符（`/` 与 `\` 都算）：保留原分隔符风格，只用于长度与拼接。
+/// 盘符根 `C:\` 会变成 `C:`，随后「根后必须紧跟分隔符」的判定正好把它补回来。
+fn trimmed_root(root: &Path) -> String {
+    let s = root.to_string_lossy().into_owned();
+    let trimmed = s.trim_end_matches(|c: char| c == '/' || c == '\\');
+    if trimmed.is_empty() {
+        s
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// 更新引导文件指向新的数据根（仅标准版改路径时调用，重启后生效）
 pub fn set_data_root(path: &Path) -> Result<(), String> {
     write_bootstrap_at(&bootstrap_file(), path)
@@ -232,6 +280,55 @@ mod tests {
             simplify_path(Path::new(r"\\?\C:\a\..\b")),
             PathBuf::from(r"\\?\C:\a\..\b")
         );
+    }
+
+    #[test]
+    fn path_within_root_requires_separator_boundary() {
+        let root = Path::new(r"C:\Users\me\AppData\Roaming\x-hub");
+        assert!(path_within_root(
+            r"C:\Users\me\AppData\Roaming\x-hub\icons\0123.png",
+            root
+        ));
+        // 只是字符串前缀（`x-hub2`）不算在根下
+        assert!(!path_within_root(
+            r"C:\Users\me\AppData\Roaming\x-hub2\icons\0123.png",
+            root
+        ));
+        assert!(!path_within_root(r"C:\Users\me\AppData\Roaming\x-hub", root));
+        // Windows 前缀大小写不敏感 + 正斜杠混用
+        assert!(path_within_root(
+            "c:/Users/me/AppData/Roaming/X-HUB/icons/0123.png",
+            root
+        ));
+        // 完全不相干的路径
+        assert!(!path_within_root(r"D:\icons\0123.png", root));
+        // 根带尾部分隔符 / 盘符根也应正确判定
+        assert!(path_within_root(
+            r"C:\data\icons\a.png",
+            Path::new(r"C:\data\")
+        ));
+        assert!(!path_within_root(r"C:\data2\icons\a.png", Path::new(r"C:\data\")));
+        assert!(path_within_root(r"C:\icons\a.png", Path::new(r"C:\")));
+    }
+
+    #[test]
+    fn relink_root_path_swaps_prefix_only() {
+        let old = Path::new(r"C:\old-data");
+        let new = Path::new(r"D:\new-data");
+        assert_eq!(
+            relink_root_path(r"C:\old-data\icons\a.png", old, new).as_deref(),
+            Some(r"D:\new-data\icons\a.png")
+        );
+        // 新根带尾部分隔符时不能拼出双分隔符
+        assert_eq!(
+            relink_root_path(r"C:\old-data\icons\a.png", old, Path::new(r"D:\new-data\"))
+                .as_deref(),
+            Some(r"D:\new-data\icons\a.png")
+        );
+        // 不在旧根下 / 只差一个字符的兄弟目录 / 远程 URL 都原样保留
+        assert_eq!(relink_root_path(r"C:\old-data2\icons\a.png", old, new), None);
+        assert_eq!(relink_root_path("https://example.com/a.png", old, new), None);
+        assert_eq!(relink_root_path(r"C:\old-data", old, new), None);
     }
 
     #[test]

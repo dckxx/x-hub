@@ -27,7 +27,41 @@ impl NoConsoleWindow for Command {
     }
 }
 
+/// 是否为 MSIX/Store 打包应用目标：`shell:AppsFolder\<AUMID>`（AUMID = 包系列名!应用 ID）。
+/// 大小写不敏感、允许首尾空白；前缀后必须还有内容（空 AUMID 判否，交给普通路径报错）。
+/// 打包应用装在受保护的 WindowsApps 下且路径带版本号，唯一稳定的引用形态就是 AUMID。
+pub fn is_shell_app_target(target: &str) -> bool {
+    const NEEDLE: &str = "shell:appsfolder\\";
+    let trimmed = target.trim();
+    trimmed.len() > NEEDLE.len() && trimmed.to_ascii_lowercase().starts_with(NEEDLE)
+}
+
+/// 从 shell: 目标里拆出 (PackageFamilyName, Application Id)（纯函数，供取图标源用）。
+/// 仅在 [`is_shell_app_target`] 命中后调用才有意义；前缀是纯 ASCII，可安全按字节下标切片。
+#[cfg(target_os = "windows")]
+pub(crate) fn split_shell_aumid(target: &str) -> Option<(&str, &str)> {
+    const NEEDLE: &str = "shell:appsfolder\\";
+    let trimmed = target.trim();
+    trimmed
+        .to_ascii_lowercase()
+        .strip_prefix(NEEDLE)
+        .map(|_| &trimmed[NEEDLE.len()..])?
+        .split_once('!')
+}
+
 pub fn launch_program(path: &str, args: Option<&str>) -> Result<(), String> {
+    // MSIX/Store 打包应用（issue #20/#32）：shell:AppsFolder\<AUMID> 不是磁盘文件，
+    // 走 cmd /C 会「假成功」——cmd 报「不是内部或外部命令」但进程本身 spawn 成功，
+    // 界面上什么也不发生。改 ShellExecuteExW 打开（带 SEE_MASK_FLAG_NO_UI，AUMID
+    // 无效时报错给我们而非弹系统错误框），等同开始菜单点击；打包应用已运行时系统
+    // 自动切回已有窗口，无需 activate_existing 调度。AUMID 无传参语义，args 忽略。
+    #[cfg(target_os = "windows")]
+    if is_shell_app_target(path) {
+        if args.map(|a| !a.trim().is_empty()).unwrap_or(false) {
+            log::debug!("打包应用忽略启动参数: {path}");
+        }
+        return shell_execute_app(path.trim());
+    }
     let target = std::path::Path::new(path);
     let mut cmd = if target.is_file() {
         let mut c = Command::new(path);
@@ -69,6 +103,35 @@ pub fn launch_program(path: &str, args: Option<&str>) -> Result<(), String> {
             launch_elevated(path, args)
         }
         Err(e) => Err(format!("启动程序失败「{}」: {}", path, e)),
+    }
+}
+
+/// ShellExecuteExW 打开 shell:AppsFolder\<AUMID>（Windows）。失败码如实上抛：
+/// 错误 2 = ERROR_FILE_NOT_FOUND，即 AUMID 不存在/应用已卸载，可指引重新扫描。
+#[cfg(target_os = "windows")]
+fn shell_execute_app(target: &str) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SHELLEXECUTEINFOW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let file: Vec<u16> = std::ffi::OsStr::new(target)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut sei: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+    sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+    sei.fMask = SEE_MASK_FLAG_NO_UI;
+    sei.lpFile = file.as_ptr();
+    sei.nShow = SW_SHOWNORMAL;
+    // SAFETY: sei 已完整初始化，lpFile 指向 NUL 结尾的缓冲
+    if unsafe { ShellExecuteExW(&mut sei) } != 0 {
+        Ok(())
+    } else {
+        let err = unsafe { GetLastError() };
+        Err(format!(
+            "启动打包应用失败「{target}」: 错误码 {err}（应用可能已卸载或名称有误）"
+        ))
     }
 }
 
@@ -502,6 +565,45 @@ mod tests {
         // 目标不是文件（命令行 / URL）时不该去匹配进程，恒 false
         assert!(!activate_existing("not-a-real-file-xyz"));
         assert!(!activate_existing("https://example.com"));
+    }
+
+    #[test]
+    fn shell_app_target_prefix_gate() {
+        // issue #20 实测 AUMID 形态：包系列名!应用 ID，大小写不敏感
+        assert!(is_shell_app_target(
+            "shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude"
+        ));
+        assert!(is_shell_app_target(
+            "shell:appsfolder\\OpenAI.Codex_2p2nqsd0c76g0!App"
+        ));
+        // 首尾空白容忍（用户手填常见）
+        assert!(is_shell_app_target("  shell:AppsFolder\\X!Y  "));
+        // 前缀近形一概不收：正斜杠、缺反斜杠、空 AUMID、其它协议
+        assert!(!is_shell_app_target("shell:appsfolder/Claude_x!Claude"));
+        assert!(!is_shell_app_target("shell:AppsFolderClaude_x!Claude"));
+        assert!(!is_shell_app_target("shell:AppsFolder\\"));
+        assert!(!is_shell_app_target("shell:AppsFolder\\ "));
+        assert!(!is_shell_app_target("shell:printersFolder\\控制面板"));
+        assert!(!is_shell_app_target(r"C:\Program Files\App\app.exe"));
+        assert!(!is_shell_app_target("https://example.com"));
+        assert!(!is_shell_app_target(""));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn split_shell_aumid_extracts_family_and_app() {
+        assert_eq!(
+            split_shell_aumid("shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude"),
+            Some(("Claude_pzs8sxrjxfjjc", "Claude"))
+        );
+        assert_eq!(
+            split_shell_aumid("  shell:appsfolder\\OpenAI.Codex_2p2nqsd0c76g0!App "),
+            Some(("OpenAI.Codex_2p2nqsd0c76g0", "App"))
+        );
+        // 无 ! 分隔 / 无前缀 / 仅前缀：None
+        assert_eq!(split_shell_aumid("shell:AppsFolder\\NoBang"), None);
+        assert_eq!(split_shell_aumid(r"C:\x\app.exe"), None);
+        assert_eq!(split_shell_aumid("shell:AppsFolder\\"), None);
     }
 
     #[test]

@@ -312,6 +312,20 @@ pub fn png_width(path: &std::path::Path) -> Option<u32> {
 mod tests {
     use super::*;
 
+    /// 手动验证用（默认跳过）：WindowsApps 保护目录下的打包应用 exe 能否进程内提图标。
+    /// 跑法：XHUB_ICON_PROBE='<WindowsApps 下 exe 绝对路径>' cargo test probe_windowsapps_icon
+    #[test]
+    fn probe_windowsapps_icon() {
+        let Ok(path) = std::env::var("XHUB_ICON_PROBE") else {
+            return;
+        };
+        if path.is_empty() {
+            return;
+        }
+        let png = extract_icon_png(&path).expect("WindowsApps exe 提取图标失败");
+        assert!(png.len() > 100, "产出异常: {} 字节", png.len());
+    }
+
     #[test]
     fn premul_unwinds_and_opaque_fallback() {
         // BGRA 预乘 (B=32,G=64,R=128)×α128 → RGBA 直通 (255,128,64)；

@@ -115,7 +115,8 @@ const targetLabel = computed(() => {
 
 const targetPlaceholder = computed(() => {
   if (kind.value === 'file') return '选择要链接的文件或文件夹'
-  if (kind.value === 'app') return '如：C:\\Program Files\\...\\code.exe'
+  if (kind.value === 'app')
+    return '如：C:\\Program Files\\...\\code.exe；Store 应用填 shell:AppsFolder\\包名!应用ID'
   return '如：github.com、https://… 或 smb://nas/share、ftp://…'
 })
 

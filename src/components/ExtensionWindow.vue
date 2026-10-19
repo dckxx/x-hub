@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { MessageSquare } from 'lucide-vue-next'
 import {
   isUnauthorizedMessage,
   requestOpenExtensionSettings,
   useExtensionFrame,
 } from '../composables/useExtensionFrame'
 import { useTheme } from '../composables/useTheme'
+import ExtensionFeedbackDialog from './ExtensionFeedbackDialog.vue'
 
 // 独立扩展窗口也要应用宿主主题：否则根元素无 data-theme/--accent，
 // 扩展 iframe 拉到的主题令牌是 :root 默认值，无法跟随用户换色/换主题
@@ -60,6 +62,9 @@ void frameRef
 
 // service 后端未授权时宿主拦截入口加载：错误态给「去授权」（广播全局事件，主窗接手弹设置）
 const unauthorized = computed(() => isUnauthorizedMessage(error.value))
+
+// 出错态反馈：独立窗口里没有注入的 showToast，成功提示走本窗口自带的那条
+const feedbackOpen = ref(false)
 </script>
 
 <template>
@@ -69,9 +74,15 @@ const unauthorized = computed(() => isUnauthorizedMessage(error.value))
     </div>
     <div v-else-if="error" class="ew-state">
       <p class="ew-error">{{ error }}</p>
-      <button v-if="unauthorized" class="ghost-btn" type="button" @click="requestOpenExtensionSettings(extId)">
-        去授权
-      </button>
+      <div class="ew-actions">
+        <button v-if="unauthorized" class="ghost-btn" type="button" @click="requestOpenExtensionSettings(extId)">
+          去授权
+        </button>
+        <button class="ghost-btn" type="button" @click="feedbackOpen = true">
+          <MessageSquare :size="14" :stroke-width="2" aria-hidden="true" />
+          反馈问题
+        </button>
+      </div>
     </div>
     <iframe
       v-show="!loading && !error"
@@ -81,6 +92,14 @@ const unauthorized = computed(() => isUnauthorizedMessage(error.value))
       sandbox="allow-scripts allow-same-origin allow-downloads"
     />
     <div v-if="toast" class="ew-toast">{{ toast }}</div>
+
+    <!-- 出错态反馈：只拿得到 extId，扩展名/版本由弹窗按 id 现查；诊断默认勾选 -->
+    <ExtensionFeedbackDialog
+      v-model:visible="feedbackOpen"
+      :ext-id="extId"
+      :default-diagnostics="true"
+      @submitted="showToast('反馈已提交，开发者可在收件箱看到')"
+    />
   </div>
 </template>
 
@@ -105,10 +124,17 @@ const unauthorized = computed(() => isUnauthorizedMessage(error.value))
 .ew-state {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   color: var(--text-3);
   font-size: 0.8125rem;
+}
+.ew-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .ew-error {
   color: var(--c-red);

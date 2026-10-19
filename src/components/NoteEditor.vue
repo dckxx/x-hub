@@ -16,6 +16,7 @@ import { isTauri, tauriApi, type Note, type NoteLinks, type Tag } from '../api/t
 import { useStore } from '../stores/workbench'
 import { normalizeShortcutDisplay } from '../composables/useShortcutRecorder'
 import { attachBlockDrag } from '../utils/blockDrag'
+import { guessCodeLanguage, looksLikeCode, unwrapFencedCode } from '../utils/pasteCode'
 import { beautifyNoteMarkdown } from '../utils/markdownBeautify'
 import { copyPlainText } from '../utils/clipboardPlainText'
 import { restoreNoteImageSyntax } from '../utils/noteImageSyntax'
@@ -37,7 +38,8 @@ import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
  * |列x行| 或表头行生成表格。实时预览里回车同样把 #、>、-、1.、---、- [ ]、- [x] 收成标题、引用、列表、分隔线和任务。
  * 图片（粘贴/拖拽/点击上传）统一由 Crepe 的上传管线处理：plugin-upload 的 handlePaste/
  * handleDrop + ImageBlock 的 onUpload 配置 → saveNoteImageFile（notes/images + xhub-note 协议）。
- * 注意勿再自建 DOM paste 监听——plugin-upload 已处理粘贴，叠加监听会导致图片重复插入。
+ * DOM paste 监听仅限 attachCodePasteListener 一处（粘贴自动成码，capture 阶段、文件剪贴板
+ * 第一步放行、preventDefault 只发生在成码路径）——再自建处理图片/富文本的 paste 监听会导致重复插入。
  * 块拖拽（六点把手）为指针实现（utils/blockDrag.ts），绕开 Tauri 原生拖放对 HTML5 DnD 的拦截。
  */
 
@@ -104,6 +106,8 @@ let detachImageListeners: () => void = () => {}
 /** [[ 双链监听解绑函数与补全浮层状态：同理必须声明在 immediate watch 之前（watch 回调经
  * destroyEditor 触达，后置声明 = ReferenceError: Cannot access ... before initialization，实测踩过） */
 let detachWikiListeners: () => void = () => {}
+/** 粘贴自动成码监听解绑函数（attachCodePasteListener 内赋值）：同上必须先于 immediate watch 声明 */
+let detachPasteListener: () => void = () => {}
 const wikiSuggest = ref<WikiSuggest | null>(null)
 /** [[ 补全浮层的 <ul>（Teleport 到 body）；键盘上下键时用它把选中项滚进可视区 */
 const wikiListEl = ref<HTMLUListElement | null>(null)
@@ -153,6 +157,7 @@ async function destroyEditor() {
   // 再也调不到，表现为「切 N 次笔记后一次回车跑 N 遍」。
   detachImageListeners()
   detachWikiListeners()
+  detachPasteListener()
   wikiSuggest.value = null
   const c = crepe
   crepe = null
@@ -309,6 +314,7 @@ async function mountEditor(content: string) {
         clipboardTextSerializer: (slice, view) => copyPlainText(slice, view.state.selection),
       })
       detachBlockDrag = attachBlockDrag(() => view)
+      if (rootEl.value) detachPasteListener = attachCodePasteListener(rootEl.value, view)
     })
     // 已缓存的图片不会再次触发 load：挂载完成后先按 attrs 同步一次宽度
     syncImageWidths()
@@ -326,6 +332,50 @@ async function mountEditor(content: string) {
       queuedMarkdown = null
     }
   }
+}
+
+// ---- 粘贴自动成码：从其它 AI/编辑器复制的裸代码（无 ``` 围栏）粘进正文只会落成普通段落 ----
+// capture 阶段挂在 Crepe 根容器上，先于 ProseMirror 的 paste 处理；判定为代码才
+// preventDefault + stopPropagation 接管成代码块，其余（图片/富文本/Markdown/围栏混合文本）
+// 全部放行走默认管线。判定与语言猜测是纯函数（utils/pasteCode.ts，tests 锁口径）。
+/** 把文本插为 code_block，光标落块内末尾；单事务 = 一步 Ctrl+Z 可整体撤销 */
+function insertPastedCodeBlock(view: EditorView, code: string, language: string) {
+  const schema = view.state.schema
+  const codeBlockType = schema.nodes.code_block
+  if (!codeBlockType) return
+  const node = codeBlockType.create({ language }, code ? schema.text(code) : undefined)
+  let tr = view.state.tr.replaceSelectionWith(node)
+  const $from = tr.selection.$from
+  if ($from.nodeBefore?.type === codeBlockType) {
+    tr = tr.setSelection(TextSelection.create(tr.doc, $from.pos - 1))
+  }
+  view.dispatch(tr.scrollIntoView())
+}
+
+function attachCodePasteListener(root: HTMLElement, view: EditorView): () => void {
+  const onPaste = (event: ClipboardEvent) => {
+    if (event.defaultPrevented || !view.editable) return
+    const cd = event.clipboardData
+    // 图片/文件剪贴板第一步放行：上传管线（plugin-upload）独占处理，勿在此劫持（约定 38）
+    if (!cd || cd.files.length > 0 || cd.types.includes('Files')) return
+    const target = event.target
+    if (!(target instanceof Node) || !view.dom.contains(target)) return
+    // 图注输入框、链接气泡输入框等编辑器内嵌 input 的粘贴保持原生
+    if (target instanceof Element && target.closest('input, textarea')) return
+    // 已在代码块内：按默认纯文本插入（粘进代码块就该是裸文本）
+    if (view.state.selection.$from.parent.type.spec.code) return
+    const text = cd.getData('text/plain')
+    if (!text) return
+    const fenced = unwrapFencedCode(text)
+    if (!fenced && !looksLikeCode(text)) return
+    event.preventDefault()
+    event.stopPropagation()
+    const code = fenced ? fenced.code : text.replace(/\n+$/, '')
+    const language = fenced ? fenced.language : guessCodeLanguage(code)
+    insertPastedCodeBlock(view, code, language)
+  }
+  root.addEventListener('paste', onPaste, true)
+  return () => root.removeEventListener('paste', onPaste, true)
 }
 
 // ---- 分屏预览：右侧挂一个只读 Crepe（同一渲染器 = 与编辑/仅预览格式一致），源码侧防抖同步 ----

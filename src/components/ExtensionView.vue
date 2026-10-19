@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, inject } from 'vue'
-import { Puzzle } from 'lucide-vue-next'
+import { computed, inject, ref } from 'vue'
+import { MessageSquare, Puzzle } from 'lucide-vue-next'
 import {
   isUnauthorizedMessage,
   requestOpenExtensionSettings,
   useExtensionFrame,
 } from '../composables/useExtensionFrame'
+import ExtensionFeedbackDialog from './ExtensionFeedbackDialog.vue'
 
 const props = defineProps<{
   extId: string
@@ -50,6 +51,9 @@ void frameRef
 // service 后端未授权时宿主直接拦截入口加载（扩展页面不会运行）：
 // 错误态给「去授权」直达权限设置，用户不必自己找入口
 const unauthorized = computed(() => isUnauthorizedMessage(error.value))
+
+// 加载失败 / 未授权时的反馈入口：出错当下最想反馈，诊断信息默认勾选
+const feedbackOpen = ref(false)
 </script>
 
 <template>
@@ -70,6 +74,10 @@ const unauthorized = computed(() => isUnauthorizedMessage(error.value))
         <button v-if="unauthorized" class="ghost-btn" type="button" @click="requestOpenExtensionSettings(extId)">
           去授权
         </button>
+        <button class="ghost-btn" type="button" @click="feedbackOpen = true">
+          <MessageSquare :size="14" :stroke-width="2" aria-hidden="true" />
+          反馈问题
+        </button>
         <button class="ghost-btn" type="button" @click="emit('close')">返回</button>
       </div>
     </div>
@@ -79,6 +87,13 @@ const unauthorized = computed(() => isUnauthorizedMessage(error.value))
       class="ev-frame"
       title="扩展视图"
       sandbox="allow-scripts allow-same-origin allow-downloads"
+    />
+
+    <!-- 出错态反馈：只拿得到 extId，扩展名/版本由弹窗按 id 现查；诊断默认勾选 -->
+    <ExtensionFeedbackDialog
+      v-model:visible="feedbackOpen"
+      :ext-id="extId"
+      :default-diagnostics="true"
     />
   </div>
 </template>

@@ -16,6 +16,7 @@ mod db;
 mod extension;
 mod ext_protocol;
 mod favicon;
+mod feedback;
 mod floating_ball;
 mod float_window;
 pub mod market;
@@ -1168,6 +1169,14 @@ pub fn run() {
             market::install_local_archive,
             market::pack_extension_archive,
             market::update_extension,
+            // 扩展反馈板（平台托管、公开可见）：提交 / 公开列表 / 开发者收件箱
+            feedback::submit_extension_feedback,
+            feedback::list_extension_feedback,
+            feedback::feedback_inbox_unread,
+            feedback::feedback_inbox_list,
+            feedback::feedback_mark_read,
+            feedback::feedback_reply,
+            feedback::feedback_hide,
             updater::check_for_update,
             updater::download_update,
             updater::get_update_status,

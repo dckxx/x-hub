@@ -1034,6 +1034,19 @@ html[data-wallpaper-clear='1'] .card {
 html:not([data-theme='dark'])[data-wallpaper-clear='1'] .card {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08), 0 12px 32px rgba(0, 0, 0, 0.12);
 }
+/* 壁纸态弹窗/右键菜单：root 的 --bg-card-solid 在暗色主题是 20% 白，弹窗又被 Teleport 到
+   body（不在 main 子树里，拿不到透底态对卡面令牌的深玻璃覆盖）——20% 白叠在照片上就是
+   浅底配浅字，正文/灰字全部失读。瞬态表面改用主题实底 95% + 已有的 backdrop-filter 取景
+   模糊：保住玻璃质感，同时保证任何壁纸上正文对比度。无壁纸时保持原外观不变。 */
+html[data-wallpaper='1'] .modal-card,
+html[data-wallpaper='1'] .ctx-menu {
+  background: rgba(255, 255, 255, 0.95);
+}
+html[data-theme='dark'][data-wallpaper='1'] .modal-card,
+html[data-theme='dark'][data-wallpaper='1'] .ctx-menu {
+  background: rgba(28, 29, 41, 0.95);
+}
+
 /* toast 背景取 --text-1 的反转技巧在白墨下会白底白字，固定为深底 */
 html[data-wallpaper-clear='1'] .toast {
   background: rgba(20, 21, 32, 0.92);

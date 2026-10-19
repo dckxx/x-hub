@@ -776,6 +776,55 @@ export interface MarketStatus {
   revoked: string[]
 }
 
+/** 扩展反馈类型（提交时三选一） */
+export type ExtensionFeedbackKind = 'bug' | 'idea' | 'question'
+
+/**
+ * 一条扩展反馈（后端 feedback.rs::ExtensionFeedback）。
+ * 公开列表接口不返回 contact / diagnostics / app_version / hidden —— 那几个字段只给开发者收件箱。
+ */
+export interface ExtensionFeedback {
+  id: number
+  kind: ExtensionFeedbackKind
+  /** 提交时的展示名；null = 匿名 */
+  author_name: string | null
+  body: string
+  /** open（待处理）/ replied（已回复）/ resolved（已解决） */
+  status: 'open' | 'replied' | 'resolved'
+  /** 开发者公开回复 */
+  reply: string | null
+  replied_at: number | null
+  /** 提交时的扩展版本（老数据可能为空） */
+  ext_version: string | null
+  created_at: number
+  // ---- 仅开发者收件箱返回 ----
+  /** 联系方式（仅开发者与平台管理员可见） */
+  contact?: string | null
+  /** 诊断信息（仅开发者与平台管理员可见） */
+  diagnostics?: string | null
+  app_version?: string | null
+  hidden?: boolean
+}
+
+/** 收件箱里一个已发布扩展的未读数（feedback_inbox_unread 返回） */
+export interface FeedbackUnreadExtension {
+  ext_id: string
+  name: string
+  version: string
+  unread: number
+}
+
+export interface FeedbackUnread {
+  total: number
+  extensions: FeedbackUnreadExtension[]
+}
+
+/** 公开反馈列表的一页（total = 全部条数，不受 limit 截断） */
+export interface ExtensionFeedbackPage {
+  total: number
+  items: ExtensionFeedback[]
+}
+
 /** 扩展打包结果（pack_extension_archive 返回） */
 export interface PackedArchive {
   /** 产物绝对路径（.xhpack，zip 格式） */
@@ -1729,6 +1778,41 @@ export const tauriApi = {
   /** 从市场更新扩展（校验 + 版本比较 + 备份 + 保留用户点文件 + 原子替换 + 回滚），返回扩展 id */
   updateFromMarket: (extension: MarketExtension) =>
     invoke<string>('update_extension', { extension }),
+  // ---- 扩展反馈（平台托管、公开可见） ----
+  /** 提交扩展反馈（匿名可；登录时服务端记用户名）。返回反馈 id */
+  submitExtensionFeedback: (payload: {
+    extId: string
+    kind: ExtensionFeedbackKind
+    body: string
+    contact?: string
+    diagnostics?: string
+    appVersion?: string
+    extVersion?: string
+  }) =>
+    invoke<number>('submit_extension_feedback', {
+      extId: payload.extId,
+      kind: payload.kind,
+      body: payload.body,
+      contact: payload.contact ?? null,
+      diagnostics: payload.diagnostics ?? null,
+      appVersion: payload.appVersion ?? null,
+      extVersion: payload.extVersion ?? null,
+    }),
+  /** 某扩展的公开反馈列表（匿名可读；不含联系方式与诊断） */
+  listExtensionFeedback: (extId: string) =>
+    invoke<ExtensionFeedbackPage>('list_extension_feedback', { extId }),
+  /** 我发布的扩展与未读数（未登录返回全 0，不报错） */
+  feedbackInboxUnread: () => invoke<FeedbackUnread>('feedback_inbox_unread'),
+  /** 开发者收件箱完整列表（需登录且为扩展所有者；含联系方式与诊断） */
+  feedbackInboxList: (extId: string) =>
+    invoke<ExtensionFeedback[]>('feedback_inbox_list', { extId }),
+  /** 把这批反馈标记为已读（服务端水位推到当前最大 id） */
+  feedbackMarkRead: (extId: string) => invoke<void>('feedback_mark_read', { extId }),
+  /** 公开回复（可同时标记为已解决） */
+  feedbackReply: (id: number, reply: string, resolved = false) =>
+    invoke<void>('feedback_reply', { id, reply, resolved }),
+  /** 隐藏 / 恢复一条反馈（软删：公开面消失，管理员仍可见） */
+  feedbackHide: (id: number, hidden = true) => invoke<void>('feedback_hide', { id, hidden }),
   // ---- 应用更新 ----
   /** 检查应用更新（拉取 update.json + Ed25519 验签 + 版本比较），失败静默返回无更新。
    * `manual`：About 页手动触发时传 true——忽略「跳过此版本」记录，让用户能再次主动获取该版本。 */

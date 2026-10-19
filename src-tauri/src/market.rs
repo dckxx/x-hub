@@ -410,9 +410,9 @@ async fn download_with_progress(
 }
 
 /// 机器标识（32 位小写 hex）：首次使用时随机生成并落盘 `数据根/install.mid`，之后不再变。
-/// 唯一用途是安装上报的服务端去重（「机器 × 扩展」主键）——卸载重装不重复计数；
+/// 唯一用途是服务端去重/限频（「机器 × 扩展」安装计数、扩展反馈的 24h 限频）——
 /// 不关联账号、不参与其它任何链路。读到损坏/缺失内容时重新生成。
-fn install_mid() -> Option<String> {
+pub(crate) fn install_mid() -> Option<String> {
     let path = crate::paths::data_root().join("install.mid");
     if let Ok(s) = std::fs::read_to_string(&path) {
         let s = s.trim();

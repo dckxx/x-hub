@@ -7,6 +7,7 @@
 //! 注意字段名是**蛇形**（`poll_id` / `min_app_version`）：服务端 Hono 读的是原始键名，
 //! 不做驼峰转换。
 
+use serde::Serialize;
 use serde_json::{json, Value};
 
 /// 请求规格：`(完整 URL, JSON 请求体)`
@@ -111,6 +112,80 @@ pub fn withdraw_submission(base: &str, id: i64) -> Spec {
     )
 }
 
+// ---------------- 扩展反馈（平台托管 · 公开可见） ----------------
+
+/// 提交反馈的请求体：字段名 = 服务端读的原始键名（蛇形）。
+///
+/// 单独建结构体而不是一串位置参数 —— `app_version` / `ext_version` 两个近似字段
+/// 用位置参数极易传反，且错了只有联调才暴露。
+#[derive(Serialize)]
+pub struct FeedbackSubmit<'a> {
+    pub ext_id: &'a str,
+    pub mid: &'a str,
+    pub kind: &'a str,
+    pub body: &'a str,
+    pub contact: &'a str,
+    pub diagnostics: &'a str,
+    pub app_version: &'a str,
+    pub ext_version: &'a str,
+}
+
+pub fn extension_feedback_submit(base: &str, body: &FeedbackSubmit<'_>) -> Spec {
+    (
+        format!("{}/api/v1/market/feedback", base_of(base)),
+        serde_json::to_value(body).unwrap_or_else(|_| json!({})),
+    )
+}
+
+/// 公开反馈列表（GET，匿名可读；不含联系方式与诊断）
+pub fn extension_feedback_list_path(ext_id: &str) -> String {
+    format!("/api/v1/market/feedback?extId={}", encode_component(ext_id))
+}
+
+/// 我的已发布扩展与未读数（GET，需登录）
+pub fn feedback_unread_path() -> &'static str {
+    "/api/v1/dev/feedback/unread"
+}
+
+/// 开发者收件箱完整列表（GET，需登录；含联系方式与诊断）
+pub fn feedback_inbox_list_path(ext_id: &str) -> String {
+    format!("/api/v1/dev/feedback?extId={}", encode_component(ext_id))
+}
+
+pub fn feedback_mark_read(base: &str, ext_id: &str) -> Spec {
+    (
+        format!("{}/api/v1/dev/feedback/read", base_of(base)),
+        json!({ "ext_id": ext_id }),
+    )
+}
+
+pub fn feedback_reply(base: &str, id: i64, reply: &str, status: &str) -> Spec {
+    (
+        format!("{}/api/v1/dev/feedback/{id}/reply", base_of(base)),
+        json!({ "reply": reply, "status": status }),
+    )
+}
+
+pub fn feedback_hide(base: &str, id: i64, hidden: bool) -> Spec {
+    (
+        format!("{}/api/v1/dev/feedback/{id}/hide", base_of(base)),
+        json!({ "hidden": hidden }),
+    )
+}
+
+/// 查询串百分号编码：只保留 RFC 3986 unreserved 字符。
+/// 扩展 id 正常只含 `[A-Za-z0-9._-]`，这里只是不给畸形 id 留注入查询串的口子。
+fn encode_component(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +207,38 @@ mod tests {
         assert_eq!(submit_extension_path(), "/api/v1/dev/submissions");
         assert_eq!(submission_detail_path(9), "/api/v1/dev/submissions/9");
         assert_eq!(withdraw_submission(b, 9).0, "https://x.example/api/v1/dev/submissions/9/withdraw");
+        // 扩展反馈：公开列表匿名可读、收件箱需登录，两套路径别串
+        assert_eq!(
+            extension_feedback_submit(
+                b,
+                &FeedbackSubmit {
+                    ext_id: "com.a_b.c",
+                    mid: "m",
+                    kind: "bug",
+                    body: "b",
+                    contact: "",
+                    diagnostics: "d",
+                    app_version: "0.9.0",
+                    ext_version: "1.0.0",
+                }
+            )
+            .0,
+            "https://x.example/api/v1/market/feedback"
+        );
+        assert_eq!(
+            extension_feedback_list_path("com.a_b.c"),
+            "/api/v1/market/feedback?extId=com.a_b.c"
+        );
+        assert_eq!(feedback_unread_path(), "/api/v1/dev/feedback/unread");
+        assert_eq!(feedback_inbox_list_path("com.a_b.c"), "/api/v1/dev/feedback?extId=com.a_b.c");
+        assert_eq!(feedback_mark_read(b, "com.a").0, "https://x.example/api/v1/dev/feedback/read");
+        assert_eq!(feedback_reply(b, 5, "hi", "resolved").0, "https://x.example/api/v1/dev/feedback/5/reply");
+        assert_eq!(feedback_hide(b, 5, true).0, "https://x.example/api/v1/dev/feedback/5/hide");
+        // 畸形 id 不能原样拼进查询串
+        assert_eq!(
+            extension_feedback_list_path("a b&c=1"),
+            "/api/v1/market/feedback?extId=a%20b%26c%3D1"
+        );
     }
 
     #[test]
@@ -146,6 +253,39 @@ mod tests {
         assert_eq!(github_device_start("b").1, json!({}));
         assert_eq!(device_revoke("b", 1).1, json!({}));
         assert_eq!(withdraw_submission("b", 1).1, json!({}));
+        // 反馈接口：服务端读的是原始蛇形键，驼峰会静默丢字段（400 / 匿名提交）
+        assert_eq!(
+            extension_feedback_submit(
+                "b",
+                &FeedbackSubmit {
+                    ext_id: "com.a",
+                    mid: "m",
+                    kind: "bug",
+                    body: "b",
+                    contact: "",
+                    diagnostics: "d",
+                    app_version: "0.9.0",
+                    ext_version: "1.0.0",
+                }
+            )
+            .1,
+            json!({
+                "ext_id": "com.a",
+                "mid": "m",
+                "kind": "bug",
+                "body": "b",
+                "contact": "",
+                "diagnostics": "d",
+                "app_version": "0.9.0",
+                "ext_version": "1.0.0",
+            })
+        );
+        assert_eq!(feedback_mark_read("b", "com.a").1, json!({ "ext_id": "com.a" }));
+        assert_eq!(
+            feedback_reply("b", 5, "hi", "resolved").1,
+            json!({ "reply": "hi", "status": "resolved" })
+        );
+        assert_eq!(feedback_hide("b", 5, true).1, json!({ "hidden": true }));
     }
 
     #[test]

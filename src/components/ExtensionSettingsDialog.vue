@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Trash2, X, FolderOpen } from 'lucide-vue-next'
+import { FolderOpen, MessageSquare, Trash2, X } from 'lucide-vue-next'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
 import { tauriApi, type ExtensionEntry } from '../api/tauri'
 import { useStore } from '../stores/workbench'
+import ExtensionFeedbackDialog from './ExtensionFeedbackDialog.vue'
 
 const props = defineProps<{ extension: ExtensionEntry | null }>()
 const emit = defineEmits<{
@@ -18,6 +19,8 @@ useFocusTrap(visible, cardRef)
 
 // Esc 关闭：弹窗可见时才响应（同屏多个 Esc 监听互不干扰，各自只管自己的弹窗）
 function onKeydown(e: KeyboardEvent) {
+  // 反馈弹窗叠在上面时由它自己处理 Esc，别把本弹窗一起关掉
+  if (feedbackOpen.value) return
   if (e.key === 'Escape' && visible.value) emit('close')
 }
 onMounted(() => window.addEventListener('keydown', onKeydown))
@@ -36,6 +39,9 @@ const confirming = ref(false)
 const uninstalling = ref(false)
 const perms = ref<Record<string, boolean>>({})
 const permsLoading = ref(false)
+// 反馈只对市场扩展开放：「我的扩展」源码目录没有市场身份，提交会被服务端判为未知扩展
+const feedbackOpen = ref(false)
+const canFeedback = computed(() => ext.value?.source === 'installed')
 
 watch(
   () => props.extension,
@@ -43,6 +49,7 @@ watch(
     confirming.value = false
     uninstalling.value = false
     perms.value = {}
+    feedbackOpen.value = false
     if (!e || e.invalid) return
     permsLoading.value = true
     try {
@@ -371,10 +378,22 @@ async function confirmUninstall() {
 
           <footer class="es-foot">
             <template v-if="!confirming">
-              <button class="es-danger-btn" type="button" @click="confirming = true">
-                <Trash2 :size="14" :stroke-width="2" aria-hidden="true" />
-                卸载扩展
-              </button>
+              <div class="es-foot-row">
+                <button
+                  v-if="canFeedback"
+                  class="ghost-btn"
+                  type="button"
+                  @click="feedbackOpen = true"
+                >
+                  <MessageSquare :size="14" :stroke-width="2" aria-hidden="true" />
+                  反馈问题
+                </button>
+                <span class="es-foot-spacer"></span>
+                <button class="es-danger-btn" type="button" @click="confirming = true">
+                  <Trash2 :size="14" :stroke-width="2" aria-hidden="true" />
+                  卸载扩展
+                </button>
+              </div>
             </template>
             <template v-else>
               <p class="es-confirm-tip">
@@ -404,6 +423,15 @@ async function confirmUninstall() {
         </div>
       </div>
     </Transition>
+
+    <!-- 提交反馈弹窗：与设置弹窗叠加（焦点陷阱按栈顶让位，Esc 由它自己消费） -->
+    <ExtensionFeedbackDialog
+      v-model:visible="feedbackOpen"
+      :ext-id="ext?.id ?? ''"
+      :ext-name="ext?.name ?? null"
+      :ext-version="ext?.version ?? null"
+      :runtime="ext?.runtime ?? null"
+    />
   </Teleport>
 </template>
 
@@ -728,6 +756,14 @@ async function confirmUninstall() {
   flex-direction: column;
   gap: 10px;
   padding: 4px 18px 18px;
+}
+.es-foot-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.es-foot-spacer {
+  flex: 1;
 }
 .es-confirm-tip {
   margin: 0;

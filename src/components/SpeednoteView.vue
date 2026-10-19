@@ -195,7 +195,7 @@ function onDeleteFolder(id: number) {
   confirmState.value = {
     visible: true,
     title: '删除文件夹',
-    message: `「${f.name}」将被删除，其中的笔记与子文件夹会**上移一级**，不会丢失。`,
+    message: `「${f.name}」将被删除，其中的笔记与子文件夹会上移一级，不会丢失。`,
     confirmText: '删除文件夹',
     tone: 'danger',
     onConfirm: () => store.deleteNoteFolder(id),

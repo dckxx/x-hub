@@ -9,10 +9,12 @@ import {
   GROUP_META,
   groupOf,
   isoKey,
+  parseServerDate,
+  startOfDay,
   type DueBadge,
 } from '../utils/todoSchedule'
 import { sudaCustomConfigured, sudaCustomItems } from '../utils/sudaCustom'
-import type { Countdown, Note, Resource, SudaCustomModuleConfig } from '../api/tauri'
+import type { Countdown, Note, Resource, SudaCustomModuleConfig, Todo } from '../api/tauri'
 
 /**
  * 布局编辑器预览的共享派生数据。
@@ -247,6 +249,43 @@ const todoDayMarks = computed(() => {
   return map
 })
 
+/** 日历横排标题：与真卡 realByDay 同口径，共享计算，避免每张缩略图重复排序。
+ * 周期虚拟实例仍只由真卡异步展开（沿用预览的现有限制）。 */
+const calendarTodosByDay = computed(() => {
+  const map = new Map<string, Todo[]>()
+  for (const t of topTodos.value) {
+    const at = t.due_at ?? (t.done ? parseServerDate(t.completed_at)?.getTime() ?? null : null)
+    if (at == null) continue
+    const key = isoKey(new Date(at))
+    const list = map.get(key) ?? []
+    list.push(t)
+    map.set(key, list)
+  }
+  const overdue = (t: Todo) => !t.done && dueBadge(t, previewDate.value)?.kind === 'over'
+  for (const list of map.values()) {
+    list.sort((a, b) => Number(a.done) - Number(b.done) || Number(overdue(b)) - Number(overdue(a)))
+  }
+  return map
+})
+
+/**
+ * 日历缩印的「含未完成逾期」日期集合：口径照抄真卡 `TodoCalendarCard.overdueByDay`——
+ * 未完成且截止日早于今天（startOfDay 比较，同 dueBadge kind 'over'），全量条目判定、
+ * 不按截断后的 chip；周期待办虚拟实例同样不参与。读 previewDate 绑定分钟 tick，
+ * 编辑器跨午夜打开时「今天」推进后红标记随之消长。
+ */
+const todoOverdueMarks = computed(() => {
+  const today0 = startOfDay(previewDate.value)
+  const set = new Set<string>()
+  for (const t of topTodos.value) {
+    if (t.done || t.due_at == null) continue
+    if (startOfDay(new Date(t.due_at)).getTime() < today0.getTime()) {
+      set.add(isoKey(new Date(t.due_at)))
+    }
+  }
+  return set
+})
+
 // ---- 最近使用（有启动记录 → last_launched_at 倒序，同 RecentBar）----
 const recentList = computed<Resource[]>(() =>
   store.state.resources
@@ -304,6 +343,8 @@ export const dashPreviewData = {
   snippetList,
   todoGroups,
   todoDayMarks,
+  calendarTodosByDay,
+  todoOverdueMarks,
   pendingCount,
   doneCount,
   recentList,

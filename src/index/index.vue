@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, onUnmounted, provide, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import TitleBar from '../components/TitleBar.vue'
 import SudaWebPanel from '../components/SudaWebPanel.vue'
 import TodoCard from '../components/TodoCard.vue'
 import TodoCalendarCard from '../components/TodoCalendarCard.vue'
 import Suda from '../components/Suda.vue'
-import NoteList from '../components/NoteList.vue'
 import NotesOverviewCard from '../components/NotesOverviewCard.vue'
+import DiaryCard from '../components/DiaryCard.vue'
 import TodoOverviewCard from '../components/TodoOverviewCard.vue'
 import ResourcesOverviewCard from '../components/ResourcesOverviewCard.vue'
 import SudaCustomCard from '../components/SudaCustomCard.vue'
@@ -23,7 +23,7 @@ import { isTauri, tauriApi } from '../api/tauri'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import type { Countdown, ExtensionEntry, Note, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
-import { FileText, FolderOpen, LayoutDashboard, ListTodo, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight, AppWindow, PanelRight } from 'lucide-vue-next'
+import { FileText, FolderOpen, LayoutDashboard, ListTodo, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import { useTheme } from '../composables/useTheme'
 import { broadcastThemeToFrames } from '../composables/themeTokens'
@@ -38,7 +38,8 @@ import {
 import SettingsSkeleton from '../components/SettingsSkeleton.vue'
 
 // 大体量/低频视图异步分包按需加载，缩小首屏主 chunk
-const NoteEditor = defineAsyncComponent(() => import('../components/NoteEditor.vue'))
+// 速记视图：两栏容器（NoteFolderTree 树 + NoteEditor，编辑器在其内部异步分包）
+const SpeednoteView = defineAsyncComponent(() => import('../components/SpeednoteView.vue'))
 const GlobalSearch = defineAsyncComponent(() => import('../components/GlobalSearch.vue'))
 // 待办视图：自带编辑弹层 / 确认弹窗 / 日期时间字段，体量大且非首屏，同样按需分包
 const TodoView = defineAsyncComponent(() => import('../components/TodoView.vue'))
@@ -271,19 +272,6 @@ function closeExtension() {
   activeView.value = 'extensions'
 }
 
-function openExtensionWindow() {
-  if (!openedExtension.value) return
-  tauriApi.openExtensionWindow(openedExtension.value.id).catch((e) => {
-    showToast(`打开窗口失败：${String(e)}`)
-  })
-}
-
-function openExtensionDrawer() {
-  if (!openedExtension.value) return
-  extensionReloadTick.value++
-  drawerExtension.value = { ...openedExtension.value }
-}
-
 function closeExtensionDrawer() {
   drawerExtension.value = null
 }
@@ -320,6 +308,7 @@ const dashCardComponents: Record<string, Component> = {
   sysmon: SysMonitorCard,
   sticky1: StickyCard,
   sticky2: StickyCard,
+  diary: DiaryCard,
   notes: NotesOverviewCard,
   todo_overview: TodoOverviewCard,
   resources: ResourcesOverviewCard,
@@ -390,6 +379,7 @@ function dashCardProps(p: DashPlacement): Record<string, unknown> {
     case 'countdown':
       return { sizeW: p.w, sizeH: p.h, ...titleProps(p) }
     case 'sysmon':
+    case 'diary':
     case 'recent':
       return { ...titleProps(p) }
     default:
@@ -519,9 +509,10 @@ onMounted(async () => {
         void onCreateNote()
       }
     })
-    // 独立对话窗「模型设置」入口：唤出主窗并定位到设置 → AI 助手
-    unlistenOpenChatSettings = await on('open-chat-settings', () => {
-      onOpenChatSettings()
+    // 独立对话窗「模型设置/去兑换」入口：唤出主窗并定位到设置页（载荷 = ai / account 分类）
+    unlistenOpenChatSettings = await on('open-chat-settings', (e) => {
+      if (e.payload === 'account') onOpenAccountSettings()
+      else onOpenChatSettings()
     })
     // 搜索快捷键（全局注册，Rust 分发）：主窗前端负责打开/关闭搜索弹窗
     unlistenSearchShortcut = await on('search-shortcut', () => {
@@ -530,6 +521,10 @@ onMounted(async () => {
     // AI 对话快捷键（全局注册，Rust 分发）：与抽屉/独立窗口形态分流共用 toggleChat
     unlistenChatShortcut = await on('chat-shortcut', () => {
       toggleChat()
+    })
+    // 速记快捷键（全局注册，Rust 分发）：唤起主窗（Rust 侧 show_window）→ 切速记视图 → 聚焦新建
+    unlistenNotesShortcut = await on('notes-shortcut', () => {
+      void onCreateNote()
     })
     // 扩展页「去授权」跳转（桥 API xhub.openPermissions）：切到扩展中心并打开该扩展的
     // 设置弹窗（权限管理所在处）。payload = 扩展 id
@@ -568,6 +563,7 @@ let unlistenBallAction: (() => void) | null = null
 let unlistenOpenChatSettings: (() => void) | null = null
 let unlistenSearchShortcut: (() => void) | null = null
 let unlistenChatShortcut: (() => void) | null = null
+let unlistenNotesShortcut: (() => void) | null = null
 let unlistenOpenExtSettings: (() => void) | null = null
 let unlistenChatMode: (() => void) | null = null
 
@@ -585,6 +581,7 @@ onUnmounted(() => {
   unlistenOpenChatSettings?.()
   unlistenSearchShortcut?.()
   unlistenChatShortcut?.()
+  unlistenNotesShortcut?.()
   unlistenOpenExtSettings?.()
   unlistenChatMode?.()
   window.removeEventListener('suda-open-web-panel', onSudaWebPanelEvent)
@@ -601,43 +598,27 @@ function hideBootSplash() {
   }
 }
 
-// ---- 笔记选中与操作 ----
-const activeNoteId = ref<number | null>(null)
+// ---- 笔记选中与操作（三栏视图挂 SpeednoteView，选择/删除/回收站在视图内部管理；
+// 这里只保留外部入口：悬浮球新建、全局搜索跳转、热键直达） ----
 const highlightTodoId = ref<number | null>(null)
 
-const activeNote = computed(
-  () => store.state.notes.find((n) => n.id === activeNoteId.value) ?? null,
-)
+const speednoteRef = ref<{ openNote: (id: number) => void; createNote: () => void } | null>(null)
+
+/** 等速记视图就绪（异步 chunk + 挂载），最多 ~1.5s；未就绪返回 null（调用方静默放弃） */
+async function waitSpeednoteReady() {
+  activeView.value = 'notes'
+  await nextTick()
+  for (let i = 0; i < 30; i++) {
+    if (speednoteRef.value) return speednoteRef.value
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  return null
+}
 
 async function onCreateNote() {
-  const n = await store.addNote('无标题笔记')
-  activeNoteId.value = n.id
   // 悬浮球等入口触发时可能停在其它视图：新建后必须切到速记页，否则只见新建不见页面
-  activeView.value = 'notes'
-}
-
-function onSelectNote(id: number) {
-  activeNoteId.value = id
-}
-
-async function onDeleteNote(id: number) {
-  const target = store.state.notes.find((n) => n.id === id)
-  if (!target) return
-  await store.removeNote(id)
-  if (activeNoteId.value === id) activeNoteId.value = null
-  showToast('笔记已删除', {
-    label: '撤销',
-    onClick: async () => {
-      const n = await store.addNote(target.title)
-      await store.saveNote(n.id, target.title, target.content)
-      activeNoteId.value = n.id
-      showToast('已恢复笔记')
-    },
-  })
-}
-
-function onSaveNote(id: number, title: string, content: string) {
-  store.saveNote(id, title, content)
+  const view = await waitSpeednoteReady()
+  view?.createNote()
 }
 
 // ---- 全局搜索 / 设置 ----
@@ -694,9 +675,16 @@ function onChatToggle() {
   toggleChat()
 }
 
-// 面板「去配置大模型」：跳转设置页并定位到 AI 助手分类
+// 面板「去配置大模型 / 模型设置」：跳转设置页并定位到 AI 助手 → 供应商子项
 function onOpenChatSettings() {
-  settingsSection.value = 'ai'
+  settingsSection.value = 'providers'
+  if (chatOpen.value) toggleChat()
+  activeView.value = 'settings'
+}
+
+// 面板积分徽标 / 「积分不足」卡片的「去兑换」：跳转设置页并定位到账号分类
+function onOpenAccountSettings() {
+  settingsSection.value = 'account'
   if (chatOpen.value) toggleChat()
   activeView.value = 'settings'
 }
@@ -786,10 +774,10 @@ async function onOpenResource(r: Resource) {
   }
 }
 
-function onOpenNote(n: Note) {
-  activeNoteId.value = n.id
-  activeView.value = 'notes'
+async function onOpenNote(n: Note) {
   searchVisible.value = false
+  const view = await waitSpeednoteReady()
+  view?.openNote(n.id)
 }
 
 // ---- 轻提示 ----
@@ -977,23 +965,8 @@ provide('showToast', showToast)
         <!-- 待办视图：标签筛选 / 月·周日历 / 周期待办（宽窗左右同屏，窄窗单栏） -->
         <TodoView v-else-if="activeView === 'todos'" />
 
-        <!-- 速记：独立视图 -->
-        <section v-else-if="activeView === 'notes'" class="view view-notes" tabindex="-1" aria-label="速记">
-          <div class="notes-split">
-            <NoteList
-              :notes="store.state.notes"
-              :active-id="activeNoteId"
-              @select="onSelectNote"
-              @create="onCreateNote"
-              @delete="onDeleteNote"
-            />
-            <NoteEditor
-              :note="activeNote"
-              @save="onSaveNote"
-              @delete="onDeleteNote"
-            />
-          </div>
-        </section>
+        <!-- 速记：三栏视图（文件夹树 / 列表 / 编辑器，docs/speednote-plan.md） -->
+        <SpeednoteView v-else-if="activeView === 'notes'" ref="speednoteRef" class="view view-notes" />
 
         <!-- 速达：独立视图 -->
         <section v-else-if="activeView === 'suda'" class="view view-suda" tabindex="-1" aria-label="速达">
@@ -1027,18 +1000,9 @@ provide('showToast', showToast)
           />
         </section>
 
-        <!-- 扩展运行视图：主区渲染扩展入口（iframe + window.xhub 桥 API） -->
+        <!-- 扩展运行视图：主区渲染扩展入口（iframe + window.xhub 桥 API）。
+             不带宿主工具栏：扩展名与「窗口/抽屉」多形态打开入口已由扩展中心承载 -->
         <section v-else-if="activeView === 'extension'" class="view view-extension" tabindex="-1" aria-label="扩展">
-          <div class="ext-toolbar">
-            <span class="ext-toolbar-name">{{ openedExtension?.name ?? '扩展' }}</span>
-            <div class="ext-toolbar-spacer" />
-            <button class="icon-btn" type="button" title="在窗口打开" aria-label="在窗口打开" @click="openExtensionWindow">
-              <AppWindow :size="15" :stroke-width="2" />
-            </button>
-            <button class="icon-btn" type="button" title="在抽屉打开" aria-label="在抽屉打开" @click="openExtensionDrawer">
-              <PanelRight :size="15" :stroke-width="2" />
-            </button>
-          </div>
           <ExtensionView
             v-if="openedExtension"
             :ext-id="openedExtension.id"
@@ -1086,6 +1050,7 @@ provide('showToast', showToast)
               :side="chatSide"
               @toggle="onChatToggle"
               @open-model-settings="onOpenChatSettings"
+              @open-account-settings="onOpenAccountSettings"
               @resized="onChatPanelResized"
             />
           </div>
@@ -1323,6 +1288,9 @@ html[data-wallpaper='1'] .title-bar [data-tip]::after {
 .sidebar.collapsed .sidebar-ext {
   align-items: center;
   gap: 6px;
+  /* 收起态需让 hover 名称气泡溢出扩展组显示：overflow-y:auto 会把右侧 ::after 气泡裁掉
+     （导航项无滚动容器所以正常，扩展组此前因此不显示名称） */
+  overflow: visible;
 }
 .sidebar.collapsed .sidebar-ext-label {
   display: none;
@@ -1546,32 +1514,10 @@ html[data-wallpaper='1'] .title-bar [data-tip]::after {
 .view-extensions :deep(.extension-center) {
   padding: 0 20px 20px 0;
 }
-/* 扩展运行视图：仅右下外边距 */
+/* 扩展运行视图（整页形态既定标准）：宿主零边距，留白由扩展页自行控制——
+   默认左上 0 / 右下 20（skill 模板内置），用户选「完全无边距」的扩展四面贴边 */
 .view-extension {
-  padding: 0 20px 20px 0;
-}
-.ext-toolbar {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 0 12px;
-}
-.ext-toolbar-spacer {
-  flex: 1;
-}
-.ext-toolbar-name {
-  font-size: 0.8125rem;
-  font-weight: 650;
-  color: var(--text-1);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ext-toolbar .icon-btn {
-  width: 30px;
-  height: 30px;
-  color: var(--text-3);
+  padding: 0;
 }
 
 /* 扩展抽屉：absolute 悬浮于工作区之上，右侧滑入 */
@@ -1652,20 +1598,6 @@ html[data-theme='dark'][data-wallpaper-clear='1'] .ext-drawer {
 }
 .view-layout-editor {
   padding: 0 20px 20px 0;
-}
-.notes-split {
-  display: flex;
-  gap: 14px;
-  height: 100%;
-  min-height: 0;
-}
-.notes-split > *:first-child {
-  flex: 0 0 300px;
-  min-width: 0;
-}
-.notes-split > *:last-child {
-  flex: 1;
-  min-width: 0;
 }
 .view-chat-hint {
   flex: 1;

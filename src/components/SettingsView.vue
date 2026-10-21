@@ -5,7 +5,7 @@
 // 于是先出现一段空白再显示内容。现在外壳 + 当前大类按需加载，切大类才取对应面板。
 // 样式统一在 ./settings/shared.css（规则带 .settings-view 前缀，避免外移后污染其它视图）。
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
-import { ChevronRight, Database, LayoutGrid, Palette, Puzzle, Search, Settings, Sparkles, User, X } from 'lucide-vue-next';
+import { Bot, ChevronRight, Database, LayoutGrid, Palette, Puzzle, Search, Settings, Sparkles, User, X } from 'lucide-vue-next';
 import { SETTINGS_INDEX } from './settingsIndex.generated';
 import PanelLoading from './settings/PanelLoading.vue';
 
@@ -24,7 +24,10 @@ const emit = defineEmits<{
 const SECTIONS = [
   { id: 'general', label: '常规' },
   { id: 'ball', label: '悬浮球' },
-  { id: 'ai', label: 'AI 助手' },
+  { id: 'assistant', label: '助手' },
+  { id: 'ai', label: '面板' },
+  { id: 'credit', label: '额度' },
+  { id: 'providers', label: '供应商' },
   { id: 'suda', label: '速达' },
   { id: 'appearance', label: '外观' },
   { id: 'workbench', label: '工作台' },
@@ -45,6 +48,8 @@ const GROUPS = [
   { id: 'general', label: '常规', icon: Settings },
   { id: 'appearance', label: '外观', icon: Palette },
   { id: 'workbench', label: '工作台', icon: LayoutGrid },
+  // AI 助手独立成大类（2026-10-16 自「功能」拉出），排在工作台下面
+  { id: 'ai', label: 'AI 助手', icon: Bot },
   { id: 'features', label: '功能', icon: Sparkles },
   { id: 'extensions', label: '扩展', icon: Puzzle },
   { id: 'account', label: '账号', icon: User },
@@ -60,7 +65,10 @@ const SECTION_GROUP: Record<SectionId, GroupId> = {
   shortcut: 'general',
   appearance: 'appearance',
   workbench: 'workbench',
-  ai: 'features',
+  assistant: 'ai',
+  ai: 'ai',
+  credit: 'ai',
+  providers: 'ai',
   suda: 'features',
   clipboard: 'features',
   online: 'features',
@@ -193,6 +201,7 @@ const PANEL_LOADERS = {
   general: () => import('./settings/GeneralPanel.vue'),
   appearance: () => import('./settings/AppearancePanel.vue'),
   workbench: () => import('./settings/WorkbenchPanel.vue'),
+  ai: () => import('./settings/AiPanel.vue'),
   features: () => import('./settings/FeaturesPanel.vue'),
   extensions: () => import('./settings/ExtensionsPanel.vue'),
   account: () => import('./settings/AccountPanel.vue'),
@@ -211,6 +220,7 @@ const PANELS: Record<GroupId, ReturnType<typeof defineAsyncComponent>> = {
   general: withPanelPlaceholder(PANEL_LOADERS.general),
   appearance: withPanelPlaceholder(PANEL_LOADERS.appearance),
   workbench: withPanelPlaceholder(PANEL_LOADERS.workbench),
+  ai: withPanelPlaceholder(PANEL_LOADERS.ai),
   features: withPanelPlaceholder(PANEL_LOADERS.features),
   extensions: withPanelPlaceholder(PANEL_LOADERS.extensions),
   account: withPanelPlaceholder(PANEL_LOADERS.account),

@@ -20,6 +20,33 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  // AI 工具端点（manifest.agent.tools 声明的工具在这里登记；2xx 响应体 = 工具结果，
+  // 失败返回非 2xx 并把原因写进 error 字段；响应体上限 256KB，大清单自己分页）
+  if (req.url === '/xhub/agent-tool' && req.method === 'POST') {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      try {
+        const { tool, args } = JSON.parse(body || '{}')
+        const handlers = {
+          get_info: () => ({ name: '我的扩展', version: '0.1.0' }),
+          // TODO: 落地时换成真实的数据查询/操作
+        }
+        const handler = handlers[tool]
+        if (!handler) {
+          res.statusCode = 404
+          res.end(JSON.stringify({ error: `未声明的工具 ${tool}` }))
+          return
+        }
+        res.end(JSON.stringify(handler(args ?? {})))
+      } catch (e) {
+        res.statusCode = 400
+        res.end(JSON.stringify({ error: String((e && e.message) || e) }))
+      }
+    })
+    return
+  }
+
   // TODO: 在这里挂真实路由（读取 body 时注意分段拼接，不要假设一次到齐）
   res.statusCode = 404
   res.end(JSON.stringify({ error: 'NOT_FOUND', path: req.url }))

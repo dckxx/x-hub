@@ -144,6 +144,64 @@ pub struct ModuleOptions {
     pub default_hide_title: Option<bool>,
 }
 
+/// 扩展声明给 AI 助手的工具（manifest.agent.tools[]，可选）。
+/// 这是「宿主不知道扩展里有什么数据」的解法：扩展**自描述**——声明工具名、用途、
+/// 参数 JSON Schema 与返回值形状，宿主聚合后经 extension_tool_list/call 两个
+/// 内置 Agent 工具暴露给模型（对齐 MCP tools/list + tools/call 模式）。
+/// 一期仅 service 扩展可声明：后端由宿主托管常驻，AI 随时可调，不依赖扩展页面是否打开。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentToolDecl {
+    /// 工具名（扩展内唯一，[a-z0-9_-]；模型看到的是 extension_tool_call 的 args，非全局命名空间）
+    pub name: String,
+    /// 一句话说明用途与返回内容（模型判断「什么时候该调我」的唯一依据，务必写清）
+    pub description: String,
+    /// 审批档位：read（默认）/ write / dangerous——**AI 侧授权档**，与 manifest.permissions
+    /// 两套体系（计划 §5 铁律：AI 工具授权 ≠ 扩展 manifest 权限，不可混用）
+    #[serde(default = "default_agent_level")]
+    pub level: String,
+    /// 参数 JSON Schema（object，缺省 = 无参）；与内置 AgentTool::parameters 同口径
+    #[serde(default)]
+    pub parameters: Value,
+    /// 返回值形状说明（可选，纯文本）：告诉模型结果长什么样，免试调一轮
+    #[serde(default)]
+    pub returns: String,
+}
+
+fn default_agent_level() -> String {
+    "read".to_string()
+}
+
+impl AgentToolDecl {
+    /// 语义校验：name/description 非空且 name 限 [a-z0-9_-]，level 三档白名单，
+    /// parameters 缺省或为 object。不合格的声明在装配 ExtensionEntry 时**跳过并落日志**
+    /// （一条坏声明不能弄哑整个扩展），返回 Err 的原因供日志定位。
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("工具名为空".into());
+        }
+        if !self.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
+            return Err(format!("工具名 {} 含非法字符（只允许小写字母/数字/_/-）", self.name));
+        }
+        if self.description.trim().is_empty() {
+            return Err(format!("工具 {} 缺 description（模型靠它判断何时调用）", self.name));
+        }
+        if !matches!(self.level.as_str(), "read" | "write" | "dangerous") {
+            return Err(format!("工具 {} 的 level {} 不在三档白名单", self.name, self.level));
+        }
+        if !self.parameters.is_null() && !self.parameters.is_object() {
+            return Err(format!("工具 {} 的 parameters 必须是 JSON object", self.name));
+        }
+        Ok(())
+    }
+}
+
+/// manifest.agent 整体（可选）：{ "tools": [ ... ] }
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentSpec {
+    #[serde(default)]
+    pub tools: Vec<AgentToolDecl>,
+}
+
 /// 扩展 manifest（manifest.json），对齐 spec §4。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionManifest {
@@ -194,6 +252,12 @@ pub struct ExtensionManifest {
     /// 一句话描述（列表展示用；spec §4 未列，作为可选补充字段）
     #[serde(default)]
     pub description: String,
+    /// 作者署名（市场卡片与详情页展示；发布弹窗可补填并回写本字段）
+    #[serde(default)]
+    pub author: Option<String>,
+    /// 分类（市场/已安装列表分类筛选用；发布弹窗可选并回写本字段，缺省 = 未分类）
+    #[serde(default)]
+    pub category: Option<String>,
     /// 扩展默认配置（对象）；用户覆盖存 `.config.json`，读取时用户覆盖优先（配置分层）
     #[serde(default)]
     pub config: Map<String, Value>,
@@ -203,6 +267,9 @@ pub struct ExtensionManifest {
     /// 工作台模块选项（manifest 字段为 moduleOptions；module 形态可选）
     #[serde(default, rename = "moduleOptions")]
     pub module_options: ModuleOptions,
+    /// 声明给 AI 助手的工具（manifest.agent.tools；经校验后的合格子集，见 AgentToolDecl）
+    #[serde(default)]
+    pub agent: Option<AgentSpec>,
 }
 
 fn default_kind() -> String {
@@ -228,6 +295,10 @@ pub struct ExtensionEntry {
     pub open_in: Vec<String>,
     pub permissions: Vec<String>,
     pub description: String,
+    /// 作者署名（manifest.author；发布弹窗预填与回写用）
+    pub author: Option<String>,
+    /// 分类（manifest.category；扩展中心分类筛选用，None = 未分类）
+    pub category: Option<String>,
     /// 图标文件绝对路径（存在时才非空）
     pub icon: Option<String>,
     /// 扩展目录绝对路径
@@ -257,6 +328,8 @@ pub struct ExtensionEntry {
     /// 安装时间（目录创建时间，RFC3339；前端「已安装」列表按此排序，最后安装的在最下面）。
     /// 取文件系统元数据，对本客户端装之前就存在的扩展同样有效；取不到时为 None
     pub installed_at: Option<String>,
+    /// 声明给 AI 助手的工具（manifest.agent.tools 校验后的合格子集；扩展设置弹窗展示 + 聚合给 Agent）
+    pub agent_tools: Vec<AgentToolDecl>,
 }
 
 fn runtime_str(r: &ExtensionRuntime) -> &'static str {
@@ -388,6 +461,8 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
         open_in: Vec::new(),
         permissions: Vec::new(),
         description: String::new(),
+        author: None,
+        category: None,
         icon: None,
         dir: dir_str.clone(),
         source: source.to_string(),
@@ -402,6 +477,7 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
         module_variants: Vec::new(),
         module_options: ModuleOptions::default(),
         installed_at: installed_at.clone(),
+        agent_tools: Vec::new(),
     };
 
     let manifest = match read_manifest(dir) {
@@ -430,6 +506,10 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
         .cloned()
         .collect();
 
+    // AI 工具声明校验：合格的进 Entry（扩展设置弹窗展示 + Agent 聚合共用），
+    // 坏声明跳过并落日志——一条坏声明不能弄哑整个扩展
+    let agent_tools = filter_agent_tools(&manifest.id, manifest.agent.as_ref());
+
     ExtensionEntry {
         id: manifest.id,
         name: manifest.name,
@@ -440,6 +520,8 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
         open_in: manifest.open_in,
         permissions: manifest.permissions,
         description: manifest.description,
+        author: manifest.author,
+        category: manifest.category,
         icon,
         dir: dir_str,
         source: source.to_string(),
@@ -454,7 +536,31 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
         module_variants: manifest.module_variants,
         module_options: manifest.module_options,
         installed_at,
+        agent_tools,
     }
+}
+
+/// 校验 manifest.agent.tools：只保留合格声明；重名/不合格的跳过并落日志。
+/// 单一校验点——ExtensionEntry.agent_tools 的消费者（扩展设置弹窗、Agent 聚合器）
+/// 拿到的都已经是干净清单，不必各自再验。
+fn filter_agent_tools(ext_id: &str, agent: Option<&AgentSpec>) -> Vec<AgentToolDecl> {
+    let Some(spec) = agent else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for t in &spec.tools {
+        if let Err(e) = t.validate() {
+            log::warn!("扩展 {ext_id} 的 AI 工具声明被跳过：{e}");
+            continue;
+        }
+        if !seen.insert(t.name.clone()) {
+            log::warn!("扩展 {ext_id} 的 AI 工具 {} 重名，后者被跳过", t.name);
+            continue;
+        }
+        out.push(t.clone());
+    }
+    out
 }
 
 /// 列出已安装扩展（Tauri 命令）。
@@ -876,9 +982,12 @@ pub(crate) const XHUB_BRIDGE_SCRIPT: &str = r#"
       all:function(){return call('config','all',{});}
     },
     sharedStorage:{
+      // A：get/set/remove 由宿主自动放进本扩展的 ext:<id>: 命名空间，代码不用改；
+      // B：读别家数据走 getFrom(ownerId, key)，别自己拼前缀（老宿主没有此方法，先特性探测）
       get:function(k){return call('sharedStorage','get',{key:k});},
       set:function(k,v){return call('sharedStorage','set',{key:k,value:v});},
-      remove:function(k){return call('sharedStorage','remove',{key:k});}
+      remove:function(k){return call('sharedStorage','remove',{key:k});},
+      getFrom:function(id,k){return call('sharedStorage','getFrom',{extId:id,key:k});}
     },
     // data 命名空间：与 Rust CAPABILITIES 的 data.* 能力一一对应（读方法带明确参数，
     // 写方法整包透传 opts——expectedVersion 等可选字段原样传递）。新增能力必须同步此表
@@ -974,6 +1083,16 @@ pub(crate) const XHUB_BRIDGE_SCRIPT: &str = r#"
     openExternal:function(url){
       window.parent.postMessage({__xhub:true,type:'open-external',url:String(url||'')},'*');
       return Promise.resolve();
+    },
+    // 界面与通知：notify 复用宿主右下角通知窗（需 manifest 声明 `notify` 权限）。
+    ui:{
+      notify:function(title,body){return call('ui','notify',{title:String(title||''),body:String(body||'')});}
+    },
+    // 剪贴板读写（需 manifest 声明 `clipboard` 权限）。readText 在剪贴板为图片/文件等
+    // 非文本内容时返回空串；writeText 写入后进宿主剪贴板历史，超 10MB 拒绝。
+    clipboard:{
+      readText:function(){return call('clipboard','readText',{});},
+      writeText:function(text){return call('clipboard','writeText',{text:String(text==null?'':text)});}
     },
     events:{
       on:function(event,handler){
@@ -1176,6 +1295,12 @@ pub fn uninstall_extension(app: tauri::AppHandle, id: String) -> Result<(), Stri
         return Err(format!("NOT_FOUND: 扩展 {id} 未安装"));
     }
     std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    // 共享存储按命名空间 `ext:<id>:` 精确清理（storage/config/permissions 都在扩展
+    // 目录内，已随 remove_dir_all 删除；旧版平铺键无归属，保持原样）
+    let purged = crate::xhub_api::purge_extension_shared_storage(&app, &id);
+    if purged > 0 {
+        log::info!("已清理扩展共享存储: {id}（{purged} 键）");
+    }
     log::info!("扩展已卸载: {id}");
     Ok(())
 }
@@ -1385,6 +1510,39 @@ mod tests {
                 XHUB_BRIDGE_SCRIPT.contains(&needle),
                 "桥脚本缺少 data 能力封装: {}.{}",
                 cap.namespace,
+                cap.method
+            );
+        }
+    }
+
+    #[test]
+    fn bridge_script_covers_clipboard_capabilities() {
+        // 剪贴板同 data 的契约：扩展按 window.xhub.clipboard.* 编程，桥漏方法 = 能力形同虚设
+        for cap in crate::xhub_api::CAPABILITIES.iter() {
+            if cap.namespace != "clipboard" {
+                continue;
+            }
+            let needle = format!("'{}','{}'", cap.namespace, cap.method);
+            assert!(
+                XHUB_BRIDGE_SCRIPT.contains(&needle),
+                "桥脚本缺少 clipboard 能力封装: {}",
+                cap.method
+            );
+        }
+    }
+
+    #[test]
+    fn bridge_script_covers_shared_storage_capabilities() {
+        // 共享存储同 data/clipboard 的契约：新增能力（如 getFrom）必须同步桥脚本，
+        // 否则能力表里有、扩展调不到（`window.xhub.sharedStorage.getFrom is not a function`）
+        for cap in crate::xhub_api::CAPABILITIES.iter() {
+            if cap.namespace != "sharedStorage" {
+                continue;
+            }
+            let needle = format!("'{}','{}'", cap.namespace, cap.method);
+            assert!(
+                XHUB_BRIDGE_SCRIPT.contains(&needle),
+                "桥脚本缺少 sharedStorage 能力封装: {}",
                 cap.method
             );
         }

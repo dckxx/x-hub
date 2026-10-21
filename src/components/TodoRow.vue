@@ -185,13 +185,15 @@ async function applyToggle() {
   }
 }
 
-/** 滚动后的下一个截止文案：今天 / 明天 / M月D日 */
+/** 滚动后的下一个截止文案：今天 / 明天 / M月D日（跨年补年份） */
 function nextLabel(t: Todo): string {
   if (t.due_at == null) return '下一轮'
   const d = new Date(t.due_at)
-  const badge = dueBadge({ due_at: t.due_at }, new Date())
+  const now = new Date()
+  const badge = dueBadge({ due_at: t.due_at }, now)
   if (badge && (badge.kind === 'today' || badge.kind === 'tmr')) return badge.text
-  return `${d.getMonth() + 1}月${d.getDate()}日`
+  const y = d.getFullYear() !== now.getFullYear() ? `${d.getFullYear()}年` : ''
+  return `${y}${d.getMonth() + 1}月${d.getDate()}日`
 }
 
 /** 确认弹窗状态：未完成子待办数量（> 0 时弹窗） */

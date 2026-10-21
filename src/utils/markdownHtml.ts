@@ -1,5 +1,6 @@
 import DOMPurify from 'dompurify'
 import { marked, Renderer } from 'marked'
+import { mapInlineProse, mapMarkdownLines } from './markdownLines'
 
 /**
  * 轻量 Markdown → 安全 HTML（待办描述等**只读展示**用）。
@@ -43,7 +44,6 @@ noteRenderer.code = ({ text, lang }) => {
 }
 
 const BR_LINE = /^[ \t]*<br\s*\/?\s*>[ \t]*$/i
-const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/
 /** Crepe 把分隔线一律写成 `***`。实时预览里用户看到的仍是分隔线，源码应回到 `---`。 */
 const HR_STAR = /^[ \t]*(?:\*\*\*|\* \* \*)[ \t]*$/
 /** 无序列表标记。只认星号后的空格，避免把行首强调 `*强调*` 改成列表。 */
@@ -53,51 +53,6 @@ const LIST_BR = /^([ \t]*-[ \t]+(?:\[[ xX]\][ \t]+)?)[ \t]*<br\s*\/?\s*>[ \t]*$/
 /** 会开 HTML 标签的 `<`。`1 < 2` 与自动链接 `<https://…>`（带 scheme）不在此列——
  *  后者若被一起转义，实时预览里可点的链接到了分屏就变成死文本，正是本模块要消灭的「左右对不上」。 */
 const RAW_TAG = /<\/?(?![A-Za-z][A-Za-z0-9+.-]*:\/\/)[A-Za-z][^>\n]*>/g
-
-type LineKind = 'fence' | 'math' | 'prose'
-
-/** 围栏和 `$$` 公式整段原样跳过，只改普通行。两边规则必须共用这一处，避免各写一套围栏识别。 */
-function mapMarkdownLines(text: string, fn: (line: string, kind: LineKind) => string): string {
-  const lines = text.split('\n')
-  let fence: { char: string; len: number } | null = null
-  let math = false
-  const out = lines.map((line) => {
-    const mark = FENCE_LINE.exec(line)
-    if (mark && !(mark[1][0] === '`' && mark[2].includes('`'))) {
-      const token = mark[1]
-      const bare = mark[2].trim() === ''
-      if (!fence) {
-        fence = { char: token[0], len: token.length }
-      } else if (fence.char === token[0] && token.length >= fence.len && bare) {
-        fence = null
-      }
-      return fn(line, 'fence')
-    }
-    if (fence) return fn(line, 'fence')
-    if (line.trim() === '$$') {
-      math = !math
-      return fn(line, 'math')
-    }
-    if (math) return fn(line, 'math')
-    return fn(line, 'prose')
-  })
-  return out.join('\n')
-}
-
-/** 行内代码用成对反引号包住，中间的 `\*`、`<tag>` 是代码，不能按正文改。 */
-function mapInlineProse(line: string, fn: (prose: string) => string): string {
-  const parts = line.split(/(`+)/)
-  let inCode = false
-  return parts
-    .map((part) => {
-      if (/^`+$/.test(part)) {
-        inCode = !inCode
-        return part
-      }
-      return inCode ? part : fn(part)
-    })
-    .join('')
-}
 
 /**
  * 单独成行的 `<br>` 在 CommonMark 里会开启 HTML 块，一直吞到下一个空行，

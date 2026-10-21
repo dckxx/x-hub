@@ -1,6 +1,6 @@
 # x-hub Linux 部署文档
 
-面向 **v0.7.6** 的 Linux 发行版部署说明：装什么依赖、怎么装包、装完在哪看数据与日志、
+面向 **v0.9.1** 的 Linux 发行版部署说明：装什么依赖、怎么装包、装完在哪看数据与日志、
 以及 Linux 版和 Windows 版**确实不一样**的那几处（先看第 6 节，能省掉一大半「这是不是 bug」的来回）。
 
 需要「WebView 为什么不能自动下载」「glibc 基座」「从源码编译」这类原理性问题时，配合读
@@ -101,7 +101,7 @@ bash install-linux.sh
 Linux 包走的是**预发布**（prerelease），tag 形如 `vX.Y.Z-linux.<短SHA>`，例如：
 
 ```bash
-scripts/install-linux.sh --tag v0.7.2-linux.<短SHA>
+scripts/install-linux.sh --tag v0.9.1-linux.<短SHA>
 ```
 
 用 `--tag` 可以把目标机钉在某个确定构建上（推荐在生产机器这么做，避免下次重装被换成别的提交）。
@@ -117,8 +117,8 @@ scripts/install-linux.sh --tag v0.7.2-linux.<短SHA>
 
 | 发行版 | 附件 | 安装命令 |
 |--------|------|----------|
-| Debian / Ubuntu | `*_amd64.deb` | `sudo apt install ./v0.7.2-linux.<短SHA>_amd64.deb` |
-| Fedora / RHEL | `*.x86_64.rpm` | `sudo dnf install ./v0.7.2-linux.<短SHA>.x86_64.rpm` |
+| Debian / Ubuntu | `*_amd64.deb` | `sudo apt install ./v0.9.1-linux.<短SHA>_amd64.deb` |
+| Fedora / RHEL | `*.x86_64.rpm` | `sudo dnf install ./v0.9.1-linux.<短SHA>.x86_64.rpm` |
 
 要点：
 
@@ -227,6 +227,9 @@ sudo apt install xdotool        # X11
 另外 Wayland 下**全局快捷键**、后台剪贴板监听会受合成器限制，行为不保证与 X11 一致；
 桌面环境跑 Wayland 时若快捷键失灵，先切到 X11 会话复测。
 
+速记里的「复制图片」（灯箱按钮 / 图片右键菜单）在 Linux 上同样写入的是图片本身：
+png / jpg / webp / gif（取首帧）都会解码后写进剪贴板，可直接粘贴到聊天或文档。
+
 ### 6.5 通知弹窗与应用内网页面板：Linux 暂不可用
 
 - **右下角通知弹窗**：自绘通知窗依赖「创建时隐藏 → 首次 show 映射」的 X11 路径，实测部分
@@ -238,7 +241,20 @@ sudo apt install xdotool        # X11
   预留一半窗口高度（即使隐藏），已通过创建后将其移出布局的方式保证主界面满高，代价是
   Linux 上该面板暂不显示——打开网页请暂改用系统浏览器。
 
-### 6.6 其它小差异
+### 6.6 速达「备注」加密：依赖系统钥匙串
+
+速达资源的「备注」（可存账号密码、解压密码等）一律加密后才写进数据库：
+
+- Windows 用系统 DPAPI；**Linux 用系统钥匙串**（Secret Service，即 GNOME Keyring / KWallet）
+  保存一把随机主密钥，备注以 AES-256-GCM 加密落盘。首次保存备注时自动生成主密钥，钥匙串里
+  的条目名为 `x-hub-secret`。AI 供应商的 API Key 用的是同一套钥匙串。
+- **钥匙串不可用时备注无法保存**（无桌面会话、钥匙串未解锁、未安装钥匙串服务）：保存会提示
+  「备注加密失败」，不会退回明文落盘。其它字段不受影响。
+- 主密钥只在本机钥匙串里，**不随数据目录或备份走**：把备份恢复到另一台机器、另一个用户，
+  或从 Windows 迁到 Linux，原有备注都解不开，按「无备注」处理（不报错、不影响其它数据），
+  需要重新填写。
+
+### 6.7 其它小差异
 
 | 功能 | Linux 行为 |
 |------|-----------|
@@ -263,6 +279,8 @@ sudo apt install xdotool        # X11
 | 悬浮球贴不住屏幕边缘 | **预期行为**，见 6.1 |
 | 提示有更新但点了没用 | **预期行为**，见 6.2 |
 | 全局快捷键无反应 | 与已有快捷键冲突，或处于 Wayland 会话；改绑快捷键 / 切 X11 复测 |
+| 保存速达资源提示「备注加密失败」 | 系统钥匙串不可用：确认已登录桌面会话、钥匙串已解锁；最小化安装需先装 `gnome-keyring`（或 KWallet），见 6.6 |
+| 恢复备份后备注都不见了 | **预期行为**：备注主密钥在原机钥匙串里、不随备份迁移，见 6.6 |
 | 界面起来但内容空白 | 看日志尾部；先确认依赖是否齐、是否有 WebKitGTK 版本冲突 |
 
 ### 数据备份 / 迁移
@@ -270,6 +288,8 @@ sudo apt install xdotool        # X11
 - 应用内：设置 →「数据与关于」→ 备份/恢复（打包为单个 zip）。
 - 粗暴做法：退出应用后直接拷整个 `~/.config/x-hub/` 到目标机同路径（不要只拷 `app.db`，
   图片、图标、配置都在旁边目录里）。
+- 两种方式都**带不走**存在系统钥匙串里的东西：速达备注（见 6.6）与 AI 供应商 API Key，
+  迁移后需重新填写。
 
 ---
 
@@ -305,7 +325,7 @@ pnpm run tauri:build:deb      # 或 tauri:build:rpm / tauri:build:linux（deb+rp
 ```bash
 # 目标机（Ubuntu 24.04 / Fedora 44 等）上，三条命令即可
 chmod +x install-linux.sh
-./install-linux.sh --tag v0.7.2-linux.<短SHA>
+./install-linux.sh --tag v0.9.1-linux.<短SHA>
 x-hub
 ```
 

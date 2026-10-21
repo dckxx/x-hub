@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref } from 'vue'
-import { ChevronDown, Copy, Eye, EyeOff, FlaskConical, ListPlus, Pencil, Plus, Trash2, X } from 'lucide-vue-next'
-import { PLATFORM_ENTRY_NAME, isPlatformModel, isTauri, tauriApi, type ChatModelConfig } from '../api/tauri'
+import { inject, onMounted, ref } from 'vue'
+import { ChevronDown, Copy, ExternalLink, Eye, EyeOff, FlaskConical, ListPlus, Pencil, Plus, Trash2, X } from 'lucide-vue-next'
+import { isPlatformModel, isTauri, tauriApi, type ChatModelConfig, type ProviderPreset } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
@@ -18,123 +18,27 @@ interface ProviderEdit {
   expanded: boolean
   fetched: string[]
   selected: Set<string>
+  /** 手动添加模型输入框的草稿（与在线拉取并存，见 addManualModel） */
+  manualModel: string
   busy: boolean
   msg: string
   savedKey: string
   keyVisible: boolean
   editingKey: boolean
+  /** 点选预设带出的「获取 Key」指引页（空 = 不显示入口；手动填写的供应商没有） */
+  keyGuide: string
 }
 
 const providers = ref<ProviderEdit[]>([])
 const loading = ref(false)
 const saving = ref(false)
 
-// ---- 平台免费额度（登录后可直接用，不需要自备 API Key） ----
-// 形态：设置里只是一个**开启/关闭**开关 —— 它不渲染成供应商卡片（没有供应商名称/Base URL/
-// API Key/测试连通/获取模型这些字段，用户也不需要关心平台侧有哪几个模型）。
-// 写入的条目仍按 `platform:<模型名>` 存（后端靠这个前缀识别平台额度，见 chat.rs::is_platform_model），
-// Key 写占位符「用账号会话换额度」，Rust 侧请求时再换成真实 token（chat.rs::PLATFORM_KEY_SENTINEL）。
-// ⚠️ 平台 Key 一律不在界面展示/复制（占位符没有意义，真 token 也不该出 Rust）。
-// AI 对话里这批条目折叠成「x-hub 平台」一个入口，具体用哪个模型由后端在多个平台模型之间负载切换。
-const PLATFORM_SENTINEL = '__xhub_platform__'
-const platformBusy = ref(false)
-/// 平台条目：不进 providers（不渲染成卡片），但必须原样留在配置里（丢了等于关掉平台额度）
-const platformModels = ref<ChatModelConfig[]>([])
-
-const platformEnabled = computed(() => platformModels.value.length > 0)
-
-/// 开关下方的状态说明：只说「开没开、平台现在有几个模型、对话里显示成什么」，
-/// 具体是哪些模型不在这里列（用户不需要选，后端会负载切换）
-const platformStatusText = computed(() => {
-  if (!platformEnabled.value) {
-    return '登录账号后即可使用平台提供的模型（走平台额度，不需要填 API Key）。开启后 AI 对话的模型列表里显示为「x-hub 平台」。'
-  }
-  const n = platformModels.value.length
-  return n > 1
-    ? `已开启 · 平台当前提供 ${n} 个模型，AI 对话里显示为「x-hub 平台」，多个模型之间自动负载切换`
-    : `已开启 · 平台当前提供 ${n} 个模型，AI 对话里显示为「x-hub 平台」`
-})
-
-/// 平台模型的列表与地址只能从平台账号接口取。
-///
-/// 平台中转只实现 `POST /v1/chat/completions`，**没有** OpenAI 的 `GET {base}/models`
-/// ——实测该路径恒 404 `{"error":"not_found"}`（2026-09-17 用户反馈「连接失败：接口返回 404」）；
-/// 平台自己的列表接口是 `/api/v1/ai/models`，鉴权走**账号登录态**而不是 API Key。
-/// 所以平台额度一律走这里，绝不能套用自备供应商那条 `GET {base_url}/models` 的通用探测。
-async function loadPlatformModels(): Promise<{ ids: string[]; baseUrl: string }> {
-  const account = await tauriApi.accountStatus()
-  if (!account.loggedIn) throw new Error('请先在「设置 → 账号」登录')
-  // 服务端地址是内置常量（设置里没有地址入口），后端正常都会回非空值；
-  // 这里只留防御性兜底，不再提示用户「去填地址」——那个入口已经不存在了
-  const server = (account.serverUrl || '').replace(/\/+$/, '')
-  if (!server) throw new Error('账号服务地址暂不可用，请稍后重试')
-  const names = await tauriApi.platformModels()
-  return { ids: names.map((n) => `platform:${n}`), baseUrl: `${server}/v1` }
-}
-
-/// 平台条目的统一构造：`platform:` 前缀是后端认出平台模型的依据（chat.rs::resolve_api_key），
-/// Key 写占位符（请求时换成账号 token），base_url 后端也会现算（这里只存一份便于展示）。
-function platformModel(id: string, baseUrl: string): ChatModelConfig {
-  const name = id.replace(/^platform:/, '')
-  return {
-    id,
-    name: `${name}（平台额度）`,
-    base_url: baseUrl,
-    model: name,
-    api_key: PLATFORM_SENTINEL,
-    is_default: false,
-    has_api_key: true,
-    provider_name: PLATFORM_ENTRY_NAME,
-  }
-}
-
-/// 开启平台额度：拉平台当前可用模型并整体写入配置（平台加/减模型时重新开关一次即同步）
-async function enablePlatform() {
-  if (!isTauri() || platformBusy.value) return
-  platformBusy.value = true
-  try {
-    const { ids, baseUrl } = await loadPlatformModels()
-    if (!ids.length) {
-      showToast('平台暂未开放任何模型')
-      return
-    }
-    const existing = collectAll().filter((m) => !isPlatformModel(m))
-    const saved = await tauriApi.saveChatModels([...existing, ...ids.map((id) => platformModel(id, baseUrl))])
-    store.setChatModels(saved)
-    // 只更新平台条目本身，**不回读整个列表**：开关与自备供应商列表毫无关系，
-    // 回读会把卡片全部重建（展开态要重继承），还可能把用户正在填的新供应商卡片冲掉
-    platformModels.value = saved.filter(isPlatformModel)
-    showToast(
-      ids.length > 1
-        ? `平台额度已开启（${ids.length} 个模型，对话里按负载自动切换）`
-        : '平台额度已开启',
-    )
-  } catch (e) {
-    showToast(`开启失败：${e}`)
-  } finally {
-    platformBusy.value = false
-  }
-}
-
-/// 关闭平台额度：把平台条目从配置里整体移除（对话里的「x-hub 平台」入口随之消失）
-async function disablePlatform() {
-  if (!isTauri() || platformBusy.value) return
-  platformBusy.value = true
-  const kept = platformModels.value
-  platformModels.value = []
-  try {
-    const saved = await tauriApi.saveChatModels(collectAll())
-    store.setChatModels(saved)
-    // 同上：平台条目已在前面就地清空（platformModels.value = []），无需回读整表
-    showToast('平台额度已关闭')
-  } catch (e) {
-    // 保存失败就把条目放回去，别让界面显示成「已关闭」而配置里其实还在
-    platformModels.value = kept
-    showToast(`关闭失败：${e}`)
-  } finally {
-    platformBusy.value = false
-  }
-}
+// ---- 平台条目（prop 回传）----
+// 平台额度的开关与逻辑在设置页 AiPanel.vue 的「额度」子项里；这里只经 prop 拿到当前平台
+// 条目，供 collectAll 整体保存时原样带回（平台条目不渲染成卡片，漏掉 = 悄悄关掉平台额度）。
+// 条目按 `platform:<模型名>` 存（后端靠前缀识别，见 chat.rs::is_platform_model），Key 是
+// 占位符，请求时由 Rust 换成账号 token（PLATFORM_KEY_SENTINEL）——绝不在此展示/复制。
+const props = defineProps<{ platformModels?: ChatModelConfig[] }>()
 
 function groupKey(m: ChatModelConfig): string {
   const name = (m.provider_name ?? '').trim()
@@ -155,11 +59,13 @@ function toProvider(m: ChatModelConfig): ProviderEdit {
     expanded: false,
     fetched: [],
     selected: new Set(),
+    manualModel: '',
     busy: false,
     msg: '',
     savedKey: '',
     keyVisible: false,
     editingKey: false,
+    keyGuide: '',
   }
 }
 
@@ -173,8 +79,7 @@ async function loadProviders(opts: { silent?: boolean } = {}) {
   if (!opts.silent) loading.value = true
   try {
     const list = await tauriApi.getChatModels()
-    // 平台条目单独摘出来（设置里它只是一个开关，不渲染成供应商卡片），其余按自备供应商分组
-    platformModels.value = list.filter(isPlatformModel)
+    // 平台条目不渲染成供应商卡片（开关在设置页「额度」子项），按自备供应商分组
     const prev = new Map(providers.value.map((p) => [p.key, p]))
     const map = new Map<string, ProviderEdit>()
     for (const m of list) {
@@ -196,6 +101,7 @@ async function loadProviders(opts: { silent?: boolean } = {}) {
         expanded: old.expanded,
         fetched: old.fetched,
         selected: old.selected,
+        manualModel: old.manualModel,
         msg: old.msg,
         savedKey: old.savedKey,
         keyVisible: old.keyVisible,
@@ -219,12 +125,23 @@ function addProvider() {
     expanded: true,
     fetched: [],
     selected: new Set(),
+    manualModel: '',
     busy: false,
     msg: '',
     savedKey: '',
     keyVisible: false,
     editingKey: false,
+    keyGuide: '',
   })
+}
+
+/** 点选预设：填名称/地址 + 带出 Key 指引，备注就地展示（#t47）。只填空卡片，不覆盖已填内容 */
+function applyPreset(p: ProviderEdit, preset: ProviderPreset) {
+  p.providerName = preset.name
+  p.baseUrl = preset.baseUrl
+  p.keyGuide = preset.keyGuideUrl
+  p.msg = preset.note
+  syncProviderFields(p)
 }
 
 function removeProvider(index: number) {
@@ -404,6 +321,40 @@ function addSelected(p: ProviderEdit) {
   p.msg = `已添加 ${ids.length} 个模型`
 }
 
+// 手动添加模型：不少 OpenAI 兼容中转不实现 /models 接口或返回空列表，在线拉取
+// 一个模型都拿不到、原来就没有任何添加入口。这里直接按模型名加入当前供应商，
+// 与「获取模型」在线拉取并存（勾选流程照旧可用）。
+function addManualModel(p: ProviderEdit) {
+  const id = p.manualModel.trim()
+  if (!id) {
+    p.msg = '请输入模型名称'
+    return
+  }
+  const name = p.providerName.trim()
+  if (!name) {
+    p.msg = '请先填写供应商名称，再添加模型'
+    return
+  }
+  if (p.models.some((m) => m.model === id)) {
+    p.msg = `模型「${id}」已在列表中`
+    p.manualModel = ''
+    return
+  }
+  p.models.push({
+    id: 'm' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+    name: id,
+    provider_name: name,
+    base_url: p.baseUrl.trim(),
+    model: id,
+    api_key: '',
+    is_default: false,
+    has_api_key: p.hasApiKey,
+  })
+  if (p.models.length === 1) p.models[0].is_default = true
+  p.manualModel = ''
+  p.msg = `已添加模型「${id}」`
+}
+
 function removeModel(p: ProviderEdit, id: string) {
   const i = p.models.findIndex((m) => m.id === id)
   if (i >= 0) {
@@ -418,9 +369,9 @@ function collectAll(): ChatModelConfig[] {
     applyKey(p)
     out.push(...p.models)
   }
-  // 平台条目不在 providers 里（它只是一个开关，不渲染卡片），但必须原样带回：
-  // saveAll / 开关切换都是整体覆盖写配置，漏掉它等于把用户开着的平台额度悄悄关掉
-  out.push(...platformModels.value)
+  // 平台条目不在 providers 里（开关在设置页「额度」子项，条目经 prop 传入），但必须原样带回：
+  // saveAll 是整体覆盖写配置，漏掉它等于把用户开着的平台额度悄悄关掉
+  out.push(...(props.platformModels ?? []))
   // 全局默认归一
   const hasDefault = out.some((m) => m.is_default)
   if (!hasDefault && out.length > 0) out[0].is_default = true
@@ -435,7 +386,7 @@ async function saveAll() {
   for (const p of providers.value) {
     if (p.models.length === 0) {
       const label = p.providerName.trim() || p.baseUrl.trim() || '未命名供应商'
-      showToast(`供应商「${label}」还没有模型：填好 Base URL 与 API Key 后点「获取模型」勾选添加；不要这个供应商就点右上角删除`)
+      showToast(`供应商「${label}」还没有模型：点「获取模型」在线拉取，或直接输入模型名手动添加；不要这个供应商就点右上角删除`)
       return
     }
   }
@@ -457,7 +408,7 @@ async function saveAll() {
   // 空配置会让 AI 对话里没有任何可选模型
   const all = collectAll()
   if (all.length === 0) {
-    showToast('还没有可用的模型：填好 Base URL 与 API Key 后点「获取模型」勾选添加，或开启上方的「x-hub 平台免费额度」')
+    showToast('还没有可用的模型：点「获取模型」在线拉取，或直接输入模型名手动添加；也可开启上方的「x-hub 平台免费额度」')
     return
   }
   saving.value = true
@@ -477,35 +428,42 @@ async function saveAll() {
 
 onMounted(() => {
   void loadProviders()
+  void loadPresets()
 })
 
 defineExpose({ reload: () => void loadProviders() })
+
+// ---- 供应商预设（#t47：后台可配；未登录/接口挂了回落内置清单，不阻塞配置） ----
+const PRESET_FALLBACK: ProviderPreset[] = [
+  { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', keyGuideUrl: 'https://platform.deepseek.com/api_keys', note: '深度求索官方 API，性价比高' },
+  { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', keyGuideUrl: 'https://platform.openai.com/api-keys', note: '' },
+  { name: 'Moonshot 月之暗面', baseUrl: 'https://api.moonshot.cn/v1', keyGuideUrl: 'https://platform.moonshot.cn/console/api-keys', note: '' },
+  { name: '阿里云百炼', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', keyGuideUrl: 'https://bailian.console.aliyun.com/?apiKey=1', note: '通义千问系列，国内直连' },
+  { name: 'Ollama（本机）', baseUrl: 'http://localhost:11434/v1', keyGuideUrl: '', note: '本机模型，无需 API Key' },
+]
+
+const presets = ref<ProviderPreset[]>(PRESET_FALLBACK)
+
+async function loadPresets() {
+  if (!isTauri()) return
+  try {
+    const list = await tauriApi.platformProviderPresets()
+    if (list.length) presets.value = list
+  } catch {
+    // 未登录 / 网络失败：保持内置清单，不打扰用户
+  }
+}
+
+/// 「获取 Key」指引页走系统浏览器（设置页内嵌跳转没有必要，也更安全）
+function openGuide(url: string) {
+  if (!url) return
+  void tauriApi.openExternal(url).catch(() => showToast('无法打开浏览器，请手动复制链接'))
+}
 </script>
 
 <template>
   <div class="ai-providers">
     <p class="ai-intro">配置 OpenAI 兼容的模型供应商（如 DeepSeek、OpenAI、Ollama）。填好 Base URL 与 API Key 后，可测试连通、拉取可用模型并勾选添加。API Key 仅保存在系统钥匙串。</p>
-
-    <!-- 平台免费额度：登录后可直接用，不需要自备 API Key。它不展开供应商字段（没有 Base URL /
-         API Key 要填，平台侧有哪些模型也不必让人关心），只有一个开关；与下面的自备供应商并存。 -->
-    <div class="setting-row ap-platform">
-      <div class="setting-info">
-        <span class="setting-name">使用 x-hub 平台免费额度</span>
-        <span class="setting-desc">{{ platformStatusText }}</span>
-      </div>
-      <button
-        class="toggle"
-        role="switch"
-        type="button"
-        :aria-checked="platformEnabled"
-        :class="{ on: platformEnabled }"
-        :disabled="platformBusy"
-        :title="platformEnabled ? '关闭后平台额度条目会从配置中移除' : '开启后自动拉取平台当前可用的模型'"
-        @click="platformEnabled ? disablePlatform() : enablePlatform()"
-      >
-        <span class="toggle-knob"></span>
-      </button>
-    </div>
 
     <!-- 只有「还没有内容」时才让占位顶掉列表：已有卡片时的刷新一律静默，避免整块闪一下 -->
     <div v-if="loading && providers.length === 0" class="ai-loading">加载中…</div>
@@ -531,6 +489,20 @@ defineExpose({ reload: () => void loadProviders() })
 
         <!-- 展开体：编辑 + 获取模型 + 模型列表 -->
         <div v-if="p.expanded" class="prov-body">
+          <!-- 供应商预设（#t47：后台可配；只对全新空卡片显示，不覆盖已填内容） -->
+          <div v-if="!p.models.length && !p.baseUrl.trim()" class="preset-row">
+            <span class="preset-label">快速填充</span>
+            <button
+              v-for="ps in presets"
+              :key="ps.name"
+              class="preset-chip"
+              type="button"
+              :title="ps.note || ps.baseUrl"
+              @click="applyPreset(p, ps)"
+            >
+              {{ ps.name }}
+            </button>
+          </div>
           <div class="ai-field">
             <label class="ai-label">供应商名称</label>
             <input v-model="p.providerName" class="field-input" placeholder="如 DeepSeek" @input="syncProviderFields(p)" />
@@ -583,6 +555,10 @@ defineExpose({ reload: () => void loadProviders() })
                 {{ p.busy ? '获取中…' : '获取模型' }}
               </button>
             </div>
+            <!-- 预设带出的「获取 Key」指引：走系统浏览器（#t47） -->
+            <a v-if="p.keyGuide" class="key-guide" :href="p.keyGuide" @click.prevent="openGuide(p.keyGuide)">
+              <ExternalLink :size="12" /> 获取 {{ p.providerName || '该平台' }} API Key
+            </a>
           </div>
 
           <p v-if="p.msg" class="prov-msg" :class="{ ok: p.msg.startsWith('连通正常') || p.msg.startsWith('已添加') || p.msg.startsWith('获取到') }">{{ p.msg }}</p>
@@ -599,10 +575,25 @@ defineExpose({ reload: () => void loadProviders() })
             </button>
           </div>
 
+          <!-- 手动添加模型：中转不实现 /models 或返回空时，直接填模型名加入（回车或点按钮） -->
+          <div class="manual-model-row">
+            <input
+              v-model="p.manualModel"
+              class="field-input"
+              placeholder="手动添加模型名（如 gpt-4o-mini），回车确认"
+              aria-label="手动添加模型名"
+              @keydown.enter.prevent="addManualModel(p)"
+            />
+            <button class="ghost-btn manual-add" :disabled="!p.manualModel.trim()" @click="addManualModel(p)">
+              <Plus :size="13" />
+              添加
+            </button>
+          </div>
+
           <!-- 当前供应商下已配置的模型：tag 形式并排展示，可复制名称/删除 -->
           <div class="models-block">
             <div class="models-head">已配置模型</div>
-            <div v-if="p.models.length === 0" class="models-empty">暂无模型，点击「获取模型」拉取后添加</div>
+            <div v-if="p.models.length === 0" class="models-empty">暂无模型：点「获取模型」在线拉取，或在上方输入模型名手动添加</div>
             <div v-else class="model-tags">
               <span
                 v-for="m in p.models"
@@ -637,17 +628,47 @@ defineExpose({ reload: () => void loadProviders() })
 </template>
 
 <style scoped>
-/* 平台免费额度：一个开关行（.setting-row 通用样式来自设置页 shared.css），
-   与下面的自备供应商卡片刻意区分——它不是供应商，没有需要用户填的东西 */
-.ap-platform {
-  margin: 4px 0 14px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border-soft);
+/* ---- Agent 权限与个性化样式（#t47）已随设置项迁往 AiPanel「助手」子项 ---- */
+
+/* ---- 供应商预设 chips（#t47） ---- */
+.preset-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
 }
-/* 说明文字用满整行剩余宽度：不给 max-width（ch 单位对中文只有半个字宽，会把话提前截在半行处） */
-.ap-platform .setting-info {
-  flex: 1;
-  min-width: 0;
+.preset-label {
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+.preset-chip {
+  padding: 3px 10px;
+  font-size: 0.75rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.preset-chip:hover {
+  border-color: color-mix(in srgb, var(--brand-500) 45%, transparent);
+  color: var(--text-1);
+}
+
+/* 预设带出的「获取 Key」指引链接（系统浏览器打开） */
+.key-guide {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 0.75rem;
+  color: var(--brand-500);
+  text-decoration: none;
+}
+.key-guide:hover {
+  text-decoration: underline;
 }
 
 .ai-intro {
@@ -802,6 +823,29 @@ defineExpose({ reload: () => void loadProviders() })
   border-color: color-mix(in srgb, var(--brand-500) 35%, transparent);
 }
 .prov-fetch:hover {
+  background: var(--brand-500);
+  color: var(--text-on-accent);
+  border-color: var(--brand-500);
+}
+/* 手动添加模型行：与 ai-key-row 同款 flex 布局 */
+.manual-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.manual-model-row .field-input {
+  flex: 1;
+}
+.manual-add {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  font-size: 0.75rem;
+  background: var(--brand-50);
+  color: var(--brand-500);
+  border-color: color-mix(in srgb, var(--brand-500) 35%, transparent);
+}
+.manual-add:hover:not(:disabled) {
   background: var(--brand-500);
   color: var(--text-on-accent);
   border-color: var(--brand-500);

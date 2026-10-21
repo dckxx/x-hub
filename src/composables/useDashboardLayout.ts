@@ -2,6 +2,7 @@ import { computed, ref, watch } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
+import { reportClientError } from '../utils/error-report'
 
 /**
  * 工作台自定义布局（设置页两栏编辑器 + 主界面渲染共用）
@@ -11,21 +12,28 @@ import { useStore } from '../stores/workbench'
  *   - 布局项记住用户选的形态（DashPlacement.variant），真实工作台按形态渲染对应内容
  *   - 老数据无 variant → 回退模块 defaultVariant，天然兼容
  * - 模块库：左侧「未放置」模块；画布：右侧「已放置」模块，单实例（左右二选一）
- * - 拖入 = 放置（按当前形态推荐尺寸落位）；画布内拖动 = 移动；右下角拖拽 = 调整尺寸（钳制到形态最小尺寸）；删除 = 退回左侧库
+ * - 拖入 = 放置（按当前形态**最小尺寸**落位，扩展最小可 1×1，放下后再按需放大）；
+ *   画布内拖动 = 移动；右下角拖拽 = 调整尺寸（钳制到形态最小尺寸）；删除 = 退回左侧库
  * - 自由布局：模块放到哪就落在哪（不左上贪心压实）；目标被占时自动向下找最近空位落位（不弹回）
  * - 草稿语义：进入编辑器 beginEdit 快照，确认 commitEdit 才写库，未确认切走 cancelEdit 恢复编辑前
  * - 持久化到应用配置（AppConfig.dashboard_layout，经 Rust config.json 落盘）；浏览器预览回退 localStorage
+ * - 默认布局快照：编辑器「存为默认布局」把当前画布存进 AppConfig.dashboard_default_layout（预览回退 localStorage），
+ *   「恢复默认布局」随时一键回到快照——编辑器内 = 回到草稿（确认后生效），编辑器外 = 立即生效
  * - 单例状态：编辑器与主界面共享同一份 placements，变更实时同步
  */
 
 export const DASH_COLS = 12
-export const MIN_SIZE = 2
+/** 全局尺寸下限：1×1 起步（扩展可声明 1×1 的最小形态，内置模块的形态 min 本就 ≥ 各自内容下限） */
+export const MIN_SIZE = 1
 
 /** 自定义标题最大长度（编辑器输入框与解析共用一个口径） */
 export const TITLE_MAX = 24
 
 /** 旧版 localStorage 存储 key（仅用于迁移到应用配置，迁移后清除） */
 const STORAGE_KEY = 'xhub.dashboard.layout.v2'
+
+/** 默认布局快照的 localStorage key（仅浏览器预览用；Tauri 走 AppConfig.dashboard_default_layout） */
+const STORAGE_KEY_DEFAULT = 'xhub.dashboard.layout.default.v1'
 
 /** 形态定义：min = 内容完整展示的最小格子，ideal = 内容正好铺满的推荐格子 */
 export interface DashVariantDef {
@@ -111,6 +119,13 @@ export const DASH_MODULES: DashModuleDef[] = [
     title: '便签 2',
     defaultVariant: 'note',
     variants: [v('note', '便签', 2, 1, 2, 2, '随手记')],
+  },
+  {
+    // 日记：回车即存入速记「日记」文件夹（缺失自动建，见 DiaryCard.vue）
+    id: 'diary',
+    title: '日记',
+    defaultVariant: 'input',
+    variants: [v('input', '随手记', 4, 2, 4, 2, '宽幅输入框，回车保存一篇日记')],
   },
   {
     id: 'notes',
@@ -204,6 +219,46 @@ const extensionModules = ref<DashModuleDef[]>([])
 
 export function registerExtensionModules(mods: DashModuleDef[]) {
   extensionModules.value = mods
+  readoptPlacements()
+}
+
+/** 把解析出的条目按注册表现状分成「在用 / 休眠」两份，是所有布局加载路径的唯一入口 */
+function adoptPlacements(all: DashPlacement[] | null) {
+  const list = all ?? []
+  placements.value = list.filter((p) => dashModuleDef(p.id))
+  dormantPlacements.value = list.filter((p) => !dashModuleDef(p.id))
+}
+
+/** 注册表更新（启动加载 / 扩展中心装·卸刷新 / 加载重试成功）后重算两份名单：
+ *  重新出现的扩展条目原位唤醒（与现有卡片重叠时让位到最近空位），消失的转休眠 */
+let extensionsLoadedOnce = false
+function readoptPlacements() {
+  // 编辑器草稿期间不动画布，唤醒留到下次注册表刷新或重启
+  if (editSnapshot) return
+  const firstLoad = !extensionsLoadedOnce
+  extensionsLoadedOnce = true
+  const merged = new Map<string, DashPlacement>()
+  for (const p of [...dormantPlacements.value, ...placements.value]) merged.set(p.id, p)
+  const active: DashPlacement[] = []
+  const dormant: DashPlacement[] = []
+  for (const p of merged.values()) (dashModuleDef(p.id) ? active : dormant).push(p)
+  const settled: DashPlacement[] = []
+  for (const p of [...active].sort((a, b) => a.y - b.y || a.x - b.x)) {
+    const rect = { ...p }
+    if (settled.some((q) => collides(rect, q))) {
+      const spot = findFreeSpot(settled, p.w, p.h, p.x, p.y)
+      rect.x = spot.x
+      rect.y = spot.y
+    }
+    settled.push(rect)
+  }
+  const changed =
+    settled.length !== placements.value.length || dormant.length !== dormantPlacements.value.length
+  placements.value = settled
+  dormantPlacements.value = dormant
+  // 首次加载的唤醒不落盘：启动 watch 紧接着会按 config 重新解析（此时注册表已就绪，条目直接按在用解析），
+  // 这里若持久化会把模块初始态（localStorage 残留 / 默认布局）抢先写进 config
+  if (changed && !firstLoad) persistIfIdle()
 }
 
 export function dashModuleDef(id: string): DashModuleDef | undefined {
@@ -262,16 +317,17 @@ export function dashFitState(p: DashPlacement): { level: DashFitLevel; label: st
   return { level: 'mid', label: `紧凑可读 · 推荐 ${vd.idealW}×${vd.idealH}` }
 }
 
-/** 推荐布局：沿用改动前的 8 模块模板（历史习惯布局） */
+/** 推荐布局：12×15 棋盘 9 模块——左列时钟/监视/便签/提示词，中列日记/倒计时/日历，右列待办通高，底部最近使用通栏 */
 const PRESET: DashPlacement[] = [
   { id: 'clock', variant: 'big', x: 0, y: 0, w: 4, h: 3 },
-  { id: 'countdown', variant: 'list', x: 4, y: 0, w: 5, h: 4 },
-  { id: 'todo', variant: 'list', x: 9, y: 0, w: 3, h: 12 },
-  { id: 'sysmon', variant: 'monitor', x: 0, y: 3, w: 4, h: 3 },
-  { id: 'prompts', variant: 'list', x: 4, y: 4, w: 5, h: 8 },
-  { id: 'sticky1', variant: 'note', x: 0, y: 6, w: 2, h: 6 },
-  { id: 'sticky2', variant: 'note', x: 2, y: 6, w: 2, h: 6 },
-  { id: 'recent', variant: 'bar', x: 0, y: 12, w: 12, h: 3 },
+  { id: 'diary', variant: 'input', x: 4, y: 0, w: 4, h: 3 },
+  { id: 'todo', variant: 'list', x: 8, y: 0, w: 4, h: 13 },
+  { id: 'sysmon', variant: 'monitor', x: 0, y: 3, w: 2, h: 3 },
+  { id: 'sticky1', variant: 'note', x: 2, y: 3, w: 2, h: 3 },
+  { id: 'countdown', variant: 'list', x: 4, y: 3, w: 4, h: 4 },
+  { id: 'prompts', variant: 'list', x: 0, y: 6, w: 4, h: 7 },
+  { id: 'calendar', variant: 'month', x: 4, y: 7, w: 4, h: 6 },
+  { id: 'recent', variant: 'bar', x: 0, y: 13, w: 12, h: 2, hideTitle: true },
 ]
 
 /** 默认布局：首次启动/空布局回退到推荐模板（不再空白） */
@@ -294,10 +350,29 @@ function parsePlacements(raw: string): DashPlacement[] | null {
   try {
     const saved = JSON.parse(raw) as Array<Partial<DashPlacement>>
     const valid = saved
-      .filter((s) => s && dashModuleDef(s.id!) && Number.isInteger(s.x) && Number.isInteger(s.y))
+      // 注意：这里不做模块注册表校验（休眠扩展条目要放行），未知 id 的过滤在下方 map 里做
+      .filter((s) => s && s.id && Number.isInteger(s.x) && Number.isInteger(s.y))
       .map((s): DashPlacement | null => {
         const vd = dashVariantDef(s.id!, s.variant)
-        if (!vd) return null
+        if (!vd) {
+          // 注册表里没有的扩展条目（扩展已卸载，或扩展列表本次加载失败）不丢弃：
+          // 原样保留为休眠条目（尺寸坐标做安全钳制），扩展重装/列表加载成功后原位唤醒；
+          // 非扩展的未知 id（损坏数据）仍然过滤
+          if (!s.id!.startsWith('ext:')) return null
+          const w = Number.isInteger(s.w) ? Math.min(Math.max(clampSize(s.w as number), 1), DASH_COLS) : 4
+          const h = Number.isInteger(s.h) ? Math.max(clampSize(s.h as number), 1) : 3
+          return {
+            id: s.id!,
+            x: Math.min(Math.max(s.x!, 0), DASH_COLS - w),
+            y: Math.max(s.y!, 0),
+            w,
+            h,
+            variant: typeof s.variant === 'string' ? s.variant : undefined,
+            title:
+              typeof s.title === 'string' && s.title.trim() ? s.title.trim().slice(0, TITLE_MAX) : undefined,
+            hideTitle: typeof s.hideTitle === 'boolean' ? s.hideTitle : undefined,
+          }
+        }
         const w = Number.isInteger(s.w)
           ? Math.min(Math.max(clampSize(s.w as number), vd.minW), DASH_COLS)
           : vd.idealW
@@ -317,9 +392,12 @@ function parsePlacements(raw: string): DashPlacement[] | null {
       .filter((p): p is DashPlacement => p !== null)
     if (valid.length) {
       // 形态 min 钳制可能放大老数据格子（旧统一 2×2 → 新形态 min 更大），逐项消解重叠：
-      // 从上往下扫，与已确认项碰撞的让位到最近空位，正常布局不受影响
+      // 从上往下扫，与已确认项碰撞的让位到最近空位，正常布局不受影响。
+      // 只收敛「在用」条目；休眠条目不渲染不占碰撞，原样透传
+      const active = valid.filter((p) => dashModuleDef(p.id))
+      const dormant = valid.filter((p) => !dashModuleDef(p.id))
       const settled: DashPlacement[] = []
-      for (const p of [...valid].sort((a, b) => a.y - b.y || a.x - b.x)) {
+      for (const p of [...active].sort((a, b) => a.y - b.y || a.x - b.x)) {
         const rect = { ...p }
         if (settled.some((q) => collides(rect, q))) {
           const spot = findFreeSpot(settled, p.w, p.h, p.x, p.y)
@@ -328,7 +406,7 @@ function parsePlacements(raw: string): DashPlacement[] | null {
         }
         settled.push(rect)
       }
-      return settled
+      return [...settled, ...dormant]
     }
   } catch {
     // 忽略损坏数据
@@ -347,10 +425,13 @@ function loadFromLocalStorage(): DashPlacement[] | null {
   return null
 }
 
-// ---- 持久化：写应用配置（Tauri）/ 回退 localStorage（浏览器预览） ----
-function persist() {
-  const data = JSON.stringify(
-    placements.value.map((p) => {
+/** 当前 placements 序列化为 placements JSON（标题/表头字段只在设置过时写入；休眠条目随主布局一起落盘） */
+function serializePlacements(): string {
+  const dormant = dormantPlacements.value.filter(
+    (d) => !placements.value.some((p) => p.id === d.id),
+  )
+  return JSON.stringify(
+    [...placements.value, ...dormant].map((p) => {
       const o: DashPlacement = {
         id: p.id,
         x: p.x,
@@ -366,6 +447,11 @@ function persist() {
       return o
     }),
   )
+}
+
+// ---- 持久化：写应用配置（Tauri）/ 回退 localStorage（浏览器预览） ----
+function persist() {
+  const data = serializePlacements()
   if (isTauri()) {
     void store.setDashboardLayout(data)
   } else {
@@ -404,8 +490,13 @@ function cancelEdit() {
 }
 
 // ---- 单例状态：所有调用方共享同一份布局，编辑器变更后主界面立即同步 ----
-// 初始先读 localStorage（浏览器预览 / 老数据），config 加载完成后再对齐到应用配置
-const placements = ref<DashPlacement[]>(loadFromLocalStorage() ?? defaultPlacements())
+// 初始先读 localStorage（浏览器预览 / 老数据），config 加载完成后再对齐到应用配置。
+// 此时扩展注册表还是空的，解析结果里的 ext: 条目会先整体归入休眠，启动加载成功后由 readoptPlacements 唤醒
+const placements = ref<DashPlacement[]>([])
+/** 休眠条目：布局里带 `ext:` 前缀、但注册表里没有对应模块的条目（扩展已卸载或列表未加载成功）。
+ *  不渲染、不占碰撞、不进模块库，只随序列化原样保留——避免「卸载再重装 / 偶发加载失败」把布局条目永久写丢 */
+const dormantPlacements = ref<DashPlacement[]>([])
+adoptPlacements(loadFromLocalStorage() ?? defaultPlacements())
 
 // ---- 倒计时卡片可见性上报 ----
 // 以「已提交（落盘）」的布局为准：编辑器草稿期间的增删不算，落盘后才同步到后端。
@@ -425,42 +516,64 @@ function syncCommitted() {
   reportCountdownCardVisible()
 }
 
+// ---- 默认布局快照：编辑器「存为默认」写入，「恢复默认」读取（Tauri 走 AppConfig，预览回退 localStorage） ----
+function loadDefaultFromLocalStorage(): string {
+  try {
+    return localStorage.getItem(STORAGE_KEY_DEFAULT) ?? ''
+  } catch {
+    return ''
+  }
+}
+const savedDefaultRaw = ref(isTauri() ? '' : loadDefaultFromLocalStorage())
+const hasSavedDefault = computed(() => savedDefaultRaw.value.trim().length > 0)
+
 /** 加载声明 module 形态的扩展，注册进工作台模块库（id 用 `ext:<扩展id>` 前缀与内置模块区分）。
  *  manifest.moduleVariants 声明的形态直接进模块库（形态芯片 / 尺寸钳制 / 适配徽标全生效）；
- *  未声明则注册单个默认形态（沿用历史 min 2×2 / ideal 4×3）。 */
-export async function loadExtensionModules() {
-  if (!isTauri()) return
-  try {
-    const exts = await tauriApi.listExtensions()
-    registerExtensionModules(
-      exts
-        .filter((e) => !e.invalid && e.surfaces.includes('module'))
-        .map((e) => {
-          const variants: DashVariantDef[] =
-            e.module_variants.length > 0
-              ? e.module_variants.map((mv) => {
-                  // manifest 作者输入不设防：钳制到合法网格范围（min ≥ 1、ideal ≥ min、宽 ≤ 12 列），
-                  // 防止 idealW>12 产生越界网格、0 尺寸破坏落位
-                  const minW = Math.max(1, Math.min(Math.round(mv.minW) || 1, DASH_COLS))
-                  const minH = Math.max(1, Math.round(mv.minH) || 1)
-                  const idealW = Math.max(minW, Math.min(Math.round(mv.idealW) || minW, DASH_COLS))
-                  const idealH = Math.max(minH, Math.round(mv.idealH) || minH)
-                  return v(mv.id, mv.name, minW, minH, idealW, idealH, mv.name)
-                })
-              : [v('module', '扩展', 2, 2, 4, 3, e.name)]
-          return {
-            id: `ext:${e.id}`,
-            title: e.name,
-            defaultVariant: variants[0].id,
-            variants,
-            // 作者声明宿主表头默认显隐：不写（null）= 默认不显示表头；写 false = 默认显示
-            defaultHideTitle: e.module_options?.default_hide_title !== false,
-          }
-        }),
-    )
-  } catch {
-    // 命令未就绪时保持无扩展模块
+ *  未声明则注册单个默认形态（min 1×1 / ideal 4×3）——拖入按最小尺寸落位，小部件类扩展
+ *  放下来就是 1×1，不必先占 4×3 再缩。
+ *  返回是否加载成功：失败自动重试 3 次（2s/4s 退避），全败落日志——
+ *  此前失败被静默吞掉，表现为本会话扩展模块库空白且无从排查 */
+export async function loadExtensionModules(): Promise<boolean> {
+  if (!isTauri()) return false
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const exts = await tauriApi.listExtensions()
+      registerExtensionModules(
+        exts
+          .filter((e) => !e.invalid && e.surfaces.includes('module'))
+          .map((e) => {
+            const variants: DashVariantDef[] =
+              e.module_variants.length > 0
+                ? e.module_variants.map((mv) => {
+                    // manifest 作者输入不设防：钳制到合法网格范围（min ≥ 1、ideal ≥ min、宽 ≤ 12 列），
+                    // 防止 idealW>12 产生越界网格、0 尺寸破坏落位
+                    const minW = Math.max(1, Math.min(Math.round(mv.minW) || 1, DASH_COLS))
+                    const minH = Math.max(1, Math.round(mv.minH) || 1)
+                    const idealW = Math.max(minW, Math.min(Math.round(mv.idealW) || minW, DASH_COLS))
+                    const idealH = Math.max(minH, Math.round(mv.idealH) || minH)
+                    return v(mv.id, mv.name, minW, minH, idealW, idealH, mv.name)
+                  })
+                : [v('module', '扩展', 1, 1, 4, 3, e.name)]
+            return {
+              id: `ext:${e.id}`,
+              title: e.name,
+              defaultVariant: variants[0].id,
+              variants,
+              // 作者声明宿主表头默认显隐：不写（null）= 默认不显示表头；写 false = 默认显示
+              defaultHideTitle: e.module_options?.default_hide_title !== false,
+            }
+          }),
+      )
+      return true
+    } catch (e) {
+      console.warn(`[dashboard] 扩展模块加载失败（第 ${attempt}/3 次）`, e)
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 2000))
+    }
   }
+  void reportClientError(
+    '[dashboard] 扩展模块连续 3 次加载失败，本会话扩展模块库为空；布局中的扩展条目已保留为休眠，下次加载成功自动恢复',
+  )
+  return false
 }
 
 // config 就绪后：先加载扩展模块再恢复布局（避免 config 里的 ext: 模块在 parse 时被过滤）
@@ -470,11 +583,14 @@ watch(
   async (loaded) => {
     if (!loaded) return
     await loadExtensionModules()
+    // 默认布局快照：config 非空才覆盖（浏览器预览 config 为空串，保留 localStorage 快照）
+    const cfgDefault = store.state.config.dashboard_default_layout
+    if (cfgDefault) savedDefaultRaw.value = cfgDefault
     const cfg = store.state.config.dashboard_layout
     if (cfg) {
       const parsed = parsePlacements(cfg)
       if (parsed) {
-        placements.value = parsed
+        adoptPlacements(parsed)
         // 已迁移到 config，清理旧 localStorage 数据
         try {
           localStorage.removeItem(STORAGE_KEY)
@@ -487,7 +603,7 @@ watch(
     }
     const ls = loadFromLocalStorage()
     if (ls) {
-      placements.value = ls
+      adoptPlacements(ls)
       persist() // persist 内部已 syncCommitted + 上报
       try {
         localStorage.removeItem(STORAGE_KEY)
@@ -536,14 +652,17 @@ function addModule(id: string, x: number, y: number, variant?: string): boolean 
   if (placements.value.some((p) => p.id === id)) return false
   const vd = dashVariantDef(id, variant) ?? dashVariantDef(id)
   if (!vd) return false
-  // 目标位置被占时自动向下找最近的空位，拖入的模块总能落进布局（按所选形态推荐尺寸落位）
-  const spot = findFreeSpot(placements.value, vd.idealW, vd.idealH, x, y)
+  // 按所选形态的最小尺寸落位（扩展可小到 1×1——小部件类扩展不必先占一大格再缩），
+  // 目标位置被占时自动向下找最近的空位，拖入的模块总能落进布局
+  const w = Math.max(1, vd.minW)
+  const h = Math.max(1, vd.minH)
+  const spot = findFreeSpot(placements.value, w, h, x, y)
   placements.value.push({
     id,
     x: spot.x,
     y: spot.y,
-    w: vd.idealW,
-    h: vd.idealH,
+    w,
+    h,
     variant: vd.id,
   })
   persistIfIdle()
@@ -642,8 +761,35 @@ function applyPreset() {
   persistIfIdle()
 }
 
+/** 把当前布局存为默认布局快照（编辑器内 = 草稿现状，独立于草稿的确认/取消；空布局不允许存，避免恢复出空工作台） */
+function saveDefaultLayout(): boolean {
+  if (!placements.value.length) return false
+  const data = serializePlacements()
+  savedDefaultRaw.value = data
+  if (isTauri()) {
+    void store.setDashboardDefaultLayout(data)
+  } else {
+    try {
+      localStorage.setItem(STORAGE_KEY_DEFAULT, data)
+    } catch {
+      // 存储失败静默，不影响交互
+    }
+  }
+  return true
+}
+
+/** 恢复为保存的默认布局：编辑器内回到草稿（确认后生效），编辑器外立即生效并落盘。无快照/快照失效返回 false */
+function restoreDefaultLayout(): boolean {
+  const parsed = parsePlacements(savedDefaultRaw.value)
+  if (!parsed) return false
+  adoptPlacements(parsed)
+  persistIfIdle()
+  return true
+}
+
 function clear() {
   placements.value = []
+  dormantPlacements.value = []
   persistIfIdle()
 }
 
@@ -659,6 +805,9 @@ export function useDashboardLayout() {
     setModuleTitle,
     applyPreset,
     clear,
+    saveDefaultLayout,
+    restoreDefaultLayout,
+    hasSavedDefault,
     beginEdit,
     commitEdit,
     cancelEdit,

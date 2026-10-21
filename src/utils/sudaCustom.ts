@@ -1,4 +1,5 @@
 import type { Resource, SudaCustomModuleConfig } from '../api/tauri'
+import { categoryMatchesPath } from './subcategoryTree'
 
 /**
  * 工作台「自定义速达」槽位（suda1..suda4）的共享口径。
@@ -27,7 +28,8 @@ export const SUDA_CUSTOM_SOURCE_OPTIONS = [
 /** 槽位内容的过滤/排序：
  * - pinned = resource_ids 顺序（勾选顺序即展示顺序；已删除的资源自动跳过）
  * - app / web / file = 整个大类，store 顺序（与速达页「应用/网页/文件」筛选同口径）
- * - subcategory = 小类名等于配置值（与速达页小类筛选同口径；未配置小类 = 空列表） */
+ * - subcategory = 小类路径命中配置值或为其子孙级（与速达页小类筛选同口径——选中目录
+ *   展示其下全部资源；带「/」层级的小类见 utils/subcategoryTree.ts；未配置 = 空列表） */
 export function sudaCustomItems(
   cfg: SudaCustomModuleConfig | undefined,
   resources: readonly Resource[],
@@ -45,7 +47,9 @@ export function sudaCustomItems(
     case 'file':
       return resources.filter((r) => r.kind === cfg.source)
     case 'subcategory':
-      return cfg.subcategory ? resources.filter((r) => r.category === cfg.subcategory) : []
+      return cfg.subcategory
+        ? resources.filter((r) => categoryMatchesPath(r.category, cfg.subcategory!))
+        : []
     default:
       return []
   }

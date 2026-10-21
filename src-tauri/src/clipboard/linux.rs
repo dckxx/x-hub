@@ -259,63 +259,21 @@ fn save_image_snapshot(bytes: &[u8], format: ImageFormat, hash: u64) -> Option<S
     Some(path.to_string_lossy().into_owned())
 }
 
+/// 图片文件写入剪贴板（剪贴板历史 BMP 快照写回 / 笔记图片 png·jpg·webp·gif 复制）。
+/// arboard 只收 RGBA，统一解码后写入；解不开明确报错，不再退化成写路径文本。
 pub fn set_clipboard_image(path: &str) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("读取图片失败: {e}"))?;
     let hash = hash_bytes(&bytes);
-    // Linux：尽量写文本占位路径；完整图片写回依赖 RGBA 解码，此处写路径文本兜底
-    // 若是 BMP，尝试粗略解析宽高后写 image（过复杂则仅文本）
+    let (width, height, rgba) = super::image_codec::decode_rgba(&bytes)?;
     let mut cb = open_clipboard()?;
-    if let Some((w, h, rgba)) = bmp_to_rgba(&bytes) {
-        let img = arboard::ImageData {
-            width: w,
-            height: h,
-            bytes: rgba.into(),
-        };
-        cb.set_image(img)
-            .map_err(|e| format!("写入剪贴板图片失败: {e}"))?;
-    } else {
-        cb.set_text(path.to_string())
-            .map_err(|e| format!("写入剪贴板失败: {e}"))?;
-    }
+    cb.set_image(arboard::ImageData {
+        width,
+        height,
+        bytes: rgba.into(),
+    })
+    .map_err(|e| format!("写入剪贴板图片失败: {e}"))?;
     record_self_set_hash(hash);
     Ok(())
-}
-
-/// 极简 BMP(24bpp) → RGBA
-fn bmp_to_rgba(bmp: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
-    if bmp.len() < 54 || &bmp[0..2] != b"BM" {
-        return None;
-    }
-    let dib = &bmp[14..];
-    if dib.len() < 40 {
-        return None;
-    }
-    let width = i32::from_le_bytes([dib[4], dib[5], dib[6], dib[7]]) as usize;
-    let height_i = i32::from_le_bytes([dib[8], dib[9], dib[10], dib[11]]);
-    let height = height_i.unsigned_abs() as usize;
-    let bpp = u16::from_le_bytes([dib[14], dib[15]]);
-    if bpp != 24 || width == 0 || height == 0 {
-        return None;
-    }
-    let row_stride = (width * 3 + 3) & !3;
-    let pixel_offset = u32::from_le_bytes([bmp[10], bmp[11], bmp[12], bmp[13]]) as usize;
-    if bmp.len() < pixel_offset + row_stride * height {
-        return None;
-    }
-    let mut rgba = vec![0u8; width * height * 4];
-    for y in 0..height {
-        let src_y = if height_i > 0 { height - 1 - y } else { y };
-        let row = &bmp[pixel_offset + src_y * row_stride..];
-        for x in 0..width {
-            let s = x * 3;
-            let d = (y * width + x) * 4;
-            rgba[d] = row[s + 2];
-            rgba[d + 1] = row[s + 1];
-            rgba[d + 2] = row[s];
-            rgba[d + 3] = 255;
-        }
-    }
-    Some((width, height, rgba))
 }
 
 pub fn set_clipboard_files(paths: &[String]) -> Result<(), String> {

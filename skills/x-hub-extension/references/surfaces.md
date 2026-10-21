@@ -60,4 +60,12 @@ module 入口默认按**多形态自适应**写：尺寸跟随当前格子（cq 
 - 有表头时表头自带 12px 上留白，iframe 从表头**下方**开始——所以**不要再额外加顶部留白**去「避开表头」。
 - 格子矮的时候优先用 `clamp()` / `cqh` 缩字号与间距，而不是把留白删到 0（删到 0 在正常格子里会贴边）。
 
+### 整页形态（view / window / drawer）的留白（边距）
+
+**宿主同样不给整页形态加任何边距**（view 容器、抽屉、独立窗口都是 0）——页面留白完全由扩展自己控制。标准：
+
+- **默认：左上 0、右下 20**，即 `body { padding: 0 20px 20px 0; box-sizing: border-box }`（`entry.view.html` 模板的写法）。左上 0 让标题行贴着标题栏下沿、与侧栏首个图标同一高度带；右下 20 防内容顶到窗沿。
+- 生成前按 SKILL.md Step 3 问过用户，选了「完全无边距」就写 `padding: 0`（内容四面顶满，适合满版布局的页面）。
+- `box-sizing: border-box` 必写，否则 `padding + height: 100%` 会撑出滚动条。
+
 预览环境用 `?xhub-variant=<id>` 调试，`__xhubPreview.setVariant(id)` 模拟切换。

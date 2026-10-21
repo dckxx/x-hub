@@ -21,6 +21,20 @@ pub struct Resource {
     pub last_launched_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// 所属速达分区 id（「全部」tab 的自定义分组，跨大类）；NULL = 未分区。
+    /// 与 category（小类）是两个独立维度：小类归各大类的筛选 chips 用，分区只管「全部」的陈列。
+    #[serde(default)]
+    pub zone_id: Option<i64>,
+    /// 用途说明（非敏感：这个网页/程序/文件是什么），编辑弹窗与卡片悬浮提示展示
+    #[serde(default)]
+    pub description: Option<String>,
+    /// 备注（敏感：可存网页账号密码、文件解压密码等）。加密落盘（secret.rs：Windows DPAPI
+    /// `dp1:` / Linux 钥匙串主密钥 + AES-GCM `ks1:`），内存与 IPC 中为明文；扩展桥载荷一律剥离本字段
+    #[serde(default)]
+    pub remark: Option<String>,
+    /// 备注自定义标签（如「账号密码」「解压密码」）；NULL = 默认「备注」
+    #[serde(default)]
+    pub remark_label: Option<String>,
 }
 
 /// 速达小类（ADR 0012）：大类（resources.kind）下单归属的小类，单归属、非多选标签。
@@ -34,6 +48,33 @@ pub struct ResourceSubcategory {
     pub is_default: bool,
 }
 
+/// 速达分区：「全部」tab 的自定义成组陈列（如「办公区」「影音区」），跨大类混居、
+/// 无 kind 维度、无层级；成员经 resources.zone_id 关联。一个分区都没有时「全部」保持平铺。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceZone {
+    pub id: i64,
+    pub name: String,
+    pub sort_order: i64,
+    /// 分区框宽度（卡片格数，吸附单元），新建默认 3
+    #[serde(default = "default_zone_cols")]
+    pub cols: i64,
+    /// 分区框高度（卡片行数，下限——内容超出按行自动膨胀），新建默认 2
+    #[serde(default = "default_zone_rows")]
+    pub rows: i64,
+    /// 分区内卡片/图标的缩放覆盖（null = 跟随全局 suda_icon_scale）。
+    /// issue #37：各分区应用数量差别大，密度需求不同，允许分区级覆盖全局档位
+    #[serde(default)]
+    pub scale: Option<f64>,
+}
+
+fn default_zone_cols() -> i64 {
+    3
+}
+
+fn default_zone_rows() -> i64 {
+    2
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Note {
     pub id: i64,
@@ -41,6 +82,72 @@ pub struct Note {
     pub content: String,
     pub created_at: String,
     pub updated_at: String,
+    /// 所在文件夹（NULL = 树根）；速记改造（docs/speednote-plan.md）新增
+    #[serde(default)]
+    pub folder_id: Option<i64>,
+    /// 剪藏来源 URL（普通笔记为空串）；同 URL 落库即去重键
+    #[serde(default)]
+    pub source_url: String,
+    /// 回收站标记（NULL = 正常；有值 = 已移入回收站）
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+    /// 自定义树图标（emoji，用户设置；None = 默认文件图标）
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+/// 笔记文件夹（单归属、可嵌套；builtin=1 的「剪藏」不可改名/删除，ADR 0015）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteFolder {
+    pub id: i64,
+    pub name: String,
+    pub parent_id: Option<i64>,
+    pub sort_order: i64,
+    pub builtin: bool,
+    pub created_at: String,
+}
+
+/// 回收站保留策略下的清理报告（purge_expired_notes）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PurgeReport {
+    pub purged: usize,
+}
+
+/// 双链出链项（to_note_id = None 表示「未链接提及」，引用了不存在的标题）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteLinkOut {
+    pub to_title: String,
+    pub to_note_id: Option<i64>,
+}
+
+/// 双链入链项（谁引用了我）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteLinkIn {
+    pub from_note_id: i64,
+    pub from_title: String,
+}
+
+/// 反链面板数据（get_note_links）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteLinks {
+    pub outgoing: Vec<NoteLinkOut>,
+    pub incoming: Vec<NoteLinkIn>,
+}
+
+/// 孤儿图片清理报告（先 dry_run 出报告，用户确认后再真删）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteImageGcReport {
+    pub dry_run: bool,
+    /// notes/images 下图片总数
+    pub total_files: usize,
+    /// 被活笔记（含回收站）引用的图片数
+    pub referenced: usize,
+    /// 孤儿图片文件名列表（hash.ext）
+    pub orphan_files: Vec<String>,
+    /// 真删模式下的实际删除数（dry_run = 0）
+    pub removed: usize,
+    /// 删除失败的文件数（被占用等）
+    pub failed: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -362,12 +469,14 @@ pub struct ClipboardItem {
     pub updated_at: String,
 }
 
-/// 笔记标签
+/// 笔记标签（builtin=1 的「剪藏」标签不可改名/删除）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tag {
     pub id: i64,
     pub name: String,
     pub created_at: String,
+    #[serde(default)]
+    pub builtin: bool,
 }
 
 /// 倒计时（三种形态统一建模）：
@@ -415,13 +524,28 @@ pub struct ChatSession {
     pub elapsed_ms: i64,
 }
 
-/// AI 对话消息（user / assistant）
+/// AI 对话消息（user / assistant / tool；tool 行携带 tool_call_id / tool_name / tool_status）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub id: i64,
     pub session_id: i64,
+    /// 一次用户输入 = 一个 turn（时间线分组 / 上下文截断 / 服务端计费共用键，计划 §6）
+    #[serde(default)]
+    pub turn_id: Option<String>,
     pub role: String,
     pub content: String,
+    /// assistant 消息携带的工具调用请求（JSON 数组文本）
+    #[serde(default)]
+    pub tool_calls: Option<String>,
+    /// tool 消息对应的调用 id
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+    /// tool 消息的工具名（UI 与统计用）
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    /// tool 结果状态：ok / error / denied
+    #[serde(default)]
+    pub tool_status: Option<String>,
     pub created_at: String,
 }
 

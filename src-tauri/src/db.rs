@@ -17,6 +17,16 @@ pub fn init_in_memory() -> Result<Connection> {
     Ok(conn)
 }
 
+/// Agent 工具执行用短连接（#t44）：主连接被 DbState 互斥锁保护，而 agent 循环跨 await，
+/// 不能持锁执行工具。WAL 模式下多连接读写安全；工具执行频率远低于模型调用，
+/// 每次调用开一条短连接（本地文件，成本可忽略）换取零锁竞争。
+pub fn open_tool_connection() -> Result<Connection> {
+    let path = crate::paths::data_root().join("app.db");
+    let conn = Connection::open(path)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(conn)
+}
+
 fn table_exists(conn: &Connection, name: &str) -> bool {
     conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -39,6 +49,9 @@ fn migrate(conn: &Connection) -> Result<()> {
           category TEXT,
           icon TEXT,
           args TEXT,
+          description TEXT,
+          remark TEXT,
+          remark_label TEXT,
           sort_order INTEGER NOT NULL DEFAULT 0,
           last_launched_at TEXT,
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
@@ -202,8 +215,16 @@ fn migrate(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS chat_messages (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-          role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+          -- 一次用户输入 = 一个 turn：时间线 UI 分组（§7）、上下文截断（§4）、服务端积分计费（§8）共用
+          turn_id TEXT,
+          role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
           content TEXT NOT NULL DEFAULT '',
+          -- assistant 消息携带的工具调用请求（JSON 数组 [{id, name, arguments}]）
+          tool_calls TEXT,
+          -- tool 消息：对应的调用 id / 工具名 / 结果状态（ok / error / denied）
+          tool_call_id TEXT,
+          tool_name TEXT,
+          tool_status TEXT,
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
         );
 
@@ -331,6 +352,62 @@ fn migrate(conn: &Connection) -> Result<()> {
         ",
     )?;
 
+    // 速达分区：「全部」tab 的自定义成组陈列，独立于小类（无 kind 维度、无层级、跨大类混居）。
+    // 一个分区都没有时「全部」保持平铺，行为与分区功能引入前完全一致；成员经
+    // resources.zone_id 关联（NULL = 未分区），不设外键约束，级联在 repo::zone 单事务手工做。
+    // cols/rows = 分区框尺寸（卡片格数，新建默认 3×2）：是**下限**——内容超出时前端按行自动
+    // 膨胀，尺寸只决定空框的最小占位与拖拽缩放的吸附单元。
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS resource_zones (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          cols INTEGER NOT NULL DEFAULT 3,
+          rows INTEGER NOT NULL DEFAULT 2,
+          scale REAL
+        );
+        ",
+    )?;
+    // 老库（分区功能首版建的表）补尺寸列，默认 3×2；scale 为分区级图标缩放覆盖
+    // （NULL = 跟随全局 suda_icon_scale，issue #37）
+    let zone_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(resource_zones)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !zone_cols.iter().any(|c| c == "cols") {
+        conn.execute(
+            "ALTER TABLE resource_zones ADD COLUMN cols INTEGER NOT NULL DEFAULT 3",
+            [],
+        )?;
+    }
+    if !zone_cols.iter().any(|c| c == "rows") {
+        conn.execute(
+            "ALTER TABLE resource_zones ADD COLUMN rows INTEGER NOT NULL DEFAULT 2",
+            [],
+        )?;
+    }
+    if !zone_cols.iter().any(|c| c == "scale") {
+        conn.execute("ALTER TABLE resource_zones ADD COLUMN scale REAL", [])?;
+    }
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(resources)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !cols.iter().any(|c| c == "zone_id") {
+        conn.execute("ALTER TABLE resources ADD COLUMN zone_id INTEGER", [])?;
+    }
+    // 速达「说明 / 备注 / 备注标签」（备注为 DPAPI 密文，见 secret.rs）：幂等补列
+    for (col, def) in [
+        ("description", "TEXT"),
+        ("remark", "TEXT"),
+        ("remark_label", "TEXT"),
+    ] {
+        if !cols.iter().any(|c| c == col) {
+            conn.execute(&format!("ALTER TABLE resources ADD COLUMN {col} {def}"), [])?;
+        }
+    }
+
     // 旧 chat_sessions 表缺 token 累计列：逐列补齐（ALTER TABLE ADD COLUMN 幂等）
     let chat_cols: Vec<String> = conn
         .prepare("PRAGMA table_info(chat_sessions)")?
@@ -350,6 +427,62 @@ fn migrate(conn: &Connection) -> Result<()> {
             )?;
         }
     }
+
+    // ---- Agent 底座（#t42 / 计划 §6）：chat_messages 重建表 ----
+    // 老表 CHECK 只放行 user/assistant 且无 turn_id/tool_* 列，CHECK 无法 ALTER →
+    // 照 resources 重建表的既有模式：识别「无 turn_id 列」的老库，整表重建 + 老数据搬迁。
+    let chat_msg_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(chat_messages)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !chat_msg_cols.iter().any(|c| c == "turn_id") {
+        // 整段包一个事务：SQLite DDL 可事务化，中途崩溃（断电/被杀）时整体回滚——
+        // 不包的话停在中间态（新表已带 turn_id 列）会让幂等判定跳过重建，
+        // 老数据永久滞留在 chat_messages_old 里无人再读
+        conn.execute_batch(
+            "
+            BEGIN;
+            ALTER TABLE chat_messages RENAME TO chat_messages_old;
+            CREATE TABLE chat_messages (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+              turn_id TEXT,
+              role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
+              content TEXT NOT NULL DEFAULT '',
+              tool_calls TEXT,
+              tool_call_id TEXT,
+              tool_name TEXT,
+              tool_status TEXT,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+            );
+            INSERT INTO chat_messages (id, session_id, turn_id, role, content, created_at)
+              SELECT id, session_id, NULL, role, content, created_at FROM chat_messages_old;
+            DROP TABLE chat_messages_old;
+
+            -- 老数据回填 turn：user 消息开新 turn（legacy_<id>），其后 assistant 归入
+            -- 最近一条 user 的 turn。老对话在时间线 UI（按 turn 分组）里同样成组；
+            -- 老库没有工具消息，tool_* 列保持 NULL。连跑两次时 turn_id 已非 NULL，天然幂等。
+            UPDATE chat_messages
+               SET turn_id = 'legacy_' || id
+             WHERE role = 'user' AND turn_id IS NULL;
+            UPDATE chat_messages
+               SET turn_id = 'legacy_' || (
+                     SELECT MAX(p.id) FROM chat_messages p
+                      WHERE p.session_id = chat_messages.session_id
+                        AND p.role = 'user' AND p.id <= chat_messages.id
+                   )
+             WHERE role = 'assistant' AND turn_id IS NULL;
+            COMMIT;
+            ",
+        )?;
+    }
+    // turn 索引在重建之后创建：重建把旧表连同其索引一起删了（session 索引也要补回）
+    conn.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_turn ON chat_messages(session_id, turn_id, id);
+        ",
+    )?;
 
     // 剪贴板历史从「纯文本」升级为「文本/图片/文件」三类型：逐列补齐（ALTER TABLE ADD COLUMN 幂等）
     let clip_cols: Vec<String> = conn
@@ -497,6 +630,90 @@ fn migrate(conn: &Connection) -> Result<()> {
     // （周期展开用 `repeat_mode <> 'once'`，SQLite 不走索引），它只让每次写 todos
     // 多维护一棵 B 树。老库在这里顺手删掉。
     conn.execute("DROP INDEX IF EXISTS idx_todos_repeat", [])?;
+
+    // ---- 速记改造（docs/speednote-plan.md）：文件夹树 / 回收站 / 剪藏来源 / 双链 ----
+    // 文件夹树（ADR 0015：单归属、可嵌套不限深度、删除不级联——笔记与子文件夹在
+    // repo 层事务内上移一级，这里的 ON DELETE SET NULL 只是兜底）；builtin=1 不可改名/删除。
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS note_folders (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          parent_id INTEGER REFERENCES note_folders(id) ON DELETE SET NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          builtin INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+        );
+
+        -- 双链轻量版：引用键 = 标题（不落块 id）。to_note_id 解析到已存在标题时补上；
+        -- 引用了不存在的标题保留为「未链接提及」（to_note_id NULL），不算错。
+        CREATE TABLE IF NOT EXISTS note_links (
+          from_note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+          to_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,
+          to_title TEXT NOT NULL,
+          PRIMARY KEY (from_note_id, to_title)
+        );
+        ",
+    )?;
+    // notes 补列（老库幂等）：folder_id=NULL=树根；source_url 剪藏来源兼去重键；deleted_at 有值=在回收站
+    let note_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(notes)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !note_cols.iter().any(|c| c == "folder_id") {
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN folder_id INTEGER REFERENCES note_folders(id) ON DELETE SET NULL",
+            [],
+        )?;
+    }
+    if !note_cols.iter().any(|c| c == "source_url") {
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN source_url TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    if !note_cols.iter().any(|c| c == "deleted_at") {
+        conn.execute("ALTER TABLE notes ADD COLUMN deleted_at TEXT", [])?;
+    }
+    // 笔记自定义树图标（emoji，用户在标题旁设置；NULL = 默认文件图标）
+    if !note_cols.iter().any(|c| c == "icon") {
+        conn.execute("ALTER TABLE notes ADD COLUMN icon TEXT", [])?;
+    }
+    // 标签内置位（「剪藏」标签不可改删；老库无此列）
+    let tag_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(tags)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !tag_cols.iter().any(|c| c == "builtin") {
+        conn.execute(
+            "ALTER TABLE tags ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    // 内置项种子（幂等）：「剪藏」文件夹（树根）+「剪藏」标签。
+    // 标签种子必须先认领同名再插入：tags.name UNIQUE，老用户手动建过「剪藏」时
+    // 只查 builtin 会撞 UNIQUE → 迁移失败 → 启动死循环。
+    conn.execute_batch(
+        "
+        INSERT INTO note_folders (name, parent_id, sort_order, builtin)
+        SELECT '剪藏', NULL, 0, 1
+        WHERE NOT EXISTS (SELECT 1 FROM note_folders WHERE builtin = 1);
+        UPDATE tags SET builtin = 1 WHERE name = '剪藏' AND builtin = 0;
+        INSERT INTO tags (name, builtin)
+        SELECT '剪藏', 1
+        WHERE NOT EXISTS (SELECT 1 FROM tags WHERE name = '剪藏');
+        ",
+    )?;
+    // 索引必须在补列之后创建（老库此时才具备这些列）
+    conn.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_note_links_to ON note_links(to_note_id);
+        CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(folder_id);
+        CREATE INDEX IF NOT EXISTS idx_notes_deleted ON notes(deleted_at);
+        CREATE INDEX IF NOT EXISTS idx_notes_source_url ON notes(source_url);
+        CREATE INDEX IF NOT EXISTS idx_notes_title ON notes(title);
+        ",
+    )?;
 
     Ok(())
 }
@@ -753,6 +970,161 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM todos WHERE id IN (?1, ?2)", params![parent.id, child.id], |r| r.get(0))
             .unwrap();
         assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn legacy_notes_schema_migrates_and_seeds_builtin() {
+        // 速记改造迁移：老库（notes/tags 无新列、无 note_folders/note_links）补列 + 内置种子 +
+        // 索引，连跑两次幂等；业务层 SELECT 引用新列能通过（迁移不完整会在此暴露）。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE notes (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              title TEXT NOT NULL DEFAULT '',
+              content TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+            );
+            CREATE TABLE tags (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL UNIQUE,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+            );
+            CREATE TABLE note_tags (
+              note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+              tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+              PRIMARY KEY (note_id, tag_id)
+            );
+            INSERT INTO notes (title, content) VALUES ('老笔记', '正文');
+            INSERT INTO tags (name) VALUES ('工作');
+            ",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(notes)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap();
+        for col in ["folder_id", "source_url", "deleted_at"] {
+            assert!(cols.iter().any(|c| c == col), "notes 缺列 {col}");
+        }
+        assert!(table_exists(&conn, "note_folders"));
+        assert!(table_exists(&conn, "note_links"));
+
+        // 内置种子只一份
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM note_folders WHERE builtin = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "内置文件夹应只有一条");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tags WHERE builtin = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "内置标签应只有一条");
+
+        // 老数据无损 + 新列默认值
+        let notes = crate::repo::note::list(&conn).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].folder_id, None);
+        assert_eq!(notes[0].source_url, "");
+        assert_eq!(notes[0].deleted_at, None);
+
+        // 新能力可用：建文件夹 + 移笔记进去（外键生效）
+        let f = crate::repo::note_folder::create(&conn, "项目", None).unwrap();
+        crate::repo::note::set_folder(&conn, notes[0].id, Some(f.id)).unwrap();
+        let got = crate::repo::note::get(&conn, notes[0].id).unwrap();
+        assert_eq!(got.folder_id, Some(f.id));
+    }
+
+    #[test]
+    fn legacy_chat_messages_rebuilds_and_backfills_turns() {
+        // Agent 底座（#t42）：老库 chat_messages（CHECK 只放行 user/assistant、无 turn_id/tool_*）
+        // 重建为新结构，老数据搬迁 + turn 回填（user 开 turn、assistant 跟随），连跑两次幂等；
+        // 新 CHECK 放行 role='tool'，turn 索引建立。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE chat_sessions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              title TEXT NOT NULL DEFAULT '新对话',
+              model_name TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+            );
+            CREATE TABLE chat_messages (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+              role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+              content TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+            );
+            CREATE INDEX idx_chat_messages_session ON chat_messages(session_id, id);
+            INSERT INTO chat_sessions (id, title) VALUES (1, '旧会话');
+            INSERT INTO chat_messages (id, session_id, role, content) VALUES
+              (1, 1, 'user', '你好'),
+              (2, 1, 'assistant', '你好！'),
+              (3, 1, 'user', '再问'),
+              (4, 1, 'assistant', '再答');
+            ",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // 幂等
+
+        // 新列齐备
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(chat_messages)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap();
+        for col in ["turn_id", "tool_calls", "tool_call_id", "tool_name", "tool_status"] {
+            assert!(cols.iter().any(|c| c == col), "chat_messages 缺列 {col}");
+        }
+
+        // 老数据无损 + turn 回填成组
+        let rows: Vec<(i64, String, Option<String>)> = conn
+            .prepare("SELECT id, role, turn_id FROM chat_messages ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].2.as_deref(), Some("legacy_1"));
+        assert_eq!(rows[1].2, rows[0].2, "assistant 应跟随前一条 user 的 turn");
+        assert_eq!(rows[2].2.as_deref(), Some("legacy_3"));
+        assert_eq!(rows[3].2, rows[2].2);
+
+        // 新 CHECK 放行 role='tool'（老 CHECK 会拒绝）
+        conn.execute(
+            "INSERT INTO chat_messages (session_id, turn_id, role, content, tool_call_id, tool_name, tool_status)
+             VALUES (1, 'turn_x', 'tool', '[]', 'call_1', 'list_todos', 'ok')",
+            [],
+        )
+        .unwrap();
+
+        // turn 索引存在（重建会连带删掉旧索引，迁移后必须补回）
+        for idx in ["idx_chat_messages_session", "idx_chat_messages_turn"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                    params![idx],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "缺索引 {idx}");
+        }
     }
 
     #[test]

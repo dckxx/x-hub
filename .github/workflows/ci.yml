@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Linux system dependencies
         run: |
@@ -35,9 +35,11 @@ jobs:
         uses: pnpm/action-setup@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          # 24：下面的 test:utils 用 node --test 直接加载 .ts 源码（原生类型剥离），
+          # Node 20 不支持、会 ERR_UNKNOWN_FILE_EXTENSION。构建产物不受影响（release.yml 仍走 20）
+          node-version: 24
           cache: pnpm
 
       - name: Setup Rust
@@ -55,6 +57,10 @@ jobs:
       # 安全回归（tests/security.test.mjs）：此前只存在于 package.json，CI 从未执行
       - name: Frontend security tests
         run: pnpm run test:security
+
+      # 纯函数单测（图片语法回收 / 一键美化）：同为「零依赖 TS 源码直接加载」，不依赖构建产物
+      - name: Frontend util tests
+        run: pnpm run test:utils
 
       - name: Rust check
         run: cargo check --manifest-path src-tauri/Cargo.toml

@@ -29,6 +29,10 @@ pub struct AccountStatus {
     pub role: String,
     pub quota_total: u64,
     pub quota_remaining: u64,
+    /// 积分账本（#t39 权威口径；/me credits 双口径之一）。legacy 次数由它派生，
+    /// 界面展示与 429 分流都以积分为准
+    pub credit_total: u64,
+    pub credit_remaining: u64,
     /// 已兑换邀请码（= 有权益：额度 + 可申请开发者）
     pub invite_redeemed: bool,
     /// none / pending / approved / rejected
@@ -47,6 +51,8 @@ impl AccountStatus {
             role: String::new(),
             quota_total: 0,
             quota_remaining: 0,
+            credit_total: 0,
+            credit_remaining: 0,
             invite_redeemed: false,
             developer_status: "none".into(),
             can_apply_developer: false,
@@ -231,6 +237,7 @@ async fn get_me(token: &str) -> Result<Value, String> {
 
 fn status_from_me(server: String, me: &Value) -> AccountStatus {
     let quota = me.get("quota").cloned().unwrap_or(Value::Null);
+    let credits = me.get("credits").cloned().unwrap_or(Value::Null);
     AccountStatus {
         logged_in: true,
         server_url: server,
@@ -238,6 +245,8 @@ fn status_from_me(server: String, me: &Value) -> AccountStatus {
         role: me.get("role").and_then(|v| v.as_str()).unwrap_or("user").to_string(),
         quota_total: quota.get("total").and_then(|v| v.as_u64()).unwrap_or(0),
         quota_remaining: quota.get("remaining").and_then(|v| v.as_u64()).unwrap_or(0),
+        credit_total: credits.get("total").and_then(|v| v.as_u64()).unwrap_or(0),
+        credit_remaining: credits.get("remaining").and_then(|v| v.as_u64()).unwrap_or(0),
         invite_redeemed: me.get("invite_redeemed").and_then(|v| v.as_bool()).unwrap_or(false),
         developer_status: me
             .get("developer_status")

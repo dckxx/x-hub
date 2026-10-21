@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { Download, RotateCcw, X } from 'lucide-vue-next'
 import { isTauri, type MarketDownloadProgress, type UpdateInfo, tauriApi } from '../api/tauri'
@@ -10,6 +10,13 @@ const phase = ref<'available' | 'downloading' | 'ready'>('available')
 const progress = ref<{ received: number; total: number | null } | null>(null)
 const busy = ref(false)
 const error = ref('')
+
+// 版本说明是 Markdown（发版脚本从 RELEASE_NOTES.md 取整节），渲染成 HTML 展示。
+// marked + DOMPurify 较重，按需动态 import（同 TodoRow），弹窗真正弹出才拉取分包
+const md = shallowRef<typeof import('../utils/markdownHtml') | null>(null)
+const notesHtml = computed(() =>
+  md.value && info.value?.notes ? md.value.renderMarkdown(info.value.notes) : '',
+)
 
 let unlisteners: UnlistenFn[] = []
 
@@ -28,6 +35,7 @@ function showAvailable(payload: UpdateInfo) {
   info.value = payload
   progress.value = null
   error.value = ''
+  if (!md.value) void import('../utils/markdownHtml').then((m) => { md.value = m })
   if (payload.ready) {
     phase.value = 'ready'
   } else if (busy.value) {
@@ -133,7 +141,8 @@ onBeforeUnmount(() => unlisteners.forEach((u) => u()))
               <span v-if="info?.portable" class="ud-portable">便携版</span>
               <span v-if="info?.size" class="ud-size">{{ fmtMB(info.size) }}</span>
             </div>
-            <div class="ud-notes">{{ info?.notes || '暂无更新说明' }}</div>
+            <div v-if="info?.notes" class="ud-notes" v-html="notesHtml"></div>
+            <div v-else class="ud-notes">暂无更新说明</div>
             <div v-if="error" class="ud-error">{{ error }}</div>
             <footer class="ud-footer">
               <button class="ghost-btn" type="button" @click="onSkipVersion">跳过此版本</button>
@@ -237,7 +246,6 @@ onBeforeUnmount(() => unlisteners.forEach((u) => u()))
   font-size: 0.8125rem;
   line-height: 1.7;
   color: var(--text-2);
-  white-space: pre-wrap;
   word-break: break-word;
   /* 完整展示版本说明：空间不够时区域内上下滚动，不截断文字 */
   max-height: min(44vh, 420px);
@@ -247,6 +255,79 @@ onBeforeUnmount(() => unlisteners.forEach((u) => u()))
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
   margin-bottom: 12px;
+}
+/* 版本说明是 v-html 注入的 Markdown（标记不在本组件作用域内 → 必须 :deep），
+   口径同 TodoRow 的悬浮描述：**新增** 等分段加粗作小标题、列表与行内代码轻排版 */
+.ud-notes :deep(p) {
+  margin: 0 0 8px;
+}
+.ud-notes :deep(p:last-child) {
+  margin-bottom: 0;
+}
+.ud-notes :deep(strong) {
+  color: var(--text-1);
+}
+/* Tailwind preflight 清掉了列表标记与缩进，版本说明里要恢复 */
+.ud-notes :deep(ul),
+.ud-notes :deep(ol) {
+  margin: 0 0 8px;
+  padding-left: 22px;
+}
+.ud-notes :deep(ul) {
+  list-style: disc outside;
+}
+.ud-notes :deep(ol) {
+  list-style: decimal outside;
+}
+.ud-notes :deep(li) {
+  margin: 3px 0;
+}
+.ud-notes :deep(li:last-child) {
+  margin-bottom: 0;
+}
+.ud-notes :deep(code) {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--bg-card-soft);
+  font-size: 0.92em;
+}
+.ud-notes :deep(pre) {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card-soft);
+  overflow-x: auto;
+}
+.ud-notes :deep(pre code) {
+  padding: 0;
+  background: transparent;
+}
+.ud-notes :deep(a) {
+  color: var(--brand-500);
+}
+.ud-notes :deep(h1),
+.ud-notes :deep(h2),
+.ud-notes :deep(h3),
+.ud-notes :deep(h4) {
+  margin: 10px 0 6px;
+  font-size: 0.875rem;
+  color: var(--text-1);
+}
+.ud-notes :deep(h1:first-child),
+.ud-notes :deep(h2:first-child),
+.ud-notes :deep(h3:first-child) {
+  margin-top: 0;
+}
+.ud-notes :deep(blockquote) {
+  margin: 0 0 8px;
+  padding: 2px 0 2px 8px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-2);
+}
+.ud-notes :deep(hr) {
+  margin: 10px 0;
+  border: none;
+  border-top: 1px solid var(--border-soft);
 }
 .ud-error {
   font-size: 0.75rem;

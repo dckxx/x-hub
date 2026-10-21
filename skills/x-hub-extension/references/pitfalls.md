@@ -7,7 +7,7 @@
 3. **npm script 用 `deploy`**，不要叫 `install`（npm 生命周期钩子会误触发）。
 4. **service 端口**：读 `process.env.PORT`，只监听 `127.0.0.1`；`/healthz` 是健康检查路径。
 5. **前端调后端**：走 `window.xhub.service.request`，不直接 fetch 端口。
-6. **桥 API 现状**以 `runtime.info().capabilities` 为准。已实现：`runtime(info/open/callExtension/openPermissions)`、`storage.*`、`config.*`、`sharedStorage.*`、**`data.*` 读写全套**、`fs.saveText/saveFile/saveAs`、`service.request`、`theme.get`、`events.on/emit`、`openExternal`、`expose`。未实现：`clipboard.*`、`net.*`、`system.*`、`ui.*`、`fs.readText/writeText/readDir/exists`。
+6. **桥 API 现状**以 `runtime.info().capabilities` 为准。已实现：`runtime(info/open/callExtension/openPermissions)`、`storage.*`、`config.*`、`sharedStorage.*`、**`data.*` 读写全套**、`fs.saveText/saveFile/saveAs`、`service.request`、`theme.get`、`events.on/emit`、`openExternal`、`ui.notify`、`clipboard.readText/writeText`、`expose`。未实现：`net.*`、`system.*`、`ui.toast`、`fs.readText/writeText/readDir/exists`。
 6b. **开外链一律用 `window.xhub.openExternal(url)`**：宿主用 Tauri/wry 承载扩展 iframe，wry 在宿主未注册新窗口处理器时对 WebView2 的 `NewWindowRequested` 直接 `SetHandled(true)` 拒绝——`target="_blank"` 和 `window.open()` 在宿主里**静默失效**（点了没反应）。更坑的是浏览器直开预览时它们"看起来正常"，所以这个坑只在宿主内才暴露。只放行 `http(s)://`。
     - **打开位置由用户决定，不由扩展决定**：用户可在扩展详情弹窗给每个扩展配「链接打开方式」——默认**应用内置浏览器窗口**，也可切「浏览器」（系统默认浏览器）。扩展代码只管调 `openExternal`，两种模式都覆盖，别自己写「用哪个浏览器打开」的逻辑。
     - **普通 `<a href="http(s)://…">` 链接宿主会自动接管**（桥在捕获阶段拦截点击 → `openExternal`），直接写链接就能用，不必自己绑 click。反过来：**别在 http(s) 外链的 `<a>` 上绑自己的点击逻辑**（确认弹窗、统计等）——宿主接管会吞掉这些处理器（`stopPropagation`）；确需自定义点击行为，用按钮 + `openExternal`，别用 `<a href=http…>`。
@@ -29,3 +29,4 @@
 21. **路径别原样交给外部程序（Windows `\\?\` 前缀）**：宿主喂给后端的脚本路径自 v0.6.2 起已归一（不带前缀），但 `__dirname` 本身在直挂目录下仍可能是 verbatim 形式（`\\?\C:\…`）——后端自己 `spawn` 子进程、调 `ffmpeg` / `git` 之类的命令行工具、或把路径拼进命令行参数时，一律先剥前缀（`\\?\C:\x` → `C:\x`，`\\?\UNC\srv\share` → `\\srv\share`），否则对方读不了这个路径（Node 就连自己都加载不了带前缀的脚本路径）。
 22. **`module` 卡片的视口可以矮到 ~86px，别假设「至少 150px」**：卡片高度由工作台网格决定（行高下限 36px），4×2 的小格子内容区可能只有 86px 左右，**若开了宿主表头还要再减约 30px**（0.6.3 及更早还有宿主 bug 让 iframe 恒为浏览器默认的 150px、矮卡底部被裁，已修）。入口用 `height: 100%` + `box-sizing: border-box` + `cqh`/`clamp()` 排版、溢出交给 `overflow: hidden/auto`；写死 `min-height` 或依赖 150px 默认高度，在矮格里就会被裁。宿主**不给** iframe 内边距，留白自己写（约定 12px，见 `surfaces.md`）。
 23. **宿主表头默认不开，别和它抢标题**：扩展 `module` 卡**默认没有**宿主表头，卡面完全由你自己画。只有写了 `"moduleOptions": { "defaultHideTitle": false }` 时，宿主才会在卡顶画一行「品牌色图标 + `manifest.name`」——这时入口**不要再画一遍同名标题**（会重复），卡名也请确认过。用户能在布局编辑器里用「Aa」按卡片覆盖作者默认。
+24. **manifest 图标必须自带配色，别用 `currentColor` / 纯黑纯白透明底**：图标在宿主里全部经 `<img>` 渲染（侧栏固定区、扩展中心、市场卡片），img 加载的 SVG 没有继承色，`stroke="currentColor"` 按 SVG 规范回落为**纯黑**——照「简洁图标 = currentColor 描边」的惯性写法生成的图标全是黑的，暗色主题与壁纸态（侧栏透明、图标直接叠在照片上）直接看不清。配色要像 app 图标：首选品牌色圆角方块底 + 白/浅色字形，或中高明度字形；交付前对着亮/暗两种底各过一遍。PNG 图标同理，透明底纯黑 logo 不要交付。

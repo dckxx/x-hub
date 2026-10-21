@@ -2,8 +2,8 @@
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { marked, Renderer } from 'marked'
 import DOMPurify from 'dompurify'
-import { ChevronDown, MessageSquare, PanelRightClose, Plus, Send, Settings2, X } from 'lucide-vue-next'
-import { PLATFORM_ENTRY_NAME, isPlatformModel, isTauri, tauriApi, type ChatMessage, type ChatModelConfig, type ChatSession, type ChatStreamEvent } from '../api/tauri'
+import { Check, ChevronDown, CircleOff, Copy, MessageSquare, PanelRightClose, Plus, Send, Settings2, Square, X, Zap } from 'lucide-vue-next'
+import { PLATFORM_ENTRY_NAME, isPlatformModel, isTauri, tauriApi, type AccountStatus, type AgentApprovalAsk, type ChatMessage, type ChatModelConfig, type ChatSession, type ChatStreamEvent } from '../api/tauri'
 import AppSelect from './AppSelect.vue'
 
 const props = defineProps<{
@@ -15,6 +15,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'toggle'): void
   (e: 'open-model-settings'): void
+  (e: 'open-account-settings'): void
   (e: 'resized', width: number, height: number): void
 }>()
 
@@ -49,6 +50,180 @@ const menuOpen = ref(false)
 const menuPos = ref({ x: 0, y: 0, width: 0, openUp: false })
 const addBtnRef = ref<HTMLButtonElement | null>(null)
 const menuRef = ref<HTMLElement | null>(null)
+
+// ---- Agent 时间线（#t46）：工具卡片 / 内联审批 / 中断 ----
+/** 工具卡片：一个工具调用从发起（running/awaiting）到结束（ok/error/denied）的实时状态。
+ *  turnId 记录该调用所属回合：审批答复失败时可精准中断那一回合（0.9.0 修复）。 */
+interface ToolCard {
+  callId: string
+  name: string
+  args: string
+  /** 危险等级；'' = 历史还原卡无从得知（落库消息不带 level），显示中性灰点 */
+  level: 'read' | 'write' | 'dangerous' | ''
+  status: 'running' | 'awaiting' | 'ok' | 'error' | 'denied'
+  turnId: string
+  summary: string
+  detail: string
+  detailOpen: boolean
+}
+/** 中间过程文本块：模型在发起工具调用前后的叙述（0.9.0 起保留），默认折叠省空间 */
+interface TextStep {
+  kind: 'text'
+  key: string
+  /** 已渲染的 Markdown HTML（收进块时渲染一次） */
+  html: string
+  open: boolean
+}
+/** 时间线流程项：叙述文本与工具卡片按发生顺序混排（0.9.0 起文本保留为可折叠块） */
+type TurnItem = ({ kind: 'card'; key: string } & ToolCard) | TextStep
+const turnFlow = ref<TurnItem[]>([])
+let stepSeq = 0
+
+function findCard(callId: string): (ToolCard & { kind: 'card'; key: string }) | undefined {
+  const it = turnFlow.value.find((i) => i.kind === 'card' && i.callId === callId)
+  return it as (ToolCard & { kind: 'card'; key: string }) | undefined
+}
+
+/** 追加一张工具卡片（去重以支持历史还原与实时事件重叠） */
+function pushCard(c: Omit<ToolCard, 'detailOpen'>) {
+  if (findCard(c.callId)) return
+  // 危险操作的确认卡默认展开参数：只显示工具名就让用户点「允许」等于盲批（0.9.0 审查修复）
+  turnFlow.value.push({
+    kind: 'card',
+    key: `card_${c.callId}`,
+    detailOpen: c.status === 'awaiting' && c.level === 'dangerous',
+    ...c,
+  })
+}
+
+/** 模型产出的参数 JSON 原文 → 展示用（能格式化就缩进，坏 JSON 原样返回） */
+function prettyArgs(args: string): string {
+  if (!args.trim()) return ''
+  try {
+    return JSON.stringify(JSON.parse(args), null, 2)
+  } catch {
+    return args
+  }
+}
+
+/** 把当前流式缓冲里的叙述文本收进可折叠的中间过程块。
+ *  在回合边界（工具调用/审批到达）与出错收尾时调用：文字保留可见但不占地方。 */
+function flushStreamToStep() {
+  const text = streamingContent.value.trim()
+  streamingContent.value = ''
+  cancelStreamRender()
+  streamHtml.value = ''
+  if (text) {
+    turnFlow.value.push({ kind: 'text', key: `step_${++stepSeq}`, html: renderMd(text), open: false })
+  }
+}
+
+/** 进行中回合的 turn_id（中断按钮用） */
+const activeTurnId = ref('')
+/** 权限档快捷切换（§5：像模型选择器一样随时切）。初始值 = 设置里的持久默认档（loadDefaultPerm） */
+const permMode = ref<'readonly' | 'ask' | 'full'>('ask')
+const permOptions = [
+  { value: 'readonly', label: '仅可查看' },
+  { value: 'ask', label: '每次都问' },
+  { value: 'full', label: '完全权限' },
+] as const
+const permLabel = computed(() => permOptions.find((o) => o.value === permMode.value)?.label ?? '')
+
+// ---- 平台积分（#t47）：头部剩余积分 + 429 积分不足分流 ----
+/** 账号完整状态（含积分账本）；loadModels 时随登录态一并刷新 */
+const account = ref<AccountStatus | null>(null)
+const creditRemaining = computed(() =>
+  account.value?.loggedIn && !account.value.error && platformEnabled.value ? account.value.creditRemaining : null,
+)
+/** 平台 429 insufficient_credits 的稳定 token（chat.rs 生成，前端据此渲染分流卡片而非裸报错） */
+const INSUFFICIENT_TOKEN = 'insufficient_credits'
+const isInsufficientCredits = computed(() => streamError.value.includes(INSUFFICIENT_TOKEN))
+
+function levelClass(l: string): string {
+  return l === 'dangerous' ? 'lv-danger' : l === 'write' ? 'lv-write' : l === 'read' ? 'lv-read' : ''
+}
+function statusText(s: ToolCard['status']): string {
+  return s === 'running' ? '执行中' : s === 'awaiting' ? '等待确认' : s === 'ok' ? '完成' : s === 'denied' ? '已拒绝' : '失败'
+}
+/** 审批三按钮（§5：允许 / 拒绝 / 本会话允许），回答后卡片回到执行中。
+ * 0.9.0 修复：答复落空（确认已被处理/已失效，如回合已被停止）时把该卡标记失败
+ * 并顺手中断其所属回合——后端等待审批的循环会立刻收尾，不再永久挂起。 */
+async function respondApproval(card: ToolCard, answer: 'once' | 'always' | 'deny') {
+  card.status = 'running'
+  try {
+    await tauriApi.respondAgentApproval(card.turnId ?? '', card.callId, answer)
+  } catch (err) {
+    card.status = 'error'
+    showToast(String(err))
+    if (card.turnId) {
+      tauriApi.cancelAgentTurn(card.turnId).catch(() => {})
+    }
+  }
+}
+/** 中断当前回合：已执行的操作不回滚（后端口径），后端收尾后回 TurnDone/Error */
+async function stopTurn() {
+  if (!activeTurnId.value) return
+  try {
+    await tauriApi.cancelAgentTurn(activeTurnId.value)
+    showToast('已请求中断，正在收尾…')
+  } catch (err) {
+    showToast(String(err))
+  }
+}
+
+/** 重开会话时，把最近一个 turn 落库的工具过程还原成卡片（只读态，可展开看结果全文）。
+ *  更早 turn 的工具行不还原；各 turn 的中间叙述由消息列表里的折叠块呈现（0.9.0）。 */
+function restoreToolCards(msgs: ChatMessage[]) {
+  const lastTurn = msgs.length ? msgs[msgs.length - 1].turn_id : null
+  if (!lastTurn) return
+  for (const m of msgs) {
+    if (m.role !== 'tool' || m.turn_id !== lastTurn) continue
+    const cancelled = m.tool_status === 'cancelled'
+    const status = m.tool_status === 'ok' ? 'ok' : m.tool_status === 'denied' || cancelled ? 'denied' : 'error'
+    pushCard({
+      callId: m.tool_call_id ?? `restored_${m.id}`,
+      name: m.tool_name ?? 'tool',
+      args: '',
+      // 落库消息不带等级，未知时显示中性灰点——不该把历史里执行过的写/危险操作
+      // 一律伪装成绿色只读级（0.9.0 审查优化）
+      level: '',
+      status,
+      turnId: m.turn_id ?? '',
+      summary: status === 'ok' ? '已执行（历史回合）' : cancelled ? '已中断（历史回合）' : status === 'denied' ? '已拒绝（历史回合）' : '执行失败（历史回合）',
+      detail: m.content,
+    })
+  }
+}
+
+/** 还原仍在等待确认的审批（0.9.0）：挂起审批不落库，面板重开/切回会话后原先
+ *  只剩「停止」自救；现在向后端查询该会话的挂起审批，恢复可操作的 awaiting 卡片。
+ *  若回合仍在跑，同时恢复 sending/activeTurnId，让流式与停止键接得上。 */
+async function restorePendingApprovals(sessionId: number) {
+  let pending: AgentApprovalAsk[] = []
+  try {
+    pending = await tauriApi.listAgentApprovals(sessionId)
+  } catch {
+    return
+  }
+  // 慢响应期间用户可能已切到别的会话：旧会话的挂起卡片不能混进新会话的时间线（0.9.0 审查修复）
+  if (activeSessionId.value !== sessionId) return
+  for (const p of pending) {
+    pushCard({
+      callId: p.callId,
+      name: p.name,
+      args: p.args,
+      level: (p.level as ToolCard['level']) || 'write',
+      status: 'awaiting',
+      turnId: p.turnId,
+      summary: '',
+      detail: '',
+    })
+  }
+  if (pending.length) {
+    sending.value = true
+    if (!activeTurnId.value) activeTurnId.value = pending[0].turnId
+  }
+}
 
 const activeSession = computed(() => sessions.value.find((s) => s.id === activeSessionId.value) ?? null)
 // 顶部直接显示当前对话标题（未命名时为「新对话」）
@@ -173,6 +348,11 @@ async function openSession(id: number) {
     tauriApi.listChatSessions().then((l) => l.find((x) => x.id === id) ?? null),
   ])
   messages.value = msgs
+  // 新会话的时间线从库里重建（历史卡片 + 挂起审批），不带上一会话的实时状态。
+  // activeTurnId 不清：切走的会话若回合仍在跑，回来后停止键要接得上
+  turnFlow.value = []
+  restoreToolCards(msgs)
+  await restorePendingApprovals(id)
   if (s) {
     selectedModel.value = displayModelName(s.model_name)
     // 同步本地会话条目（标题 / token 等可能已变化）
@@ -282,12 +462,43 @@ async function loadModels() {
   if (!isTauri()) return
   models.value = await tauriApi.getChatModels()
   // 平台入口的凭据是账号登录态，一并刷新（登录/退出只会发生在设置页，面板下次唤起时自然重查）
-  accountLoggedIn.value = (await tauriApi.accountStatus()).loggedIn
+  // 完整状态留存（含积分账本），头部剩余积分用（#t47）
+  account.value = await tauriApi.accountStatus()
+  accountLoggedIn.value = account.value.loggedIn
+  await loadDefaultPerm()
   // 归一当前选中值：历史会话存的可能是某个具体平台模型名（平台已折叠成入口）、
   // 也可能是已被移除的自备模型 —— 都回落到默认项
   const cur = displayModelName(selectedModel.value)
   selectedModel.value = modelOptions.value.some((o) => o.value === cur) ? cur : defaultModelName()
   await commitSessionModel()
+}
+
+/** 权限档快捷切换的初始值 = 设置里的持久默认档（#t47）。
+ *  refreshModels（模型配置保存后）也会重走这里：设置改了默认档，面板即刻对齐 */
+async function loadDefaultPerm() {
+  if (!isTauri()) return
+  try {
+    const cfg = await tauriApi.getUiConfig()
+    if (cfg.agent_permission_mode === 'readonly' || cfg.agent_permission_mode === 'full') {
+      permMode.value = cfg.agent_permission_mode
+    } else {
+      permMode.value = 'ask'
+    }
+  } catch {
+    // 读不到配置就保持当前值/默认 ask，不影响对话
+  }
+}
+
+/** 平台回合结束后刷新剩余积分（服务端按 usage 结算，本地不推算）；失败静默 */
+function refreshCredits() {
+  if (!isTauri() || !platformEnabled.value) return
+  void tauriApi
+    .accountStatus()
+    .then((st) => {
+      account.value = st
+      accountLoggedIn.value = st.loggedIn
+    })
+    .catch(() => {})
 }
 
 async function switchModel(name: string) {
@@ -334,22 +545,97 @@ async function send() {
   sending.value = true
   streamingContent.value = ''
   streamError.value = ''
+  // 新回合：清上一回合的时间线（中间过程块 + 工具卡片）
+  turnFlow.value = []
+  activeTurnId.value = ''
   // 用户主动发送：强制定位到最新消息，后续流式输出保持跟随
   scrollToBottom(true)
 
+  // 回合所属会话：期间用户切到其它会话时，消息视图的变更全部跳过
+  //（回到本会话时 openSession 会从库里重拉），只保留 sending 等回合级状态收尾，
+  // 否则旧回合的 TurnDone 会把当前会话的消息列表整个顶掉（0.9.0 修复）
+  const turnSessionId = activeSessionId.value
+
   try {
-    await tauriApi.sendChatMessage(activeSessionId.value, content, (e: ChatStreamEvent) => {
+    await tauriApi.sendAgentMessage(activeSessionId.value, content, permMode.value, (e: ChatStreamEvent) => {
+      const cross = activeSessionId.value !== turnSessionId
       if (e.type === 'chunk') {
+        if (cross) return
         streamingContent.value += e.content
         scheduleStreamRender()
         scrollToBottom()
+      } else if (e.type === 'turnStart') {
+        // 回合开工即拿到 turn_id：停止键立刻亮出（不等首个工具事件）
+        if (!cross) activeTurnId.value = e.turnId
+      } else if (e.type === 'toolCall') {
+        if (cross) return
+        // 回合边界：把上一段叙述收进可折叠的中间过程块（0.9.0 起保留）
+        flushStreamToStep()
+        activeTurnId.value = e.turnId
+        pushCard({
+          callId: e.callId,
+          name: e.name,
+          args: e.args,
+          level: (e.level as ToolCard['level']) || 'read',
+          status: 'running',
+          turnId: e.turnId,
+          summary: '',
+          detail: '',
+        })
+        scrollToBottom()
+      } else if (e.type === 'toolResult') {
+        if (cross) return
+        const card = findCard(e.callId)
+        if (card) {
+          card.status = e.ok ? 'ok' : 'error'
+          card.summary = e.summary
+          card.detail = e.detail
+        }
+        scrollToBottom()
+      } else if (e.type === 'approvalRequest') {
+        if (cross) return
+        flushStreamToStep()
+        activeTurnId.value = e.turnId
+        pushCard({
+          callId: e.callId,
+          name: e.name,
+          args: e.args,
+          level: (e.level as ToolCard['level']) || 'write',
+          status: 'awaiting',
+          turnId: e.turnId,
+          summary: '',
+          detail: '',
+        })
+        scrollToBottom()
+      } else if (e.type === 'turnDone') {
+        refreshCredits()
+        if (!cross) {
+          cancelStreamRender()
+          streamHtml.value = ''
+          // 中间过程留在时间线（折叠态）；最终回复按库里的权威消息追加
+          messages.value = [...messages.value, e.message]
+          streamingContent.value = ''
+        }
+        sending.value = false
+        activeTurnId.value = ''
+        const idx = sessions.value.findIndex((x) => x.id === e.session.id)
+        if (idx >= 0) {
+          sessions.value = sessions.value
+            .map((x) => (x.id === e.session.id ? e.session : x))
+            .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+        } else {
+          sessions.value.unshift(e.session)
+        }
+        if (!cross) scrollToBottom(true)
       } else if (e.type === 'done') {
-        cancelStreamRender()
-        streamHtml.value = ''
-        // 用后端落库的权威消息替换占位回复
-        const i = messages.value.findIndex((m) => m.id === userMsg.id)
-        messages.value = [...messages.value.slice(0, i + 1), e.message]
-        streamingContent.value = ''
+        if (!cross) {
+          cancelStreamRender()
+          streamHtml.value = ''
+          // 用后端落库的权威消息替换占位回复
+          const i = messages.value.findIndex((m) => m.id === userMsg.id)
+          messages.value = [...messages.value.slice(0, i + 1), e.message]
+          streamingContent.value = ''
+        }
         sending.value = false
         // 后端返回的会话含自动生成的标题与累计 token，直接替换本地条目
         const idx = sessions.value.findIndex((x) => x.id === e.session.id)
@@ -360,14 +646,19 @@ async function send() {
         } else {
           sessions.value.unshift(e.session)
         }
-        scrollToBottom(true)
+        if (!cross) scrollToBottom(true)
       } else if (e.type === 'error') {
-        cancelStreamRender()
-        streamError.value = e.message
-        if (e.partial) streamingContent.value = e.partial
-        streamHtml.value = renderMd(streamingContent.value)
+        if (!cross) {
+          cancelStreamRender()
+          streamError.value = e.message
+          // 已流出的叙述收进中间过程块保留（可展开），不随气泡一起消失
+          flushStreamToStep()
+          if (e.partial) streamingContent.value = e.partial
+          streamHtml.value = renderMd(streamingContent.value)
+          scrollToBottom(true)
+        }
         sending.value = false
-        scrollToBottom(true)
+        activeTurnId.value = ''
       }
     })
   } catch (err) {
@@ -451,6 +742,48 @@ function mdHtml(m: ChatMessage): string {
   return html
 }
 
+// ---- 消息复制钮：默认隐藏、悬停对应消息才浮现；点击复制原文，短暂变主题色对勾 ----
+const copiedMsgId = ref<number | null>(null)
+let copiedTimer: ReturnType<typeof setTimeout> | null = null
+async function copyMessage(m: ChatMessage) {
+  const text = m.content
+  if (!text) return
+  let ok = false
+  try {
+    await navigator.clipboard.writeText(text)
+    ok = true
+  } catch {
+    // 剪贴板 API 不可用时回退 execCommand（与 AiProviders 同款做法）
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    try {
+      ok = document.execCommand('copy')
+    } catch {
+      ok = false
+    }
+    document.body.removeChild(ta)
+  }
+  if (!ok) {
+    showToast('复制失败')
+    return
+  }
+  copiedMsgId.value = m.id
+  if (copiedTimer) clearTimeout(copiedTimer)
+  copiedTimer = setTimeout(() => {
+    copiedMsgId.value = null
+  }, 1200)
+}
+
+// 历史中间过程块的展开状态（按消息 id，默认折叠）
+const stepOpen = ref<Record<number, boolean>>({})
+function toggleStep(id: number) {
+  stepOpen.value[id] = !stepOpen.value[id]
+}
+
 // ---- 流式渲染节流 ----
 // 首个 chunk 立即渲染（保住首字延迟手感），后续 ~80ms 内合并多次增量只重渲染一次
 let lastRenderAt = 0
@@ -525,7 +858,7 @@ let startSize = 420
 
 const isVertical = computed(() => props.side === 'top' || props.side === 'bottom')
 
-const panelWidth = ref(420)
+const panelWidth = ref(450)
 const panelHeight = ref(380)
 
 function clampSize(v: number, min: number, max: number): number {
@@ -625,6 +958,7 @@ defineExpose({
     streamingContent.value = ''
     streamHtml.value = ''
     streamError.value = ''
+    turnFlow.value = []
     mdCache.clear()
   },
   focusInput,
@@ -637,6 +971,18 @@ defineExpose({
 
     <div class="cp-header">
       <div class="cp-title" :title="currentTitle">{{ currentTitle }}</div>
+      <!-- 平台剩余积分（#t47）：只在用平台入口时显示；点按去账号页兑换。
+           每回合结束 refreshCredits 随结算刷新，本地不做推算 -->
+      <button
+        v-if="creditRemaining !== null"
+        class="cp-credits"
+        :class="{ low: creditRemaining <= 0 }"
+        :title="creditRemaining > 0 ? '平台剩余积分（按 token 折算）' : '积分已用完，点击去兑换'"
+        @click="emit('open-account-settings')"
+      >
+        <Zap :size="11" />
+        剩余 {{ creditRemaining }} 积分
+      </button>
       <div class="cp-spacer"></div>
       <button
         ref="addBtnRef"
@@ -675,19 +1021,72 @@ defineExpose({
         </div>
 
         <template v-else>
-          <div
-            v-for="m in messages"
-            :key="m.id"
-            class="msg"
-            :class="m.role === 'user' ? 'user' : 'ai'"
-          >
-            <div class="ava">{{ m.role === 'user' ? '你' : 'A' }}</div>
-            <div v-if="m.role === 'assistant'" class="bubble md" v-html="mdHtml(m)"></div>
-            <div v-else class="bubble">{{ m.content }}</div>
+          <template v-for="m in messages" :key="m.id">
+            <!-- 中间过程（0.9.0）：带 tool_calls 的 assistant 叙述保留为折叠块，点按展开 -->
+            <div v-if="m.role === 'assistant' && m.tool_calls && m.content" class="msg ai">
+              <div class="ava">X</div>
+              <div class="step-block" :class="{ open: !!stepOpen[m.id] }" @click="toggleStep(m.id)">
+                <div class="step-head">
+                  <ChevronDown :size="12" class="step-chev" />
+                  <span class="step-label">中间过程</span>
+                </div>
+                <div v-if="stepOpen[m.id]" class="bubble md step-body" v-html="mdHtml(m)"></div>
+              </div>
+            </div>
+            <!-- tool 结果行已由卡片时间线呈现，不重复渲染 -->
+            <div v-else-if="m.role !== 'tool' && !m.tool_calls" class="msg" :class="m.role === 'user' ? 'user' : 'ai'">
+              <div class="ava">{{ m.role === 'user' ? '你' : 'X' }}</div>
+              <div class="bubble-col">
+                <div v-if="m.role === 'assistant'" class="bubble md" v-html="mdHtml(m)"></div>
+                <div v-else class="bubble">{{ m.content }}</div>
+                <button
+                  class="msg-copy"
+                  :class="{ copied: copiedMsgId === m.id }"
+                  type="button"
+                  :title="copiedMsgId === m.id ? '已复制' : '复制内容'"
+                  :aria-label="copiedMsgId === m.id ? '已复制' : '复制这条消息内容'"
+                  @click="copyMessage(m)"
+                >
+                  <Check v-if="copiedMsgId === m.id" :size="12" :stroke-width="2.6" />
+                  <Copy v-else :size="12" :stroke-width="2" />
+                </button>
+              </div>
+            </div>
+          </template>
+
+          <!-- 本回合时间线：中间过程块（折叠）与工具卡片按发生顺序混排 + 内联审批 -->
+          <div v-if="turnFlow.length" class="msg ai">
+            <div class="ava">X</div>
+            <div class="tool-timeline">
+              <template v-for="item in turnFlow" :key="item.key">
+                <div v-if="item.kind === 'text'" class="step-block" :class="{ open: item.open }" @click="item.open = !item.open">
+                  <div class="step-head">
+                    <ChevronDown :size="12" class="step-chev" />
+                    <span class="step-label">中间过程</span>
+                  </div>
+                  <div v-if="item.open" class="bubble md step-body" v-html="item.html"></div>
+                </div>
+                <div v-else class="tool-card" :class="levelClass(item.level)">
+                  <div class="tc-head" @click="item.detailOpen = !item.detailOpen">
+                    <span class="tc-dot"></span>
+                    <span class="tc-name">{{ item.name }}</span>
+                    <span class="tc-status" :class="item.status">{{ statusText(item.status) }}</span>
+                  </div>
+                  <div v-if="item.summary" class="tc-summary">{{ item.summary }}</div>
+                  <!-- awaiting 态还没有结果：展开时展示参数 JSON——审批前先看清楚将执行什么 -->
+                  <div v-if="item.detailOpen && (item.detail || item.args)" class="tc-detail">{{ item.detail || prettyArgs(item.args) }}</div>
+                  <div v-if="item.status === 'awaiting'" class="tc-actions">
+                    <button class="tc-btn ok" @click.stop="respondApproval(item, 'once')">允许</button>
+                    <button class="tc-btn always" @click.stop="respondApproval(item, 'always')">本会话允许</button>
+                    <button class="tc-btn no" @click.stop="respondApproval(item, 'deny')">拒绝</button>
+                  </div>
+                </div>
+              </template>
+            </div>
           </div>
 
           <div v-if="sending" class="msg ai">
-            <div class="ava">A</div>
+            <div class="ava">X</div>
             <div v-if="streamingContent" class="bubble streaming md">
               <span v-html="streamHtml"></span><span class="cursor"></span>
             </div>
@@ -697,8 +1096,17 @@ defineExpose({
           </div>
 
           <div v-if="streamError" class="msg ai">
-            <div class="ava">A</div>
-            <div class="bubble error">
+            <div class="ava">X</div>
+            <!-- 积分不足（429 insufficient_credits）分流卡片：给去处，不只给报错（#t47） -->
+            <div v-if="isInsufficientCredits" class="bubble error insufficient">
+              <span class="err-title"><CircleOff :size="13" /> 积分不足</span>
+              <span class="insufficient-text">平台积分余额不足，这次对话没能开始。可兑换积分后重试，或改用自备 API Key 的模型。</span>
+              <div class="insufficient-actions">
+                <button class="tc-btn ok" @click="emit('open-account-settings')">去兑换积分</button>
+                <button class="tc-btn" @click="openModelSettings">配置自备 Key</button>
+              </div>
+            </div>
+            <div v-else class="bubble error">
               <span class="err-title">出错了</span>
               {{ streamError }}
             </div>
@@ -737,7 +1145,6 @@ defineExpose({
         @input="autosize"
       ></textarea>
       <div class="cp-input-bar">
-        <span v-if="sending" class="cp-hint">生成中…</span>
         <div class="model-sel">
           <span class="dotg" :class="{ off: !selectedReady }" :title="readyHint"></span>
           <AppSelect
@@ -751,8 +1158,23 @@ defineExpose({
             @update:model-value="switchModel"
           />
           <span v-else class="model-empty" @click="openModelSettings">未配置，去设置</span>
+          <!-- 权限档快捷切换（§5）：仅可查看 / 每次都问 / 完全权限 -->
+          <AppSelect
+            class="perm-app-select"
+            :model-value="permMode"
+            :options="permOptions.map((o) => ({ value: o.value, label: o.label, group: '' }))"
+            :menu-min-width="140"
+            :disabled="sending"
+            aria-label="AI 权限模式"
+            :title="`AI 权限：${permLabel}`"
+            @update:model-value="(v: string) => (permMode = v as typeof permMode)"
+          />
         </div>
-        <button class="send" :disabled="sending || !input.trim() || !activeSessionId" @click="send">
+        <button v-if="sending && activeTurnId" class="send stop" title="中断本回合（已执行的操作不回滚）" @click="stopTurn">
+          <Square :size="12" />
+          停止
+        </button>
+        <button v-else class="send" :disabled="sending || !input.trim() || !activeSessionId" @click="send">
           <Send :size="13" />
           发送
         </button>
@@ -1254,6 +1676,47 @@ defineExpose({
   word-break: break-word;
   overflow-wrap: anywhere;
 }
+/* 气泡列：气泡 + 下方复制钮纵向排布（用户消息整体右对齐） */
+.bubble-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+}
+.msg.user .bubble-col {
+  align-items: flex-end;
+}
+.bubble-col .bubble {
+  max-width: 100%;
+}
+/* 复制钮：默认隐藏，悬停对应消息行才浮现；点击后短暂变主题色对勾 */
+.msg-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-4);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms, color 120ms;
+}
+.msg:hover .msg-copy,
+.msg-copy:focus-visible {
+  opacity: 1;
+}
+.msg-copy:hover {
+  color: var(--text-2);
+  background: var(--bg-card-soft);
+}
+.msg-copy.copied {
+  color: var(--brand-500);
+  opacity: 1;
+}
 .msg.user .bubble {
   background: var(--brand-500);
   color: var(--text-on-accent);
@@ -1467,6 +1930,54 @@ defineExpose({
   margin-bottom: 3px;
 }
 
+/* ---- 平台剩余积分徽标（#t47） ---- */
+.cp-credits {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  font-size: 0.71875rem;
+  font-weight: 600;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--brand-500) 30%, transparent);
+  background: color-mix(in srgb, var(--brand-500) 10%, var(--bg-card-solid));
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cp-credits:hover {
+  border-color: color-mix(in srgb, var(--brand-500) 55%, transparent);
+  color: var(--text-1);
+}
+.cp-credits.low {
+  border-color: var(--c-red-soft);
+  background: color-mix(in srgb, var(--c-red-soft) 25%, var(--bg-card-solid));
+  color: var(--c-red-ink);
+}
+
+/* 积分不足分流卡片（#t47）：标题下给一句去向说明 + 两个按钮 */
+.bubble.error.insufficient {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.insufficient .err-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 0;
+}
+.insufficient-text {
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.insufficient-actions {
+  display: flex;
+  gap: 8px;
+}
+
 /* ---- 当前会话 token 统计行（置于输入区内、紧贴输入框上方） ---- */
 .cp-stats {
   display: flex;
@@ -1534,9 +2045,23 @@ defineExpose({
   align-items: center;
   gap: 8px;
 }
-.cp-hint {
-  font-size: 0.71875rem;
-  color: var(--text-3);
+/* 生成中的进行中动效落在停止键上：方块图标脉冲呼吸（进行中一眼可见），
+   不再需要「生成中…」文字提示；系统「减少动态效果」时被 style.css 全局降级 */
+.send.stop svg {
+  animation: stop-pulse 1.1s ease-in-out infinite;
+}
+@keyframes stop-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+.send.stop {
+  background: var(--c-red);
 }
 .send {
   margin-left: auto;
@@ -1559,5 +2084,147 @@ defineExpose({
 .send:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* ---- Agent 工具时间线（#t46）---- */
+.tool-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+/* 中间过程折叠块（0.9.0）：一行摘要头 + 展开正文，保留多轮叙述又不占空间 */
+.step-block {
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  min-width: 0;
+  cursor: pointer;
+  user-select: none;
+}
+.step-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.6875rem;
+  color: var(--text-3);
+}
+.step-chev {
+  flex: none;
+  transition: transform 0.15s ease;
+}
+.step-block.open .step-chev {
+  transform: rotate(180deg);
+}
+.step-body {
+  margin-top: 6px;
+  cursor: auto;
+  user-select: text;
+}
+.tool-card {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 0.75rem;
+  background: var(--bg-card-soft);
+}
+.tc-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  min-width: 0;
+}
+.tc-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-3);
+}
+.tool-card.lv-read .tc-dot {
+  background: var(--c-green);
+}
+.tool-card.lv-write .tc-dot {
+  background: var(--c-yellow);
+}
+.tool-card.lv-danger .tc-dot {
+  background: var(--c-red);
+}
+.tc-name {
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tc-status {
+  margin-left: auto;
+  flex: none;
+  font-size: 0.6875rem;
+  color: var(--text-3);
+}
+.tc-status.ok {
+  color: var(--c-green-ink);
+}
+.tc-status.error,
+.tc-status.denied {
+  color: var(--c-red-ink);
+}
+.tc-status.awaiting {
+  color: var(--c-yellow-ink);
+  font-weight: 600;
+}
+.tc-summary {
+  margin-top: 3px;
+  color: var(--text-2);
+  word-break: break-word;
+}
+.tc-detail {
+  margin-top: 5px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+  color: var(--text-2);
+  font-size: 0.71875rem;
+}
+.tc-actions {
+  margin-top: 7px;
+  display: flex;
+  gap: 8px;
+}
+.tc-btn {
+  font-size: 0.71875rem;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.tc-btn:hover {
+  background: var(--bg-card-soft);
+}
+.tc-btn.ok {
+  color: var(--c-green-ink);
+  border-color: var(--c-green-ink);
+}
+.tc-btn.always {
+  color: var(--c-yellow-ink);
+  border-color: var(--c-yellow-ink);
+}
+.tc-btn.no {
+  color: var(--c-red-ink);
+  border-color: var(--c-red-ink);
+}
+.perm-app-select {
+  flex: none;
+  font-size: 0.71875rem;
 }
 </style>

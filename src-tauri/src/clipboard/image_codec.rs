@@ -36,6 +36,20 @@ pub fn transcode_image_bytes(bytes: &[u8], dest_ext: &str) -> Result<Vec<u8>, St
     Ok(out.into_inner())
 }
 
+/// 图片字节（png/jpg/webp/gif 首帧/bmp/ico）解码为 `(宽, 高, RGBA 像素)`，BMP 源同样做
+/// alpha 归一。供非 Windows 写图片剪贴板：arboard 只收 RGBA，笔记图片多为 jpg/webp/gif。
+#[cfg(not(target_os = "windows"))]
+pub(super) fn decode_rgba(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
+    let img = image::load_from_memory(bytes).map_err(|e| format!("解码图片失败: {}", e))?;
+    let img = if bytes.starts_with(b"BM") {
+        normalize_bmp_alpha(img)
+    } else {
+        img
+    };
+    let rgba = img.to_rgba8();
+    Ok((rgba.width() as usize, rgba.height() as usize, rgba.into_raw()))
+}
+
 fn normalize_bmp_alpha(img: image::DynamicImage) -> image::DynamicImage {
     let mut rgba = img.to_rgba8();
     if !rgba.pixels().any(|p| p[3] != 0) {
@@ -47,11 +61,11 @@ fn normalize_bmp_alpha(img: image::DynamicImage) -> image::DynamicImage {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::clipboard) mod tests {
     use super::*;
 
     /// 构造 32bpp BI_RGB 的 BMP 文件字节（自底向上，同 GDI 写剪贴板形态）
-    fn bmp32_file(width: u32, height: u32, px: &[[u8; 4]]) -> Vec<u8> {
+    pub(in crate::clipboard) fn bmp32_file(width: u32, height: u32, px: &[[u8; 4]]) -> Vec<u8> {
         let mut dib = Vec::new();
         dib.extend_from_slice(&40u32.to_le_bytes());
         dib.extend_from_slice(&(width as i32).to_le_bytes());
@@ -122,5 +136,37 @@ mod tests {
             .unwrap();
         let bytes = png.into_inner();
         assert_eq!(transcode_image_bytes(&bytes, ".png").unwrap(), bytes);
+    }
+
+    /// 笔记图片常见的 jpg/webp/gif 都要能解成 RGBA（Linux 写剪贴板只收 RGBA）
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn decode_rgba_handles_note_image_formats() {
+        for fmt in [
+            image::ImageFormat::Png,
+            image::ImageFormat::Jpeg,
+            image::ImageFormat::WebP,
+            image::ImageFormat::Gif,
+        ] {
+            let mut buf = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgba8(3, 2)
+                .to_rgb8()
+                .write_to(&mut buf, fmt)
+                .unwrap();
+            let (w, h, rgba) = decode_rgba(&buf.into_inner())
+                .unwrap_or_else(|e| panic!("{fmt:?} 应能解码: {e}"));
+            assert_eq!((w, h, rgba.len()), (3, 2, 3 * 2 * 4), "{fmt:?}");
+        }
+    }
+
+    /// BMP 源（Linux 剪贴板历史快照）沿用 alpha 归一；坏字节明确报错，不静默写坏数据
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn decode_rgba_bmp_alpha_and_garbage() {
+        let bmp = bmp32_file(2, 2, &[[10, 20, 30, 0]; 4]);
+        let (w, h, rgba) = decode_rgba(&bmp).unwrap();
+        assert_eq!((w, h), (2, 2));
+        assert_eq!(&rgba[0..4], &[10, 20, 30, 255], "alpha 全 0 的 DIB 应按不透明");
+        assert!(decode_rgba(b"not an image").is_err());
     }
 }

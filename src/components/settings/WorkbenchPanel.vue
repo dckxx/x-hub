@@ -6,11 +6,22 @@
 import { inject, ref } from 'vue';
 import { isTauri } from '../../api/tauri';
 import AppSelect from '../AppSelect.vue';
+import { useDashboardLayout } from '../../composables/useDashboardLayout';
 import { useStore } from '../../stores/workbench';
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
+const layout = useDashboardLayout()
 const emit = defineEmits<{ (e: 'open-layout-editor'): void }>()
+
+/** 恢复为保存的默认布局（编辑器外立即生效并落盘；无快照时按钮置灰不会进来） */
+function onRestoreDefaultLayout() {
+  if (layout.restoreDefaultLayout()) {
+    showToast('已恢复为默认布局')
+  } else {
+    showToast('默认布局已失效，请在布局编辑器里重新「存为默认」')
+  }
+}
 
 function onToggleCountdownSound() {
   void store.setCountdownSound(!store.state.config.countdown_sound)
@@ -51,9 +62,18 @@ function onQuoteSourceChange(value: string) {
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">自定义布局</span>
-              <span class="setting-desc">拖拽排列主界面的模块位置与显隐（时钟、待办、提示词等），推荐布局为 12×15 棋盘，完成后回到主页面</span>
+              <span class="setting-desc">拖拽排列主界面的模块位置与显隐（时钟、待办、提示词等），推荐布局为 12×15 棋盘，完成后回到主页面；编辑器里可把当前布局「存为默认」，之后随时一键恢复</span>
             </div>
-            <button class="ghost-btn data-btn" @click="emit('open-layout-editor')">打开编辑器</button>
+            <div class="layout-row-btns">
+              <button
+                class="ghost-btn data-btn"
+                type="button"
+                :disabled="!layout.hasSavedDefault.value"
+                title="把工作台恢复为保存的默认布局（立即生效）"
+                @click="onRestoreDefaultLayout"
+              >恢复默认布局</button>
+              <button class="ghost-btn data-btn" type="button" @click="emit('open-layout-editor')">打开编辑器</button>
+            </div>
           </div>
 
           <div class="setting-row">
@@ -109,6 +129,13 @@ function onQuoteSourceChange(value: string) {
 </template>
 
 <style scoped>
+/* 自定义布局行的两个并排按钮（打开编辑器 / 恢复默认布局） */
+.layout-row-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
 /* 名言来源下拉：与上方语录输入框等宽（AppSelect 触发器通过 $attrs 接收 class，需 :deep 穿透） */
 :deep(.quote-source) {
   min-width: 240px;

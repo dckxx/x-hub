@@ -22,7 +22,8 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 | Frost edge | `--frost-edge` | `inset 0 1px 0 rgba(255,255,255,.55)` | `inset 0 1px 0 rgba(255,255,255,.10)` | 卡片顶部玻璃反光高光 |
 | Text primary | `--text-1` | `#26231d` | `#f2efe8` | 标题、正文 |
 | Text secondary | `--text-2` | `#57524a` | `#ccc8bf` | 辅助信息 |
-| Text muted | `--text-3` | `#8d877d` | `#9b968c` | 元数据、图标 |
+| Text muted | `--text-3` | `#8d877d` | `#a8a39a` | 元数据、图标 |
+| Text faint | `--text-4` | `#6f6a63` | `#99948b` | 时间戳、微字号弱化信息（2026-10-14 暗色提亮一档过 AA） |
 | Border subtle | `--border-soft` | `rgba(255,255,255,.55)` | `rgba(255,255,255,.16)` | 分隔、输入框 |
 | Border strong | `--border-strong` | `rgba(40,35,60,.22)` | `rgba(255,255,255,.28)` | 焦点、强调描边 |
 | Accent | `--brand-500` | `var(--accent)`（默认 `#5b5bf5`） | `var(--accent)`（默认 `#8b8bff`） | 当前项、主操作、焦点 |

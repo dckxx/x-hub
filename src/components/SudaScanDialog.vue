@@ -10,6 +10,8 @@ export interface ScanItem {
   kind: 'app' | 'web' | 'file' | 'folder'
   /** 书签来源文件夹（按 folder 分组展示） */
   folder?: string
+  /** 书签来源浏览器（Chrome/Edge/Brave/Chromium）；书签树顶层按浏览器分组勾选 */
+  browser?: string
   /** 导入时归入的速达小类名（书签按文件夹归类时填；null = 默认归类/未归类） */
   category?: string | null
   /** 桌面快捷方式原始路径（仅 .lnk/.url 有），供「导入后清理桌面快捷方式」用 */
@@ -19,8 +21,9 @@ export interface ScanItem {
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
-import { AlertTriangle, Check, ChevronRight, Loader2, Minus, Search } from 'lucide-vue-next'
+import { AlertTriangle, Check, ChevronRight, Globe, Loader2, Minus, Search } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
+import type { BrowserProfileStat } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
@@ -43,6 +46,13 @@ useFocusTrap(toRef(props, 'visible'), cardRef, searchRef)
 const loading = ref(false)
 const error = ref('')
 const items = ref<ScanItem[]>([])
+/** 书签模式：数量口径（各配置文件原始条数 / 去重合并 / 无效跳过 / 超限截断），解释「x-hub 计数 ≠ 浏览器收藏夹计数」 */
+const bookmarkMeta = ref<{
+  profiles: BrowserProfileStat[]
+  duplicates: number
+  skipped: number
+  truncated: number
+} | null>(null)
 const checked = ref<Set<string>>(new Set())
 const keyword = ref('')
 const brokenIcons = ref<Set<string>>(new Set())
@@ -50,6 +60,10 @@ const brokenIcons = ref<Set<string>>(new Set())
 const cleanShortcuts = ref(false)
 /** 书签模式：是否按浏览器文件夹设置速达小类（默认开，浏览器里已分好的目录直接沿用） */
 const groupByFolder = ref(true)
+/** 书签模式：按网址去重（默认开；**浏览器内**去重——同一网址在同一浏览器的多配置文件/文件夹间只算一条，
+ *  跨浏览器各自展示、不互相合并，导入侧按网址只建一条——dckxx 2026-10-09 二次改口径：
+ *  最早的「跨浏览器只留第一条」会把与首个浏览器大量重复的浏览器整个吞掉，分组后直接消失） */
+const dedupeBookmarks = ref(true)
 /** 文件夹 → 小类的手动覆盖（key=文件夹完整路径，原始输入；空 = 归默认小类）。
  *  未覆盖的走 folderToCategory 自动映射；同名覆盖可把多个文件夹合并进同一个小类 */
 const categoryOverrides = ref<Map<string, string>>(new Map())
@@ -58,7 +72,8 @@ const expandedFolders = ref<Set<string>>(new Set())
 
 const keyOf = (a: { target: string }) => a.target.toLowerCase()
 
-/** 后端小类名的长度上限（commands::validate_subcategory_input） */
+/** 后端小类名的长度上限（commands::validate_subcategory_input）：全路径 60、每段 20 */
+const SUBCATEGORY_PATH_MAX = 60
 const SUBCATEGORY_NAME_MAX = 20
 
 /** 书签文件夹路径切分（trim + 去空段），folderToCategory / 文件夹树 / 默认展开三处共用 */
@@ -67,26 +82,36 @@ function folderSegments(folder: string | undefined | null): string[] {
   return folder.split('/').map((s) => s.trim()).filter(Boolean)
 }
 
-/** 书签文件夹 → 速达小类名：剥掉浏览器根名（书签栏/其他书签/移动端），余下路径用 / 连接——
- *  浏览器里已分好的目录直接沿用（「书签栏/前端」→「前端」、「书签栏/开发/前端」→「开发/前端」）；
- *  根下直挂的书签返回 null（走默认小类/未归类）；全路径超 20 字符时退化为末级文件夹名，仍超才硬截断 */
+/** 书签文件夹 → 速达小类全路径：剥掉浏览器根名（书签栏/其他书签/移动端），余下路径用 / 连接——
+ *  浏览器里已分好的目录直接沿用（「书签栏/前端」→「前端」、「书签栏/开发/前端」→「开发/前端」；
+ *  「/」层级在速达小类行里逐级嵌套展示，见 utils/subcategoryTree.ts）；
+ *  根下直挂的书签返回 null（走默认小类/未归类）；全路径超 60 字符时退化为末级文件夹名，仍超才硬截断 */
 function folderToCategory(folder: string | undefined | null): string | null {
   const segs = folderSegments(folder)
   if (segs.length <= 1) return null
   const full = segs.slice(1).join('/')
-  if (full.length <= SUBCATEGORY_NAME_MAX) return full
+  // 全路径 ≤60 且每段 ≤20 才用完整路径；任一段超 20（后端按段校验）退化到末级，
+  // 仍超才硬截断——否则小类创建被拒，资源挂着不存在的小类落库、任何 chip 都筛不出来
+  if (full.length <= SUBCATEGORY_PATH_MAX && segs.slice(1).every((s) => s.length <= SUBCATEGORY_NAME_MAX)) return full
   const leaf = segs[segs.length - 1]
   if (leaf.length <= SUBCATEGORY_NAME_MAX) return leaf
   return leaf.slice(0, SUBCATEGORY_NAME_MAX)
 }
 
-/** 文件夹最终归入的小类：手动覆盖优先（trim；空 = 明确归默认小类），否则自动映射 */
+/** 文件夹最终归入的小类：手动覆盖优先（trim；空 = 明确归默认小类），否则自动映射。
+ *  覆盖输入按分段 trim + 拼回全路径——后端校验「分段首尾禁空格 + 每段 1–20 + 全路径 ≤60」，
+ *  「开发 / 前端」这类顺手的输入不归一会让小类创建被拒、资源挂着不存在的小类落库，
+ *  在任何小类 chip 下都筛不出来（Suda.vue onScanImported 的创建失败兜底只报错不拦截） */
 function effectiveCategory(folder: string | undefined | null): string | null {
   if (!folder) return null
   const ov = categoryOverrides.value.get(folder)
   if (ov === undefined) return folderToCategory(folder)
-  const t = ov.trim()
-  return t === '' ? null : t.slice(0, SUBCATEGORY_NAME_MAX)
+  const t = ov
+    .split('/')
+    .map((s) => s.trim().slice(0, SUBCATEGORY_NAME_MAX))
+    .filter(Boolean)
+    .join('/')
+  return t === '' ? null : t.slice(0, SUBCATEGORY_PATH_MAX)
 }
 
 /** 编辑文件夹的小类映射（存原始输入不即时 trim，避免输入中途空格被绑定值吃掉） */
@@ -118,7 +143,7 @@ const CONF = {
   },
   bookmarks: {
     title: '导入浏览器书签',
-    sub: 'Chrome / Edge / Brave / Chromium 书签；点文件夹勾选整组，点行展开逐级挑选，也可搜索',
+    sub: '检测到的浏览器默认全部勾选，点浏览器行整组取消/恢复；展开目录可逐级挑选，也可搜索',
     placeholder: '搜索书签…',
     loading: '正在读取浏览器书签…',
     loadingHint: '正在解析各浏览器配置目录',
@@ -180,9 +205,9 @@ const groups = computed(() => {
   return [{ key: 'all', label: '', items: list }]
 })
 
-// ---- 书签文件夹树（大书签库逐条滚不现实：按真实目录层级折叠浏览，文件夹勾选框整组选入）----
+// ---- 书签文件夹树（大书签库逐条滚不现实：顶层 = 浏览器（勾选整组导入），其下按真实目录层级折叠浏览）----
 interface BookmarkNode {
-  /** 完整路径（= folder 口径，如「书签栏/前端」） */
+  /** 完整路径（顶层 = 浏览器名；其下带浏览器前缀，如「Edge/书签栏/前端」，保证跨浏览器同名目录各自独立） */
   path: string
   name: string
   depth: number
@@ -191,21 +216,40 @@ interface BookmarkNode {
   items: ScanItem[]
   /** 子树书签总数（含直挂） */
   total: number
+  /** 不带浏览器前缀的原始目录路径（供小类映射 folderToCategory 剥根名的口径不变；顶层浏览器节点为空） */
+  rawFolder: string
+}
+
+/** 浏览器展示排序（检测不到的排在后面），顶层浏览器节点按此排序 */
+const BROWSER_ORDER = ['Chrome', 'Edge', 'Brave', 'Chromium']
+
+/** 条目在树中的路径分段：顶层 = 浏览器，其后为原始目录分段（空目录归「未分类」） */
+function treeSegments(it: ScanItem): string[] {
+  const rest = folderSegments(it.folder)
+  if (rest.length === 0) rest.push('未分类')
+  return [it.browser || '其他', ...rest]
 }
 
 function buildTree(list: ScanItem[]): BookmarkNode[] {
   const roots: BookmarkNode[] = []
   const byPath = new Map<string, BookmarkNode>()
   for (const it of list) {
-    const segs = folderSegments(it.folder)
-    if (segs.length === 0) segs.push('未分类')
+    const segs = treeSegments(it)
     let path = ''
     let parent: BookmarkNode | null = null
     for (let d = 0; d < segs.length; d++) {
       path = d === 0 ? segs[0] : `${path}/${segs[d]}`
       let node = byPath.get(path)
       if (!node) {
-        node = { path, name: segs[d], depth: d, children: [], items: [], total: 0 }
+        node = {
+          path,
+          name: segs[d],
+          depth: d,
+          children: [],
+          items: [],
+          total: 0,
+          rawFolder: segs.slice(1, d + 1).join('/'),
+        }
         byPath.set(path, node)
         if (parent) parent.children.push(node)
         else roots.push(node)
@@ -220,6 +264,11 @@ function buildTree(list: ScanItem[]): BookmarkNode[] {
     return n.total
   }
   roots.forEach(calcTotal)
+  const rank = (browser: string) => {
+    const i = BROWSER_ORDER.indexOf(browser)
+    return i === -1 ? BROWSER_ORDER.length : i
+  }
+  roots.sort((a, b) => rank(a.name) - rank(b.name))
   return roots
 }
 
@@ -317,6 +366,36 @@ function folderCountText(n: BookmarkNode): string {
   return n.children.length > 0 ? `共 ${n.total}` : `${n.items.length}`
 }
 
+/** 浏览器行的配置文件原始条数（去重前），如「Default 612 · Profile 3 238」；无数据返回 null */
+function browserRawText(name: string): string | null {
+  const rows = bookmarkMeta.value?.profiles.filter((p) => p.browser === name) ?? []
+  if (rows.length === 0) return null
+  return rows.map((p) => `${p.profile} ${p.count}`).join(' · ')
+}
+
+/** 浏览器行悬浮提示：x-hub 显示条数随「按网址去重」开关变化，配置文件原始数供与浏览器收藏夹管理器对账 */
+function browserRowTitle(n: BookmarkNode): string {
+  const raw = browserRawText(n.name)
+  const base = dedupeBookmarks.value
+    ? `${n.name} 共 ${n.total} 条书签（浏览器内已按网址去重）`
+    : `${n.name} 共 ${n.total} 条书签（未按网址去重）`
+  return raw ? `${base}；各配置文件原始：${raw}` : base
+}
+
+/** 数量口径说明文案：开头说明去重开关状态，其后列出合并 / 跳过 / 截断明细 */
+const bookmarkNote = computed(() => {
+  const m = bookmarkMeta.value
+  if (!m) return ''
+  const head = dedupeBookmarks.value
+    ? '各浏览器独立展示，同一网址在同一浏览器的多个配置文件、文件夹间只算一条，跨浏览器不互相合并'
+    : '各浏览器独立展示，未按网址去重，同一网址会重复出现'
+  const parts: string[] = []
+  if (dedupeBookmarks.value && m.duplicates > 0) parts.push(`已合并浏览器内重复网址 ${m.duplicates} 条`)
+  if (m.skipped > 0) parts.push(`跳过空名 / 空网址 / 脚本书签 ${m.skipped} 条`)
+  if (m.truncated > 0) parts.push(`超出上限，仅保留前 ${items.value.length} 条`)
+  return `数量口径：${head}${parts.length ? `，${parts.join('，')}` : ''}；导入时同一网址只建一条`
+})
+
 /** 统一的列表行模型：树浏览时 folder/item 交替，扁平分组时 group/item */
 type ListRow =
   | { type: 'group'; key: string; label: string; count: number; cat: string | null }
@@ -370,9 +449,11 @@ const stats = computed(() => {
 })
 
 const selectedCount = computed(() => {
+  // 跨浏览器同网址共享勾选键（keyOf=网址）：按唯一网址计数，
+  // 否则按钮显示的条数会大于实际导入条数（confirm 按网址去重传参）
+  const keys = new Set(items.value.map(keyOf))
   let n = 0
-  for (const a of items.value) {
-    const k = keyOf(a)
+  for (const k of keys) {
     if (checked.value.has(k) && !existingTargets.value.has(k)) n++
   }
   return n
@@ -417,24 +498,30 @@ async function runScan(mode: ScanMode): Promise<ScanItem[]> {
     return list.map((d) => ({ ...d, kind: d.kind }))
   }
   if (mode === 'bookmarks') {
-    const list = await tauriApi.scanBrowserBookmarks()
-    return list.map((b) => ({
+    const scan = await tauriApi.scanBrowserBookmarks(dedupeBookmarks.value)
+    bookmarkMeta.value = {
+      profiles: scan.profiles,
+      duplicates: scan.duplicates,
+      skipped: scan.skipped,
+      truncated: scan.truncated,
+    }
+    return scan.items.map((b) => ({
       name: b.name,
       target: b.target,
       icon: null,
       kind: 'web' as const,
       folder: b.folder,
+      browser: b.browser,
     }))
   }
   const apps = await tauriApi.scanInstalledApps()
   return apps.map((a) => ({ ...a, kind: 'app' as const }))
 }
 
-/** 默认勾选规则：桌面模式下文件/文件夹噪音大，默认不勾；书签超过 100 条也默认不勾
- *  （大书签库「全选再挑」一次误点就导入上千条，改为按文件夹整组挑更安全，要全选仍有工具栏按钮）；其余全勾 */
+/** 默认勾选规则：桌面模式下文件/文件夹噪音大，默认不勾；书签默认全部勾选
+ *  （顶层浏览器整组亮勾，不要的浏览器/目录再手动取消——dckxx 2026-10-09 拍板的口径）；其余全勾 */
 function defaultChecked(list: ScanItem[]): Set<string> {
   const s = new Set<string>()
-  if (props.mode === 'bookmarks' && list.length > 100) return s
   for (const it of list) {
     if (props.mode === 'desktop' && (it.kind === 'file' || it.kind === 'folder')) continue
     s.add(keyOf(it))
@@ -442,13 +529,10 @@ function defaultChecked(list: ScanItem[]): Set<string> {
   return s
 }
 
-/** 书签树初始展开：只展开第一层（浏览器根），让大书签库先呈现结构总览，按需逐级展开 */
+/** 书签树初始展开：只展开浏览器层（其下根目录行可见但收起），先看「哪些浏览器、各多少条」 */
 function defaultExpanded(list: ScanItem[]): Set<string> {
   const s = new Set<string>()
-  for (const it of list) {
-    const segs = folderSegments(it.folder)
-    if (segs.length > 0) s.add(segs[0])
-  }
+  for (const it of list) s.add(treeSegments(it)[0])
   return s
 }
 
@@ -457,11 +541,13 @@ async function startScan() {
   loading.value = true
   error.value = ''
   items.value = []
+  bookmarkMeta.value = null
   checked.value = new Set()
   keyword.value = ''
   brokenIcons.value = new Set()
   cleanShortcuts.value = false
   groupByFolder.value = true
+  dedupeBookmarks.value = true
   categoryOverrides.value = new Map()
   try {
     const list = await runScan(props.mode)
@@ -479,6 +565,29 @@ async function startScan() {
 
 function isExisting(a: ScanItem) {
   return existingTargets.value.has(keyOf(a))
+}
+
+/** 切换「按网址去重」：重扫书签刷新列表与数量口径（保留小类设置；勾选/展开按新列表回默认）。
+ *  守卫先于翻开关：扫描进行中/非 Tauri 环境不切口径，并把勾选框视觉态拨回去——
+ *  否则开关已翻、列表还是旧口径，两边对不上直到下次重扫 */
+async function toggleDedupe(e: Event) {
+  if (loading.value || !isTauri()) {
+    ;(e.target as HTMLInputElement).checked = dedupeBookmarks.value
+    return
+  }
+  dedupeBookmarks.value = !dedupeBookmarks.value
+  loading.value = true
+  error.value = ''
+  try {
+    const list = await runScan(props.mode)
+    items.value = list
+    checked.value = defaultChecked(list)
+    expandedFolders.value = defaultExpanded(list)
+  } catch (e) {
+    error.value = String(e)
+  } finally {
+    loading.value = false
+  }
 }
 
 function showImg(a: ScanItem) {
@@ -511,10 +620,16 @@ function toggleAll() {
 }
 
 function confirm() {
-  const selected = items.value.filter((a) => {
+  // 跨浏览器同网址共享勾选键：按唯一网址取第一条（排序在前浏览器的文件夹决定小类），
+  // 否则同网址会传两条给 Suda.vue 重复建资源
+  const selected: ScanItem[] = []
+  const seenKeys = new Set<string>()
+  for (const a of items.value) {
     const k = keyOf(a)
-    return checked.value.has(k) && !existingTargets.value.has(k)
-  })
+    if (seenKeys.has(k)) continue
+    seenKeys.add(k)
+    if (checked.value.has(k) && !existingTargets.value.has(k)) selected.push(a)
+  }
   if (selected.length === 0) return
   // 书签按文件夹归类时把小类名随条目带回（Suda.vue 负责补建缺失的小类再落库）；
   // 小类取「手动覆盖 ?? 自动映射」，覆盖可改名/合并/清空（清空 = 归默认小类）
@@ -585,9 +700,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 @change="groupByFolder = !groupByFolder"
               />
               <span>
-                按<b>浏览器文件夹</b>设置速达小类（如「书签栏/前端」→ 小类「前端」；各文件夹的小类可在列表中直接修改，留空归默认，改同名即合并；缺的小类自动创建<template v-if="newCategoryCount > 0">，本次将新建 {{ newCategoryCount }} 个</template>）
+                按<b>浏览器文件夹</b>设置速达小类，目录层级原样保留（如「书签栏/开发/前端」→ 小类「开发/前端」，在速达中逐级嵌套选择）；各文件夹的小类可在列表中直接修改，留空归默认，改同名即合并；缺的小类自动创建<template v-if="newCategoryCount > 0">，本次将新建 {{ newCategoryCount }} 个</template>
               </span>
             </label>
+            <!-- 数量口径：解释「x-hub 计数 ≠ 浏览器收藏夹管理器计数」（所有配置文件合并 + 同网址只算一条） -->
+            <label class="scan-clean">
+              <input
+                type="checkbox"
+                :checked="dedupeBookmarks"
+                @change="toggleDedupe"
+              />
+              <span>按<b>网址去重</b>：同一网址在同一浏览器的多个配置文件、文件夹间只算一条；各浏览器独立展示，<b>导入时同一网址只建一条</b>；取消勾选则完全原样展示</span>
+            </label>
+            <p v-if="bookmarkNote" class="scan-note">{{ bookmarkNote }}</p>
           </template>
 
           <!-- 搜索 + 全选 -->
@@ -642,11 +767,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                   >→ 小类「{{ row.cat }}」</span
                 >
               </p>
-              <!-- 文件夹行：点行展开/收起，勾选框三态整组选入 -->
+              <!-- 文件夹行：点行展开/收起，勾选框三态整组选入；顶层行 = 浏览器（整组勾选/取消） -->
               <div
                 v-else-if="row.type === 'folder'"
                 class="scan-folder"
-                :class="{ disabled: !hasSelectable(row.node) }"
+                :class="{ disabled: !hasSelectable(row.node), browser: row.node.depth === 0 }"
                 :style="{ paddingLeft: 10 + row.node.depth * 16 + 'px' }"
                 :title="row.node.path"
                 role="button"
@@ -666,7 +791,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                   class="scan-tri"
                   :class="folderCheckState(row.node)"
                   :title="
-                    folderCheckState(row.node) === 'all' ? '取消整组（含子目录）' : '勾选整组（含子目录）'
+                    folderCheckState(row.node) === 'all'
+                      ? row.node.depth === 0
+                        ? `取消 ${row.node.name} 全部书签`
+                        : '取消整组（含子目录）'
+                      : row.node.depth === 0
+                        ? `勾选 ${row.node.name} 全部书签`
+                        : '勾选整组（含子目录）'
                   "
                   @click.stop="toggleFolderCheck(row.node)"
                 >
@@ -677,28 +808,39 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                     :stroke-width="3"
                   />
                 </span>
+                <Globe
+                  v-if="row.node.depth === 0"
+                  :size="13"
+                  :stroke-width="2"
+                  class="scan-browser-ico"
+                  aria-hidden="true"
+                />
                 <span class="scan-folder-name">{{ row.node.name }}</span>
-                <!-- 小类映射：默认自动推导，可直接改（留空=归默认小类，改同名=合并多个文件夹） -->
-                <span v-if="groupByFolder" class="scan-cat-wrap" @click.stop>
+                <!-- 小类映射：默认自动推导，可直接改（留空=归默认小类，改同名=合并多个文件夹）；浏览器顶层行不参与 -->
+                <span v-if="groupByFolder && row.node.depth > 0" class="scan-cat-wrap" @click.stop>
                   <span class="scan-cat-label">小类</span>
                   <input
                     class="scan-cat-input"
                     type="text"
-                    maxlength="20"
+                    maxlength="60"
                     :value="
-                      categoryOverrides.get(row.node.path) ??
-                      folderToCategory(row.node.path) ??
+                      categoryOverrides.get(row.node.rawFolder) ??
+                      folderToCategory(row.node.rawFolder) ??
                       ''
                     "
                     placeholder="默认"
-                    title="导入时归入的速达小类，可修改；留空 = 按默认小类归档；多个文件夹改成同名会合并进同一个小类"
+                    title="导入时归入的速达小类（可用 / 分层级，如「开发/前端」），可修改；留空 = 按默认小类归档；多个文件夹改成同名会合并进同一个小类"
                     @keydown.stop
-                    @input="onCatInput(row.node.path, $event)"
+                    @input="onCatInput(row.node.rawFolder, $event)"
                   />
                 </span>
                 <span
                   class="scan-folder-count"
-                  :title="`直挂 ${row.node.items.length} · 子目录共 ${row.node.total}`"
+                  :title="
+                    row.node.depth === 0
+                      ? browserRowTitle(row.node)
+                      : `直挂 ${row.node.items.length} · 子目录共 ${row.node.total}`
+                  "
                   >{{ folderCountText(row.node) }}</span
                 >
               </div>
@@ -786,6 +928,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-2);
+}
+/* 书签数量口径说明（合并/跳过/截断非零才出现） */
+.scan-note {
+  margin-top: 6px;
+  padding: 0 2px;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--text-3);
 }
 .scan-warn {
   display: flex;
@@ -943,6 +1093,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .scan-folder.disabled:hover {
   background: transparent;
+}
+/* 顶层浏览器行：整组勾选的宿主，名称略强于目录行 */
+.scan-folder.browser {
+  font-weight: 700;
+}
+.scan-browser-ico {
+  flex-shrink: 0;
+  color: var(--text-3);
 }
 .scan-chev {
   flex-shrink: 0;

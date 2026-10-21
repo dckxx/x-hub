@@ -29,6 +29,40 @@ server.listen(port, '127.0.0.1', () => console.log('listening', server.address()
 
 > 后端自己发外部 HTTP 请求（抓取、调第三方 API）**不需要任何权限**——那是 Node 进程自己的事，权限系统只管扩展 ↔ 宿主的桥调用与对外监听。
 
+## AI 工具端点（manifest 声明了 `agent.tools` 时必须实现）
+
+宿主会把 AI 助手的调用转发到本扩展的固定端点 `POST /xhub/agent-tool`：
+body 为 `{"tool": "<工具名>", "args": {...}}`，请求头 `X-XHub-Ext-Id` 是本扩展 id（日志溯源用）。
+**2xx 响应体（任意 JSON）就是工具结果**，会原文交给模型；失败返回非 2xx，把原因写进 body 的
+`error` 或 `message` 字段。响应体上限 256 KB，大清单在工具内分页/截断。
+
+```js
+// 挂在 createServer 的回调里，与业务路由并列
+if (req.url === '/xhub/agent-tool' && req.method === 'POST') {
+  let body = ''
+  req.on('data', (c) => (body += c))
+  req.on('end', () => {
+    try {
+      const { tool, args } = JSON.parse(body || '{}')
+      const handler = {
+        list_orders: (a) => ({ orders: queryOrders(a.status) }),
+        // TODO: 在这里登记 manifest.agent.tools 声明的每个工具
+      }[tool]
+      if (!handler) {
+        res.statusCode = 404
+        res.end(JSON.stringify({ error: `未声明的工具 ${tool}` }))
+        return
+      }
+      res.end(JSON.stringify(handler(args ?? {})))
+    } catch (e) {
+      res.statusCode = 400
+      res.end(JSON.stringify({ error: String((e && e.message) || e) }))
+    }
+  })
+  return
+}
+```
+
 ## 排错：后端没起来先看哪里
 
 宿主把后端的 stdout / stderr **落盘**到 `<数据根>\logs\service\<扩展 id>.log`（单份上限 1MB，每次启动写一条 `----- service 启动 <时间> -----` 分隔标记，便于分清哪几行属于哪一次启动）。前端 `runtime.info().serviceReady === false` 只说明「端口没探通」——可能没起来、起来就崩、也可能端口被占，**先打开这个文件**；宿主日志 `logs\x-hub.log` 里同时有 `service 后端未就绪: … exit=<退出码>` 加日志尾部 20 行。不要对用户写「正在下载 Node」这类猜测文案。

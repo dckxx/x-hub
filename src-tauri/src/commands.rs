@@ -3,16 +3,17 @@ use crate::config;
 use crate::config::AppConfig;
 use crate::models::{
     ChatMessage, ChatModelConfig, ChatSession, ClipboardItem, Countdown, DetachedSticky, Note,
-    RepeatRule, Resource, ResourceKind, ResourceSubcategory, SearchResult, Snippet, Sticky, Tag,
-    Todo, TodoOccurrence, TodoTag, TodoTagLink,
+    NoteFolder, NoteImageGcReport, NoteLinks, PurgeReport, RepeatRule, Resource, ResourceKind,
+    ResourceSubcategory, ResourceZone, SearchResult, Snippet, Sticky, Tag, Todo, TodoOccurrence,
+    TodoTag, TodoTagLink,
 };
 use crate::process;
 use crate::repo::{
-    chat, clipboard, countdown, detached_sticky, note, resource, snippet, sticky, subcategory,
-    tag, todo, todo_tag,
+    chat, clipboard, countdown, detached_sticky, note, note_folder, note_link, resource, snippet,
+    sticky, subcategory, tag, todo, todo_tag, zone,
 };
 use crate::todo_recurrence;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 
@@ -34,6 +35,7 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let resources = resource::list_all(&conn).map_err(err_str)?;
     let notes = note::list(&conn).map_err(err_str)?;
+    let note_folders = note_folder::list(&conn).map_err(err_str)?;
     let tags = tag::list(&conn).map_err(err_str)?;
     let todos = todo::list(&conn).map_err(err_str)?;
     let stickies = sticky::list(&conn).map_err(err_str)?;
@@ -41,9 +43,10 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
     let countdowns = countdown::list(&conn).map_err(err_str)?;
     let config = crate::config::load();
     log::info!(
-        "初始化数据加载完成: resources={} notes={} tags={} todos={} stickies={} detached={} countdowns={}",
+        "初始化数据加载完成: resources={} notes={} folders={} tags={} todos={} stickies={} detached={} countdowns={}",
         resources.len(),
         notes.len(),
+        note_folders.len(),
         tags.len(),
         todos.len(),
         stickies.len(),
@@ -53,6 +56,7 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
     Ok(InitialData {
         resources,
         notes,
+        note_folders,
         tags,
         todos,
         stickies,
@@ -62,10 +66,18 @@ pub fn get_initial_data(state: State<'_, DbState>) -> Result<InitialData, String
     })
 }
 
+/// 速达资源全量清单（resources-changed 刷新用；agent 工具改库后前端重拉此命令）
+#[tauri::command]
+pub fn list_resources(state: State<'_, DbState>) -> Result<Vec<crate::models::Resource>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    resource::list_all(&conn).map_err(err_str)
+}
+
 #[derive(serde::Serialize)]
 pub struct InitialData {
     pub resources: Vec<Resource>,
     pub notes: Vec<Note>,
+    pub note_folders: Vec<NoteFolder>,
     pub tags: Vec<Tag>,
     pub todos: Vec<Todo>,
     pub stickies: Vec<Sticky>,
@@ -85,9 +97,18 @@ pub fn create_resource(
     category: Option<String>,
     icon: Option<String>,
     args: Option<String>,
+    zone_id: Option<i64>,
+    description: Option<String>,
+    remark: Option<String>,
+    remark_label: Option<String>,
 ) -> Result<Resource, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let kind = parse_kind(&kind)?;
+    if let Some(zid) = zone_id {
+        if !zone::exists(&conn, zid).map_err(err_str)? {
+            return Err(format!("NOT_FOUND: 分区 {zid} 不存在"));
+        }
+    }
     let res = resource::create(
         &conn,
         kind,
@@ -96,6 +117,10 @@ pub fn create_resource(
         category.as_deref(),
         icon.as_deref(),
         args.as_deref(),
+        zone_id,
+        description.as_deref(),
+        remark.as_deref(),
+        remark_label.as_deref(),
     )
     .map_err(err_str)?;
     log::info!(
@@ -117,9 +142,18 @@ pub fn update_resource(
     category: Option<String>,
     icon: Option<String>,
     args: Option<String>,
+    zone_id: Option<i64>,
+    description: Option<String>,
+    remark: Option<String>,
+    remark_label: Option<String>,
 ) -> Result<Resource, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let kind = parse_kind(&kind)?;
+    if let Some(zid) = zone_id {
+        if !zone::exists(&conn, zid).map_err(err_str)? {
+            return Err(format!("NOT_FOUND: 分区 {zid} 不存在"));
+        }
+    }
     let res = resource::update(
         &conn,
         id,
@@ -129,10 +163,24 @@ pub fn update_resource(
         category.as_deref(),
         icon.as_deref(),
         args.as_deref(),
+        zone_id,
+        description.as_deref(),
+        remark.as_deref(),
+        remark_label.as_deref(),
     )
     .map_err(err_str)?;
     log::info!("更新资源: id={} {} ({:?})", res.id, res.name, res.kind);
     Ok(res)
+}
+
+/// 备注明文按需解密（编辑弹窗打开时拉一次）：明文不随资源列表/get 下发
+#[tauri::command]
+pub fn get_resource_remark(
+    state: State<'_, DbState>,
+    resource_id: i64,
+) -> Result<Option<String>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    resource::remark_plaintext(&conn, resource_id).map_err(err_str)
 }
 
 #[tauri::command]
@@ -189,7 +237,10 @@ pub fn launch_resource(state: State<'_, DbState>, id: i64) -> Result<(), String>
     let res = resource::get(&conn, id).map_err(err_str)?;
     match res.kind {
         ResourceKind::App => {
-            // 程序已在运行 → 只把已有窗口调度到前台，不再拉起第二个实例。
+            // 程序已在运行且有可见（含最小化）窗口 → 只把已有窗口调度到前台，不再拉起第二个
+            // 实例。窗口全隐藏（托盘挂后台，如微信/WorkBuddy）时 activate_existing 返回 false，
+            // 照常启动 exe——应用自带的单实例逻辑会把主窗正规唤起（外部 SW_SHOW 隐藏窗只会
+            // 得到点不动/不重绘的空壳，实测记录见 process.rs）。
             // 带参数的资源仍按原样启动：参数往往就是「这次要打开的东西」（如 --incognito、
             // 要打开的文件夹），忽略它会丢语义。
             let no_args = res.args.as_deref().map(|a| a.trim().is_empty()).unwrap_or(true);
@@ -235,16 +286,72 @@ pub fn launch_resource(state: State<'_, DbState>, id: i64) -> Result<(), String>
     }
 }
 
+/// 以管理员身份启动速达「程序」资源（触发 UAC 确认）。仅 App 类型支持——
+/// 网页/文件没有「提权运行」的语义。不走 launch_program 的 740 自动提权路径：
+/// 这里是用户显式要求提权，直接 Start-Process -Verb RunAs。
+#[tauri::command]
+pub fn launch_resource_as_admin(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let res = resource::get(&conn, id).map_err(err_str)?;
+    match res.kind {
+        ResourceKind::App => {
+            // 打包应用（shell:AppsFolder\<AUMID>）没有提权语义：Start-Process -Verb RunAs
+            // 对 shell: URI 直接失败且 PS 子进程照常 spawn 成功，会「报成功但没反应」
+            if process::is_shell_app_target(&res.target) {
+                return Err("MSIX 打包应用不支持以管理员身份运行".into());
+            }
+            process::launch_elevated(&res.target, res.args.as_deref())?;
+            let _ = resource::touch(&conn, id);
+            log::info!("以管理员身份启动程序: {} ({})", res.name, res.target);
+            Ok(())
+        }
+        _ => Err("只有「程序」类型的资源支持以管理员身份运行".into()),
+    }
+}
+
+/// 在资源管理器中打开速达资源所在位置并选中该项（右键「打开文件所在位置」）。
+/// 仅本地路径型资源（程序 / 文件）有意义；网页资源没有「所在目录」概念，直接拒绝。
+#[tauri::command]
+pub fn reveal_resource_in_explorer(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let res = resource::get(&conn, id).map_err(err_str)?;
+    if matches!(res.kind, ResourceKind::Web) {
+        return Err("网页资源没有所在目录".to_string());
+    }
+    process::reveal_in_explorer(&res.target).map_err(|e| {
+        log::warn!("打开文件所在位置失败: {} ({}) -> {}", res.name, res.target, e);
+        e
+    })?;
+    log::info!("打开文件所在位置: {} ({})", res.name, res.target);
+    Ok(())
+}
+
 // ---------- 速达小类（ADR 0012）----------
+
+/// 小类名（可含「/」层级）的形状校验：全路径 1–60 字符、每段 1–20、分段首尾禁空格。
+/// create 与 rename 共用——资源按全路径字符串匹配，形状不一会让行名与树推导的路径对不上。
+fn validate_subcategory_name(name: &str) -> Result<(), String> {
+    let chars = name.chars().count();
+    if chars == 0 || chars > 60 {
+        return Err("小类名称需为 1–60 个字符".into());
+    }
+    for seg in name.split('/') {
+        if seg.trim() != seg {
+            return Err("小类路径分段的前后不能有空格（用 / 分隔层级）".into());
+        }
+        let n = seg.chars().count();
+        if n == 0 || n > 20 {
+            return Err("小类路径的每一段需为 1–20 个字符（用 / 分隔层级）".into());
+        }
+    }
+    Ok(())
+}
 
 fn validate_subcategory_input(kind: &str, name: &str) -> Result<(), String> {
     if !subcategory::VALID_KINDS.contains(&kind) {
         return Err("无效的大类".into());
     }
-    if name.is_empty() || name.chars().count() > 20 {
-        return Err("小类名称需为 1–20 个字符".into());
-    }
-    Ok(())
+    validate_subcategory_name(name)
 }
 
 #[tauri::command]
@@ -275,9 +382,7 @@ pub fn create_subcategory(
 #[tauri::command]
 pub fn rename_subcategory(state: State<'_, DbState>, id: i64, name: String) -> Result<(), String> {
     let name = name.trim().to_string();
-    if name.is_empty() || name.chars().count() > 20 {
-        return Err("小类名称需为 1–20 个字符".into());
-    }
+    validate_subcategory_name(&name)?;
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     subcategory::rename(&mut conn, id, &name)
 }
@@ -308,11 +413,143 @@ pub fn set_default_subcategory(state: State<'_, DbState>, id: i64) -> Result<(),
     subcategory::set_default(&conn, id)
 }
 
-/// 速达网页默认打开方式（panel=内嵌面板 / window=独立窗口，ADR 0011 2026-09-25 拍板）
+// ---------- 速达分区（「全部」tab 自定义成组陈列，独立于小类） ----------
+
+/// 分区名形状校验：trim 后 1–20 字符（无 kind 维度、无层级，`/` 是普通字符不禁）
+fn validate_zone_name(name: &str) -> Result<(), String> {
+    let chars = name.chars().count();
+    if chars == 0 || chars > 20 {
+        return Err("分区名称需为 1–20 个字符".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_zones(state: State<'_, DbState>) -> Result<Vec<ResourceZone>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    zone::list(&conn).map_err(err_str)
+}
+
+#[tauri::command]
+pub fn create_zone(state: State<'_, DbState>, name: String) -> Result<ResourceZone, String> {
+    let name = name.trim().to_string();
+    validate_zone_name(&name)?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    if !zone::is_name_free(&conn, &name, None).map_err(err_str)? {
+        return Err(format!("DUP: 已有名为「{name}」的分区"));
+    }
+    let z = zone::create(&conn, &name).map_err(err_str)?;
+    log::info!("新建分区: {}", z.name);
+    Ok(z)
+}
+
+#[tauri::command]
+pub fn rename_zone(state: State<'_, DbState>, id: i64, name: String) -> Result<(), String> {
+    let name = name.trim().to_string();
+    validate_zone_name(&name)?;
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    zone::rename(&mut conn, id, &name)
+}
+
+/// 删除分区：成员批量落「未分区」（资源本身不动，单事务，见 repo::zone::delete）
+#[tauri::command]
+pub fn delete_zone(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+    zone::delete(&mut conn, id)
+}
+
+#[tauri::command]
+pub fn reorder_zones(state: State<'_, DbState>, ids: Vec<i64>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    zone::reorder(&conn, &ids).map_err(err_str)
+}
+
+/// 调整分区框尺寸（cols/rows 为卡片格数，1..=12；新建默认 3×2）。
+/// 尺寸是下限语义：内容超出时前端按行自动膨胀，这里只改空框占位。
+#[tauri::command]
+pub fn resize_zone(
+    state: State<'_, DbState>,
+    id: i64,
+    cols: i64,
+    rows: i64,
+) -> Result<(), String> {
+    if !(1..=12).contains(&cols) || !(1..=12).contains(&rows) {
+        return Err("分区尺寸需在 1–12 格之间".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    zone::resize(&conn, id, cols, rows)
+}
+
+/// 设置分区级图标缩放覆盖（issue #37；None = 清除覆盖，跟随全局 suda_icon_scale）
+#[tauri::command]
+pub fn set_zone_scale(
+    state: State<'_, DbState>,
+    id: i64,
+    scale: Option<f64>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    zone::set_scale(&conn, id, scale)
+}
+
+/// 批量改分区归属（右键「移动到分区」/ 删分区撤销恢复），不动 sort_order
+#[tauri::command]
+pub fn set_resources_zone(
+    state: State<'_, DbState>,
+    ids: Vec<i64>,
+    zone_id: Option<i64>,
+) -> Result<(), String> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    if let Some(zid) = zone_id {
+        if !zone::exists(&conn, zid).map_err(err_str)? {
+            return Err(format!("NOT_FOUND: 分区 {zid} 不存在"));
+        }
+    }
+    resource::set_zone(&conn, &ids, zone_id).map_err(err_str)
+}
+
+/// 分区模式拖拽的原子写回载荷：顺序即新的全表 sort_order，zone_id 为目标分区（null=未分区）
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZonedOrderEntry {
+    pub id: i64,
+    pub zone_id: Option<i64>,
+}
+
+/// 「全部」tab 分区模式下的拖拽落盘：全表 sort_order 与每项的分区归属单事务同写。
+/// entries 必须覆盖全表（「全部」tab 下所有资源都可见，前端天然满足），
+/// 目标分区不存在时整批拒绝——宁可让前端报错重拉，也不留「有 zone_id 却无分区」的孤儿成员。
+#[tauri::command]
+pub fn reorder_resources_zoned(
+    state: State<'_, DbState>,
+    entries: Vec<ZonedOrderEntry>,
+) -> Result<(), String> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut known: Vec<i64> = Vec::new();
+    for zid in entries.iter().filter_map(|e| e.zone_id) {
+        if !known.contains(&zid) {
+            if !zone::exists(&conn, zid).map_err(err_str)? {
+                return Err(format!("NOT_FOUND: 分区 {zid} 不存在"));
+            }
+            known.push(zid);
+        }
+    }
+    let pairs: Vec<(i64, Option<i64>)> = entries.iter().map(|e| (e.id, e.zone_id)).collect();
+    resource::reorder_zoned(&conn, &pairs).map_err(err_str)?;
+    log::info!("资源分区排序更新: {} 项", entries.len());
+    Ok(())
+}
+
+/// 速达网页默认打开方式（panel=内嵌面板 / window=独立窗口 / system=系统默认浏览器，ADR 0011 2026-09-25 拍板）
 #[tauri::command]
 pub fn set_suda_web_open_mode(mode: String) -> Result<String, String> {
     let mode = mode.trim().to_string();
-    if !["panel", "window"].contains(&mode.as_str()) {
+    if !["panel", "window", "system"].contains(&mode.as_str()) {
         return Err("无效的打开方式".into());
     }
     let _guard = crate::config::lock();
@@ -332,6 +569,29 @@ pub fn create_note(state: State<'_, DbState>, title: String) -> Result<Note, Str
     Ok(note)
 }
 
+/// 新建笔记（速记视图口径）：一次性落 folder / source_url / 初始正文。
+/// folder_id 传 null = 树根（未选中文件夹时的新建落根，方案 Q13–Q18）。
+#[tauri::command]
+pub fn create_note_in(
+    state: State<'_, DbState>,
+    title: String,
+    content: Option<String>,
+    folder_id: Option<i64>,
+    source_url: Option<String>,
+) -> Result<Note, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let note = note::create_in(
+        &conn,
+        &title,
+        content.as_deref().unwrap_or(""),
+        folder_id,
+        source_url.as_deref().unwrap_or(""),
+    )
+    .map_err(err_str)?;
+    log::info!("新建笔记(带目录): id={} folder={:?}", note.id, note.folder_id);
+    Ok(note)
+}
+
 #[tauri::command]
 pub fn update_note(
     state: State<'_, DbState>,
@@ -340,11 +600,53 @@ pub fn update_note(
     content: String,
 ) -> Result<Note, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let note = note::update(&conn, id, &title, &content).map_err(err_str)?;
+    // 改名感知：标题变化时同事务做全库 [[旧标题]]→[[新标题]] 替换与链索引重建（双链断链防护）
+    let note = note::update_with_link_fixup(&conn, id, &title, &content).map_err(err_str)?;
     log::debug!("更新笔记: id={} 内容 {} 字", id, content.chars().count());
     Ok(note)
 }
 
+/// 移入回收站（软删）。UI 删除按钮与撤销恢复走这里；硬删见 purge_note。
+#[tauri::command]
+pub fn trash_note(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::trash(&conn, id).map_err(err_str)?;
+    log::info!("笔记移入回收站: id={}", id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn restore_note(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::restore(&conn, id).map_err(err_str)?;
+    log::info!("笔记从回收站还原: id={}", id);
+    Ok(())
+}
+
+/// 永久删除（回收站内）：连带 note_tags、note_links 出链。扩展桥 notes.delete 同语义。
+#[tauri::command]
+pub fn purge_note(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::delete(&conn, id).map_err(err_str)?;
+    log::info!("笔记永久删除: id={}", id);
+    Ok(())
+}
+
+/// 按设置的保留天数清理回收站（note_trash_retention_days，0 = 永久保留）。
+/// 启动时与设置变更时各跑一次；也可手动触发。
+#[tauri::command]
+pub fn purge_expired_notes(state: State<'_, DbState>) -> Result<PurgeReport, String> {
+    let days = config::load().note_trash_retention_days;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let purged = note::purge_expired(&conn, days).map_err(err_str)?;
+    if purged > 0 {
+        log::info!("回收站清理: {} 条（保留 {} 天）", purged, days);
+    }
+    Ok(PurgeReport { purged })
+}
+
+/// 删除笔记（硬删语义保持向后兼容：扩展桥 notes.delete 与旧调用方期望「删干净」）。
+/// UI 删除一律走 trash_note（软删进回收站）。
 #[tauri::command]
 pub fn delete_note(state: State<'_, DbState>, id: i64) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -359,6 +661,261 @@ pub fn delete_note(state: State<'_, DbState>, id: i64) -> Result<(), String> {
 pub fn list_notes(state: State<'_, DbState>) -> Result<Vec<Note>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     note::list_meta(&conn).map_err(err_str)
+}
+
+/// 单条笔记全量（含正文）：回收站还原回填活列表、刷新列表补拉外部新建条目用。
+/// 只传 note_id 不存在时返回 None，其余错误照常上报
+#[tauri::command]
+pub fn get_note(state: State<'_, DbState>, note_id: i64) -> Result<Option<Note>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(note::get(&conn, note_id).ok())
+}
+
+/// 回收站列表（含正文，还原/永久删除界面用）
+#[tauri::command]
+pub fn list_trashed_notes(state: State<'_, DbState>) -> Result<Vec<Note>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::list_trashed(&conn).map_err(err_str)
+}
+
+/// 设置/清除笔记自定义树图标（emoji，None = 恢复默认）
+#[tauri::command]
+pub fn set_note_icon(state: State<'_, DbState>, id: i64, icon: Option<String>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::set_icon(&conn, id, icon.as_deref()).map_err(err_str)
+}
+
+/// 一键清空回收站：逐条硬删（不可恢复；调用方负责先向用户确认）。单事务——
+/// 中断（错误/进程退出）要么全清要么全留，不留半截
+#[tauri::command]
+pub fn purge_all_trashed_notes(state: State<'_, DbState>) -> Result<usize, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(err_str)?;
+    let ids: Vec<i64> = {
+        let mut stmt = tx
+            .prepare("SELECT id FROM notes WHERE deleted_at IS NOT NULL")
+            .map_err(err_str)?;
+        let rows = stmt
+            .query_map([], |r| r.get(0))
+            .map_err(err_str)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(err_str)?;
+        rows
+    };
+    for id in &ids {
+        tx.execute("DELETE FROM notes WHERE id = ?1", params![id])
+            .map_err(err_str)?;
+    }
+    tx.commit().map_err(err_str)?;
+    if !ids.is_empty() {
+        log::info!("回收站已清空: {} 条", ids.len());
+    }
+    Ok(ids.len())
+}
+
+// ---------- 笔记文件夹（速记三栏视图左栏，ADR 0015） ----------
+
+#[tauri::command]
+pub fn list_note_folders(state: State<'_, DbState>) -> Result<Vec<NoteFolder>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note_folder::list(&conn).map_err(err_str)
+}
+
+#[tauri::command]
+pub fn create_note_folder(
+    state: State<'_, DbState>,
+    name: String,
+    parent_id: Option<i64>,
+) -> Result<NoteFolder, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("文件夹名不能为空".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let f = note_folder::create(&conn, name, parent_id).map_err(err_str)?;
+    log::info!("新建笔记文件夹: {} (parent={:?})", f.name, f.parent_id);
+    Ok(f)
+}
+
+#[tauri::command]
+pub fn rename_note_folder(state: State<'_, DbState>, id: i64, name: String) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("文件夹名不能为空".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note_folder::rename(&conn, id, name).map_err(err_str)
+}
+
+/// 删除文件夹：笔记与子文件夹上移一级，不级联删（ADR 0015）。
+/// 文件夹本身不进回收站；其成员原样保留。
+#[tauri::command]
+pub fn delete_note_folder(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note_folder::delete(&conn, id).map_err(err_str)?;
+    log::info!("删除笔记文件夹: id={}（成员上移一级）", id);
+    Ok(())
+}
+
+/// 拖拽移动 + 排序的原子写回（环检测在 repo 层：不能拖进自己或自己的后代）。
+/// ⚠️ 字段名按**蛇形**反序列化，与前端 `reorderNoteFolders` 载荷（tauri.ts / store /
+/// NoteFolderTree 的 emit 类型一路都是 `parent_id`/`sort_order`，对齐 NoteFolder 模型）
+/// 一致——嵌套载荷不做 Tauri 的驼峰自动转换，标 `rename_all = "camelCase"` 会让
+/// `sort_order` 读成缺失、整批反序列化失败，表现为文件夹拖拽完全无效果。
+#[derive(serde::Deserialize)]
+pub struct NoteFolderMove {
+    pub id: i64,
+    pub parent_id: Option<i64>,
+    pub sort_order: i64,
+}
+
+#[tauri::command]
+pub fn reorder_note_folders(
+    state: State<'_, DbState>,
+    moves: Vec<NoteFolderMove>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let entries: Vec<note_folder::FolderMove> = moves
+        .into_iter()
+        .map(|m| note_folder::FolderMove {
+            id: m.id,
+            parent_id: m.parent_id,
+            sort_order: m.sort_order,
+        })
+        .collect();
+    note_folder::reorder(&conn, &entries).map_err(err_str)
+}
+
+/// 移动单条笔记到文件夹（folder_id = null 回树根）
+#[tauri::command]
+pub fn set_note_folder(
+    state: State<'_, DbState>,
+    note_id: i64,
+    folder_id: Option<i64>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::set_folder(&conn, note_id, folder_id).map_err(err_str)
+}
+
+// ---------- 笔记图片孤儿 GC（只手动触发；dry_run 先出报告，确认后才真删） ----------
+
+/// 收集 notes/images 下全部图片文件名，与「未永久删除笔记（含回收站）」正文里的
+/// xhub-note 引用做差集——差集即孤儿。回收站内笔记的引用必须算活引用（方案 §10 风险 4）。
+pub fn scan_orphan_note_images(conn: &Connection) -> Result<NoteImageGcReport, String> {
+    use std::collections::HashSet;
+
+    let dir = crate::paths::data_root().join("notes").join("images");
+    let mut files: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                // 文件名严格为 16 位哈希 + 扩展（与 import_note_image 的落盘口径一致）
+                if is_note_image_name(name) {
+                    files.push(name.to_string());
+                }
+            }
+        }
+    }
+    let mut referenced: HashSet<String> = HashSet::new();
+    for content in note::all_contents_including_trashed(conn).map_err(err_str)? {
+        for hash in extract_note_image_hashes(&content) {
+            referenced.insert(hash);
+        }
+    }
+    let orphans: Vec<String> = files
+        .iter()
+        .filter(|f| {
+            let stem = f.split('.').next().unwrap_or("");
+            !referenced.contains(stem)
+        })
+        .cloned()
+        .collect();
+    Ok(NoteImageGcReport {
+        dry_run: true,
+        total_files: files.len(),
+        referenced: referenced.len(),
+        orphan_files: orphans,
+        removed: 0,
+        failed: 0,
+    })
+}
+
+/// 孤儿图片扫描（dry_run=true 恒定：本命令只报告，真删走 gc_orphan_note_images_commit）
+#[tauri::command]
+pub fn gc_orphan_note_images(state: State<'_, DbState>, dry_run: bool) -> Result<NoteImageGcReport, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut report = scan_orphan_note_images(&conn)?;
+    report.dry_run = dry_run;
+    if dry_run {
+        return Ok(report);
+    }
+    let dir = crate::paths::data_root().join("notes").join("images");
+    let mut removed = 0usize;
+    let mut failed = 0usize;
+    for name in &report.orphan_files {
+        if std::fs::remove_file(dir.join(name)).is_ok() {
+            removed += 1;
+        } else {
+            failed += 1;
+        }
+    }
+    report.removed = removed;
+    report.failed = failed;
+    log::info!(
+        "笔记孤儿图片清理: 孤儿 {} 张，删除 {} 张，失败 {} 张",
+        report.orphan_files.len(),
+        removed,
+        failed
+    );
+    Ok(report)
+}
+
+/// 笔记图片文件名口径：16 位十六进制哈希 + 白名单扩展
+fn is_note_image_name(name: &str) -> bool {
+    const EXTS: [&str; 6] = ["png", "jpg", "jpeg", "webp", "bmp", "gif"];
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) => (s, e.to_lowercase()),
+        None => return false,
+    };
+    stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_hexdigit()) && EXTS.contains(&ext.as_str())
+}
+
+/// 从笔记正文里抽取引用的图片哈希（xhub-note.localhost/<hash>.<ext> 两种 host 形态都认）
+fn extract_note_image_hashes(content: &str) -> Vec<String> {
+    const NEEDLE: &str = "xhub-note.localhost/";
+    let mut hashes = Vec::new();
+    let mut rest = content;
+    while let Some(pos) = rest.find(NEEDLE) {
+        let tail = &rest[pos + NEEDLE.len()..];
+        let name: String = tail
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
+            .collect();
+        let stem = name.split('.').next().unwrap_or("");
+        if stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_hexdigit()) {
+            hashes.push(stem.to_string());
+        }
+        rest = tail;
+    }
+    hashes
+}
+
+// ---------- 双链（轻量版：引用键 = 标题） ----------
+
+#[tauri::command]
+pub fn get_note_links(state: State<'_, DbState>, note_id: i64) -> Result<NoteLinks, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let (outgoing, incoming) = note_link::for_note(&conn, note_id).map_err(err_str)?;
+    Ok(NoteLinks { outgoing, incoming })
+}
+
+/// 存量笔记的双链索引重建（升级后首次使用：老笔记没有索引）。幂等。
+#[tauri::command]
+pub fn rebuild_note_links(state: State<'_, DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note_link::reindex_all(&conn).map_err(err_str)?;
+    log::info!("笔记双链索引已全量重建");
+    Ok(())
 }
 
 // ---------- 待办清单 ----------
@@ -474,6 +1031,29 @@ pub fn reorder_todo_orders(
     let _ = app.emit("todos-changed", ());
     log::debug!("待办排序更新: {} 条", ids.len());
     Ok(())
+}
+
+/// 跨父拖拽：把子待办改挂到另一个顶级父待办下，并按传入顺序重写目标父下的子项排序。
+/// `ordered_ids` 为目标落点后的完整子项顺序（含被移动项）。
+#[tauri::command]
+pub fn move_todo_child(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    id: i64,
+    new_parent_id: i64,
+    ordered_ids: Vec<i64>,
+) -> Result<Todo, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let t = todo::move_child(&conn, id, new_parent_id, &ordered_ids)?;
+    drop(conn);
+    let _ = app.emit("todos-changed", ());
+    log::info!(
+        "子待办改挂父级: id={} -> parent={} (目标下 {} 条)",
+        id,
+        new_parent_id,
+        ordered_ids.len()
+    );
+    Ok(t)
 }
 
 // ---------- 待办升级：描述 / 置顶 / 周期 / 标签 ----------
@@ -758,12 +1338,23 @@ pub async fn detach_sticky(
     if !(1..=2).contains(&slot) {
         return Err("便签槽位取值 1-2".into());
     }
-    // 已存在浮窗：聚焦并直接返回
+    // 已存在浮窗记录：窗口在 → 聚焦；窗口不在（上次创建失败/被异常销毁）→ 原位重建，
+    // 否则记录永远在而窗口永远不在，用户再点「脱离」只会走本分支静默聚焦，卡死到重启
     if let Some(existing) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         detached_sticky::get_by_slot(&conn, slot).map_err(err_str)?
     } {
-        crate::sticky_window::focus(&app, slot);
+        if !crate::sticky_window::focus(&app, slot) {
+            log::warn!("便签浮窗记录存在但窗口缺失，重建自愈: slot={}", slot);
+            crate::sticky_window::create_or_focus(
+                &app,
+                slot,
+                existing.x,
+                existing.y,
+                existing.always_on_top,
+            )
+            .map_err(|e| format!("创建浮窗失败: {}", e))?;
+        }
         return Ok(existing);
     }
 
@@ -776,21 +1367,47 @@ pub async fn detach_sticky(
     sticky::upsert(&conn, slot, "").map_err(err_str)?;
     drop(conn);
 
-    let win = crate::sticky_window::create_or_focus(&app, slot, saved.x, saved.y, true)
-        .map_err(|e| format!("创建浮窗失败: {}", e))?;
+    // 创建失败必须回滚（删除浮窗记录 + 恢复原卡内容并广播刷新）：
+    // DB 已写而窗口没建出来，就是「内容从主卡消失 + 再也浮不起来」的根源
+    if let Err(e) = crate::sticky_window::create_or_focus(&app, slot, saved.x, saved.y, true) {
+        log::error!("便签浮窗创建失败，回滚脱离: slot={} err={}", slot, e);
+        let conn = state.0.lock().map_err(|err| err.to_string())?;
+        let _ = detached_sticky::delete_by_slot(&conn, slot);
+        let _ = sticky::upsert(&conn, slot, &content);
+        drop(conn);
+        let _ = app.emit("stickies-changed", ());
+        return Err(format!("创建浮窗失败: {}", e));
+    }
     log::info!("便签脱离浮窗: slot={} 内容 {} 字", slot, content.chars().count());
-    drop(win);
 
     Ok(saved)
 }
 
-/// 再次点击脱离 icon 时聚焦已有浮窗（无浮窗则返回 false）
+/// 再次点击脱离 icon 时聚焦已有浮窗；窗口缺失但记录在 → 原位重建自愈；
+/// 记录也不在 → 返回 false（前端据此走脱离分支）
 #[tauri::command]
-pub async fn focus_detached_sticky(app: tauri::AppHandle, slot: i64) -> Result<bool, String> {
+pub async fn focus_detached_sticky(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    slot: i64,
+) -> Result<bool, String> {
     if !(1..=2).contains(&slot) {
         return Err("便签槽位取值 1-2".into());
     }
-    Ok(crate::sticky_window::focus(&app, slot))
+    if crate::sticky_window::focus(&app, slot) {
+        return Ok(true);
+    }
+    let existing = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        detached_sticky::get_by_slot(&conn, slot).map_err(err_str)?
+    };
+    let Some(existing) = existing else {
+        return Ok(false);
+    };
+    log::warn!("便签浮窗窗口缺失，重建自愈: slot={}", slot);
+    crate::sticky_window::create_or_focus(&app, slot, existing.x, existing.y, existing.always_on_top)
+        .map_err(|e| format!("创建浮窗失败: {}", e))?;
+    Ok(true)
 }
 
 /// 浮窗内容随输入保存（防抖由前端处理）
@@ -875,7 +1492,9 @@ pub async fn restore_detached_sticky(
     Ok(target_slot)
 }
 
-/// 删除浮窗便签（浮窗数据彻底删除）
+/// 删除浮窗便签（浮窗数据彻底删除）。
+/// 空内容关闭浮窗也走这里：必须广播 stickies-changed，否则主窗口 state.detached
+/// 留下幻影记录，便签卡的「脱离」按钮停在「已脱离」，再点只走聚焦分支永远浮不起来
 #[tauri::command]
 pub async fn delete_detached_sticky(
     app: tauri::AppHandle,
@@ -891,6 +1510,7 @@ pub async fn delete_detached_sticky(
 
     crate::sticky_window::destroy(&app, slot);
     log::info!("删除浮窗便签: slot={}", slot);
+    let _ = app.emit("stickies-changed", ());
     Ok(())
 }
 
@@ -1269,21 +1889,14 @@ pub struct NoteTagRow {
 pub struct AppInfo {
     /// 当前应用版本号（运行时读取打包版本，与 tauri.conf.json 一致）
     pub version: String,
-    /// 完整版本历史 markdown（内置，零网络）
-    pub changelog: String,
-    /// 最新一段版本说明（「What's New」弹窗用）
-    pub latest_section: String,
 }
 
-/// 返回应用版本 + 内置更新日志（版本历史），供「关于」页展示
+/// 返回应用版本号，供「关于」页与扩展市场的最低版本判断使用。
+/// 版本历史不再内置：客户端「关于」页直接跳转 GitHub Releases。
 #[tauri::command]
 pub fn get_app_info(app: tauri::AppHandle) -> Result<AppInfo, String> {
     let version = app.package_info().version.to_string();
-    Ok(AppInfo {
-        version,
-        changelog: crate::about::RELEASE_NOTES.to_string(),
-        latest_section: crate::about::latest_section(),
-    })
+    Ok(AppInfo { version })
 }
 
 // ---------- 配置 ----------
@@ -1359,6 +1972,101 @@ pub fn get_global_shortcut() -> Result<String, String> {
 
 #[tauri::command]
 pub fn set_global_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    set_configured_shortcut(app, value, ConfiguredShortcut::Main)
+}
+
+/// 可自定义快捷键在配置里的落点（set_*_shortcut 命令共用同一套改绑/持久化流程）
+enum ConfiguredShortcut {
+    Main,
+    Clipboard,
+    Search,
+    Chat,
+    Notes,
+}
+
+impl ConfiguredShortcut {
+    fn field<'a>(&self, cfg: &'a mut crate::config::AppConfig) -> &'a mut String {
+        match self {
+            ConfiguredShortcut::Main => &mut cfg.global_shortcut,
+            ConfiguredShortcut::Clipboard => &mut cfg.clipboard_shortcut,
+            ConfiguredShortcut::Search => &mut cfg.search_shortcut,
+            ConfiguredShortcut::Chat => &mut cfg.chat_shortcut,
+            ConfiguredShortcut::Notes => &mut cfg.notes_shortcut,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            ConfiguredShortcut::Main => "主窗口",
+            ConfiguredShortcut::Clipboard => "剪贴板",
+            ConfiguredShortcut::Search => "搜索",
+            ConfiguredShortcut::Chat => "AI 对话",
+            ConfiguredShortcut::Notes => "速记",
+        }
+    }
+
+    /// 该快捷键当前是否处于启用状态（禁用 = 不注册但保留键值）
+    fn enabled(&self, cfg: &crate::config::AppConfig) -> bool {
+        match self {
+            ConfiguredShortcut::Main => cfg.global_shortcut_enabled,
+            ConfiguredShortcut::Clipboard => cfg.clipboard_shortcut_enabled,
+            ConfiguredShortcut::Search => cfg.search_shortcut_enabled,
+            ConfiguredShortcut::Chat => cfg.chat_shortcut_enabled,
+            ConfiguredShortcut::Notes => cfg.notes_shortcut_enabled,
+        }
+    }
+
+    fn set_enabled(&self, cfg: &mut crate::config::AppConfig, value: bool) {
+        match self {
+            ConfiguredShortcut::Main => cfg.global_shortcut_enabled = value,
+            ConfiguredShortcut::Clipboard => cfg.clipboard_shortcut_enabled = value,
+            ConfiguredShortcut::Search => cfg.search_shortcut_enabled = value,
+            ConfiguredShortcut::Chat => cfg.chat_shortcut_enabled = value,
+            ConfiguredShortcut::Notes => cfg.notes_shortcut_enabled = value,
+        }
+    }
+
+    /// 键值是否与**其它**快捷键里某一个相同（物理按键口径，CommandOrControl 与 Ctrl
+    /// 视为同键）。改键/启用前的配置层冲突预检用——配置相同而 OS 各自注册必然撞车，
+    /// 与其在启用时报一句含糊的「快捷键冲突」，不如在写入配置时就拦下并点名是谁。
+    fn conflicts_with_other(
+        &self,
+        cfg: &crate::config::AppConfig,
+        key: &str,
+    ) -> Option<(&'static str, String)> {
+        let others = [
+            (
+                ConfiguredShortcut::Main,
+                cfg.global_shortcut.clone(),
+                "主窗口",
+            ),
+            (
+                ConfiguredShortcut::Clipboard,
+                cfg.clipboard_shortcut.clone(),
+                "剪贴板",
+            ),
+            (ConfiguredShortcut::Search, cfg.search_shortcut.clone(), "搜索"),
+            (ConfiguredShortcut::Chat, cfg.chat_shortcut.clone(), "AI 对话"),
+            (ConfiguredShortcut::Notes, cfg.notes_shortcut.clone(), "速记"),
+        ];
+        others
+            .into_iter()
+            .find(|(which, value, _)| {
+                std::mem::discriminant(which) != std::mem::discriminant(self)
+                    && !value.is_empty()
+                    && crate::shortcut::same_hotkey(value, key)
+            })
+            .map(|(_, value, label)| (label, value))
+    }
+}
+
+/// 更新某个可自定义全局快捷键：改绑（冲突预检/反注册/注册/回滚）+ 配置持久化。
+/// 同一物理按键组合仅换写法（CommandOrControl→Ctrl）时直接改存储字符串，不重新注册。
+fn set_configured_shortcut(
+    app: tauri::AppHandle,
+    value: String,
+    which: ConfiguredShortcut,
+) -> Result<String, String> {
     let _guard = crate::config::lock();
     let shortcut = value.trim();
     if shortcut.is_empty() {
@@ -1366,40 +2074,125 @@ pub fn set_global_shortcut(app: tauri::AppHandle, value: String) -> Result<Strin
     }
 
     let mut config = crate::config::load();
-    let previous = config.global_shortcut.clone();
+    let previous = config_field(&config, &which);
     if previous == shortcut {
-        return Ok(config.global_shortcut);
+        return Ok(previous);
     }
-
-    // 同一物理按键组合仅换了写法（如 Windows 上 CommandOrControl→Ctrl），
-    // 无需重新注册，直接更新存储的字符串
-    if crate::shortcut::same_hotkey(&previous, shortcut) {
-        config.global_shortcut = shortcut.to_string();
+    // 改键前先做配置层冲突预检：其它快捷键已占用同一物理按键时无论本键是否禁用
+    // 都拦下（禁用态存进去就是颗雷——重新启用时注册必然撞车，报错还不知所云）
+    if let Some((label, _)) = which.conflicts_with_other(&config, shortcut) {
+        return Err(format!("与「{label}」快捷键冲突，请换一个组合"));
+    }
+    // 该快捷键处于「禁用」状态（config.*_shortcut_enabled = false）时只改存储值、不注册，
+    // 否则禁用后一改键就又把热键注册上了，开关形同虚设（重新启用时按新值注册）
+    if !which.enabled(&config) {
+        *which.field(&mut config) = shortcut.to_string();
         crate::config::save(&config)?;
-        return Ok(config.global_shortcut);
+        log::info!("[快捷键] {}快捷键（当前已禁用）已改为 {}", which.label(), shortcut);
+        return Ok(shortcut.to_string());
     }
-
-    if crate::shortcut::is_shortcut_registered(&app, shortcut) {
-        return Err("快捷键冲突".into());
+    if crate::shortcut::same_hotkey(&previous, shortcut) {
+        *which.field(&mut config) = shortcut.to_string();
+        crate::config::save(&config)?;
+        return Ok(shortcut.to_string());
     }
-
-    if let Err(e) = crate::shortcut::unregister_toggle_shortcut(&app, &previous) {
-        if !crate::shortcut::is_conflict_error(&e) {
-            return Err(e);
-        }
-        return Err("快捷键冲突".into());
-    }
-
-    if let Err(e) = crate::shortcut::register_toggle_shortcut(&app, shortcut) {
-        let mapped = crate::shortcut::format_shortcut_error(&e);
-        if !mapped.eq(&e) {
-            let _ = crate::shortcut::register_toggle_shortcut(&app, &previous);
-        }
-        return Err(mapped);
-    }
-    config.global_shortcut = shortcut.to_string();
+    crate::shortcut::rebind_shortcut(&app, &previous, shortcut)?;
+    *which.field(&mut config) = shortcut.to_string();
     crate::config::save(&config)?;
-    Ok(config.global_shortcut)
+    log::info!("[快捷键] {}快捷键已改为 {}", which.label(), shortcut);
+    Ok(shortcut.to_string())
+}
+
+fn config_field(cfg: &crate::config::AppConfig, which: &ConfiguredShortcut) -> String {
+    match which {
+        ConfiguredShortcut::Main => cfg.global_shortcut.clone(),
+        ConfiguredShortcut::Clipboard => cfg.clipboard_shortcut.clone(),
+        ConfiguredShortcut::Search => cfg.search_shortcut.clone(),
+        ConfiguredShortcut::Chat => cfg.chat_shortcut.clone(),
+        ConfiguredShortcut::Notes => cfg.notes_shortcut.clone(),
+    }
+}
+
+/// 更新全局搜索呼出快捷键
+#[tauri::command]
+pub fn set_search_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    set_configured_shortcut(app, value, ConfiguredShortcut::Search)
+}
+
+/// 更新速记呼出快捷键（唤起主窗 → 切速记视图 → 聚焦新建）
+#[tauri::command]
+pub fn set_notes_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    set_configured_shortcut(app, value, ConfiguredShortcut::Notes)
+}
+
+/// 更新 AI 对话呼出快捷键
+#[tauri::command]
+pub fn set_chat_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    set_configured_shortcut(app, value, ConfiguredShortcut::Chat)
+}
+
+/// 启用/禁用某个可自定义全局快捷键：禁用 = 注销该热键但保留键值；启用 = 按当前键值重新注册。
+/// 与 set_*_shortcut 分开：这里只切开关，不动键值本身。
+#[tauri::command]
+pub fn set_shortcut_enabled(
+    app: tauri::AppHandle,
+    kind: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let which = match kind.as_str() {
+        "main" => ConfiguredShortcut::Main,
+        "clipboard" => ConfiguredShortcut::Clipboard,
+        "search" => ConfiguredShortcut::Search,
+        "chat" => ConfiguredShortcut::Chat,
+        "notes" => ConfiguredShortcut::Notes,
+        _ => return Err("未知的快捷键类型".into()),
+    };
+    let _guard = crate::config::lock();
+    let mut config = crate::config::load();
+    let value = config_field(&config, &which);
+    if enabled {
+        if value.trim().is_empty() {
+            return Err("尚未设置快捷键".into());
+        }
+        // 只在实际未注册时注册（已注册则幂等跳过，避免「已注册」冲突）
+        if !crate::shortcut::is_shortcut_registered(&app, &value) {
+            if let Err(e) = crate::shortcut::register_toggle_shortcut(&app, &value) {
+                // 注册报「已被注册」但登记表说没有：先强反注册再试一次自愈——登记表与
+                // 系统热键状态失同步（历史反注册失败留下的残留等）时按原样重试永远失败
+                let mut last_err = crate::shortcut::format_shortcut_error(&e);
+                if crate::shortcut::is_conflict_error(&e) {
+                    let _ = crate::shortcut::unregister_toggle_shortcut(&app, &value);
+                    match crate::shortcut::register_toggle_shortcut(&app, &value) {
+                        Ok(()) => last_err.clear(),
+                        Err(e2) => last_err = crate::shortcut::format_shortcut_error(&e2),
+                    }
+                }
+                if !last_err.is_empty() {
+                    // 报错要点名冲突来源：其它三个快捷键占了同键（配置撞车）与外部程序
+                    // 占用（本进程从未注册成功过）对用户是完全不同的两件事
+                    if let Some((label, _)) = which.conflicts_with_other(&config, &value) {
+                        return Err(format!("与「{label}」快捷键键值相同，请先修改其中一个"));
+                    }
+                    return Err(format!(
+                        "启用失败：{last_err}（该组合可能正被其它程序占用）"
+                    ));
+                }
+            }
+        }
+    } else if crate::shortcut::is_shortcut_registered(&app, &value) {
+        // 未注册时忽略：可能当初注册就被别的程序占用而失败过
+        if let Err(e) = crate::shortcut::unregister_toggle_shortcut(&app, &value) {
+            log::warn!("[快捷键] 禁用时反注册失败（残留会导致下次启用报冲突）: {e}");
+        }
+    }
+    which.set_enabled(&mut config, enabled);
+    crate::config::save(&config)?;
+    log::info!(
+        "[快捷键] {}快捷键已{}",
+        which.label(),
+        if enabled { "启用" } else { "禁用" }
+    );
+    Ok(())
 }
 
 // ---------- 开机自启动 ----------
@@ -1518,6 +2311,19 @@ pub fn delete_tag(state: State<'_, DbState>, id: i64) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     tag::delete(&conn, id).map_err(err_str)?;
     log::info!("删除标签: id={}", id);
+    Ok(())
+}
+
+/// 笔记标签改名（修缺陷③：归属关系 note_tags 不动，所有引用它的笔记自动跟随新名字）
+#[tauri::command]
+pub fn rename_tag(state: State<'_, DbState>, id: i64, name: String) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("标签名不能为空".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    tag::rename(&conn, id, name).map_err(err_str)?;
+    log::info!("标签改名: id={} → {}", id, name);
     Ok(())
 }
 
@@ -1723,10 +2529,16 @@ pub fn get_data_path() -> Result<DataPathInfo, String> {
     })
 }
 
-/// 更改数据存储目录：把现有数据（数据库 / 图标 / 剪贴板图片 / 配置 / 密钥）复制到新目录，
-/// 写引导文件指向新目录，重启后生效。旧目录保留（安全起见不删除，由用户自行清理）。
+/// 更改数据存储目录：把**整个数据根**迁移到新目录（数据库走 SQLite 在线备份，
+/// 其余条目原样复制，见 [`copy_data_root`]），并把库内与配置里的绝对路径从旧根
+/// 改写为新根（见 [`rewrite_migrated_db_paths`] / [`rewrite_migrated_config_paths`]），
+/// 最后写引导文件指向新目录，重启后生效。旧目录保留（安全起见不删除，由用户自行清理）。
 #[tauri::command]
-pub fn change_data_dir(state: State<'_, DbState>, new_dir: String) -> Result<(), String> {
+pub fn change_data_dir(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    new_dir: String,
+) -> Result<(), String> {
     // 便携版数据固定跟随程序目录（exe\data），不支持更改
     if crate::paths::is_portable() {
         return Err("便携版数据跟随程序目录，不支持更改".into());
@@ -1738,9 +2550,22 @@ pub fn change_data_dir(state: State<'_, DbState>, new_dir: String) -> Result<(),
     std::fs::create_dir_all(target).map_err(|e| format!("创建数据目录失败: {}", e))?;
 
     let src = crate::paths::data_root();
-    if src.canonicalize().ok() == target.canonicalize().ok() {
+    // 互相包含会把「复制数据根」变成递归复制（目标在源内时现场建目录并读到自己），
+    // 也会让「目标已含旧根」产生不可预期的嵌套数据，直接拒绝
+    let src_c = src.canonicalize().unwrap_or_else(|_| src.to_path_buf());
+    let target_c = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.to_path_buf());
+    if src_c == target_c {
         return Err("新路径与当前路径相同".into());
     }
+    if target_c.starts_with(&src_c) || src_c.starts_with(&target_c) {
+        return Err("新目录不能与当前数据目录相同或互相包含".into());
+    }
+
+    // 0. 先停掉 service 扩展后端：它们可能在扩展目录里持有打开的文件（扩展自带
+    //    SQLite 等），复制会因共享冲突失败。迁移后本就立即重启，提前停止无副作用
+    crate::service::stop_all(&app);
 
     // 1. 数据库在线备份到新目录（运行中数据库被占用，不能直接复制文件；WAL 安全）
     {
@@ -1748,25 +2573,26 @@ pub fn change_data_dir(state: State<'_, DbState>, new_dir: String) -> Result<(),
         conn.backup("main", &target.join("app.db"), None)
             .map_err(|e| format!("迁移数据库失败: {}", e))?;
     }
-
-    // 2. 复制图标 / 剪贴板图片目录
-    for name in ["icons", "clipboard"] {
-        let s = src.join(name);
-        let d = target.join(name);
-        if s.exists() {
-            let _ = copy_dir_recursive(&s, &d);
-        }
+    // 目标目录若以前就是数据根（迁移回来 / 复用过），残留的 -wal/-shm 属于旧库，
+    // 下次启动会被 SQLite 当作本次快照的 WAL 回放——直接清掉，让备份库干净打开
+    for suffix in ["app.db-wal", "app.db-shm", "app.db-journal"] {
+        let _ = std::fs::remove_file(target.join(suffix));
     }
 
-    // 3. 复制配置与密钥文件（app.json 随数据走，实现 U 盘换机配置一并继承）
-    for name in ["app.json", "chat_keys.json"] {
-        let s = src.join(name);
-        if s.exists() {
-            let _ = std::fs::copy(&s, target.join(name));
-        }
-    }
+    // 2. 数据库之外的整个数据根原样复制：扩展（代码 + `.storage.json` /
+    //    `.config.json` / `.shared-storage.json`）、笔记图片、壁纸、市场缓存、
+    //    剪贴板图片、安装标识、配置与密钥……漏掉任一目录，重启后都表现为
+    //    「数据消失」（扩展全没了 / 速达图标要重新指定 / 笔记配图裂图）
+    copy_data_root(src, target)?;
 
-    // 4. 写引导文件指向新目录（重启后 init_database 读它）
+    // 3. 库内绝对路径改写：resources.icon 与 clipboard_history.image_path 都存旧根
+    //    绝对路径，而 asset 协议作用域只放行当前数据根——不改写就是图标全丢
+    rewrite_migrated_db_paths(&target.join("app.db"), src, target)?;
+
+    // 4. app.json 内的绝对路径（壁纸 / 「我的扩展」源码目录 / Skills 根目录）
+    rewrite_migrated_config_paths(&target.join("app.json"), src, target);
+
+    // 5. 写引导文件指向新目录（重启后 init_database 读它）
     crate::paths::set_data_root(target)?;
 
     log::info!(
@@ -1777,30 +2603,195 @@ pub fn change_data_dir(state: State<'_, DbState>, new_dir: String) -> Result<(),
     Ok(())
 }
 
+/// 数据目录迁移时不需要跟着走的顶层条目：
+/// - `app.db*`：数据库走 `conn.backup` 在线快照；直接复制运行中的 `app.db` /
+///   `-wal` / `-shm` 会把不一致状态带到新目录；
+/// - `restore.db` / `restore_icons` / `.restore_pending`：待恢复的一次性中间态；
+/// - `logs` / `updates`：日志与已下载/待应用的更新包，可重建；
+///   （`runtime/` 内置 Node **要复制**：没有系统 Node 的用户迁移后 service 扩展
+///   仍需它才能启动，跳过会变成一次隐性下载）
+/// - `data_path.json`：引导文件锚点（固定放 `%APPDATA%\x-hub`），不属于数据本身。
+fn data_root_entry_skipped(name: &str) -> bool {
+    name.starts_with("app.db")
+        || matches!(
+            name,
+            "restore.db"
+                | "restore_icons"
+                | ".restore_pending"
+                | "logs"
+                | "updates"
+                | "data_path.json"
+        )
+}
+
+/// 复制数据根的**全部业务条目**（[`data_root_entry_skipped`] 之外的目录与文件），
+/// 覆盖目标同名文件。收集逐项失败而不是遇到第一个错误就中止：把能复制的都复制过去，
+/// 最后一次性报错（此时不写引导文件，重启仍回旧目录，不会半迁半丢）。
+fn copy_data_root(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| format!("创建数据目录失败: {e}"))?;
+    let entries = std::fs::read_dir(src).map_err(|e| format!("读取当前数据目录失败: {e}"))?;
+    let mut failures: Vec<String> = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                failures.push(format!("读取数据目录项失败: {e}"));
+                continue;
+            }
+        };
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if data_root_entry_skipped(&name_str) {
+            continue;
+        }
+        copy_entry(&entry.path(), &dst.join(&name), &mut failures);
+    }
+    if failures.is_empty() {
+        return Ok(());
+    }
+    let first = &failures[0];
+    Err(format!(
+        "有 {} 项数据复制失败（首个：{}）；已复制的内容保留在新目录，旧目录未改动。请关闭占用文件的程序并重启应用后重试",
+        failures.len(),
+        first
+    ))
+}
+
+/// 单个文件/目录的递归复制（失败只记录不中断，交给 [`copy_data_root`] 汇总）
+fn copy_entry(src: &std::path::Path, dst: &std::path::Path, failures: &mut Vec<String>) {
+    if src.is_dir() {
+        if let Err(e) = std::fs::create_dir_all(dst) {
+            failures.push(format!("{}: {e}", dst.display()));
+            return;
+        }
+        match std::fs::read_dir(src) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => {
+                            copy_entry(&entry.path(), &dst.join(entry.file_name()), failures)
+                        }
+                        Err(e) => failures.push(format!("{}: {e}", src.display())),
+                    }
+                }
+            }
+            Err(e) => failures.push(format!("{}: {e}", src.display())),
+        }
+    } else if let Err(e) = std::fs::copy(src, dst) {
+        failures.push(format!("{}: {e}", src.display()));
+    }
+}
+
+/// 把迁移后数据库里指向旧数据根的绝对路径改写为新根。
+///
+/// 两处需要改：`resources.icon`（速达图标缓存绝对路径）与
+/// `clipboard_history.image_path`（剪贴板图片快照绝对路径）。asset 协议作用域
+/// 启动时只放行**当前**数据根下的 icons/wallpapers/clipboard-images，旧根路径的
+/// `<img>`/缩略图一律 403——用户看到的就是「迁移后图标全没了，得重新指定」。
+fn rewrite_migrated_db_paths(
+    db: &std::path::Path,
+    old_root: &std::path::Path,
+    new_root: &std::path::Path,
+) -> Result<(), String> {
+    let mut conn =
+        Connection::open(db).map_err(|e| format!("打开迁移后的数据库失败: {e}"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("开启迁移路径改写事务失败: {e}"))?;
+    let icons = rewrite_table_root_paths(&tx, "resources", "icon", old_root, new_root)?;
+    let clipboard = rewrite_table_root_paths(
+        &tx,
+        "clipboard_history",
+        "image_path",
+        old_root,
+        new_root,
+    )?;
+    tx.commit().map_err(|e| e.to_string())?;
+    if icons + clipboard > 0 {
+        log::info!("已改写库内旧数据目录路径：图标 {icons} 条 / 剪贴板图片 {clipboard} 条");
+    }
+    Ok(())
+}
+
+/// 表内某一列（存绝对路径）批量换根；返回改写的行数。
+fn rewrite_table_root_paths(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    column: &str,
+    old_root: &std::path::Path,
+    new_root: &std::path::Path,
+) -> Result<usize, String> {
+    let select = format!("SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL AND {column} <> ''");
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = tx.prepare(&select).map_err(|e| e.to_string())?;
+        let collected = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        collected
+    };
+    let update = format!("UPDATE {table} SET {column} = ?1 WHERE id = ?2");
+    let mut changed = 0;
+    for (id, path) in rows {
+        let Some(relinked) = crate::paths::relink_root_path(&path, old_root, new_root) else {
+            continue;
+        };
+        tx.execute(&update, params![relinked, id])
+            .map_err(|e| e.to_string())?;
+        changed += 1;
+    }
+    Ok(changed)
+}
+
+/// 改写迁移后 app.json 里指向旧数据根的绝对路径（当前字段集：壁纸、
+/// 「我的扩展」源码目录、Skills 自定义根目录）。解析/写盘失败只记日志不阻断迁移：
+/// 这些路径最坏是暂时失效，可再选一次，而阻断迁移会留下半套数据。
+fn rewrite_migrated_config_paths(
+    path: &std::path::Path,
+    old_root: &std::path::Path,
+    new_root: &std::path::Path,
+) {
+    if !path.exists() {
+        return;
+    }
+    let Ok(content) = std::fs::read_to_string(path) else {
+        log::warn!("迁移后读取 app.json 失败，跳过配置路径改写");
+        return;
+    };
+    let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&content) else {
+        log::warn!("迁移后解析 app.json 失败，跳过配置路径改写");
+        return;
+    };
+    let mut changed = false;
+    if let Some(p) = crate::paths::relink_root_path(&cfg.wallpaper_path, old_root, new_root) {
+        cfg.wallpaper_path = p;
+        changed = true;
+    }
+    for dir in cfg.dev_extensions.iter_mut().chain(cfg.skill_roots.iter_mut()) {
+        if let Some(p) = crate::paths::relink_root_path(dir, old_root, new_root) {
+            *dir = p;
+            changed = true;
+        }
+    }
+    if changed {
+        if let Err(e) = config::save_to(&cfg, path) {
+            log::warn!("迁移后配置路径改写落盘失败: {e}");
+        }
+    }
+}
+
 /// 重启应用（更改数据目录 / 恢复数据 / 更新就绪后前端调用）。
 /// 统一走 `updater::relaunch_app`：释放 single-instance 互斥后 spawn 新进程并退出。
 /// 不再用 `app.restart()`：tauri 的重启在非主线程（IPC 命令线程）触发时依赖
 /// `RunEvent::Exit` 事件循环分支，而 x-hub 在 `.run()` 回调里对 Exit 直接
 /// `std::process::exit(0)`（为保证托盘退出生效），会先杀死进程导致 restart
 /// 永不执行——表现为「点了立即重启却只退出不重启」。显式 spawn 规避该路径。
+/// strip_hidden_arg=true：这是用户主动点的重启，剥掉 `--autostart-hidden`
+/// （开机自启静默实例装完更新重启后应直接弹出主窗口，而不是隐回托盘）。
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
-    crate::updater::relaunch_app(&app);
-}
-
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let s = entry.path();
-        let d = dst.join(entry.file_name());
-        if s.is_dir() {
-            copy_dir_recursive(&s, &d)?;
-        } else {
-            std::fs::copy(&s, &d)?;
-        }
-    }
-    Ok(())
+    crate::updater::relaunch_app(&app, true);
 }
 
 // ---------- 拖拽导入 ----------
@@ -1812,7 +2803,8 @@ pub struct DroppedAppInfo {
     pub icon: Option<String>,
 }
 
-/// 解析拖入的文件信息：.exe 直接读取，.lnk 快捷方式解析其目标路径；均尝试提取程序图标
+/// 解析拖入的文件信息。
+/// Windows：.exe / .lnk；Linux：可执行文件 / .desktop。
 #[tauri::command]
 pub fn parse_dropped_path(path: String) -> Result<DroppedAppInfo, String> {
     let p = std::path::Path::new(&path);
@@ -1821,32 +2813,139 @@ pub fn parse_dropped_path(path: String) -> Result<DroppedAppInfo, String> {
         .and_then(|e| e.to_str())
         .map(|s| s.to_lowercase())
         .unwrap_or_default();
-    let (name, target, icon) = match ext.as_str() {
-        "exe" => {
-            let name = p
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("本地应用")
-                .to_string();
-            let target = path.clone();
-            let icon = extract_app_icon(&target);
-            (name, target, icon)
+
+    #[cfg(target_os = "windows")]
+    {
+        let (name, target, icon) = match ext.as_str() {
+            "exe" => {
+                let name = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("本地应用")
+                    .to_string();
+                let target = path.clone();
+                let icon = extract_app_icon(&target);
+                (name, target, icon)
+            }
+            "lnk" => {
+                let name = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("快捷方式")
+                    .to_string();
+                let (target, icon) = resolve_lnk_target_and_icon(&path)?;
+                (name, target, icon)
+            }
+            _ => {
+                log::warn!("拖入文件不支持: {}", path);
+                return Err("仅支持 .exe 文件或 .lnk 快捷方式".into());
+            }
+        };
+        log::info!(
+            "拖入解析成功: {} -> {} (图标: {})",
+            name,
+            target,
+            if icon.is_some() { "有" } else { "无" }
+        );
+        return Ok(DroppedAppInfo {
+            name,
+            target,
+            icon,
+        });
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if ext == "desktop" {
+            let info = parse_desktop_file(&path)?;
+            log::info!(
+                "拖入解析成功: {} -> {} (图标: {})",
+                info.name,
+                info.target,
+                if info.icon.is_some() { "有" } else { "无" }
+            );
+            return Ok(info);
         }
-        "lnk" => {
-            let name = p
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("快捷方式")
-                .to_string();
-            let (target, icon) = resolve_lnk_target_and_icon(&path)?;
-            (name, target, icon)
+        // 无扩展名或任意可执行文件
+        let meta = std::fs::metadata(&path).map_err(|e| format!("无法读取文件: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
+                return Err("仅支持可执行文件或 .desktop 快捷方式".into());
+            }
         }
-        _ => {
-            log::warn!("拖入文件不支持: {}", path);
-            return Err("仅支持 .exe 文件或 .lnk 快捷方式".into());
+        #[cfg(not(unix))]
+        {
+            if !meta.is_file() {
+                return Err("仅支持可执行文件或 .desktop 快捷方式".into());
+            }
         }
+        let name = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("本地应用")
+            .to_string();
+        let icon = extract_app_icon(&path);
+        log::info!(
+            "拖入解析成功: {} -> {} (图标: {})",
+            name,
+            path,
+            if icon.is_some() { "有" } else { "无" }
+        );
+        Ok(DroppedAppInfo {
+            name,
+            target: path,
+            icon,
+        })
+    }
+}
+
+/// 解析 .desktop：取 Name= / Exec= / Icon=
+#[cfg(not(target_os = "windows"))]
+fn parse_desktop_file(path: &str) -> Result<DroppedAppInfo, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| format!("读取 .desktop 失败: {e}"))?;
+    let mut name = String::new();
+    let mut exec = String::new();
+    let mut icon_name = String::new();
+    let mut in_desktop_entry = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_desktop_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_desktop_entry || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(v) = line.strip_prefix("Name=") {
+            if name.is_empty() && !v.contains('[') {
+                name = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("Exec=") {
+            if exec.is_empty() {
+                exec = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("Icon=") {
+            if icon_name.is_empty() {
+                icon_name = v.trim().to_string();
+            }
+        }
+    }
+    if name.is_empty() {
+        name = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("本地应用")
+            .to_string();
+    }
+    let target = desktop_exec_to_target(&exec)
+        .ok_or_else(|| "无法解析 .desktop 的 Exec 字段".to_string())?;
+    let icon = if icon_name.is_empty() {
+        extract_app_icon(&target)
+    } else {
+        resolve_linux_icon(&icon_name).or_else(|| extract_app_icon(&target))
     };
-    log::info!("拖入解析成功: {} -> {} (图标: {})", name, target, if icon.is_some() { "有" } else { "无" });
     Ok(DroppedAppInfo {
         name,
         target,
@@ -1854,7 +2953,108 @@ pub fn parse_dropped_path(path: String) -> Result<DroppedAppInfo, String> {
     })
 }
 
+/// Exec= 字段 → 可执行路径（去掉 %u/%f 等占位与参数）
+#[cfg(not(target_os = "windows"))]
+fn desktop_exec_to_target(exec: &str) -> Option<String> {
+    let trimmed = exec.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let first = if let Some(rest) = trimmed.strip_prefix('"') {
+        let end = rest.find('"')?;
+        &rest[..end]
+    } else {
+        trimmed.split_whitespace().next()?
+    };
+    // 去掉字段码
+    let first = first
+        .trim_end_matches("%u")
+        .trim_end_matches("%U")
+        .trim_end_matches("%f")
+        .trim_end_matches("%F")
+        .trim_end_matches("%i")
+        .trim_end_matches("%c")
+        .trim_end_matches("%k")
+        .trim();
+    if first.is_empty() {
+        return None;
+    }
+    let p = std::path::Path::new(first);
+    if p.is_absolute() {
+        return Some(first.to_string());
+    }
+    // 在 PATH 中查找
+    let path_env = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_env) {
+        let cand = dir.join(first);
+        if cand.is_file() {
+            return Some(cand.to_string_lossy().into_owned());
+        }
+    }
+    Some(first.to_string())
+}
+
+/// 按 Icon= 名称或路径解析图标文件，复制进 icons 缓存
+#[cfg(not(target_os = "windows"))]
+fn resolve_linux_icon(icon: &str) -> Option<String> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let src = if std::path::Path::new(icon).is_file() {
+        std::path::PathBuf::from(icon)
+    } else {
+        // 常见 hicolor / pixmaps 路径
+        let names = [
+            format!("{icon}.png"),
+            format!("{icon}.svg"),
+            format!("{icon}.xpm"),
+        ];
+        let bases = [
+            "/usr/share/pixmaps",
+            "/usr/share/icons/hicolor/48x48/apps",
+            "/usr/share/icons/hicolor/64x64/apps",
+            "/usr/share/icons/hicolor/128x128/apps",
+            "/usr/share/icons/hicolor/scalable/apps",
+        ];
+        let mut found = None;
+        for base in bases {
+            for n in &names {
+                let p = std::path::Path::new(base).join(n);
+                if p.is_file() {
+                    found = Some(p);
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        found?
+    };
+
+    // svg/xpm 前端未必能直接显示，仅复制 png；其它格式也尝试复制
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if ext != "png" && ext != "jpg" && ext != "jpeg" && ext != "webp" {
+        return None;
+    }
+
+    let dir = crate::paths::data_root().join("icons");
+    std::fs::create_dir_all(&dir).ok()?;
+    let mut hasher = DefaultHasher::new();
+    icon.hash(&mut hasher);
+    let out = dir.join(format!("{:016x}.png", hasher.finish()));
+    if !out.exists() {
+        std::fs::copy(&src, &out).ok()?;
+    }
+    Some(out.to_string_lossy().into_owned())
+}
+
 /// 创建隐藏窗口的 powershell 命令：避免 GUI 应用调用时弹出黑色控制台窗口
+#[cfg(target_os = "windows")]
 fn powershell() -> std::process::Command {
     use crate::process::NoConsoleWindow;
     let mut cmd = std::process::Command::new("powershell");
@@ -1862,112 +3062,166 @@ fn powershell() -> std::process::Command {
     cmd
 }
 
-/// 单次 PowerShell 进程内解析 .lnk 目标并提取图标
-/// （原两段式需要先后启动两次 PowerShell，合并为一次调用可省约一半耗时）
-/// 图标仍按「目标路径」命名缓存，与 .exe 导入共用缓存键
+/// 解析 .lnk 目标并提取图标：目标解析走 IShellLink COM（app_icon.rs，不再为取
+/// 目标单独起一个 PowerShell），图标提取复用 extract_app_icon（含低清缓存升级）。
+/// 图标仍按「目标路径」命名缓存，与 .exe 导入共用缓存键。
+#[cfg(target_os = "windows")]
 fn resolve_lnk_target_and_icon(lnk_path: &str) -> Result<(String, Option<String>), String> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let dir = crate::paths::data_root().join("icons");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-
-    // 先用 lnk 路径生成临时输出路径；解析出目标后再按目标路径（既有缓存键）重命名
-    let mut tmp_hasher = DefaultHasher::new();
-    lnk_path.hash(&mut tmp_hasher);
-    let tmp_path = dir.join(format!("{:016x}.png", tmp_hasher.finish()));
-
-    let script = "Add-Type -AssemblyName System.Drawing; $sh=New-Object -ComObject WScript.Shell; $t=$sh.CreateShortcut($env:XHUB_LNK).TargetPath; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Write-Output ('TARGET='+$t); if($t -ne ''){$i=[System.Drawing.Icon]::ExtractAssociatedIcon($t); if($i -ne $null){$i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png)}}";
-    let output = powershell()
-        .args(["-NoProfile", "-Command", script])
-        .env("XHUB_LNK", lnk_path)
-        .env("XHUB_OUT", tmp_path.to_str().unwrap_or(""))
-        .output()
-        .map_err(|e| {
-            log::error!("解析快捷方式失败（PowerShell 执行错误）: {}", e);
-            format!("解析快捷方式失败: {}", e)
-        })?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let target = stdout
-        .lines()
-        .find_map(|l| l.strip_prefix("TARGET="))
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log::error!(
-                "解析快捷方式失败（目标为空）: {} {}",
-                lnk_path,
-                stderr.trim()
-            );
-            "无法解析快捷方式目标路径".to_string()
-        })?;
-
-    // 图标按目标路径命名：与 .exe 拖入/已缓存图标共用缓存键，避免重复提取
-    let icon = if tmp_path.exists() {
-        let mut final_hasher = DefaultHasher::new();
-        target.hash(&mut final_hasher);
-        let final_path = dir.join(format!("{:016x}.png", final_hasher.finish()));
-        if final_path != tmp_path {
-            if final_path.exists() {
-                let _ = std::fs::remove_file(&tmp_path);
-            } else {
-                let _ = std::fs::rename(&tmp_path, &final_path);
-            }
-        }
-        Some(final_path.to_string_lossy().into_owned())
-    } else {
-        None
-    };
-
+    let target = crate::app_icon::resolve_lnk_target(lnk_path)?;
+    let icon = extract_app_icon(&target);
     Ok((target, icon))
 }
 
-/// 提取程序图标（System.Drawing.ExtractAssociatedIcon），保存 PNG 到 app_data_dir/icons/
-/// 提取失败或无图标时返回 None（前端回退到名称首字母）
-fn extract_app_icon(source: &str) -> Option<String> {
+/// 图标缓存判旧阈值（像素）：旧 PowerShell ExtractAssociatedIcon 只能产出 32×32，
+/// 宽度低于此值的缓存视为低清、重新提取（新链路产出 ≥48 或按帧尺寸的紧凑 PNG）。
+/// 注意 32 档新产物（图标最大帧只有 32 的程序）与本阈值天然「永远判旧」——重提是
+/// 幂等的（结果恒为同一张 32×32），每次扫描只多两次 COM 调用，接受；不能为此把
+/// 阈值降到 32 以下，否则存量旧 32×32 低清缓存永远不升级。
+const ICON_CACHE_MIN_WIDTH: u32 = 48;
+
+/// 图标缓存文件名：DefaultHasher(target) 的 16 位十六进制（沿用旧缓存键，
+/// 老数据直接命中缓存，不健康的经宽度+内容判别升级）。
+fn icon_cache_path(target: &str) -> std::path::PathBuf {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-
-    let dir = crate::paths::data_root().join("icons");
-    std::fs::create_dir_all(&dir).ok()?;
-
     let mut hasher = DefaultHasher::new();
-    source.hash(&mut hasher);
-    let file_name = format!("{:016x}.png", hasher.finish());
-    let output_path = dir.join(&file_name);
+    target.hash(&mut hasher);
+    crate::paths::data_root()
+        .join("icons")
+        .join(format!("{:016x}.png", hasher.finish()))
+}
 
-    // 已提取过则直接复用
-    if output_path.exists() {
+/// 原子写缓存：先写 .tmp 再替换，避免前端 <img> 恰好读到半截文件。
+/// Windows 的 rename 不能覆盖既有文件，先删再挪（窗口极小，丢了也只是重提一次）。
+fn write_png_atomically(path: &std::path::Path, bytes: &[u8]) -> bool {
+    let tmp = path.with_extension("png.tmp");
+    if std::fs::write(&tmp, bytes).is_err() {
+        return false;
+    }
+    if path.exists() {
+        let _ = std::fs::remove_file(path);
+    }
+    std::fs::rename(&tmp, path).is_ok()
+}
+
+/// 缓存文件「健康」才可直接复用：宽度达标（≥48；旧 PowerShell 链路只出 32×32）
+/// **且**解码后非「小帧居中垫图」鬼影产物——v0.7.6 一度的回归产物宽度就是 256、
+/// 字形墨迹却只占中间一小块（Cheat Engine 48 帧垫进 256 画布），按宽度判旧永远
+/// 抓不到，必须解码看墨迹（app_icon::icon_png_padded）。非 PNG（历史脏文件）与
+/// 解码失败同样判旧重提（重提自愈）。
+fn icon_cache_usable(path: &std::path::Path) -> bool {
+    crate::app_icon::png_width(path)
+        .map(|w| w >= ICON_CACHE_MIN_WIDTH && !crate::app_icon::icon_png_padded(path))
+        .unwrap_or(false)
+}
+
+/// 提取程序图标：缓存键 = target 哈希，位图默认也从 target 提取。
+/// 打包应用（target = shell:AppsFolder\<AUMID>）走 with_source 现查包内主程序。
+fn extract_app_icon(source: &str) -> Option<String> {
+    extract_app_icon_with_source(source, None)
+}
+
+/// 提取程序图标（Shell IShellItemImageFactory，进程内无子进程；有 256 帧得 256、
+/// 最大帧不足得按帧尺寸的紧凑画布，见 app_icon.rs「小帧垫图补偿」），
+/// 保存 PNG 到数据根 icons/。缓存键 = target 路径哈希；不健康缓存（旧 32×32 低清
+/// / 垫图鬼影）自动重提，重提失败保留旧图（宁可糊着不能没图标）。失败且无缓存
+/// 返回 None（前端回退到名称首字母）。
+///
+/// icon_source：位图的实际来源，缓存键不受影响——打包应用的 shell: 目标不是磁盘
+/// 文件，位图从包安装目录的主程序 exe 提取（批量扫描随单直传；手动录入/图标清扫
+/// 等零星场合传 None，这里现查一次 PS）。现查失败按提取失败处理，走旧缓存兜底。
+fn extract_app_icon_with_source(target: &str, icon_source: Option<&str>) -> Option<String> {
+    let output_path = icon_cache_path(target);
+    if icon_cache_usable(&output_path) {
         return Some(output_path.to_string_lossy().into_owned());
     }
-
-    let script = "Add-Type -AssemblyName System.Drawing; $i=[System.Drawing.Icon]::ExtractAssociatedIcon($env:XHUB_SRC); if($i -ne $null){$i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'}";
-    let output = match powershell()
-        .args(["-NoProfile", "-Command", script])
-        .env("XHUB_SRC", source)
-        .env("XHUB_OUT", output_path.to_str().unwrap_or(""))
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            log::warn!("图标提取失败（PowerShell 无法执行）: {} -> {}", source, e);
-            return None;
-        }
+    if let Some(dir) = output_path.parent() {
+        std::fs::create_dir_all(dir).ok()?;
+    }
+    let resolved;
+    let bmp_source: &str = if let Some(s) = icon_source {
+        s
+    } else if process::is_shell_app_target(target) {
+        resolved = match resolve_packaged_icon_source(target) {
+            Some(s) => s,
+            None => return old_cache_fallback(&output_path, target),
+        };
+        &resolved
+    } else {
+        target
     };
+    match crate::app_icon::extract_icon_png(bmp_source) {
+        Some(png) => {
+            // 写失败时若旧缓存文件还在（原子写 remove 后 rename 失败会连旧文件一起
+            // 丢，此时 exists 为假）就沿用旧图；都不在才回 None，绝不返回指向
+            // 不存在文件的假路径——前端 <img> 会显示破图占位。
+            if write_png_atomically(&output_path, &png) || output_path.exists() {
+                Some(output_path.to_string_lossy().into_owned())
+            } else {
+                log::warn!("图标写入失败且无旧缓存: {}", target);
+                None
+            }
+        }
+        None => old_cache_fallback(&output_path, target),
+    }
+}
 
-    if String::from_utf8_lossy(&output.stdout).contains("OK") {
+/// 提取失败时的旧缓存兜底：有旧图沿用（宁可糊着不能没图标），都没有才返回 None。
+fn old_cache_fallback(output_path: &std::path::Path, target: &str) -> Option<String> {
+    if output_path.exists() {
+        log::warn!("图标高清重提失败，沿用旧缓存: {}", target);
         Some(output_path.to_string_lossy().into_owned())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        log::warn!("图标提取失败（程序无图标或提取出错）: {} -> {}", source, stderr.trim());
         None
     }
 }
 
+/// 非 Windows 无 MSIX 打包应用：shell: 目标不会出现，按提取失败走旧缓存兜底。
+#[cfg(not(target_os = "windows"))]
+fn resolve_packaged_icon_source(_target: &str) -> Option<String> {
+    None
+}
+
+/// 解析打包应用（shell:AppsFolder\<AUMID>）的图标源 exe：按包系列名找安装目录，
+/// 从 AppxManifest.xml 取目标应用（Id 对不上取第一个）的 Executable 拼绝对路径。
+/// 单次 PowerShell 现查，环境变量传参（约定 15）；拿不到返回 None。
+#[cfg(target_os = "windows")]
+fn resolve_packaged_icon_source(target: &str) -> Option<String> {
+    let (family, app_id) = process::split_shell_aumid(target)?;
+    let script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$pkg = Get-AppxPackage -PackageTypeFilter Main | Where-Object { $_.PackageFamilyName -eq $env:XHUB_PKG_FAMILY } | Select-Object -First 1
+if ($pkg -and $pkg.InstallLocation) {
+  try {
+    [xml]$mx = Get-Content -LiteralPath (Join-Path $pkg.InstallLocation 'AppxManifest.xml')
+    $app = $mx.Package.Applications.Application | Where-Object { $_.Id -eq $env:XHUB_APP_ID } | Select-Object -First 1
+    if (-not $app) { $app = @($mx.Package.Applications.Application)[0] }
+    if ($app -and $app.Executable) {
+      Write-Output ('ICONSRC=' + (Join-Path $pkg.InstallLocation $app.Executable))
+    }
+  } catch {}
+}
+"#;
+    let output = powershell()
+        .args(["-NoProfile", "-Command", script])
+        .env("XHUB_PKG_FAMILY", family)
+        .env("XHUB_APP_ID", app_id)
+        .output()
+        .ok()?;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Some(src) = line.strip_prefix("ICONSRC=") {
+            let src = src.trim();
+            if !src.is_empty() {
+                return Some(src.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// 导入用户选择的图标文件到 icons 目录：
-/// - .ico 经 System.Drawing 转为 PNG
+/// - .ico 经 image crate 解码（自动选目录里最大的一帧，旧 PowerShell 写法只会拿 32×32）转存 PNG
 /// - png/jpg 等图片直接复制
 /// 返回存储后的 PNG 路径（失败返回 None）
 #[tauri::command]
@@ -1989,33 +3243,33 @@ pub fn import_icon_file(source: String) -> Result<Option<String>, String> {
     let file_name = format!("{:016x}.png", hasher.finish());
     let output_path = dir.join(&file_name);
 
-    // 已导入过则直接复用
-    if output_path.exists() {
+    // 已导入且健康（宽度达标且非垫图鬼影）则直接复用（旧 32×32 缓存重导入时升级；
+    // 垫图判定对「用户自选的稀疏图片」的解码误报也只是幂等重导一次，无副作用）
+    if icon_cache_usable(&output_path) {
         return Ok(Some(output_path.to_string_lossy().into_owned()));
     }
 
     if ext == "ico" {
-        let script = "Add-Type -AssemblyName System.Drawing; $i=New-Object System.Drawing.Icon($env:XHUB_SRC); $i.ToBitmap().Save($env:XHUB_OUT,[System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'OK'";
-        let output = powershell()
-            .args(["-NoProfile", "-Command", script])
-            .env("XHUB_SRC", &source)
-            .env("XHUB_OUT", output_path.to_str().unwrap_or(""))
-            .output()
-            .map_err(|e| {
-                log::error!("图标转换失败（PowerShell 无法执行）: {}", e);
-                format!("图标转换失败: {}", e)
-            })?;
-        if String::from_utf8_lossy(&output.stdout).contains("OK") {
-            log::info!("图标导入成功: {} -> {}", source, output_path.display());
-            Ok(Some(output_path.to_string_lossy().into_owned()))
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log::error!("图标转换失败: {} -> {}", source, stderr.trim());
-            Err("图标转换失败".into())
+        let bytes =
+            std::fs::read(&source).map_err(|e| format!("读取图标文件失败: {}", e))?;
+        let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Ico)
+            .map_err(|e| format!("图标转换失败（.ico 解码失败）: {}", e))?;
+        let mut png = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .map_err(|e| format!("图标转换失败: {}", e))?;
+        if !write_png_atomically(&output_path, &png) {
+            return Err("图标转换失败（写入缓存失败）".into());
         }
+        log::info!("图标导入成功: {} -> {}", source, output_path.display());
+        Ok(Some(output_path.to_string_lossy().into_owned()))
     } else {
-        match std::fs::copy(&source, &output_path) {
-            Ok(_) => {
+        // 与 .ico 分支同款原子写（先 .tmp 再替换）：前端 <img> 不会读到半截文件
+        match std::fs::read(&source) {
+            Ok(bytes) => {
+                if !write_png_atomically(&output_path, &bytes) {
+                    log::error!("图标写入失败: {} -> {}", source, output_path.display());
+                    return Err("图标导入失败（写入缓存失败）".into());
+                }
                 log::info!("图标导入成功: {} -> {}", source, output_path.display());
                 Ok(Some(output_path.to_string_lossy().into_owned()))
             }
@@ -2161,6 +3415,36 @@ pub fn note_image_url(name: &str) -> String {
     format!("http://xhub-note.localhost/{}", name)
 }
 
+/// 从 xhub-note 协议 URL 里取图片文件名（16 位哈希 + 白名单扩展，协议侧同款口径）。
+/// 尾随任何多余字符（query / 路径穿越 / 空串）一律判非法——这是借 URL 把数据根外
+/// 任意文件写进剪贴板的唯一入口，必须从严。
+fn note_image_name_from_url(url: &str) -> Option<String> {
+    const NEEDLE: &str = "xhub-note.localhost/";
+    let tail = url.split_once(NEEDLE)?.1;
+    let name: String = tail
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
+        .collect();
+    (name.len() == tail.len() && is_note_image_name(&name)).then_some(name)
+}
+
+/// 复制笔记内嵌图片到系统剪贴板（灯箱「复制图片」按钮 / 整图选中 Ctrl+C）。
+/// 入参为笔记里的 xhub-note 协议 URL，文件名按协议同款口径校验后才拼数据根路径。
+/// 写入后清掉回声指纹：从笔记复制图片与从浏览器复制一样应正常进剪贴板历史
+/// （历史项自身回写才需要抑制回声，这里不是）。
+#[tauri::command]
+pub fn copy_note_image(url: String) -> Result<(), String> {
+    let name =
+        note_image_name_from_url(&url).ok_or_else(|| "不是有效的笔记图片地址".to_string())?;
+    let path = crate::paths::data_root()
+        .join("notes")
+        .join("images")
+        .join(&name);
+    crate::clipboard::set_clipboard_image(&path.to_string_lossy())?;
+    crate::clipboard::clear_self_set_fingerprint();
+    Ok(())
+}
+
 // ---------- 扫描已安装应用 ----------
 
 #[derive(serde::Serialize)]
@@ -2170,7 +3454,17 @@ pub struct InstalledAppInfo {
     pub icon: Option<String>,
 }
 
-/// 扫描本机已安装应用（注册表卸载项 + 用户/公共开始菜单快捷方式），
+/// 扫描出的单条候选。`icon_source` 仅打包应用（target = shell:AppsFolder\<AUMID>）有值：
+/// shell: 目标不是磁盘文件，提取位图须从包安装目录的主程序 exe 取；缓存键仍按
+/// target 哈希，与普通应用、图标清扫共用一套口径。
+#[derive(Debug, Clone)]
+struct ScanCandidate {
+    name: String,
+    target: String,
+    icon_source: Option<String>,
+}
+
+/// 扫描本机已安装应用（Windows：用户/公共开始菜单快捷方式 + MSIX 打包应用；Linux：`*.desktop`），
 /// 去重、过滤系统噪音后批量提取程序图标（icons/<hash>.png，与拖拽导入共用缓存键）。
 /// 必须 async：扫描 + 图标提取耗时数秒，同步命令会卡死主线程冻结 UI。
 #[tauri::command]
@@ -2179,18 +3473,41 @@ pub async fn scan_installed_apps() -> Result<Vec<InstalledAppInfo>, String> {
     if candidates.is_empty() {
         return Ok(vec![]);
     }
-    let icons = batch_extract_icons(&candidates)?;
+    let pairs: Vec<(String, Option<String>)> = candidates
+        .iter()
+        .map(|c| (c.target.clone(), c.icon_source.clone()))
+        .collect();
+    let icons = {
+        tauri::async_runtime::spawn_blocking(move || batch_extract_icons(&pairs))
+            .await
+            .map_err(|e| format!("应用图标提取失败: {}", e))??
+    };
     Ok(candidates
         .into_iter()
         .zip(icons)
-        .map(|((name, target), icon)| InstalledAppInfo { name, target, icon })
+        .map(|(c, icon)| InstalledAppInfo {
+            name: c.name,
+            target: c.target,
+            icon,
+        })
         .collect())
 }
 
-/// 单次 PowerShell 扫描注册表卸载项 + 开始菜单快捷方式，
-/// 输出 APP=<json> 行（name/target），Rust 侧解析并二次去重、按名称排序、限量。
-/// 命名/路径等取值一律在 PS 内 Trim + 环境变量展开，中文经 UTF-8 输出。
-fn scan_app_candidates() -> Result<Vec<(String, String)>, String> {
+/// 单次 PowerShell 扫描开始菜单快捷方式（用户 + 公共）与 MSIX 打包应用，
+/// 输出 APP=<json> 行（name/target/iconSource），Rust 侧解析并二次去重、按名称排序、限量。
+/// 命名/路径等取值一律在 PS 内 Trim，中文经 UTF8 输出。
+///
+/// 已不再扫注册表卸载项（2026-09-30 按需求去掉）：卸载项常把 DisplayIcon 指向
+/// 卸载器/维护程序，图标与名称噪音大。只保留开始菜单 `.lnk`（用户真正点得到的东西）。
+///
+/// 打包应用段（issue #20/#32，2026-10-18 起）：`Get-StartApps` 里 AppID 含「!」
+/// 即 MSIX/Store 打包应用，target 存 `shell:AppsFolder\<AUMID>`（包路径带版本号、
+/// WindowsApps 受保护，AUMID 是唯一稳定引用）；iconSource 顺带按包系列名查安装
+/// 目录、从 AppxManifest.xml 解析主程序 exe，供图标提取。开始菜单列表会自动排除
+/// 不上开始菜单的包内辅助程序；AppID 不允许含路径分隔符，防桌面 .lnk 路径撞「!」
+/// 误入。`Get-StartApps`/`Get-AppxPackage` 失败时该段静默为空，退化成原有行为。
+#[cfg(target_os = "windows")]
+fn scan_app_candidates() -> Result<Vec<ScanCandidate>, String> {
     let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -2212,46 +3529,6 @@ function Add-App([string]$name, [string]$target) {
   [void]$out.Add(@{ name = $name; target = $target })
 }
 
-# ---- 注册表卸载项（HKLM 32/64 + HKCU）----
-$regRoots = @(
-  'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-  'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
-  'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
-)
-foreach ($root in $regRoots) {
-  Get-ItemProperty $root | ForEach-Object {
-    $dn = $_.DisplayName
-    if (-not $dn) { return }
-    $dn = ([string]$dn).Trim()
-    # 过滤系统组件/运行时/更新类噪音
-    if ($dn -match '^(KB\d+|Update for|Security Update|Hotfix|Microsoft Update Health|Microsoft Edge (Update|WebView)|Microsoft Windows|Windows (SDK|Driver|Update|PowerShell|Terminal|Web Experience|Package Manager|App Runtime|App Certification|Kits)|Microsoft Visual C\+\+|Microsoft \.NET|\.NET (Runtime|Host)|Windows App Runtime|Microsoft Office (ClickToRun|Microsoft 365 Apps for enterprise))') { return }
-    if ($dn -match '(卸载|Uninstall|Update|Updater)$') { return }
-    $target = ''
-    # DisplayIcon 常直接指向主 exe（可能带 ,0 序号或 %环境变量%）
-    if ($_.DisplayIcon) {
-      $di = (([string]$_.DisplayIcon) -split ',')[0].Trim()
-      if ($di) {
-        try { $di = $ExecutionContext.InvokeCommand.ExpandString($di) } catch {}
-        if ($di -and (Test-Path -LiteralPath $di)) { $target = $di }
-      }
-    }
-    # 无 DisplayIcon 时从安装目录挑一个主 exe
-    if (-not $target -and $_.InstallLocation) {
-      $loc = ([string]$_.InstallLocation).Trim()
-      try { $loc = $ExecutionContext.InvokeCommand.ExpandString($loc) } catch {}
-      if ($loc -and (Test-Path -LiteralPath $loc)) {
-        $exe = Get-ChildItem -LiteralPath $loc -Filter *.exe -File -Recurse -Depth 1 -ErrorAction SilentlyContinue |
-          Where-Object { $_.FullName -notmatch '(unins\d*\.exe|uninstall(\.exe|_?[\w-]*\.exe)?|update(\.exe|r\.exe)?)$' } |
-          Select-Object -First 1
-        if ($exe) { $target = $exe.FullName }
-      }
-    }
-    if (-not $target) { return }
-    if ($target -match '\\Windows\\(System32|SysWOW64|servicing|WinSxS)\\' -or $target -match '(unins\d*\.exe|uninstall(\.exe|_?[\w-]*\.exe)?)$') { return }
-    Add-App $dn $target
-  }
-}
-
 # ---- 开始菜单快捷方式（用户 + 公共）----
 $lnkDirs = @(
   "$env:APPDATA\Microsoft\Windows\Start Menu\Programs",
@@ -2271,6 +3548,34 @@ foreach ($dir in $lnkDirs) {
   }
 }
 
+# ---- MSIX/Store 打包应用（issue #20）：target 存 shell:AppsFolder\<AUMID>，
+# iconSource = 包安装目录下清单主程序 exe（提取位图用，缓存键仍是 target）----
+$pkgByFam = @{}
+Get-AppxPackage -PackageTypeFilter Main | ForEach-Object { $pkgByFam[$_.PackageFamilyName] = $_ }
+Get-StartApps | ForEach-Object {
+  $id = '' + $_.AppID
+  $nm = ('' + $_.Name).Trim()
+  if (-not $id -or -not $nm) { return }
+  # 只收「包系列名!应用 ID」形态（不含路径分隔符）；桌面 .lnk 的 AppID 是路径，天然排除
+  if ($id -notmatch '^[^\\/]+![^\\/]+$') { return }
+  $target = 'shell:AppsFolder\' + $id
+  $key = $target.ToLower()
+  if ($seen.ContainsKey($key)) { return }
+  $seen[$key] = $true
+  $iconSource = ''
+  $parts = $id.Split('!')
+  $pkg = $pkgByFam[$parts[0]]
+  if ($pkg -and $pkg.InstallLocation) {
+    try {
+      [xml]$mx = Get-Content -LiteralPath (Join-Path $pkg.InstallLocation 'AppxManifest.xml')
+      $app = $mx.Package.Applications.Application | Where-Object { $_.Id -eq $parts[1] } | Select-Object -First 1
+      if (-not $app) { $app = @($mx.Package.Applications.Application)[0] }
+      if ($app -and $app.Executable) { $iconSource = Join-Path $pkg.InstallLocation $app.Executable }
+    } catch {}
+  }
+  [void]$out.Add(@{ name = $nm; target = $target; iconSource = $iconSource })
+}
+
 foreach ($a in $out) {
   Write-Output ('APP=' + ($a | ConvertTo-Json -Compress))
 }
@@ -2285,7 +3590,7 @@ foreach ($a in $out) {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut apps: Vec<(String, String)> = Vec::new();
+    let mut apps: Vec<ScanCandidate> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for line in stdout.lines() {
         let Some(json) = line.strip_prefix("APP=") else {
@@ -2307,12 +3612,22 @@ foreach ($a in $out) {
         if !seen.insert(target.to_lowercase()) {
             continue;
         }
-        apps.push((name.to_string(), target.to_string()));
+        let icon_source = v
+            .get("iconSource")
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        apps.push(ScanCandidate {
+            name: name.to_string(),
+            target: target.to_string(),
+            icon_source,
+        });
     }
     apps.sort_by(|a, b| {
-        a.0.to_lowercase()
-            .cmp(&b.0.to_lowercase())
-            .then_with(|| a.1.cmp(&b.1))
+        a.name.to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.target.cmp(&b.target))
     });
     const MAX_APPS: usize = 500;
     if apps.len() > MAX_APPS {
@@ -2322,100 +3637,809 @@ foreach ($a in $out) {
     Ok(apps)
 }
 
-/// 批量提取程序图标：单次 PowerShell 提取所有未缓存目标图标到临时目录，
-/// 再按 DefaultHasher(target) 重命名为正式缓存键（与 extract_app_icon 共用缓存，
-/// 已缓存的目标直接复用，重复扫描零开销）。
-fn batch_extract_icons(
-    apps: &[(String, String)],
-) -> Result<Vec<Option<String>>, String> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let icons_dir = crate::paths::data_root().join("icons");
-    std::fs::create_dir_all(&icons_dir).map_err(|e| e.to_string())?;
-
-    // 已缓存目标直接复用，只收集未缓存的索引
-    let mut missing: Vec<usize> = Vec::new();
-    let mut result: Vec<Option<String>> = Vec::with_capacity(apps.len());
-    for (i, (_, target)) in apps.iter().enumerate() {
-        let mut hasher = DefaultHasher::new();
-        target.hash(&mut hasher);
-        let cached = icons_dir.join(format!("{:016x}.png", hasher.finish()));
-        if cached.exists() {
-            result.push(Some(cached.to_string_lossy().into_owned()));
-        } else {
-            result.push(None);
-            missing.push(i);
+/// Linux：扫描 applications 目录中的 .desktop（跳过 NoDisplay/Hidden）
+#[cfg(not(target_os = "windows"))]
+fn scan_app_candidates() -> Result<Vec<ScanCandidate>, String> {
+    let mut dirs = vec![
+        std::path::PathBuf::from("/usr/share/applications"),
+        std::path::PathBuf::from("/usr/local/share/applications"),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".local/share/applications"));
+    }
+    let mut apps: Vec<ScanCandidate> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                continue;
+            }
+            let Ok(info) = parse_desktop_file(&path.to_string_lossy()) else {
+                continue;
+            };
+            // 再读一遍过滤 NoDisplay/Hidden（parse_desktop_file 未检查）
+            if desktop_is_hidden(&path) {
+                continue;
+            }
+            if !seen.insert(info.target.to_lowercase()) {
+                continue;
+            }
+            apps.push(ScanCandidate {
+                name: info.name,
+                target: info.target,
+                icon_source: None,
+            });
         }
     }
-    if missing.is_empty() {
-        return Ok(result);
+    apps.sort_by(|a, b| {
+        a.name.to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.target.cmp(&b.target))
+    });
+    const MAX_APPS: usize = 500;
+    if apps.len() > MAX_APPS {
+        apps.truncate(MAX_APPS);
     }
+    log::info!("扫描已安装应用: 共 {} 个", apps.len());
+    Ok(apps)
+}
 
-    let tmp_dir = icons_dir.join(".scan_tmp");
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
-    let list_path = tmp_dir.join("list.txt");
-    let mut list = String::new();
-    for &i in &missing {
-        list.push_str(&apps[i].1);
-        list.push('\n');
+#[cfg(not(target_os = "windows"))]
+fn desktop_is_hidden(path: &std::path::Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return true;
+    };
+    let mut in_entry = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_entry {
+            continue;
+        }
+        if line.eq_ignore_ascii_case("NoDisplay=true") || line.eq_ignore_ascii_case("Hidden=true")
+        {
+            return true;
+        }
+        if line.eq_ignore_ascii_case("Type=Link") || line.eq_ignore_ascii_case("Type=Directory") {
+            return true;
+        }
     }
-    std::fs::write(&list_path, list).map_err(|e| e.to_string())?;
+    false
+}
 
+/// 批量提取程序图标：逐个复用 extract_app_icon_with_source（Shell COM 进程内提取，
+/// 免去旧方案的 PowerShell 子进程 + 临时目录周转）。入参 = (target, icon_source)，
+/// icon_source 仅打包应用有值（见 ScanCandidate）。已缓存且高清的目标直接复用、
+/// 低清旧缓存就地升级，重复扫描零开销。调用方须在阻塞线程上执行
+/// （scan_installed_apps / scan_desktop 均经 spawn_blocking 调入）。
+#[cfg(target_os = "windows")]
+fn batch_extract_icons(apps: &[(String, Option<String>)]) -> Result<Vec<Option<String>>, String> {
+    let result: Vec<Option<String>> = apps
+        .iter()
+        .map(|(target, icon_source)| {
+            extract_app_icon_with_source(target, icon_source.as_deref())
+        })
+        .collect();
+    log::info!("应用图标提取完成: 共 {} 个", apps.len());
+    Ok(result)
+}
+
+/// 批量提取程序图标（Linux）：target 文件名当 Icon 名按图标主题路径解析，复制为
+/// 正式缓存键 icons/<hash(target)>.png（与拖拽导入共用）；已缓存直接复用，
+/// 解析不到返回 None（前端回退首字母）。icon_source 仅 Windows 打包应用有值，这里不用。
+#[cfg(not(target_os = "windows"))]
+fn batch_extract_icons(apps: &[(String, Option<String>)]) -> Result<Vec<Option<String>>, String> {
+    let icons_dir = crate::paths::data_root().join("icons");
+    std::fs::create_dir_all(&icons_dir).map_err(|e| e.to_string())?;
+    let result: Vec<Option<String>> = apps
+        .iter()
+        .map(|(target, _)| {
+            let cached = icon_cache_path(target);
+            if !cached.exists() {
+                let icon_key = std::path::Path::new(target)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(target);
+                let _ = std::fs::copy(resolve_linux_icon(icon_key)?, &cached);
+            }
+            cached
+                .exists()
+                .then(|| cached.to_string_lossy().into_owned())
+        })
+        .collect();
+    log::info!(
+        "应用图标提取完成: {} 个（缺 {} 个）",
+        apps.len(),
+        result.iter().filter(|x| x.is_none()).count()
+    );
+    Ok(result)
+}
+
+/// 图标缓存清扫统计（速达页「修复图标」手动触发后的结果）。
+#[derive(serde::Serialize)]
+pub struct IconSweepSummary {
+    /// 检查的自动提取键条目数（去重后；手动导入/favicon 不在统计内）
+    pub scanned: usize,
+    /// 判为不健康并重提的缓存数
+    pub reextracted: usize,
+    /// 重提失败数（失败项保留旧图）
+    pub failed: usize,
+}
+
+/// 图标缓存清扫（速达页右上角「修复图标」手动触发；2026-10-11 前为启动 15s
+/// 自动跑，按需求改为手动）：把不健康的缓存按 target 键就地重提——含旧
+/// PowerShell 链路的 32×32 低清缓存（宽度判旧），**以及 v0.7.6 一度产出的
+/// 「小帧居中垫图」鬼影缓存**（宽度是 256、字形墨迹只占中间一小块，须解码看
+/// 墨迹，icon_cache_usable 统一判定）。只处理「资源图标路径 == target 的缓存键」
+/// 的条目——用户手动导入的图标（键 = 图标文件路径哈希）与网页 favicon（fav- 前缀）
+/// 不越权重置；重提失败保留旧图。图标路径不变，前端清扫完成后带版本参数刷新。
+/// 必须 async + spawn_blocking：全量解码 PNG 与 COM 提取是秒级 IO，同步命令会
+/// 卡死主线程冻结 UI（同 scan_installed_apps）。
+#[tauri::command]
+pub async fn sweep_stale_icons(state: tauri::State<'_, DbState>) -> Result<IconSweepSummary, String> {
+    // 读完全量资源立刻放锁：后续解码/COM 提取是秒级 IO，不能攥着 DB 互斥锁
+    let resources = {
+        let conn = state.0.lock().map_err(|_| "数据库不可用".to_string())?;
+        crate::repo::resource::list_all(&conn).map_err(|e| format!("读取资源列表失败: {e}"))?
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut scanned = 0usize;
+        let mut stale: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for r in &resources {
+            let Some(icon) = &r.icon else { continue };
+            // 只认自动提取键（icon == hash(target).png），手动导入/favicon 不动
+            if icon_cache_path(&r.target) != std::path::PathBuf::from(icon) {
+                continue;
+            }
+            if !seen.insert(r.target.clone()) {
+                continue;
+            }
+            scanned += 1;
+            if !icon_cache_usable(std::path::Path::new(icon)) {
+                stale.push(r.target.clone());
+            }
+        }
+        if stale.is_empty() {
+            log::info!("图标清扫：{scanned} 个缓存全部健康，无需重提");
+            return IconSweepSummary { scanned, reextracted: 0, failed: 0 };
+        }
+        log::info!("图标清扫：{} 个不健康缓存待重提", stale.len());
+        let failed = stale.iter().filter(|t| extract_app_icon(t).is_none()).count();
+        let reextracted = stale.len() - failed;
+        log::info!("图标清扫完成：{reextracted}/{} 重提成功（失败项保留旧图）", stale.len());
+        IconSweepSummary { scanned, reextracted, failed }
+    })
+    .await
+    .map_err(|e| format!("图标清扫失败: {e}"))
+}
+
+// ---------- 扫描桌面 ----------
+
+#[derive(serde::Serialize)]
+pub struct DesktopEntry {
+    pub name: String,
+    pub target: String,
+    pub icon: Option<String>,
+    /// 展示用分类：`app` | `web` | `file` | `folder`（导入速达时 folder 归入 file 大类）
+    pub kind: String,
+    /// 桌面上的快捷方式原始路径（仅 `.lnk`/`.url` 有；供「导入后清理桌面快捷方式」使用）
+    pub source: Option<String>,
+}
+
+/// 扫描【用户桌面】一层（不递归，只 `%USERPROFILE%\Desktop`，不含公共桌面）：
+/// - `.lnk` 解析目标 → 按目标分类为 应用 / 网页 / 文件 / 文件夹（解析不到目标的 UWP 等跳过）
+/// - `.url` 解析 URL → 网页
+/// - `.exe/.bat/.cmd` → 应用
+/// - 文件夹 → 文件夹；其它文件 → 文件
+/// 图标沿用 batch_extract_icons 批量缓存（与拖拽导入、已安装应用扫描共用 icons/<hash>.png）。
+/// 必须 async：解析快捷方式 + 提取图标耗时数秒，同步命令会冻结 UI。
+#[tauri::command]
+pub async fn scan_desktop() -> Result<Vec<DesktopEntry>, String> {
+    let candidates = scan_desktop_candidates()?;
+    if candidates.is_empty() {
+        return Ok(vec![]);
+    }
+    // 网页（URL）没有可提取的图标资源，跳过图标提取（前端回退到名称首字母）
+    let icon_pairs: Vec<(String, Option<String>)> = candidates
+        .iter()
+        .filter(|(_, _, kind, _)| kind != "web")
+        .map(|(_, target, _, _)| (target.clone(), None))
+        .collect();
+    let icons =
+        tauri::async_runtime::spawn_blocking(move || batch_extract_icons(&icon_pairs))
+            .await
+            .map_err(|e| format!("应用图标提取失败: {}", e))??;
+    let mut icon_iter = icons.into_iter();
+    let entries = candidates
+        .into_iter()
+        .map(|(name, target, kind, source)| {
+            let icon = if kind == "web" {
+                None
+            } else {
+                icon_iter.next().flatten()
+            };
+            DesktopEntry {
+                name,
+                target,
+                icon,
+                kind,
+                source,
+            }
+        })
+        .collect();
+    Ok(entries)
+}
+
+/// 单次 PowerShell 枚举用户桌面一层并分类，输出 DESK=<json> 行（name/target/kind/src），
+/// Rust 侧解析、二次去重、排序、限量。名称/路径取值一律在 PS 内 Trim，中文经 UTF-8 输出。
+/// `src` = 该条目对应的桌面快捷方式原始路径（仅 `.lnk`/`.url` 非空），供「导入后清理」用。
+#[cfg(target_os = "windows")]
+fn scan_desktop_candidates() -> Result<Vec<(String, String, String, Option<String>)>, String> {
     let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
-Add-Type -AssemblyName System.Drawing
-$listFile = $env:XHUB_LIST
-$outDir = $env:XHUB_OUTDIR
-$idx = 0
-Get-Content -LiteralPath $listFile -Encoding UTF8 | ForEach-Object {
-  $p = $_.Trim()
-  if ($p) {
-    try {
-      $i = [System.Drawing.Icon]::ExtractAssociatedIcon($p)
-      if ($i -ne $null) {
-        try {
-          $bmp = $i.ToBitmap()
-          $bmp.Save((Join-Path $outDir ('{0}.png' -f $idx)), [System.Drawing.Imaging.ImageFormat]::Png)
-          $bmp.Dispose()
-        } catch {}
-        $i.Dispose()
-      }
-    } catch {}
-  }
-  $idx++
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$sh = New-Object -ComObject WScript.Shell
+$desktop = [Environment]::GetFolderPath('Desktop')
+if (-not (Test-Path -LiteralPath $desktop)) { return }
+$seen = @{}
+$out = New-Object System.Collections.ArrayList
+
+function Add-Entry([string]$name, [string]$target, [string]$kind, [string]$src) {
+  if (-not $target) { return }
+  $target = $target.Trim()
+  $name = ([string]$name).Trim()
+  if (-not $name) { $name = [System.IO.Path]::GetFileNameWithoutExtension($target) }
+  if (-not $name) { return }
+  $key = $target.ToLower()
+  if ($seen.ContainsKey($key)) { return }
+  $seen[$key] = $true
+  if ($null -eq $src) { $src = '' }
+  [void]$out.Add(@{ name = $name; target = $target; kind = $kind; src = $src })
 }
+
+Get-ChildItem -LiteralPath $desktop | ForEach-Object {
+  $item = $_
+  $full = $item.FullName
+  if ($item.PSIsContainer) {
+    Add-Entry $item.Name $full 'folder' ''
+    return
+  }
+  $ext = [System.IO.Path]::GetExtension($item.Name).ToLower()
+  switch ($ext) {
+    '.lnk' {
+      $t = ''
+      try { $t = $sh.CreateShortcut($full).TargetPath } catch { $t = '' }
+      if (-not $t) { return }   # UWP / 失效快捷方式：没有可启动的路径目标，跳过
+      if ($t -match '^https?://') { Add-Entry $item.BaseName $t 'web' $full }
+      elseif (Test-Path -LiteralPath $t) {
+        if ((Get-Item -LiteralPath $t).PSIsContainer) { Add-Entry $item.BaseName $t 'folder' $full }
+        elseif ($t -match '\.(exe|bat|cmd|msi)$') { Add-Entry $item.BaseName $t 'app' $full }
+        else { Add-Entry $item.BaseName $t 'file' $full }
+      }
+      else { return }           # 目标已不存在：不导出一个死链
+    }
+    '.url' {
+      $line = Get-Content -LiteralPath $full -TotalCount 20 |
+        Where-Object { $_ -match '^URL=' } | Select-Object -First 1
+      if ($line) {
+        $u = (($line -replace '^URL=', '')).Trim()
+        if ($u) { Add-Entry $item.BaseName $u 'web' $full }
+      }
+    }
+    '.exe' { Add-Entry $item.BaseName $full 'app' '' }
+    '.bat' { Add-Entry $item.BaseName $full 'app' '' }
+    '.cmd' { Add-Entry $item.BaseName $full 'app' '' }
+    default { Add-Entry $item.BaseName $full 'file' '' }
+  }
+}
+
+foreach ($e in $out) { Write-Output ('DESK=' + ($e | ConvertTo-Json -Compress)) }
 "#;
     let output = powershell()
         .args(["-NoProfile", "-Command", script])
-        .env("XHUB_LIST", list_path.to_str().unwrap_or(""))
-        .env("XHUB_OUTDIR", tmp_dir.to_str().unwrap_or(""))
         .output()
-        .map_err(|e| format!("应用图标提取失败（PowerShell 执行错误）: {}", e))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        log::warn!("应用图标提取脚本异常退出: {}", stderr.trim());
+        .map_err(|e| format!("扫描桌面失败（PowerShell 执行错误）: {}", e))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        log::debug!("扫描桌面 PowerShell stderr: {}", stderr.trim());
     }
 
-    // 临时图标重命名为正式缓存键（缺文件 = 该程序无可用图标）
-    for (n, &i) in missing.iter().enumerate() {
-        let tmp_file = tmp_dir.join(format!("{}.png", n));
-        if !tmp_file.exists() {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in stdout.lines() {
+        let Some(json) = line.strip_prefix("DESK=") else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+            continue;
+        };
+        let (Some(name), Some(target)) = (
+            v.get("name").and_then(|x| x.as_str()),
+            v.get("target").and_then(|x| x.as_str()),
+        ) else {
+            continue;
+        };
+        let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("file");
+        let kind = match kind {
+            "app" | "web" | "file" | "folder" => kind,
+            _ => "file",
+        };
+        let source = v
+            .get("src")
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let (name, target) = (name.trim(), target.trim());
+        if name.is_empty() || target.is_empty() {
             continue;
         }
-        let mut hasher = DefaultHasher::new();
-        apps[i].1.hash(&mut hasher);
-        let final_path = icons_dir.join(format!("{:016x}.png", hasher.finish()));
-        if final_path.exists() {
-            let _ = std::fs::remove_file(&tmp_file);
-        } else {
-            let _ = std::fs::rename(&tmp_file, &final_path);
+        if !seen.insert(target.to_lowercase()) {
+            continue;
         }
-        result[i] = Some(final_path.to_string_lossy().into_owned());
+        entries.push((name.to_string(), target.to_string(), kind.to_string(), source));
     }
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-    log::info!("应用图标提取完成: {} 个（缺 {} 个）", apps.len(), missing.len());
-    Ok(result)
+    // 分类展示顺序：应用 → 网页 → 文件 → 文件夹，同类别内按名称排序
+    let kind_rank = |k: &str| match k {
+        "app" => 0,
+        "web" => 1,
+        "file" => 2,
+        _ => 3,
+    };
+    entries.sort_by(|a, b| {
+        kind_rank(&a.2)
+            .cmp(&kind_rank(&b.2))
+            .then_with(|| {
+                a.0.to_lowercase()
+                    .cmp(&b.0.to_lowercase())
+                    .then_with(|| a.1.cmp(&b.1))
+            })
+    });
+    const MAX_DESKTOP: usize = 500;
+    if entries.len() > MAX_DESKTOP {
+        entries.truncate(MAX_DESKTOP);
+    }
+    log::info!("扫描桌面: 共 {} 项", entries.len());
+    Ok(entries)
+}
+
+/// Linux：扫描用户桌面（XDG 桌面目录）一层并分类，口径与 Windows 侧一致：
+/// - `.desktop`：Type=Application → 应用（Exec 经 desktop_exec_to_target 解析）；
+///   Type=Link → 网页（URL=）；NoDisplay/Hidden 跳过；Type=Directory 跳过
+/// - 可执行文件 → 应用；目录 → 文件夹；其它文件 → 文件
+/// `source` = .desktop 路径（口径同 .lnk）；清理命令的扩展名护栏只认 `.lnk`/`.url`，
+/// `.desktop` 的「导入后清理」暂不支持，导入后保持只读。
+#[cfg(not(target_os = "windows"))]
+fn scan_desktop_candidates() -> Result<Vec<(String, String, String, Option<String>)>, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(desktop) = dirs::desktop_dir() else {
+        return Ok(vec![]);
+    };
+    let Ok(read) = std::fs::read_dir(&desktop) else {
+        return Ok(vec![]);
+    };
+    let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in read.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            if seen.insert(path.to_string_lossy().to_lowercase()) {
+                entries.push((name, path.to_string_lossy().into_owned(), "folder".into(), None));
+            }
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) == Some("desktop") {
+            if let Some((name, target, kind)) = desktop_entry_from_file(&path) {
+                if seen.insert(target.to_lowercase()) {
+                    entries.push((
+                        name,
+                        target,
+                        kind,
+                        Some(path.to_string_lossy().into_owned()),
+                    ));
+                }
+            }
+            continue;
+        }
+        let is_exec = path
+            .metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+        let kind = if is_exec { "app" } else { "file" };
+        if seen.insert(path.to_string_lossy().to_lowercase()) {
+            entries.push((name, path.to_string_lossy().into_owned(), kind.into(), None));
+        }
+    }
+    // 分类展示顺序：应用 → 网页 → 文件 → 文件夹，同类别内按名称排序（与 Windows 侧一致）
+    let kind_rank = |k: &str| match k {
+        "app" => 0,
+        "web" => 1,
+        "file" => 2,
+        _ => 3,
+    };
+    entries.sort_by(|a, b| {
+        kind_rank(&a.2)
+            .cmp(&kind_rank(&b.2))
+            .then_with(|| {
+                a.0.to_lowercase()
+                    .cmp(&b.0.to_lowercase())
+                    .then_with(|| a.1.cmp(&b.1))
+            })
+    });
+    const MAX_DESKTOP: usize = 500;
+    if entries.len() > MAX_DESKTOP {
+        entries.truncate(MAX_DESKTOP);
+    }
+    log::info!("扫描桌面: 共 {} 项", entries.len());
+    Ok(entries)
+}
+
+/// 解析单个桌面 `.desktop` 文件为 (name, target, kind)；NoDisplay/Hidden、
+/// Type=Directory 或 Exec 解析不出目标的返回 None（不导出死链，口径同 Windows）。
+#[cfg(not(target_os = "windows"))]
+fn desktop_entry_from_file(path: &std::path::Path) -> Option<(String, String, String)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut name = String::new();
+    let mut exec = String::new();
+    let mut url = String::new();
+    let mut is_link = false;
+    let mut hidden = false;
+    let mut in_entry = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_entry || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.eq_ignore_ascii_case("NoDisplay=true") || line.eq_ignore_ascii_case("Hidden=true") {
+            hidden = true;
+        } else if line.eq_ignore_ascii_case("Type=Link") {
+            is_link = true;
+        } else if let Some(v) = line.strip_prefix("Name=") {
+            if name.is_empty() && !v.contains('[') {
+                name = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("Exec=") {
+            if exec.is_empty() {
+                exec = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("URL=") {
+            if url.is_empty() {
+                url = v.trim().to_string();
+            }
+        }
+    }
+    if hidden {
+        return None;
+    }
+    if is_link {
+        if url.is_empty() {
+            return None;
+        }
+        let name = if name.is_empty() {
+            path.file_stem()?.to_str()?.to_string()
+        } else {
+            name
+        };
+        return Some((name, url, "web".into()));
+    }
+    let target = desktop_exec_to_target(&exec)?;
+    if name.is_empty() {
+        name = std::path::Path::new(&target)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("本地应用")
+            .to_string();
+    }
+    Some((name, target, "app".into()))
+}
+
+/// 删除桌面上的快捷方式（仅 `.lnk`/`.url`），供「扫描桌面 → 导入后清理」使用。
+/// 安全护栏（缺一不可）：①扩展名必须是 `.lnk`/`.url` ②必须是普通文件 ③必须是**用户桌面**
+/// 的直接子项。绝不删除文件夹、`.exe` 及其它文件；不在护栏杆内的路径静默跳过。
+#[tauri::command]
+pub fn delete_desktop_shortcuts(paths: Vec<String>) -> Result<usize, String> {
+    let Some(desktop) = dirs::desktop_dir() else {
+        return Err("找不到桌面目录".into());
+    };
+    let desktop = desktop.canonicalize().unwrap_or(desktop);
+    let mut removed = 0usize;
+    for raw in paths {
+        let path = std::path::Path::new(&raw);
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+        if ext != "lnk" && ext != "url" {
+            log::warn!("跳过清理（非快捷方式）: {}", raw);
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let parent = path
+            .parent()
+            .map(|d| d.canonicalize().unwrap_or_else(|_| d.to_path_buf()));
+        if parent.as_deref() != Some(desktop.as_path()) {
+            log::warn!("跳过清理（不在用户桌面）: {}", raw);
+            continue;
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => removed += 1,
+            Err(e) => log::warn!("清理桌面快捷方式失败: {} -> {}", raw, e),
+        }
+    }
+    log::info!("清理桌面快捷方式: {} 个", removed);
+    Ok(removed)
+}
+
+// ---------- 扫描浏览器书签 ----------
+
+#[derive(serde::Serialize)]
+pub struct BrowserBookmark {
+    pub name: String,
+    pub target: String,
+    /// 书签所在文件夹（用 `/` 连接层级；顶层书签栏内为空 → 「书签栏」等根名）
+    pub folder: String,
+    /// 来源浏览器名（Chrome / Edge / Brave / Chromium）
+    pub browser: String,
+}
+
+/// 单个浏览器配置文件（profile 目录）的原始书签条数（去重前）。
+/// 用来解释「x-hub 计数 ≠ 浏览器收藏夹管理器计数」：所有 profile 合并 + 同网址去重。
+#[derive(serde::Serialize)]
+pub struct BrowserProfileStat {
+    pub browser: String,
+    /// 配置目录名（Default / Profile 3…），不是 Edge 里显示的「个人资料名称」
+    pub profile: String,
+    /// 该配置文件里 type=url 的条数（去重前）
+    pub count: usize,
+}
+
+/// 扫描浏览器书签的完整结果：条目 + 数量口径（前端弹窗展示，用户可自查差异来源）
+#[derive(serde::Serialize)]
+pub struct BrowserBookmarkScan {
+    pub items: Vec<BrowserBookmark>,
+    /// 各浏览器各配置文件的原始条数（去重前）
+    pub profiles: Vec<BrowserProfileStat>,
+    /// 同一浏览器内相同网址（跨配置文件/文件夹）被合并掉的条数；跨浏览器不合并、各自展示
+    pub duplicates: usize,
+    /// 空名称 / 空网址 / javascript: 跳过的条数
+    pub skipped: usize,
+    /// 超过单次上限被截断的条数
+    pub truncated: usize,
+}
+
+/// 读取 Chromium 系浏览器书签（Chrome / Edge / Brave / Chromium）。
+/// 纯文件读取（不跑 PowerShell、不读历史），遍历各浏览器 User Data 下所有配置目录的
+/// `Bookmarks` **与 `AccountBookmarks`**（后者是登录 Google 账号后的账号存储，存在只写
+/// 它而无本地 Bookmarks 的机器），递归 roots 收集 `type=url` 节点；`dedupe` 为 true 时
+/// **同一浏览器内**按 URL 去重（多配置文件/文件夹的相同网址只留一条），**跨浏览器不合并、
+/// 各自展示**（曾按「跨浏览器只留第一条」去重：第二个浏览器的书签若与第一个大量重复会整个
+/// 被吞、前端按浏览器分组后该浏览器直接从列表消失，dckxx 2026-10-09 改口径；导入侧按网址
+/// 只建一条资源，不怕跨浏览器重复展示）。Firefox 的 places.sqlite 属二期，不在此列。
+#[tauri::command]
+pub fn scan_browser_bookmarks(dedupe: bool) -> Result<BrowserBookmarkScan, String> {
+    const MAX_BOOKMARKS: usize = 2000;
+    let Some(local) = dirs::data_local_dir() else {
+        return Ok(BrowserBookmarkScan {
+            items: vec![],
+            profiles: vec![],
+            duplicates: 0,
+            skipped: 0,
+            truncated: 0,
+        });
+    };
+    // (展示名, User Data 相对路径)；均为 Chromium 系，Bookmarks 结构一致
+    let vendors: [(&str, &str); 4] = [
+        ("Chrome", r"Google\Chrome\User Data"),
+        ("Edge", r"Microsoft\Edge\User Data"),
+        ("Brave", r"BraveSoftware\Brave-Browser\User Data"),
+        ("Chromium", r"Chromium\User Data"),
+    ];
+
+    let mut found: Vec<BrowserBookmark> = Vec::new();
+    let mut profiles: Vec<BrowserProfileStat> = Vec::new();
+    let mut skipped: usize = 0;
+    for (browser, rel) in vendors {
+        let user_data = local.join(rel);
+        if !user_data.is_dir() {
+            continue;
+        }
+        let Ok(dirs) = std::fs::read_dir(&user_data) else {
+            continue;
+        };
+        for profile in dirs.flatten() {
+            let path = profile.path();
+            if !path.is_dir() {
+                continue;
+            }
+            // profile 目录名（Default / Profile 3…），用于数量口径展示
+            let profile_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let mut counted = 0usize;
+            // 书签文件有两个来源：经典本地存储 `Bookmarks` + 登录 Google 账号后的账号存储
+            // `AccountBookmarks`（结构与 Bookmarks 完全同构；实测存在只写后者的机器——本地
+            // Bookmarks 根本不存在，2026-10-09 用户 Chrome 书签「消失」即漏读它）。两文件
+            // 都读：同一网址同时落在两文件时由浏览器内去重合并，原始条数照实计入 counted
+            for file_name in ["Bookmarks", "AccountBookmarks"] {
+                let bookmarks = path.join(file_name);
+                if !bookmarks.is_file() {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&bookmarks) else {
+                    continue;
+                };
+                let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+                    log::warn!("浏览器书签解析失败: {}", bookmarks.display());
+                    continue;
+                };
+                let Some(roots) = json.get("roots").and_then(|r| r.as_object()) else {
+                    continue;
+                };
+                for (key, node) in roots {
+                    // 根节点自身有 name（本地化，如「书签栏」）；没有则按 key 兜底
+                    let root_name = node
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| match key.as_str() {
+                            "bookmark_bar" => "书签栏".to_string(),
+                            "other" => "其他书签".to_string(),
+                            "synced" => "移动端".to_string(),
+                            _ => key.to_string(),
+                        });
+                    collect_bookmark_children(
+                        node,
+                        &root_name,
+                        browser,
+                        &mut found,
+                        &mut counted,
+                        &mut skipped,
+                    );
+                }
+            }
+            if counted > 0 {
+                profiles.push(BrowserProfileStat {
+                    browser: browser.to_string(),
+                    profile: profile_name,
+                    count: counted,
+                });
+            }
+        }
+    }
+
+    // 浏览器内按 URL 去重（同一浏览器多配置文件/文件夹的相同网址只留一条）；
+    // 跨浏览器不合并（各浏览器独立展示）；关掉则原样保留
+    let raw_total = found.len();
+    let duplicates = dedupe_within_browser(&mut found, dedupe);
+    found.sort_by(|a, b| {
+        a.browser
+            .cmp(&b.browser)
+            .then_with(|| a.folder.cmp(&b.folder))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    let truncated = found.len().saturating_sub(MAX_BOOKMARKS);
+    if truncated > 0 {
+        found.truncate(MAX_BOOKMARKS);
+    }
+    log::info!(
+        "扫描浏览器书签: 原始 {} 条（配置文件 {} 个），去重{}、合并 {}、跳过无效 {}、截断 {}，保留 {} 条",
+        raw_total,
+        profiles.len(),
+        if dedupe { "开" } else { "关" },
+        duplicates,
+        skipped,
+        truncated,
+        found.len()
+    );
+    Ok(BrowserBookmarkScan {
+        items: found,
+        profiles,
+        duplicates,
+        skipped,
+        truncated,
+    })
+}
+
+/// 递归收集 Chromium 书签节点：`type=url` 收下，`type=folder` 带前缀继续下钻。
+/// `counted` 累计有效条数（按 profile 统计用）、`skipped` 累计无效跳过数（空名/空 URL/javascript:）。
+/// 浏览器内按 URL（小写）去重：同一浏览器的重复条目只留第一条，跨浏览器**不**合并。
+/// 返回被合并掉的条数。抽成纯函数用单测锁口径——「跨浏览器去重」曾把整个浏览器吞掉。
+fn dedupe_within_browser(found: &mut Vec<BrowserBookmark>, dedupe: bool) -> usize {
+    if !dedupe {
+        return 0;
+    }
+    let raw_total = found.len();
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    found.retain(|b| seen.insert((b.browser.clone(), b.target.to_lowercase())));
+    raw_total - found.len()
+}
+
+fn collect_bookmark_children(
+    node: &serde_json::Value,
+    prefix: &str,
+    browser: &str,
+    out: &mut Vec<BrowserBookmark>,
+    counted: &mut usize,
+    skipped: &mut usize,
+) {
+    let Some(children) = node.get("children").and_then(|c| c.as_array()) else {
+        return;
+    };
+    for child in children {
+        let ty = child.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let name = child
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .trim();
+        match ty {
+            "url" => {
+                let url = child
+                    .get("url")
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("")
+                    .trim();
+                if name.is_empty() || url.is_empty() || url.starts_with("javascript:") {
+                    *skipped += 1;
+                    continue;
+                }
+                *counted += 1;
+                out.push(BrowserBookmark {
+                    name: name.to_string(),
+                    target: url.to_string(),
+                    folder: if prefix.is_empty() {
+                        "未分类".to_string()
+                    } else {
+                        prefix.to_string()
+                    },
+                    browser: browser.to_string(),
+                });
+            }
+            "folder" => {
+                if name.is_empty() {
+                    continue;
+                }
+                let sub = if prefix.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{}/{}", prefix, name)
+                };
+                collect_bookmark_children(child, &sub, browser, out, counted, skipped);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 批量抓取网页图标（favicon）：书签/网页资源导入后自动补齐站点图标（见 favicon.rs）。
+/// 返回「原样 target → 图标绝对路径」映射（抓不到为 None）；同域名只抓一次，永不整体报错。
+#[tauri::command]
+pub async fn fetch_favicons(
+    targets: Vec<String>,
+) -> Result<std::collections::HashMap<String, Option<String>>, String> {
+    Ok(crate::favicon::fetch_favicons(targets).await)
 }
 
 // ---------- 运行状态检测 ----------
@@ -2463,11 +4487,20 @@ pub fn create_chat_session(
     Ok(s)
 }
 
-/// 删除会话（级联删除消息）
+/// 删除会话（级联删除消息；同时清掉该会话的「本会话允许」授权，防残留语义直跑）
 #[tauri::command]
-pub fn delete_chat_session(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+pub fn delete_chat_session(
+    state: State<'_, DbState>,
+    agent: State<'_, std::sync::Arc<crate::agent::state::AgentState>>,
+    id: i64,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     chat::delete_session(&conn, id).map_err(err_str)?;
+    drop(conn);
+    // 会话删了，其进行中的 agent 回合也要中断：不取消会继续烧模型调用，
+    // 收尾写入还会因外键级联（消息已随会话清掉）而报错（0.9.0 审查优化）
+    agent.cancel_session_turns(id);
+    agent.clear_session(id);
     log::info!("删除对话会话: id={}", id);
     Ok(())
 }
@@ -2810,7 +4843,11 @@ pub async fn send_chat_message(
     //    避免历史越长发送越慢、内存按全量历史成倍膨胀）
     let history = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
-        chat::list_recent_messages(&conn, session_id, CHAT_CONTEXT_WINDOW).map_err(err_str)?
+        // 截断边界可能落在 agent 回合中间：头部孤儿 tool 消息会被上游 400，先剪掉
+        //（这里的 chat 是 repo::chat；剪裁助手在 crate::chat）
+        crate::chat::trim_leading_orphan_tools(
+            chat::list_recent_messages(&conn, session_id, CHAT_CONTEXT_WINDOW).map_err(err_str)?,
+        )
     };
 
     // 4) 解析模型配置：平台额度走「一个入口 + 多模型负载切换」，自备供应商精确命中（见 pick_chat_model）
@@ -2829,13 +4866,21 @@ pub async fn send_chat_message(
 
     let chunk_sender = on_event.clone();
     let started = std::time::Instant::now();
-    let result = crate::chat::stream_chat(&model, &history, &mut reply, |delta| {
-        chunk_sender
-            .send(crate::chat::ChatStreamEvent::Chunk {
-                content: delta,
-            })
-            .map_err(|e| e.to_string())
-    })
+    // turn_id：本轮用户消息的 turn（#t42 生成）；平台链路以 X-XHub-Turn-Id 透传给服务端对账（§8）
+    let result = crate::chat::stream_chat_ex(
+        &model,
+        &history,
+        None,
+        user_msg.turn_id.as_deref(),
+        &mut reply,
+        |delta| {
+            chunk_sender
+                .send(crate::chat::ChatStreamEvent::Chunk {
+                    content: delta,
+                })
+                .map_err(|e| e.to_string())
+        },
+    )
     .await;
     let elapsed_ms = started.elapsed().as_millis() as i64;
 
@@ -2844,7 +4889,7 @@ pub async fn send_chat_message(
             if reply.trim().is_empty() {
                 send_error = Some("模型未返回任何内容".to_string());
             } else {
-                usage = Some(u);
+                usage = Some(u.usage);
             }
         }
         Err(e) => send_error = Some(e),
@@ -2900,6 +4945,421 @@ pub async fn send_chat_message(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Agent 模式（#t44，计划 §4）：带工具循环的对话
+// ---------------------------------------------------------------------------
+
+/// 模型调用实现体：包 `chat::stream_chat_ex`，增量经 Channel 推 Chunk；
+/// 每次回调前检查中断旗标（用户取消 → 掐断上游流）。
+struct AgentStreamInvoke {
+    model: crate::models::ChatModelConfig,
+    turn_id: String,
+    ch: tauri::ipc::Channel<crate::chat::ChatStreamEvent>,
+    flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl crate::agent::turn::ModelInvoke for AgentStreamInvoke {
+    fn invoke<'a>(
+        &mut self,
+        msgs: Vec<crate::models::ChatMessage>,
+        tools: Option<Vec<serde_json::Value>>,
+        _cb: crate::agent::turn::ChunkCb<'a>,
+    ) -> crate::agent::turn::InvokeFuture<'a> {
+        let model = self.model.clone();
+        let turn_id = self.turn_id.clone();
+        let ch = self.ch.clone();
+        let flag = self.flag.clone();
+        Box::pin(async move {
+            let mut buf = String::new();
+            let cancelled = flag.clone();
+            let mut fwd = |delta: String| -> Result<(), String> {
+                if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err("已中断".into());
+                }
+                ch.send(crate::chat::ChatStreamEvent::Chunk { content: delta })
+                    .map_err(|e| e.to_string())
+            };
+            let res = crate::chat::stream_chat_ex_with_cancel(
+                &model,
+                &msgs,
+                tools.as_deref(),
+                Some(&turn_id),
+                Some(flag.clone()),
+                &mut buf,
+                &mut fwd,
+            )
+            .await?;
+            Ok(crate::agent::turn::RoundOutput {
+                content: buf,
+                usage: res.usage,
+                tool_calls: res.tool_calls,
+            })
+        })
+    }
+}
+
+/// 审批实现体：挂 oneshot 等前端 `respond_agent_approval` 回答；
+/// 前端关窗/超时未答（接收端 Err）→ 按拒绝处理，宁严勿宽。
+/// 0.9.0 修复：等待期间同时轮询中断旗标——用户点「停止」能立刻结束等待；
+/// 否则 Ask 档在无人应答时会把回合挂死（审批卡丢失/前端异常后循环永不退出）。
+struct OneshotApprover {
+    state: std::sync::Arc<crate::agent::state::AgentState>,
+    flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl crate::agent::turn::Approver for OneshotApprover {
+    fn approve(&mut self, ask: crate::agent::turn::ApprovalAsk) -> crate::agent::turn::ApproveFuture {
+        let st = self.state.clone();
+        let flag = self.flag.clone();
+        Box::pin(async move {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            st.open_approval(ask, tx);
+            // 每 200ms 查一次中断旗标；中断 = 按拒绝收尾，循环随后的检查点会结束回合
+            async fn cancelled(flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+                loop {
+                    if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            }
+            tokio::select! {
+                r = rx => match r {
+                    Ok(a) => a,
+                    Err(_) => crate::agent::approval::ApproveAnswer::Denied,
+                },
+                _ = cancelled(flag) => crate::agent::approval::ApproveAnswer::Denied,
+            }
+        })
+    }
+}
+
+/// Agent 模式发消息：带工具循环的对话（计划 §4）。
+/// 与 `send_chat_message` 的区别：下发权限档过滤后的工具清单，模型发起工具调用时
+/// 循环执行（Ask 档先经前端内联确认），过程事件（ToolCall/ToolResult/ApprovalRequest）
+/// 与最终 TurnDone 一并推给前端渲染（工具卡片/时间线 UI 在 #t46）。
+#[tauri::command]
+pub async fn send_agent_message(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    agent: State<'_, std::sync::Arc<crate::agent::state::AgentState>>,
+    session_id: i64,
+    content: String,
+    // 对话框快捷切换的权限档（readonly/ask/full）；缺省回落配置（#t47 接 AppConfig，当前默认 ask）
+    permission_mode: Option<String>,
+    on_event: tauri::ipc::Channel<crate::chat::ChatStreamEvent>,
+) -> Result<(), String> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err("消息不能为空".into());
+    }
+    let started = std::time::Instant::now();
+
+    // 1) 会话 + 用户消息落库（自动标题 / touch 与普通对话同一套）
+    let session = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        chat::get_session(&conn, session_id).map_err(err_str)?
+    };
+    let user_msg = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        let m = chat::add_message(&conn, session_id, "user", &content).map_err(err_str)?;
+        let _ = chat::touch_session(&conn, session_id);
+        if session.title == "新对话" {
+            let title = auto_chat_title(&content);
+            let _ = chat::rename_session(&conn, session_id, &title);
+        }
+        m
+    };
+    // user 消息落库时一定生成了 turn_id；兜底以防历史数据/未来改动破坏该约定
+    let turn_id = user_msg
+        .turn_id
+        .clone()
+        .unwrap_or_else(|| format!("turn_{}", chrono::Utc::now().timestamp_micros()));
+
+    // 2) 模型配置 + 权限档：对话框快捷切换优先；未传时读持久默认档（非法值回落安全默认 ask）
+    let cfg = config::load();
+    let model = pick_chat_model(&cfg.chat_models, &session.model_name)?;
+    let mode = permission_mode
+        .as_deref()
+        .and_then(crate::agent::approval::PermissionMode::from_param)
+        .or_else(|| crate::agent::approval::PermissionMode::from_param(&cfg.agent_permission_mode))
+        .unwrap_or(crate::agent::approval::DEFAULT_PERMISSION_MODE);
+    let prompt_on_dangerous = cfg.agent_prompt_on_dangerous;
+
+    // 3) 上下文：system prompt（四段：身份/时间/准则/关于我——档案为空时该段省略）+ 按 turn 截断历史
+    let about_me = Some(cfg.agent_about_me.as_str()).filter(|s| !s.trim().is_empty());
+    let system_prompt = crate::agent::prompt::build_system_prompt(chrono::Local::now(), about_me);
+    let history = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        crate::agent::context::build_context(&conn, session_id).map_err(err_str)?
+    };
+
+    // 4) 运行时：中断旗标 + 三个实现体（模型调用 / 审批 / 事件转发）
+    // 开工即告知前端 turn_id：停止键立刻可用（不必等首个工具事件才知道 id）。
+    // 先发再登记：发送失败（前端窗口已销毁）直接早退——若先 register_turn 再失败，
+    // cancels 登记无人清理（turn_id 每条消息唯一，慢泄漏只增不减）
+    on_event
+        .send(crate::chat::ChatStreamEvent::TurnStart { turn_id: turn_id.clone() })
+        .map_err(|e| e.to_string())?;
+    let cancel_flag = agent.register_turn(session_id, &turn_id);
+    let mut invoke = AgentStreamInvoke {
+        model: model.clone(),
+        turn_id: turn_id.clone(),
+        ch: on_event.clone(),
+        flag: cancel_flag.clone(),
+    };
+    let mut approver = OneshotApprover { state: agent.inner().clone(), flag: cancel_flag.clone() };
+    let ev = on_event.clone();
+    // 错误/中断收尾的 partial：顺手记录已流出的增量（封顶防无界）——正文本体在
+    // invoke 内部的 buffer 里，这里不记的话 Error 事件的 partial 永远是空串
+    let partial_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let pb = partial_buf.clone();
+    let emit = move |e: crate::chat::ChatStreamEvent| {
+        if let crate::chat::ChatStreamEvent::Chunk { content } = &e {
+            if let Ok(mut b) = pb.lock() {
+                if b.len() < 20_000 {
+                    b.push_str(content);
+                }
+            }
+        }
+        ev.send(e).map_err(|x| x.to_string())
+    };
+    let f2 = cancel_flag.clone();
+    let is_cancelled = move || f2.load(std::sync::atomic::Ordering::Relaxed);
+
+    // 5) 循环（grants 用快照：0.9.0 修复——原先 tokio 锁跨整个回合 await 持有，
+    // Ask 档等确认期间其它回合会全部卡死在取锁上；现在各回合在副本上判定，结束并回）
+    let mut grants = agent.grants_snapshot();
+    let result = crate::agent::turn::run_agent_turn(
+        session_id,
+        &turn_id,
+        mode,
+        &mut grants,
+        prompt_on_dangerous, // 完全权限档下危险操作仍提示（子开关，设置里可开）
+        crate::agent::tools::global(),
+        &system_prompt,
+        history,
+        crate::agent::turn::MAX_ROUNDS,
+        &mut invoke,
+        &mut approver,
+        emit,
+        is_cancelled,
+        || crate::db::open_tool_connection().map_err(|e| e.to_string()),
+    )
+    .await;
+    agent.grants_merge(&grants);
+    agent.finish_turn(&turn_id);
+
+    // 6) 落库（pending 顺序即发生顺序）+ 用量累加 + 收尾事件
+    // 工具改过的数据域广播刷新事件（0.9.0 修复：agent 建的待办/笔记此前
+    // 不触发任何刷新事件，界面上「显示成功但看不到数据」）。事件名与
+    // UI 命令一致（todos-changed 等），各窗口界面统一刷新。
+    // Ok/Err 两条出口都要广播：真错误（模型调用断掉等）发生前工具可能已经写过库，
+    // 只在成功路径广播会漏掉这批写入——待办已建、界面却再也不刷新。
+    let broadcast_domains = |domains: &std::collections::BTreeSet<String>| {
+        for domain in domains {
+            let event = match domain.as_str() {
+                "todos" => Some(("todos-changed", Some("todo-tags-changed"))),
+                "notes" => Some(("notes-changed", None)),
+                "snippets" => Some(("snippets-changed", None)),
+                "stickies" => Some(("stickies-changed", None)),
+                "countdowns" => Some(("countdowns-changed", None)),
+                "resources" => Some(("resources-changed", None)),
+                _ => None,
+            };
+            if let Some((primary, secondary)) = event {
+                let _ = app.emit(primary, ());
+                if let Some(sec) = secondary {
+                    let _ = app.emit(sec, ());
+                }
+            }
+        }
+    };
+    match result {
+        Ok(art) => {
+            let usage = art.usage;
+            let tool_count = art.tool_count;
+            broadcast_domains(&art.domains);
+            let mut last: Option<crate::models::ChatMessage> = None;
+            {
+                let conn = state.0.lock().map_err(|e| e.to_string())?;
+                for p in &art.pending {
+                    last = Some(
+                        chat::add_message_ex(
+                            &conn,
+                            session_id,
+                            Some(&turn_id),
+                            &p.role,
+                            &p.content,
+                            p.tool_calls.as_deref(),
+                            p.tool_call_id.as_deref(),
+                            p.tool_name.as_deref(),
+                            p.tool_status.as_deref(),
+                        )
+                        .map_err(err_str)?,
+                    );
+                }
+                let _ = chat::add_session_usage(
+                    &conn,
+                    session_id,
+                    usage.input,
+                    usage.output,
+                    usage.cache_read,
+                    usage.reasoning,
+                    started.elapsed().as_millis() as i64,
+                );
+                let _ = chat::touch_session(&conn, session_id);
+            }
+            let conn = state.0.lock().map_err(|e| e.to_string())?;
+            let updated = chat::get_session(&conn, session_id).map_err(err_str)?;
+            drop(conn);
+            match last {
+                Some(message) => on_event
+                    .send(crate::chat::ChatStreamEvent::TurnDone {
+                        turn_id,
+                        message,
+                        session: updated,
+                        usage,
+                        tool_count,
+                    })
+                    .map_err(|e| e.to_string())?,
+                // 中断发生在任何轮次完成之前：无内容可落库，按错误收尾（前端保留已流出部分）
+                None => on_event
+                    .send(crate::chat::ChatStreamEvent::Error {
+                        message: "已中断".into(),
+                        partial: partial_buf.lock().map(|b| b.clone()).unwrap_or_default(),
+                    })
+                    .map_err(|e| e.to_string())?,
+            }
+        }
+        Err((e, art)) => {
+            // 已执行的写入照常广播刷新（见 broadcast_domains 注释）；过程消息按既有口径不落库
+            broadcast_domains(&art.domains);
+            on_event
+                .send(crate::chat::ChatStreamEvent::Error {
+                    message: e,
+                    partial: partial_buf.lock().map(|b| b.clone()).unwrap_or_default(),
+                })
+                .map_err(|e2| e2.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
+/// 前端回答工具审批（Ask 档内联卡片）：once 本次允许 / always 本会话内允许 / 其他一律拒绝。
+/// turn_id 用于并发回合同 call_id 撞车时精确路由（兼容后端会跨请求复用 call_0 这类 id）
+#[tauri::command]
+pub async fn respond_agent_approval(
+    agent: State<'_, std::sync::Arc<crate::agent::state::AgentState>>,
+    turn_id: String,
+    call_id: String,
+    answer: String,
+) -> Result<(), String> {
+    log::info!("[agent] 收到审批答复: {turn_id}/{call_id} answer={answer}");
+    let ans = crate::agent::approval::ApproveAnswer::from_param(&answer);
+    if agent.answer_approval(turn_id.trim(), &call_id, ans) {
+        Ok(())
+    } else {
+        // 0.9.0 修复：区分「已被处理/已失效」。点停止或回合已结束都会清掉挂起的确认，
+        // 这时回答会落空——提示用户该回合的状态而不是含糊报错。
+        Err("该确认已失效（可能已停止或已处理），如界面仍卡住请点停止结束该回合".into())
+    }
+}
+
+/// 查询某会话仍在等待确认的审批（Ask 档）：面板重开/切回会话时还原 awaiting 卡片。
+/// 挂起审批不落库、只存内存（§4），这里给只读快照；答复仍走 `respond_agent_approval`。
+#[tauri::command]
+pub fn list_agent_approvals(
+    agent: State<'_, std::sync::Arc<crate::agent::state::AgentState>>,
+    session_id: i64,
+) -> Result<Vec<crate::agent::turn::ApprovalAsk>, String> {
+    Ok(agent.pending_approvals(session_id))
+}
+
+/// 用户中断 Agent 回合：置旗标（流式回调与循环检查点都会看到）。
+/// 已执行的写操作不回滚（§4）；循环收尾后由 send_agent_message 完成落库与事件。
+#[tauri::command]
+pub async fn cancel_agent_turn(
+    agent: State<'_, std::sync::Arc<crate::agent::state::AgentState>>,
+    turn_id: String,
+) -> Result<(), String> {
+    agent.cancel_turn(&turn_id);
+    Ok(())
+}
+
+/// 笔记 AI 深度整理：把笔记全文交给对话模型做一次**无会话**的语义重排（分组/标题/清单）。
+/// 与 `send_chat_message` 的区别：不建会话、不落库、不出现在聊天记录里；模型解析**优先平台内置
+/// 额度**（用户明确要求：有平台条目且已登录就固定走平台入口轮询），未登录/未开启平台时回退
+/// 「新会话默认模型」同一套（`default_session_model_name` → `pick_chat_model`）。
+/// 流式增量经 Channel 推送（Chunk），invoke 返回值即完整整理结果；失败返回 Err（前端可保留 partial）。
+/// 注意：整理的提示词把「逐字保留 URL/密钥/账号等技术信息」作为硬约束——这类内容改一个字符就是事故。
+/// 图片语法 `![说明](地址)` 同样列入硬约束：模型曾把图片压成裸地址（URL 一字不差但图片不再显示，
+/// 因为 Crepe 只认 `![...](...)` 才渲染成图片），前端 `noteImageSyntax.ts` 另有按原稿的回收兜底——
+/// 两层是**互补**的：提示词管「尽量别写坏」，回收管「已经写坏了也救回来」，缺一个都会复发。
+#[tauri::command]
+pub async fn ai_transform_note(
+    content: String,
+    on_event: tauri::ipc::Channel<crate::chat::ChatStreamEvent>,
+) -> Result<String, String> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err("笔记内容为空".into());
+    }
+
+    let models = config::load().chat_models;
+    // 平台额度可用 = 有平台条目且已登录（登录态就是平台请求的真实凭据，未登录时平台必然
+    // 报 401，此时静默回退默认模型而不是把功能卡死在「请先登录」上）
+    let prefer_platform = models.iter().any(|m| crate::chat::is_platform_model(m))
+        && crate::account::session_token().is_some();
+    let session_name = if prefer_platform {
+        crate::chat::PLATFORM_ENTRY_NAME.to_string()
+    } else {
+        default_session_model_name(&models)
+    };
+    let model = pick_chat_model(&models, &session_name)?;
+    if crate::chat::is_platform_model(&model) {
+        log::info!("笔记 AI 整理使用平台模型: {}", model.model);
+    }
+
+    // 指令与正文合进一条 user 消息：stream_chat 的消息层只保证 user/assistant 两角色，
+    // 不依赖各供应商对 system 消息的兼容度
+    let instruction = "\
+你是笔记整理助手。把用户提供的笔记内容重组为清晰、结构化的 Markdown：\
+按主题分组，用标题与列表组织同一条目下的多项信息；\
+必须逐字保留所有 URL、密钥、账号、电话、邮箱、代码等技术信息，不得改写、省略、合并或翻译任何事实内容；\
+图片必须原样保留 Markdown 图片语法 ![说明](地址)，不得改写成链接、纯地址或直接省略，也不要改动其中的地址——\
+语法一改图片就不显示（笔记图片地址形如 http://xhub-note.localhost/xxx.png，把它写成裸地址同样是错的）；\
+说明文字没有就留空写成 ![](地址)；\
+原文没有的信息不要编造。只输出整理后的 Markdown 正文，不要任何解释，也不要包代码围栏。";
+    let message = crate::models::ChatMessage {
+        id: 0,
+        session_id: 0,
+        turn_id: None,
+        role: "user".into(),
+        content: format!("{instruction}\n\n---\n\n{content}"),
+        tool_calls: None,
+        tool_call_id: None,
+        tool_name: None,
+        tool_status: None,
+        created_at: String::new(),
+    };
+
+    let mut reply = String::new();
+    let chunk_sender = on_event.clone();
+    crate::chat::stream_chat(&model, &[message], &mut reply, |delta| {
+        chunk_sender
+            .send(crate::chat::ChatStreamEvent::Chunk { content: delta })
+            .map_err(|e| e.to_string())
+    })
+    .await?;
+
+    if reply.trim().is_empty() {
+        return Err("模型未返回任何内容".into());
+    }
+    Ok(reply)
 }
 
 // ---------- 剪贴板历史 ----------
@@ -3098,41 +5558,7 @@ pub fn clipboard_get_info(state: State<'_, DbState>) -> Result<ClipboardInfo, St
 /// 更新剪贴板全局快捷键（注册/反注册与配置持久化）
 #[tauri::command]
 pub fn set_clipboard_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
-    let _guard = crate::config::lock();
-    let shortcut = value.trim();
-    if shortcut.is_empty() {
-        return Err("快捷键不能为空".into());
-    }
-
-    let mut config = crate::config::load();
-    let previous = config.clipboard_shortcut.clone();
-    if previous == shortcut {
-        return Ok(config.clipboard_shortcut);
-    }
-    if crate::shortcut::same_hotkey(&previous, shortcut) {
-        config.clipboard_shortcut = shortcut.to_string();
-        crate::config::save(&config)?;
-        return Ok(config.clipboard_shortcut);
-    }
-    if crate::shortcut::is_shortcut_registered(&app, shortcut) {
-        return Err("快捷键冲突".into());
-    }
-    if let Err(e) = crate::shortcut::unregister_toggle_shortcut(&app, &previous) {
-        if !crate::shortcut::is_conflict_error(&e) {
-            return Err(e);
-        }
-        return Err("快捷键冲突".into());
-    }
-    if let Err(e) = crate::shortcut::register_toggle_shortcut(&app, shortcut) {
-        let mapped = crate::shortcut::format_shortcut_error(&e);
-        if !mapped.eq(&e) {
-            let _ = crate::shortcut::register_toggle_shortcut(&app, &previous);
-        }
-        return Err(mapped);
-    }
-    config.clipboard_shortcut = shortcut.to_string();
-    crate::config::save(&config)?;
-    Ok(config.clipboard_shortcut)
+    set_configured_shortcut(app, value, ConfiguredShortcut::Clipboard)
 }
 
 /// 更新剪贴板保留策略（条数上限 / 保留天数），保存后立即执行一次清理
@@ -3236,6 +5662,185 @@ fn parse_kind(kind: &str) -> Result<ResourceKind, String> {
 mod tests {
     use super::*;
 
+    /// 迁移时只跳过可重建/一次性/会带来不一致的条目，业务数据一律跟着走
+    /// （扩展/笔记图片/壁纸/市场缓存漏掉一个，用户就看到「数据消失」）
+    #[test]
+    fn data_root_copy_skips_only_transient_entries() {
+        for skipped in [
+            "app.db",
+            "app.db-wal",
+            "app.db-shm",
+            "app.db.bak-pre-migration",
+            "restore.db",
+            "restore_icons",
+            ".restore_pending",
+            "logs",
+            "updates",
+            "data_path.json",
+        ] {
+            assert!(data_root_entry_skipped(skipped), "{skipped} 不应被复制");
+        }
+        for copied in [
+            "extensions",
+            "notes",
+            "wallpapers",
+            "market",
+            "icons",
+            "clipboard",
+            "runtime",
+            "app.json",
+            "chat_keys.json",
+            "install.mid",
+        ] {
+            assert!(!data_root_entry_skipped(copied), "{copied} 必须随迁移复制");
+        }
+    }
+
+    /// 数据根复制要带走扩展（含各扩展的 storage/config 与跨扩展共享存储）、
+    /// 笔记图片、壁纸、安装标识，同时不搬运行中的 db/wal 与日志
+    #[test]
+    fn copy_data_root_brings_extension_and_note_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("old");
+        let dst = dir.path().join("new");
+        std::fs::create_dir_all(src.join("extensions/com.demo/ext")).unwrap();
+        std::fs::write(src.join("extensions/com.demo/manifest.json"), "{}").unwrap();
+        std::fs::write(src.join("extensions/com.demo/.storage.json"), "{\"k\":1}").unwrap();
+        std::fs::write(src.join("extensions/.shared-storage.json"), "{}").unwrap();
+        std::fs::create_dir_all(src.join("notes/images")).unwrap();
+        std::fs::write(src.join("notes/images/a.png"), b"png").unwrap();
+        std::fs::create_dir_all(src.join("wallpapers")).unwrap();
+        std::fs::write(src.join("wallpapers/w.jpg"), b"jpg").unwrap();
+        std::fs::write(src.join("install.mid"), "0123456789abcdef0123456789abcdef").unwrap();
+        std::fs::write(src.join("app.json"), "{}").unwrap();
+        std::fs::write(src.join("app.db"), b"db").unwrap();
+        std::fs::write(src.join("app.db-wal"), b"wal").unwrap();
+        std::fs::create_dir_all(src.join("logs")).unwrap();
+        std::fs::write(src.join("logs/x.log"), b"log").unwrap();
+
+        copy_data_root(&src, &dst).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dst.join("extensions/com.demo/.storage.json")).unwrap(),
+            "{\"k\":1}"
+        );
+        assert!(dst.join("extensions/com.demo/manifest.json").is_file());
+        assert!(dst.join("extensions/.shared-storage.json").is_file());
+        assert!(dst.join("notes/images/a.png").is_file());
+        assert!(dst.join("wallpapers/w.jpg").is_file());
+        assert!(dst.join("app.json").is_file());
+        assert!(dst.join("install.mid").is_file());
+        // 运行中的数据库走在线备份，绝不直接复制；日志不随数据走
+        assert!(!dst.join("app.db").exists());
+        assert!(!dst.join("app.db-wal").exists());
+        assert!(!dst.join("logs").exists());
+    }
+
+    /// 迁移后库内绝对路径换根：资源图标与剪贴板图片要改，根外路径原样保留
+    #[test]
+    fn migration_rewrites_icon_and_clipboard_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("app.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE resources (id INTEGER PRIMARY KEY, icon TEXT);
+                 CREATE TABLE clipboard_history (id INTEGER PRIMARY KEY, image_path TEXT);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO resources (id, icon) VALUES (1, ?1)",
+                params![r"C:\old\icons\aaaa.png"],
+            )
+            .unwrap();
+            // 根外路径（用户自选的外部图标）与空值都不该动
+            conn.execute(
+                "INSERT INTO resources (id, icon) VALUES (2, ?1)",
+                params![r"E:\custom\bbbb.png"],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO resources (id, icon) VALUES (3, NULL)", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO clipboard_history (id, image_path) VALUES (1, ?1)",
+                params![r"C:\old\clipboard\images\cccc.png"],
+            )
+            .unwrap();
+        }
+        rewrite_migrated_db_paths(
+            &db,
+            std::path::Path::new(r"C:\old"),
+            std::path::Path::new(r"D:\new"),
+        )
+        .unwrap();
+
+        let conn = Connection::open(&db).unwrap();
+        let icon = |id: i64| -> Option<String> {
+            conn.query_row(
+                "SELECT icon FROM resources WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(icon(1).as_deref(), Some(r"D:\new\icons\aaaa.png"));
+        assert_eq!(icon(2).as_deref(), Some(r"E:\custom\bbbb.png"));
+        assert_eq!(icon(3), None);
+        let clip: String = conn
+            .query_row(
+                "SELECT image_path FROM clipboard_history WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(clip, r"D:\new\clipboard\images\cccc.png");
+    }
+
+    /// 迁移后配置里的绝对路径换根：壁纸/开发扩展/Skills 根目录改，外部路径不动
+    #[test]
+    fn migration_rewrites_config_root_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.json");
+        let mut cfg = AppConfig::default();
+        cfg.wallpaper_path = r"C:\old\wallpapers\a.jpg".into();
+        cfg.dev_extensions = vec![r"C:\old\my-ext".into(), r"E:\dev\other".into()];
+        cfg.skill_roots = vec![r"C:\old\skills".into()];
+        config::save_to(&cfg, &path).unwrap();
+
+        rewrite_migrated_config_paths(&path, std::path::Path::new(r"C:\old"), std::path::Path::new(r"D:\new"));
+
+        let loaded = config::load_from(&path);
+        assert_eq!(loaded.wallpaper_path, r"D:\new\wallpapers\a.jpg");
+        assert_eq!(loaded.dev_extensions, vec![r"D:\new\my-ext", r"E:\dev\other"]);
+        assert_eq!(loaded.skill_roots, vec![r"D:\new\skills"]);
+    }
+
+    /// copy_note_image 的 URL 入口校验：合法 xhub-note URL 放行，
+    /// 外站地址 / 尾随 query / 哈希长度不符 / 越权扩展 / 路径穿越一律拒绝
+    #[test]
+    fn note_image_name_from_url_validates_like_protocol() {
+        assert_eq!(
+            note_image_name_from_url("http://xhub-note.localhost/0123456789abcdef.png").as_deref(),
+            Some("0123456789abcdef.png")
+        );
+        assert!(note_image_name_from_url("http://xhub-note.localhost/0123456789abcdef.webp").is_some());
+        assert!(note_image_name_from_url("http://example.com/0123456789abcdef.png").is_none());
+        assert!(
+            note_image_name_from_url("http://xhub-note.localhost/0123456789abcdef.png?x=1")
+                .is_none(),
+            "尾随 query 必须整体判非法"
+        );
+        assert!(note_image_name_from_url("http://xhub-note.localhost/abc.png").is_none());
+        assert!(
+            note_image_name_from_url("http://xhub-note.localhost/0123456789abcdef.exe").is_none(),
+            "白名单外的扩展名不得放行"
+        );
+        assert!(
+            note_image_name_from_url("http://xhub-note.localhost/../../app.json").is_none(),
+            "路径穿越不得放行"
+        );
+    }
+
     /// 平台模型的 Key 是占位符（真凭据是账号登录态、请求时现取），**任何界面都不该拿到它**：
     /// 展示出来只会有两种坏结果 —— 让人以为平台 Key 泄露了，或让人以为这里必须填 Key。
     #[test]
@@ -3247,6 +5852,51 @@ mod tests {
             "sk-real-key"
         );
         assert!(api_key_for_ui(None).is_err());
+    }
+
+    /// 图标缓存判旧的完整口径（宽度 + 垫图鬼影内容判定）：
+    /// 旧 32×32 产物、v0.7.6 的 256 宽鬼影产物都要判旧重提；满幅 48/256 才可复用。
+    /// 鬼影产物宽度就是 256——宽度判旧永远抓不到，这条测试锁的就是那次回归。
+    #[test]
+    fn icon_cache_usable_checks_width_and_padding() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let save = |name: &str, img: image::RgbaImage| {
+            let p = dir.path().join(name);
+            img.save(&p).unwrap();
+            p
+        };
+        let solid = |size: u32| {
+            let mut v = Vec::with_capacity((size * size * 4) as usize);
+            for _ in 0..size * size {
+                v.extend_from_slice(&[10u8, 20, 30, 255]);
+            }
+            image::RgbaImage::from_raw(size, size, v).unwrap()
+        };
+
+        // 满 48：可复用；旧 PowerShell 的 32×32：判旧
+        assert!(icon_cache_usable(&save("ok48.png", solid(48))));
+        assert!(!icon_cache_usable(&save("old32.png", solid(32))));
+
+        // v0.7.6 鬼影形态：256 画布中间 45px 方块（宽度达标但墨迹只占一小块）→ 判旧
+        let mut ghost = vec![0u8; 256 * 256 * 4];
+        for y in 100..145 {
+            for x in 100..145 {
+                let i = ((y * 256 + x) * 4) as usize;
+                ghost[i..i + 4].copy_from_slice(&[10, 20, 30, 255]);
+            }
+        }
+        let ghost_img = image::RgbaImage::from_raw(256, 256, ghost).unwrap();
+        assert!(!icon_cache_usable(&save("ghost256.png", ghost_img)));
+
+        // 满幅 256：可复用
+        assert!(icon_cache_usable(&save("ok256.png", solid(256))));
+
+        // 非 PNG / 文件不存在：判旧（重提自愈）
+        let bin = dir.path().join("dirty.bin");
+        std::fs::write(&bin, b"not a png").unwrap();
+        assert!(!icon_cache_usable(&bin));
+        assert!(!icon_cache_usable(&dir.path().join("absent.png")));
     }
 
     /// 平台占位符不许当 Key 发去探测通用 `/models`：占位符不是凭据（真凭据是登录态），
@@ -3262,6 +5912,28 @@ mod tests {
         // 未传且钥匙串里也没有 → 明确提示
         assert!(probe_key("", None).is_err());
         assert_eq!(probe_key("", Some("sk-stored".into())).unwrap(), "sk-stored");
+    }
+
+    /// 文件夹拖拽载荷的线上契约：前端 api/tauri.ts 的 reorderNoteFolders 发的是
+    /// 蛇形键（对齐 NoteFolder 模型），serde 侧字段名必须逐字一致——嵌套载荷没有
+    /// Tauri 顶层参数的驼峰自动转换，曾因 `rename_all = "camelCase"` 整批反序列化
+    /// 失败（`sort_order` 无默认值读成缺失），文件夹拖拽完全无效果。
+    #[test]
+    fn note_folder_move_payload_matches_frontend_snake_case() {
+        let moves: Vec<NoteFolderMove> = serde_json::from_value(serde_json::json!([
+            { "id": 3, "parent_id": 7, "sort_order": 0 },
+            { "id": 7, "parent_id": null, "sort_order": 1 },
+        ]))
+        .expect("前端蛇形载荷必须能反序列化");
+        assert_eq!(moves[0].parent_id, Some(7));
+        assert_eq!(moves[0].sort_order, 0);
+        assert_eq!(moves[1].parent_id, None);
+        assert_eq!(moves[1].sort_order, 1);
+        // 驼峰键不是合法载荷（防有人把前端改回驼峰而 Rust 静默吞掉）
+        assert!(serde_json::from_value::<Vec<NoteFolderMove>>(serde_json::json!([
+            { "id": 3, "parentId": 7, "sortOrder": 0 }
+        ]))
+        .is_err());
     }
 
     // ---- 平台额度：一个入口 + 多模型负载切换（自备供应商精确命中照旧）----
@@ -3371,5 +6043,91 @@ mod tests {
             crate::chat::PLATFORM_ENTRY_NAME
         );
         assert_eq!(default_session_model_name(&[]), "");
+    }
+
+    // ---- 浏览器书签解析（Chromium Bookmarks JSON）----
+
+    /// 书签树递归：只收 type=url（跳过 javascript: 与空名/空 URL），文件夹拼成 `A/B` 前缀
+    #[test]
+    fn bookmark_tree_walk_collects_urls_with_folder_prefix() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{
+              "name": "书签栏",
+              "type": "folder",
+              "children": [
+                { "type": "url", "name": "GitHub", "url": "https://github.com/" },
+                { "type": "url", "name": "空书签", "url": "" },
+                { "type": "url", "name": "脚本", "url": "javascript:void(0)" },
+                {
+                  "type": "folder",
+                  "name": "前端",
+                  "children": [
+                    { "type": "url", "name": "MDN", "url": "https://developer.mozilla.org/" }
+                  ]
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let mut out = Vec::new();
+        let mut counted = 0usize;
+        let mut skipped = 0usize;
+        collect_bookmark_children(&json, "书签栏", "Chrome", &mut out, &mut counted, &mut skipped);
+
+        assert_eq!(out.len(), 2, "应只保留两条有效 URL");
+        assert_eq!(counted, 2, "有效条数与保留数一致");
+        assert_eq!(skipped, 2, "空 URL 与 javascript: 各计一条跳过");
+        assert_eq!(out[0].name, "GitHub");
+        assert_eq!(out[0].folder, "书签栏");
+        assert_eq!(out[0].browser, "Chrome");
+        assert_eq!(out[1].name, "MDN");
+        assert_eq!(out[1].folder, "书签栏/前端");
+        assert_eq!(out[1].target, "https://developer.mozilla.org/");
+        // 无 children 的节点（如 workspaces_v2）应安全返回空
+        let mut empty = Vec::new();
+        let mut empty_counted = 0usize;
+        let mut empty_skipped = 0usize;
+        collect_bookmark_children(
+            &serde_json::json!({ "type": "folder", "name": "x" }),
+            "x",
+            "Edge",
+            &mut empty,
+            &mut empty_counted,
+            &mut empty_skipped,
+        );
+        assert!(empty.is_empty());
+        assert_eq!(empty_counted, 0);
+        assert_eq!(empty_skipped, 0);
+    }
+
+    #[test]
+    fn dedupe_within_browser_keeps_cross_browser_duplicates() {
+        let mk = |browser: &str, url: &str, name: &str| BrowserBookmark {
+            name: name.to_string(),
+            target: url.to_string(),
+            folder: "书签栏".to_string(),
+            browser: browser.to_string(),
+        };
+        // Chrome 与 Edge 各有一条同网址书签 + Chrome 自己的配置文件里重复一条
+        let mut found = vec![
+            mk("Chrome", "https://a.dev/", "A"),
+            mk("Chrome", "https://A.dev/", "A'"), // 同浏览器同网址（大小写不敏感）
+            mk("Edge", "https://a.dev/", "A"),
+            mk("Edge", "https://b.dev/", "B"),
+        ];
+        let removed = dedupe_within_browser(&mut found, true);
+        // 只合并 Chrome 内部那条；跨浏览器的同网址各自保留（否则整个浏览器会被吞掉消失）
+        assert_eq!(removed, 1);
+        assert_eq!(found.len(), 3);
+        assert!(found.iter().filter(|b| b.browser == "Chrome").count() == 1);
+        assert!(found.iter().filter(|b| b.browser == "Edge").count() == 2);
+        // 关掉去重：原样保留
+        let mut raw = vec![
+            mk("Chrome", "https://a.dev/", "A"),
+            mk("Chrome", "https://a.dev/", "A'"),
+        ];
+        assert_eq!(dedupe_within_browser(&mut raw, false), 0);
+        assert_eq!(raw.len(), 2);
     }
 }

@@ -19,6 +19,9 @@ const emit = defineEmits<{
 
 const store = useStore()
 
+/** 弹窗内展示当前生效的呼出快捷键：跟随设置 → 快捷键的自定义配置 */
+const searchShortcutLabel = computed(() => store.state.config.search_shortcut || 'Ctrl+K')
+
 const keyword = ref('')
 const results = ref<{ resources: Resource[]; notes: Note[]; todos: Todo[] }>({
   resources: [],
@@ -142,6 +145,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               type="text"
               placeholder="搜索资源与笔记…"
             />
+            <kbd class="esc-hint" :title="`按 ${searchShortcutLabel} 可随时开关搜索`">{{ searchShortcutLabel }}</kbd>
             <kbd class="esc-hint">ESC</kbd>
           </div>
 

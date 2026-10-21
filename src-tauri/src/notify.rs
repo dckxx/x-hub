@@ -50,9 +50,18 @@ const PENDING_CAP: usize = 8;
 /// 窗口从此不存在、notice_ready 永不触发、所有通知卡进暂存队列，弹窗整体静默失联
 /// （单测/类型检查全绿，只有实机暴露）。该铁律的正解 = build 恰留这一处、在 init。
 pub fn init(app: &AppHandle) {
+    // Linux：自绘通知窗在部分 X11 环境（mutter + 虚拟显卡）下创建时隐藏 →
+    // 首次 show 无法映射（WM_STATE 停在 Withdrawn，见 show_notice 注释），暂不预创建。
+    #[cfg(not(target_os = "windows"))]
+    {
+        log::info!("Linux 下禁用自绘通知弹窗，跳过通知窗预创建");
+        return;
+    }
+    #[cfg(target_os = "windows")]
     if app.get_webview_window(NOTICE_LABEL).is_some() {
         return;
     }
+    #[cfg(target_os = "windows")]
     match build_window(app) {
         Ok(_) => log::info!("通知窗已预创建（隐藏常驻）"),
         Err(e) => log::warn!("通知窗预创建失败: {e}"),
@@ -90,6 +99,14 @@ fn build_window(app: &AppHandle) -> Result<WebviewWindow, String> {
 /// 推送一条通知：确保窗口存在 → 先定位并无激活显示 → emit `notice-new` 给前端渲染。
 /// `kind` 供前端选图标/配色（"countdown" | "todo" | "info" ...）。
 pub fn show_notice(app: &AppHandle, kind: &str, title: &str, body: &str) {
+    // Linux：自绘通知窗在部分 X11 环境（mutter + 虚拟显卡）下创建时隐藏 → 首次 show
+    // 无法映射（WM_STATE 停在 Withdrawn，实测 2026-10-07），弹窗不可用，暂时禁用。
+    // 提醒不丢：todo-remind / countdown-fired 事件照常发出，主窗可见时以应用内 toast 呈现。
+    #[cfg(not(target_os = "windows"))]
+    {
+        log::info!("[通知·Linux 禁用弹窗] [{kind}] {title}: {body}");
+        return;
+    }
     let win = match ensure_window(app) {
         Ok(w) => w,
         Err(e) => {
@@ -335,6 +352,12 @@ fn hide_window(win: &WebviewWindow) {
         }
         return;
     }
+    let _ = win.hide();
+}
+
+#[cfg(not(target_os = "windows"))]
+fn hide_window(win: &WebviewWindow) {
+    crate::webview_mem::on_hidden(win.app_handle(), win.label());
     let _ = win.hide();
 }
 

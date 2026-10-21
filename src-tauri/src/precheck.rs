@@ -71,7 +71,10 @@ fn id_ok(id: &str) -> bool {
 /// 为什么需要这张表：`scan_bridge_calls` 只收「命名空间.方法」形态的链，而顶层方法的链只有一段
 /// （`window.xhub.openExternal(...)`），于是它**完全消失**在「能力是否实现 / 权限是否申报」两项对账之外——
 /// 运行时从 v0.6.6 起要求 `openExternal` 声明权限，预检却一直判"不需要"，正是这条漏检造成的。
-const TOP_LEVEL_METHODS: &[(&str, &str)] = &[("openExternal", "runtime.openExternal")];
+const TOP_LEVEL_METHODS: &[(&str, &str)] = &[
+    ("openExternal", "runtime.openExternal"),
+    ("openPermissions", "runtime.openPermissions"),
+];
 
 /// 从 `at` 起跳过空白后是否紧跟 `(`（即这是一次**调用**，不是属性访问）。
 fn is_call_at(bytes: &[u8], at: usize) -> bool {

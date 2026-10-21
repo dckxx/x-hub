@@ -377,10 +377,11 @@ pub fn chat_window_save_mode(app: AppHandle, enabled: bool) -> Result<(), String
     Ok(())
 }
 
-/// 独立窗内点「模型设置」：唤出主窗并定位到设置 → AI 助手
+/// 独立窗内点「模型设置」/积分不足「去兑换」：唤出主窗并定位到设置页对应分区。
+/// section 为空 = 「providers」（供应商，模型设置的落点）；"account" = 账号页（积分徽标 / 429 分流卡片用）
 #[tauri::command]
-pub fn chat_window_open_settings(app: AppHandle) {
+pub fn chat_window_open_settings(app: AppHandle, section: Option<String>) {
     crate::tray::show_window(&app);
     use tauri::Emitter;
-    let _ = app.emit_to("main", "open-chat-settings", ());
+    let _ = app.emit_to("main", "open-chat-settings", section.unwrap_or_else(|| "providers".into()));
 }

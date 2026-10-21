@@ -23,10 +23,10 @@ description: "Generate an x-hub extension (扩展 / 插件): manifest.json + ent
 | `references/bridge-api.md` | 要用宿主数据 / 存储 / 配置 / 事件 / 导出文件时——**先确认 API 是否存在、要什么权限** |
 | `references/theming.md` | **写任何 CSS 之前**——变量表、壁纸态、双声明 fallback |
 | `references/surfaces.md` | 定形态、或写 `module` 多形态入口时 |
-| `references/service.md` | 扩展带 Node 后端时 |
+| `references/service.md` | 扩展带 Node 后端时；要在 manifest 里声明 `agent.tools` 给内置 AI 助手调用时也读这里的「AI 工具端点」节 |
 | `references/convert-html.md` | 改造现成网页时——去 CDN / 主题映射 / 存储迁移 |
 | `references/debug-deploy.md` | 代码写完要跑起来、报交付清单、用户提到发布上架时 |
-| `references/pitfalls.md` | 写代码前扫一眼、交付前逐条对一遍（21 条实机踩坑） |
+| `references/pitfalls.md` | 写代码前扫一眼、交付前逐条对一遍（24 条实机踩坑） |
 | `templates/` | 生成骨架时**直接复制**（都在 `templates/` 目录下）：`entry.view.html`、`entry.module.html`、`service.index.js`、`manifest.web.json`、`manifest.service.json` |
 | `xhub.d.ts` | 复制进用户项目换编辑器补全（扩展本身不 import 它） |
 
@@ -133,6 +133,11 @@ skill 的使用者手里通常只有**装好的 x-hub 应用** + 这个 skill �
   - ⚠️ **有表头时入口别再画一遍同名标题**（会重复）；没表头的卡要自己画标题，但别照抄扩展中心那种大标题，紧凑卡常常不需要标题。
   - 两种情况下 `manifest.name` 都必填（扩展中心、模块库都用它）；用户还能在布局编辑器里用「Aa」按卡片覆盖作者默认。
 - **勾了 `module` 且要多形态**（同一张卡在不同格子里显示不同内容）：**也用多选**让他挑形态（如「通栏 / 宫格 / 紧凑」），再逐个问**形态名**（编辑器形态芯片上显示的字，写进 `moduleVariants[].name`）。把「卡名 + 各形态名」**合并成一条清单**让他一次填完（同轮追问，不额外占提问轮次）。说不清就先给一个默认形态（min 2×2 / ideal 4×3），别硬造 4 个。
+- **勾了 `view` / `window` / `drawer`（整页形态，共用入口）→ 顺带问一句整页边距**（与上面同一轮清单，不额外占轮次；只勾 `module` 的扩展跳过这题）：
+  - 背景：宿主对所有整页形态**零边距**，页面留白完全由扩展自己控制，这题决定入口的 `body padding`。
+  - **默认（推荐）**：左上 0、右下 20——标题行贴标题栏下沿、与侧栏首个图标同一高度带，右下不顶窗沿（模板已内置）。
+  - **完全无边距**：四边 0——内容顶满容器，适合满版布局或页面自己管边距的情形。
+  - 话术：`整页边距按默认（左上 0、右下 20），还是完全不要边距？`
 
 ### Step 4 · 权限：反推 + 必须明示
 
@@ -143,10 +148,12 @@ skill 的使用者手里通常只有**装好的 x-hub 应用** + 这个 skill �
 | 读笔记 / 待办 / 便签 / 速达 / 提示词 | `data:read` |
 | 创建或修改上述数据 | `data:write` |
 | 存文件到系统下载目录 | `fs` |
-| 跨扩展共享存储 | `shared-storage` |
+| 扩展共享存储（`get/set` 自动按扩展隔离；读别家用 `getFrom`） | `shared-storage` |
 | 广播事件给其它扩展 | `events` |
-| 用默认浏览器打开外链（`xhub.openExternal`） | `open-url` |
+| 打开外链（`xhub.openExternal`，默认应用内浏览器） | `open-url` |
+| 推送右下角通知（`xhub.ui.notify`） | `notify` |
 | service 后端（后端自己发请求、前端走 `service.request`） | **无需权限** |
+| service 后端未授权时给「去授权」入口（`xhub.openPermissions`） | **无需权限** |
 | 后端要**对外**监听（局域网 / `0.0.0.0`） | `network` |
 
 **`network` 是唯一的例外**：它不对应任何可用的桥 API，只门控 service 后端的对外监听——默认回环的后端**不要**声明它。
@@ -157,7 +164,7 @@ skill 的使用者手里通常只有**装好的 x-hub 应用** + 这个 skill �
 
 **只声明真正用到的**。声明了不用是安全负担，用了没声明会直接 reject `PERMISSION_DENIED`。
 
-若用到不确定的 API，先读 `bridge-api.md` 的「未实现（planned）」清单——`clipboard.*` / `net.*` / `system.*` / `ui.*` / `fs.readText` 那一套目前**都不可用**，遇到就改设计，别写进去等运行时炸。
+若用到不确定的 API，先读 `bridge-api.md` 的「未实现（planned）」清单——`net.*` / `system.*` / `ui.toast` / `fs.readText` 那一套目前**都不可用**，遇到就改设计，别写进去等运行时炸。剪贴板 `clipboard.readText/writeText` 已可用（需 `clipboard` 权限）。
 
 ### Step 5 · 生成骨架
 
@@ -185,10 +192,10 @@ skill 的使用者手里通常只有**装好的 x-hub 应用** + 这个 skill �
 生成时：
 
 1. 从 `templates/` 复制对应文件改字段：`manifest.web.json` 或 `manifest.service.json` → 改名 `manifest.json`；`entry.view.html` / `entry.module.html`；service 加 `service.index.js`。
-2. **`id` 用你自己的反向域名**（`com.你的名字.短名`，全小写、必须含 `.`）。⚠️ **绝不要用 `com.x-hub.*`**——那是平台保留命名空间（只给官方自营），第三方用它本地预检只提示不拦、到服务端关卡才被拒。`version` 必须是 **`x.y.z` 三段纯数字**（`1.0.0-beta` 之类不合法）。
+2. **`id` 用你自己的反向域名**（`com.你的名字.短名`，全小写、必须含 `.`）。⚠️ **绝不要用 `com.x-hub.*`**——那是平台保留命名空间（只给官方自营），第三方用它本地预检只提示不拦、到服务端关卡才被拒。`version` 必须是 **`x.y.z` 三段纯数字**（`1.0.0-beta` 之类不合法）。`author` 填作者署名（用户名 / 团队名，市场卡片与详情页会展示它）：用户说过署名就照写，没说就先放占位、并在交付报告里说明去哪改（发布弹窗里也能补填，会写回 manifest.json）。
 3. **每个声明的 entry 都必须有真实文件**，否则扩展打不开。
-4. **写 CSS 前读 `references/theming.md`**——页面底用 `var(--xhub-page-bg, transparent)`、内容表面用 `var(--xhub-surface)`。
-5. `icon.svg` 手写一个简洁的即可（`viewBox="0 0 24 24"`，`stroke="currentColor"`）。
+4. **写 CSS 前读 `references/theming.md`**——页面底用 `var(--xhub-page-bg, transparent)`、内容表面用 `var(--xhub-surface)`。**整页入口（view/window/drawer）的 body padding 按边距决策写**：默认 `0 20px 20px 0`，用户在 Step 3 选了「完全无边距」则 `0`（宿主零边距，留白全由扩展页负责）。
+5. `icon.svg` **必须自带配色，别用 `currentColor`**：宿主把图标当独立 `<img>` 渲染（侧栏固定区、扩展中心、市场卡片），img 加载的 SVG 没有继承色，`currentColor` 按 SVG 规范回落为**纯黑**——暗色主题 / 壁纸态（侧栏透明、图标直接叠在照片上）整块看不清（实机踩过，见 pitfalls 24）。推荐 app-tile 式画法：品牌色圆角方块底（`<rect rx="6">`）+ 白/浅色字形，任何背景都可读；字形也可直接用中高明度色。纯黑或纯白单色 + 透明底的图标不要交付。
 6. 入口是**静态 HTML**，可引用同目录 JS/CSS（相对路径自动解析）。零构建即可；用 Vite 等构建时指向 `dist/index.html`。
 7. 脚本直接调 `window.xhub.*`，**不要 import 任何 xhub 包**（桥由宿主注入）。
 8. **不要引用任何 CDN**。
@@ -196,7 +203,7 @@ skill 的使用者手里通常只有**装好的 x-hub 应用** + 这个 skill �
 
 ### Step 6 · 校验 + 交给用户真机跑
 
-生成后自己过一遍 `references/pitfalls.md`（21 条）与 `references/debug-deploy.md` 的自检清单，然后**必须**把这段操作指引给用户（这是唯一能看到真实效果的路）：
+生成后自己过一遍 `references/pitfalls.md`（24 条）与 `references/debug-deploy.md` 的自检清单，然后**必须**把这段操作指引给用户（这是唯一能看到真实效果的路）：
 
 > 1. 扩展中心 →「**我的扩展**」标签页 → 添加这个源码目录（须含 `manifest.json`）
 > 2. **添加即加载**（不需要任何开关）：打开扩展就能跑真机——**改代码约 1.5 秒自动重载**，可用真实数据；移除目录即撤销

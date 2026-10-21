@@ -4,8 +4,11 @@
 //! 管理员权限进程无法从资源管理器接收文件拖放（速达拖拽导入失效），该模式已移除。
 //! `apply` 时会顺带清理旧版残留的计划任务。
 
-use crate::process::NoConsoleWindow;
+#[cfg(target_os = "windows")]
 use std::process::Command;
+
+#[cfg(target_os = "windows")]
+use crate::process::NoConsoleWindow;
 
 /// 自启动在命令行里追加的隐藏启动参数（主窗不弹出、直接驻留托盘）
 pub const HIDDEN_ARG: &str = "--autostart-hidden";
@@ -137,7 +140,14 @@ pub fn probe() -> (bool, bool) {
 
 #[cfg(not(target_os = "windows"))]
 pub fn probe() -> (bool, bool) {
-    (false, false)
+    #[cfg(target_os = "linux")]
+    {
+        (xdg_autostart_registered(), false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        (false, false)
+    }
 }
 
 /// 启动自愈：用户已开启自启动、但 Run 键缺失或指向别的路径（程序被移动/换目录/被清理工具删除）时，
@@ -160,7 +170,22 @@ pub fn ensure_registered() -> Result<bool, String> {
 
 #[cfg(not(target_os = "windows"))]
 pub fn ensure_registered() -> Result<bool, String> {
-    Ok(false)
+    #[cfg(target_os = "linux")]
+    {
+        if !xdg_autostart_registered() {
+            // 仅在用户已开启自启动（桌面文件曾存在但路径漂移）时自愈；
+            // 无文件则视为用户未开启，不主动创建。
+            if xdg_autostart_file().map(|f| f.exists()).unwrap_or(false) {
+                write_xdg_autostart()?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(false)
+    }
 }
 
 // ---------- 旧版管理员模式残留清理 ----------
@@ -236,12 +261,78 @@ pub fn apply(enabled: bool) -> Result<(), String> {
         }
         Ok(())
     }
-    // 非 Windows 平台：自启动仅支持当前平台时返回错误提示
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    {
+        if enabled {
+            write_xdg_autostart()
+        } else {
+            remove_xdg_autostart();
+            Ok(())
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let _ = enabled;
         Err("当前平台不支持开机自启动".into())
     }
+}
+
+// ---- Linux XDG Autostart ----
+
+#[cfg(target_os = "linux")]
+fn xdg_autostart_file() -> Option<std::path::PathBuf> {
+    let dir = dirs::config_dir()?.join("autostart");
+    Some(dir.join("x-hub.desktop"))
+}
+
+#[cfg(target_os = "linux")]
+fn write_xdg_autostart() -> Result<(), String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("获取可执行路径失败: {e}"))?;
+    let file = xdg_autostart_file().ok_or("无法定位 XDG config 目录")?;
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建 autostart 目录失败: {e}"))?;
+    }
+    let content = format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=x-hub\n\
+         Comment=本地个人效率工作台\n\
+         Exec=\"{}\" {}\n\
+         Icon=x-hub\n\
+         Terminal=false\n\
+         X-GNOME-Autostart-enabled=true\n\
+         Hidden=false\n",
+        exe.display(),
+        HIDDEN_ARG
+    );
+    std::fs::write(&file, content).map_err(|e| format!("写入自启动项失败: {e}"))?;
+    log::info!("[自启动] 已写入 {}", file.display());
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn remove_xdg_autostart() {
+    if let Some(file) = xdg_autostart_file() {
+        if file.exists() {
+            let _ = std::fs::remove_file(&file);
+            log::info!("[自启动] 已移除 {}", file.display());
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn xdg_autostart_registered() -> bool {
+    let Some(file) = xdg_autostart_file() else {
+        return false;
+    };
+    let Ok(content) = std::fs::read_to_string(&file) else {
+        return false;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    content.contains(&exe.to_string_lossy().to_string()) && !content.contains("Hidden=true")
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// 功能大类（AI 助手 / 剪贴板 / 联网）
+// 功能大类（速达 / 剪贴板 / 联网 / 性能）
+// （AI 助手 2026-10-16 自本大类拉出为独立设置项 AiPanel.vue：对话形态 + 供应商 + AI 额度）
 //
 // 从 SettingsView.vue 拆出（见该文件顶部说明）：设置页按大类按需加载，
 // 首次打开只需外壳 + 当前大类的代码，切大类时才加载对应面板。
@@ -7,7 +8,6 @@ import { computed, inject, onMounted, ref } from 'vue';
 import { LocateFixed, MapPin, Trash2 } from 'lucide-vue-next';
 import { isTauri, tauriApi } from '../../api/tauri';
 import AppSelect from '../AppSelect.vue';
-import AiProviders from '../AiProviders.vue';
 import SudaSubcategoryManager from './SudaSubcategoryManager.vue';
 import { useStore } from '../../stores/workbench';
 import { reportClientError } from '../../utils/error-report';
@@ -15,51 +15,22 @@ import { reportClientError } from '../../utils/error-report';
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
 
-function onChatPanelOpacityInput(e: Event) {
-  const v = Number((e.target as HTMLInputElement).value)
-  void store.setChatPanelOpacity(v)
-}
-
-const CHAT_PANEL_SIDE_OPTIONS = [
-  { value: 'right', label: '右侧' },
-  { value: 'left', label: '左侧' },
-  { value: 'top', label: '顶部' },
-  { value: 'bottom', label: '底部' },
-] as const
-
-async function onChatPanelSideChange(value: string) {
-  const side = value as 'left' | 'right' | 'top' | 'bottom'
-  await store.setChatPanelSide(side)
-  showToast(`AI 对话面板已改为从${['右侧', '左侧', '顶部', '底部'][['right', 'left', 'top', 'bottom'].indexOf(side)]}滑出`)
-}
-
-// AI 对话形态：独立小窗 / 主窗内嵌抽屉（互斥）。开关经后端专用命令落地建窗/隐窗
-const chatWindowMode = computed(() => !!store.state.config.chat_window_mode)
-
 // ---- 速达（网页打开方式 + 小类管理，ADR 0011 / 0012）----
 const SUDA_OPEN_MODE_OPTIONS = [
   { value: 'panel', label: '内嵌面板（主窗口内）' },
   { value: 'window', label: '独立浏览器窗口' },
+  { value: 'system', label: '系统默认浏览器' },
 ]
-const sudaWebOpenMode = computed(() =>
-  store.state.config.suda_web_open_mode === 'window' ? 'window' : 'panel',
-)
+const sudaWebOpenMode = computed(() => {
+  const mode = store.state.config.suda_web_open_mode
+  return mode === 'window' || mode === 'system' ? mode : 'panel'
+})
 function onSudaOpenModeChange(v: string | number) {
-  void store.setSudaWebOpenMode(v === 'window' ? 'window' : 'panel')
+  void store.setSudaWebOpenMode(v === 'window' || v === 'system' ? v : 'panel')
 }
 
 async function onToggleSudaPanelToolbar() {
   await store.setSudaPanelToolbar(!store.state.config.suda_panel_toolbar)
-}
-
-async function onToggleChatWindowMode() {
-  const next = !chatWindowMode.value
-  try {
-    await store.setChatWindowMode(next)
-    showToast(next ? 'AI 对话已改为独立窗口打开' : 'AI 对话已改回主窗内嵌面板')
-  } catch {
-    showToast('切换失败，请重试')
-  }
 }
 
 // ---- 联网 / 在线服务 ----
@@ -184,72 +155,13 @@ onMounted(() => {
 </script>
 
 <template>
-        <section id="sv-sec-ai" class="sv-sec" aria-label="AI 助手">
-          <h3 class="sv-sec-title">AI 助手</h3>
-
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-name">以独立窗口打开 AI 对话</span>
-              <span class="setting-desc">开启后对话变为可缩放、可置顶的独立小窗：标题栏按钮、Ctrl+Shift+K 与悬浮球「AI 对话」入口都唤起它，主窗内嵌抽屉随之停用（两种形态互斥）</span>
-            </div>
-            <button
-              class="toggle"
-              role="switch"
-              type="button"
-              :aria-checked="chatWindowMode"
-              :class="{ on: chatWindowMode }"
-              @click="onToggleChatWindowMode"
-            >
-              <span class="toggle-knob"></span>
-            </button>
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-name">AI 对话面板透明度</span>
-              <span class="setting-desc">{{ chatWindowMode ? '仅内嵌面板生效（当前为独立窗口形态）' : '对话抽屉的整体不透明度（50% – 100%）' }}</span>
-            </div>
-            <div class="opacity-edit">
-              <input
-                class="opacity-slider"
-                type="range"
-                min="0.5"
-                max="1"
-                step="0.05"
-                :value="store.state.config.chat_panel_opacity ?? 1"
-                :aria-label="'AI 对话面板透明度'"
-                :disabled="chatWindowMode"
-                @input="onChatPanelOpacityInput"
-              />
-              <span class="opacity-value">{{ Math.round((store.state.config.chat_panel_opacity ?? 1) * 100) }}%</span>
-            </div>
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-name">AI 对话面板位置</span>
-              <span class="setting-desc">{{ chatWindowMode ? '仅内嵌面板生效（独立窗口可自由拖动摆放）' : '对话抽屉从上下左右哪个方位滑出（左右方位可拖拽调宽，上下方位可拖拽调高）' }}</span>
-            </div>
-            <AppSelect
-              :model-value="store.state.config.chat_panel_side ?? 'right'"
-              :options="CHAT_PANEL_SIDE_OPTIONS"
-              aria-label="AI 对话面板位置"
-              class="chat-panel-side"
-              :disabled="chatWindowMode"
-              @update:model-value="onChatPanelSideChange"
-            />
-          </div>
-
-          <AiProviders />
-        </section>
-
         <section id="sv-sec-suda" class="sv-sec" aria-label="速达">
           <h3 class="sv-sec-title">速达</h3>
 
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">网页默认打开方式</span>
-              <span class="setting-desc">点击网页条目时的打开位置：内嵌面板在主窗口右侧视图打开（轻量、单页），独立浏览器窗口支持多标签与同地址复用；右键菜单可临时换另一种方式</span>
+              <span class="setting-desc">点击网页条目时的打开位置：内嵌面板在主窗口右侧视图打开（轻量、单页），独立浏览器窗口支持多标签与同地址复用，系统默认浏览器交由 Windows 按系统设置打开；右键菜单可临时换其它方式</span>
             </div>
             <AppSelect
               :model-value="sudaWebOpenMode"
@@ -279,7 +191,7 @@ onMounted(() => {
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">小类管理</span>
-              <span class="setting-desc">大类（应用/网页/文件）下的二级归属，每条资源归入一个小类；行内改名、拖拽排序、点星标设默认，删除后条目自动改挂默认小类</span>
+              <span class="setting-desc">大类（应用/网页/文件）下的二级归属，每条资源归入一个小类；行内改名、拖拽排序、点星标设默认，名称可用 / 分层级（如 开发/前端）；删除需点两下——第一下垃圾桶变 √ 勾，再点一下才真删（3 秒后自动取消），删除后条目自动改挂默认小类；右上「批量删除」可勾选多个一并删除</span>
             </div>
           </div>
           <SudaSubcategoryManager />

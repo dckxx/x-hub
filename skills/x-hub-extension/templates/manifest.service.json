@@ -18,5 +18,17 @@
   },
   "icon": "./icon.svg",
   "description": "一句话说明这个扩展做什么",
-  "permissions": []
+  "author": "作者署名（改成你的名字或团队名，市场卡片与详情页会展示）",
+  "permissions": [],
+  "agent": {
+    "tools": [
+      {
+        "name": "get_info",
+        "description": "返回本扩展的基本信息（名称/版本），作为 AI 工具的最小示例；落地时换成真实的数据查询或操作",
+        "level": "read",
+        "parameters": { "type": "object", "properties": {} },
+        "returns": "{ name, version }"
+      }
+    ]
+  }
 }

@@ -29,7 +29,11 @@
     body {
       margin: 0;
       min-height: 100vh;
-      padding: 24px;
+      box-sizing: border-box;
+      /* 整页边距标准（宿主对 view/window/drawer 零边距，留白全由本页负责）：
+         默认左上 0 / 右下 20 —— 标题行贴标题栏下沿、与侧栏首个图标同带，右下不顶窗沿；
+         用户在生成时选了「完全无边距」则改为 padding: 0 */
+      padding: 0 20px 20px 0;
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
       font-size: 13px;
       /* 铁律：页面底用 --xhub-page-bg（无壁纸 = 宿主页面背景；有壁纸 = transparent） */

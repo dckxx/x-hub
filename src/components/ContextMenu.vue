@@ -22,9 +22,11 @@ const menuRef = ref<HTMLElement | null>(null)
 const pos = ref({ x: 0, y: 0 })
 const activeIndex = ref(0)
 
+// 盯 visible + x/y：菜单开着时右键别处（visible 保持 true、坐标变化）也要重定位
+// 并重置高亮/焦点——只盯 visible 的话连续右键菜单会停在旧位置（实测反馈）
 watch(
-  () => props.visible,
-  async (v) => {
+  [() => props.visible, () => props.x, () => props.y],
+  async ([v]) => {
     if (!v) return
     await nextTick()
     const w = menuRef.value?.offsetWidth ?? 168

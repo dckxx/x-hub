@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, provide, ref, watch } from 'vue'
-import { ArrowRight, ListTodo, PanelTopClose } from 'lucide-vue-next'
+import { ArrowRight, ListTodo, PanelTopClose, X } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Todo } from '../api/tauri'
 import { parseTodoItems } from '../utils/todoParse'
@@ -44,22 +44,55 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
 const view = ref<'pending' | 'done'>('pending')
 const input = ref('')
 
+// ---- 标签筛选（与待办视图同口径）：OR 匹配、空 = 不过滤；待办/已完成两个视图都吃 ----
+const tagFilter = ref<number[]>([])
+const allTags = computed(() => store.state.todoTags)
+function hasTag(t: Todo): boolean {
+  if (!tagFilter.value.length) return true
+  const ids = store.todoTagIds(t.id)
+  return tagFilter.value.some((id) => ids.includes(id))
+}
+function toggleTagFilter(id: number) {
+  const i = tagFilter.value.indexOf(id)
+  if (i >= 0) tagFilter.value.splice(i, 1)
+  else tagFilter.value.push(id)
+}
+/** chip 上的未完成计数：让「点标签 = 查待办」一眼可见。
+ *  对未过滤的全集统计（与待办视图同口径）——用过滤后的列表算的话，选中标签 A 后
+ *  B 的 chip 数字会变成 A∩B 交集数，切页对不上 */
+const tagCounts = computed(() => {
+  const map = new Map<number, number>()
+  for (const t of store.state.todos) {
+    if (t.done || t.parent_id != null) continue
+    for (const id of store.todoTagIds(t.id)) map.set(id, (map.get(id) ?? 0) + 1)
+  }
+  return map
+})
+// 标签在别处（编辑弹窗/待办视图）被删时，把失效 id 从筛选里摘掉
+watch(allTags, (tags) => {
+  const ids = new Set(tags.map((t) => t.id))
+  if (tagFilter.value.some((id) => !ids.has(id))) {
+    tagFilter.value = tagFilter.value.filter((id) => ids.has(id))
+  }
+})
+
 // 全局搜索跳转高亮
 const highlight = ref<number | null>(null)
 let highlightTimer: ReturnType<typeof setTimeout> | null = null
 
-// ---- 列表派生：待办按 逾期 → 今天 → 有日期 → 无日期 分组，组内按创建时间倒序 ----
+// ---- 列表派生：待办按 置顶 → 逾期 → 今天 → 有日期 → 无日期 分组（置顶独立成组，
+// 新增待办只会落进日期组、不会盖到置顶条目上面），组内按手动排序/创建时间倒序 ----
 interface TodoGroup {
   label: string
   items: Todo[]
 }
 
 const topPending = computed(() =>
-  store.state.todos.filter((t) => !t.done && t.parent_id == null),
+  store.state.todos.filter((t) => !t.done && t.parent_id == null && hasTag(t)),
 )
 const topDone = computed(() =>
   store.state.todos
-    .filter((t) => t.done && t.parent_id == null)
+    .filter((t) => t.done && t.parent_id == null && hasTag(t))
     .sort((a, b) => (b.completed_at ?? '').localeCompare(a.completed_at ?? '')),
 )
 
@@ -391,11 +424,38 @@ watch(
       <p class="todo-input-hint">回车：新建待办　·　粘贴序号列表（1. 2. 3.）可拆成多条</p>
     </div>
 
+    <!-- 标签筛选行：与待办视图同语言（chips + 未完成计数），点标签即查待办。
+         紧贴列表上方（2026-10-16 反馈「放到置顶上面」）：输入完一抬眼就是过滤器，
+         过滤着哪个范围直接看得到 -->
+    <div v-if="allTags.length" class="todo-tagbar">
+      <button
+        v-for="tag in allTags"
+        :key="tag.id"
+        type="button"
+        class="tc-tagchip"
+        :class="{ on: tagFilter.includes(tag.id) }"
+        :title="`点击按「${tag.name}」筛选待办（再点取消）`"
+        @click="toggleTagFilter(tag.id)"
+      >
+        <i class="dot" :style="{ background: tag.color || 'var(--brand-500)' }"></i>{{ tag.name }}
+        <span class="cnt">{{ tagCounts.get(tag.id) ?? 0 }}</span>
+      </button>
+      <button
+        v-if="tagFilter.length"
+        type="button"
+        class="tc-tagclear"
+        title="清除标签筛选"
+        @click="tagFilter = []"
+      >
+        <X :size="10" :stroke-width="2.5" aria-hidden="true" />清除
+      </button>
+    </div>
+
     <div ref="bodyRef" class="todo-body">
       <template v-if="view === 'pending'">
         <div v-if="pendingGroups.length === 0" class="empty-state todo-empty">
-          <p>今天要做什么？</p>
-          <p>按回车快速添加</p>
+          <p>{{ tagFilter.length ? '没有符合所选标签的待办' : '今天要做什么？' }}</p>
+          <p v-if="!tagFilter.length">按回车快速添加</p>
         </div>
         <div v-for="g in pendingGroups" :key="g.label" class="todo-group" :data-group="g.label">
           <div class="todo-group-head">
@@ -630,6 +690,77 @@ watch(
   font-size: 0.6875em;
 }
 
+/* ---- 标签筛选行（与待办视图 .tv-tagbar 同语言，字号随卡片 em 系数） ---- */
+.todo-tagbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.tc-tagchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 0.6875em;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-pill);
+  background: var(--bg-card-soft);
+  color: var(--text-3);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  font-family: inherit;
+}
+.tc-tagchip:hover {
+  border-color: var(--text-4);
+  color: var(--text-2);
+}
+.tc-tagchip.on {
+  border-color: var(--brand-500);
+  color: var(--text-1);
+  font-weight: 600;
+  background: var(--brand-50);
+}
+.tc-tagchip .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+/* 计数药丸与 .tv-tagchip .cnt 同口径：flex 自居中 + line-height 1，数字与标签名垂直对齐 */
+.tc-tagchip .cnt {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--text-4);
+  background: var(--bg-page);
+  border-radius: var(--radius-pill);
+  padding: 2px 5px;
+  line-height: 1;
+}
+.tc-tagchip.on .cnt {
+  color: var(--brand-500);
+  background: var(--bg-card);
+}
+.tc-tagclear {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: none;
+  background: transparent;
+  padding: 3px 8px;
+  font-size: 0.6875em;
+  color: var(--brand-500);
+  cursor: pointer;
+  border-radius: var(--radius-pill);
+  font-family: inherit;
+}
+.tc-tagclear:hover {
+  background: var(--brand-50);
+}
+
 .todo-add {
   margin-bottom: 8px;
 }
@@ -719,6 +850,10 @@ watch(
   font-weight: 600;
   color: var(--text-3);
   letter-spacing: 0.02em;
+}
+/* 置顶组头品牌色（与待办视图 .tv-group-h.pinned 同语言） */
+.todo-group[data-group='置顶'] .glabel {
+  color: var(--brand-500);
 }
 .todo-group-head .gline {
   flex: 1;

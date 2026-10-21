@@ -5,14 +5,15 @@
 ## 开发环境
 
 - Node.js 20
+- pnpm 9+
 - Rust stable（含 Tauri 2 依赖）
-- Windows（CI 在 windows-latest 上验证）
+- Ubuntu（CI 在 ubuntu-latest 上验证）
 
 ## 本地验证
 
 ```bash
-npm ci
-npm run build        # vue-tsc 类型检查 + vite 构建
+pnpm install --frozen-lockfile
+pnpm run build        # vue-tsc 类型检查 + vite 构建
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 

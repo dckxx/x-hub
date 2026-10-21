@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// 账号大类（登录 / 额度 / 开发者申请 / 我的设备）
+// 账号大类（登录 / 兑换邀请码 / 开发者申请 / 我的设备）
+// （AI 额度（积分）展示 2026-10-16 挪到「AI 助手」大类 AiPanel.vue；兑换入口仍在本页）
 //
 // 平台服务端地址是内置常量（`config::DEFAULT_SERVER_URL`），设置里**不提供地址入口**：
 // 正式域名启用后用户无需也无法改地址（改地址只会让账号功能指向失效的服务端，见约定 52）。
@@ -88,6 +89,38 @@ function emailErrorText(e: unknown): { text: string; raw: string } {
   }
   if (raw.startsWith('EMAIL_NOT_CONFIGURED')) {
     return { text: '服务器尚未配置发信，暂时无法用邮箱登录', raw }
+  }
+  return authErrorText(e)
+}
+
+/**
+ * 邀请码兑换的错误文案：错误码（INVITE_CODE_EXHAUSTED 等）对用户不可读，直接塞进 toast
+ * 就是「兑换失败：INVITE_CODE_EXHAUSTED:服务端返回400」。服务端已补可读 message
+ * （api_error 拼成 `CODE: 说明`，前缀在这里剥掉）；同时保留本地映射兜底——
+ * 服务端发版前，老响应不带 message 也照样给可读句子。
+ */
+function redeemErrorText(e: unknown): { text: string; raw: string } {
+  const raw = String(e)
+  if (raw.startsWith('INVITE_CODE_EXHAUSTED')) {
+    return { text: '该邀请码已被领完，请换一个邀请码', raw }
+  }
+  if (raw.startsWith('INVITE_CODE_REVOKED')) {
+    return { text: '该邀请码已失效', raw }
+  }
+  if (raw.startsWith('INVITE_CODE_EXPIRED')) {
+    return { text: '该邀请码已过期', raw }
+  }
+  if (raw.startsWith('INVITE_CODE_INVALID')) {
+    return { text: '邀请码不存在，请检查是否输入有误', raw }
+  }
+  if (raw.startsWith('ALREADY_REDEEMED')) {
+    return { text: '这个账号已经兑换过邀请码，无需重复兑换', raw }
+  }
+  if (raw.startsWith('INVITE_CODE_REQUIRED')) {
+    return { text: '请填写邀请码', raw }
+  }
+  if (raw.startsWith('NETWORK_ERROR')) {
+    return { text: '连不上服务器，请检查网络后重试', raw }
   }
   return authErrorText(e)
 }
@@ -374,7 +407,7 @@ async function doLogout() {
     account.value = await tauriApi.accountLogout()
     showToast('已退出登录')
   } catch (e) {
-    showToast(`退出失败：${e}`)
+    showToast(`退出失败：${authErrorText(e).text}`)
   } finally {
     accountBusy.value = false
   }
@@ -391,7 +424,8 @@ async function doRedeem() {
     redeemInput.value = ''
     showToast('兑换成功，权益已到账')
   } catch (e) {
-    showToast(`兑换失败：${e}`)
+    const { text } = redeemErrorText(e)
+    showToast(`兑换失败：${text}`)
   } finally {
     accountBusy.value = false
   }
@@ -411,7 +445,7 @@ async function doApply() {
     await loadAccount()
   } catch (e) {
     if (await handleAuthError(e)) return
-    showToast(`提交失败：${e}`)
+    showToast(`提交失败：${authErrorText(e).text}`)
   } finally {
     accountBusy.value = false
   }
@@ -551,19 +585,6 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="setting-row">
-              <div class="setting-info">
-                <span class="setting-name">AI 额度</span>
-                <span class="setting-desc">
-                  {{
-                    account.inviteRedeemed
-                      ? `剩余 ${account.quotaRemaining} 次（共 ${account.quotaTotal} 次）`
-                      : '尚未兑换邀请码，当前没有额度'
-                  }}
-                </span>
-              </div>
-            </div>
-
-            <div v-if="!account.inviteRedeemed" class="setting-row">
               <div class="setting-info">
                 <span class="setting-name">兑换邀请码</span>
                 <span class="setting-desc">兑换后才发放额度，并开放「申请成为开发者」</span>

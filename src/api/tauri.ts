@@ -12,6 +12,14 @@ export interface Resource {
   last_launched_at: string | null
   created_at: string
   updated_at: string
+  /** 所属速达分区 id（「全部」tab 自定义分组，跨大类）；null = 未分区。与小类 category 正交 */
+  zone_id: number | null
+  /** 用途说明（非敏感：这个网页/程序/文件是什么） */
+  description: string | null
+  /** 备注（敏感：可存账号密码/解压密码等，后端 DPAPI 加密落盘；展示侧一律密文 + 小眼睛） */
+  remark: string | null
+  /** 备注自定义标签（如「账号密码」「解压密码」）；null = 默认「备注」 */
+  remark_label: string | null
 }
 
 /** 工作台「自定义速达」槽位内容配置（槽位 id 固定 suda1..suda4，同便签 1/2 池子模式） */
@@ -42,6 +50,18 @@ export interface ResourceSubcategory {
   is_default: boolean
 }
 
+/** 速达分区：「全部」tab 的自定义成组陈列（跨大类、无层级）；一个都没有时「全部」保持平铺。
+ *  cols/rows = 分区框尺寸（卡片格数，新建默认 3×2，下限语义：内容超出按行自动膨胀）；
+ *  scale = 分区级图标缩放覆盖（issue #37），null = 跟随全局 config.suda_icon_scale */
+export interface ResourceZone {
+  id: number
+  name: string
+  sort_order: number
+  cols: number
+  rows: number
+  scale: number | null
+}
+
 /** 速达独立应用内浏览器窗口槽位快照（chrome 页挂载时拉取） */
 export interface SudaSlotState {
   slot: number
@@ -70,6 +90,14 @@ export interface Note {
   content: string
   created_at: string
   updated_at: string
+  /** 所在文件夹（null = 树根） */
+  folder_id: number | null
+  /** 剪藏来源 URL（普通笔记为空串） */
+  source_url: string
+  /** 回收站标记（null = 正常；有值 = 已移入回收站） */
+  deleted_at: string | null
+  /** 自定义树图标（emoji，null = 默认文件图标） */
+  icon: string | null
 }
 
 export interface Todo {
@@ -255,10 +283,23 @@ export interface AppConfig {
   dashboard_mid_content: string
   /** 工作台自定义布局（placements JSON 数组字符串；空串 = 未自定义，回退推荐布局） */
   dashboard_layout: string
+  /** 用户保存的默认布局快照（placements JSON 数组字符串；空串 = 未保存过，恢复默认不可用） */
+  dashboard_default_layout: string
   countdown_sound: boolean
   clock_quote: string // 时钟卡片语录（可配置，空串回退默认）
   notice_duration_ms: number // 右下角通知弹窗驻留时长（毫秒，1000–60000）
   online_enabled: boolean // 联网功能总开关（默认开）
+  /** AI 助手默认权限档：readonly（仅可查看）/ ask（每次都问，默认）/ full（完全权限）。
+   *  对话框快捷切换未手动调整时以此初始化；后端命令缺省回落同款安全默认 ask */
+  agent_permission_mode: string
+  /** 「关于我」自画像（Agent system prompt 第四段；空串 = 不注入该段） */
+  agent_about_me: string
+  /** 完全权限档下危险操作仍弹确认（子开关，默认关：完全权限 = 风险自担） */
+  agent_prompt_on_dangerous: boolean
+  /** AI 助手调用扩展工具的总开关（默认开）：关闭后扩展声明的 AI 工具整体退出聚合清单 */
+  agent_ext_tools_enabled: boolean
+  /** 每扩展授权（缺项 = 允许）：扩展设置弹窗「允许 AI 助手调用」写入 */
+  agent_ext_tool_grants?: Record<string, boolean>
   webview_mem_low_on_hide: boolean // 隐藏窗口降低内存占用（默认开）：隐藏时 WebView2 内存级别设 Low，显示前恢复 Normal
   weather_city: string // 天气城市展示名（空串 = 未配置）
   weather_lat: number // 天气纬度缓存
@@ -285,6 +326,18 @@ export interface AppConfig {
   chat_window_pinned: boolean
   /** 剪贴板历史全局呼出快捷键 */
   clipboard_shortcut: string
+  /** 全局搜索呼出快捷键（默认 Ctrl+K） */
+  search_shortcut: string
+  /** AI 对话呼出快捷键（默认 Ctrl+Shift+K） */
+  chat_shortcut: string
+  /** 速记呼出快捷键（默认 Ctrl+Shift+N）：唤起主窗→切速记视图→聚焦新建 */
+  notes_shortcut: string
+  /** 各全局快捷键是否启用（默认开）：关掉 = 注销热键但保留键值，重开即恢复 */
+  global_shortcut_enabled: boolean
+  clipboard_shortcut_enabled: boolean
+  search_shortcut_enabled: boolean
+  chat_shortcut_enabled: boolean
+  notes_shortcut_enabled: boolean
   /** 剪贴板历史最大条数（含置顶） */
   clipboard_max_items: number
   /** 非置顶记录保留天数 */
@@ -293,12 +346,14 @@ export interface AppConfig {
   clipboard_paused: boolean
   /** 粘贴快捷键方式：auto / ctrl_v / ctrl_shift_v / shift_insert */
   clipboard_paste_method: string
-  /** 速达网页默认打开方式：panel(内嵌面板) / window(独立应用内浏览器窗口) */
+  /** 速达网页默认打开方式：panel(内嵌面板) / window(独立应用内浏览器窗口) / system(系统默认浏览器) */
   suda_web_open_mode: string
   /** 工作台「自定义速达」槽位内容配置（suda1..suda4） */
   suda_custom_modules: SudaCustomModuleConfig[]
   /** 速达内嵌面板是否显示工具栏（默认不显示，隐藏时整个面板区域只渲染网页） */
   suda_panel_toolbar: boolean
+  /** 速达卡片/图标全局缩放档位（issue #37）：0.8 小 / 1.0 标准 / 1.2 大 / 1.4 特大；分区级可覆盖 */
+  suda_icon_scale: number
   /** 记录剪贴板图片（默认开启） */
   clipboard_image_enabled: boolean
   /** 记录剪贴板文件（默认开启） */
@@ -315,12 +370,20 @@ export interface AppConfig {
   font_todo: number
   /** 速记编辑器模式：wysiwyg（实时预览）/ split（分屏预览）/ source（源码） */
   note_editor_mode: string
+  /** 速记回收站保留天数（0 = 永久保留，默认）。启动时与设置变更时按此清理 */
+  note_trash_retention_days: number
   /** service 扩展运行时策略：auto / builtin / system */
   runtime_strategy: string
+  /** 全局自动信任 service 扩展（默认关）：开启后新装/更新的 service 扩展无需逐个「去授权」 */
+  service_auto_trust: boolean
   /** 固定到左侧栏的扩展 id 列表（点击侧栏菜单即在主区打开对应扩展） */
   sidebar_extensions: string[]
   /** 扩展「默认打开方式」映射：extId → view / window / drawer（未设置时侧栏点击默认 view） */
   extension_open_modes: Record<string, string>
+  /** 扩展「链接打开方式」映射：extId → inapp（应用内浏览器，默认）/ browser（系统浏览器） */
+  extension_link_modes: Record<string, string>
+  /** 扩展中心列表点击行为：detail（默认，点行看详情）/ open（点行直接打开） */
+  extension_row_click: 'detail' | 'open'
   /** 开机自启动（登录 Windows 时自动驻留托盘） */
   run_at_startup: boolean
   /** 自动升级总开关（默认开启） */
@@ -329,6 +392,8 @@ export interface AppConfig {
   update_interval_hours: number
   /** 用户「跳过此版本」记录的版本号（空 = 未跳过） */
   skipped_update_version: string
+  /** 「稍后再提示」暂停到点（epoch 毫秒，0 = 未暂停） */
+  update_snooze_until_ms: number
   /** 桌面悬浮球总开关（ADR 0004，默认开启）：主窗口隐藏时在桌面显示悬浮球 */
   floating_ball_enabled: boolean
   /** 悬浮球贴边自动隐藏（拖到屏幕边缘附近松手 → 半隐只露一半，悬停完整露出） */
@@ -346,8 +411,6 @@ export interface AppConfig {
 
 export interface AppInfo {
   version: string
-  changelog: string
-  latest_section: string
 }
 
 /** AI 对话独立窗口状态（Rust chat_window::chat_window_get_state） */
@@ -408,6 +471,10 @@ export interface ExtensionEntry {
   open_in: string[]
   permissions: string[]
   description: string
+  /** 作者署名（manifest.author；发布弹窗预填，市场卡片与详情页展示） */
+  author: string | null
+  /** 分类（manifest.category；扩展中心分类筛选用，null = 归入「其他」） */
+  category: string | null
   /** 图标文件绝对路径（存在时才非空） */
   icon: string | null
   /** 扩展目录绝对路径 */
@@ -433,6 +500,22 @@ export interface ExtensionEntry {
   module_variants: ExtensionModuleVariant[]
   /** 工作台模块选项（manifest.moduleOptions；module 卡片表头默认显隐） */
   module_options: ExtensionModuleOptions
+  /** 安装时间（目录创建时间，RFC3339；「已安装」列表按此排序，最后安装的在最下面） */
+  installed_at: string | null
+  /** 声明给 AI 助手的工具（manifest.agent.tools 校验后的合格子集，空 = 未声明） */
+  agent_tools: ExtensionAgentTool[]
+}
+
+/** 扩展声明给 AI 助手的工具（后端 extension.rs::AgentToolDecl） */
+export interface ExtensionAgentTool {
+  name: string
+  description: string
+  /** AI 侧审批档：read / write / dangerous（与扩展 permissions 两套体系） */
+  level: 'read' | 'write' | 'dangerous'
+  /** 参数 JSON Schema（object；null = 无参） */
+  parameters: Record<string, unknown> | null
+  /** 返回值形状说明（空串 = 未声明） */
+  returns: string
 }
 
 /** 工作台模块选项（后端 extension.rs::ModuleOptions） */
@@ -526,6 +609,15 @@ export interface AccountDevice {
   current?: boolean
 }
 
+/** 发布配额（服务端只回剩余次数与每日重置时刻，不回上限） */
+export interface PublishQuota {
+  drafts_remaining?: number
+  published_remaining?: number
+  daily_submits_remaining?: number
+  /** 每日提交额度的重置时刻（epoch ms，服务端本地自然日 0 点）；旧服务端没有该字段 */
+  daily_reset_at?: number
+}
+
 /** 发布提交结果（关卡逐项结论；客户端只展示服务端结论，不内置任何审核规则） */
 export interface SubmitResult {
   id: number
@@ -536,7 +628,7 @@ export interface SubmitResult {
   extId: string
   version: string
   /** 剩余配额（服务端只回剩余次数，不回上限） */
-  quota: { drafts_remaining?: number; published_remaining?: number; daily_submits_remaining?: number } | null
+  quota: PublishQuota | null
 }
 
 /** 我的一条提交记录 */
@@ -563,7 +655,7 @@ export interface DevSubmissionDetail extends DevSubmissionRow {
 export interface DevSubmissionList {
   submissions: DevSubmissionRow[]
   total: number
-  quota: { drafts_remaining?: number; published_remaining?: number; daily_submits_remaining?: number }
+  quota: PublishQuota
 }
 
 /** 平台账号状态（后端 account.rs::AccountStatus） */
@@ -576,6 +668,11 @@ export interface AccountStatus {
   role: string
   quotaTotal: number
   quotaRemaining: number
+  /** 积分账本（权威口径）：平台模型按 token 折算扣积分，1 次 ≈ 10 积分。
+   *  ⚠️ 字段名与后端 serde 序列化严格一致（account.rs 是 credit 单数）——
+   *  写成 credits 复数会静默读到 undefined（徽标曾显示「剩余 undefined 积分」） */
+  creditTotal: number
+  creditRemaining: number
   /** 已兑换邀请码（= 有权益：额度 + 可申请开发者） */
   inviteRedeemed: boolean
   /** none / pending / approved / rejected */
@@ -656,6 +753,14 @@ export interface MarketExtension {
   screenshots: string[]
   /** 该扩展申请的权限（发布时由服务端从 manifest 写入；老清单缺此字段 = 未提供） */
   permissions?: string[]
+  /** 分类（发布时作者自选、随 manifest 透传；老清单缺此字段 = 归入「其他」） */
+  category?: string
+  /** 官方扩展标记（平台官方自营账号发布时由服务端打上；老清单缺此字段，com.x-hub.* 前缀等价官方） */
+  official?: boolean
+  /** 安装次数（服务端下发清单时实时注入，按「机器 × 扩展」去重；老清单/本地缓存缺此字段 = 未知） */
+  installCount?: number
+  /** 本版本上架时间（ISO8601；市场「按发布时间」排序用，老条目缺此字段 = 排最旧） */
+  publishedAt?: string
 }
 
 /** 市场状态（get_market_registry / refresh_market_registry 返回） */
@@ -669,6 +774,55 @@ export interface MarketStatus {
   error: string | null
   /** 撤销列表（`id@version`）：已装扩展命中则警示并停止自动更新（不静默卸载/禁用） */
   revoked: string[]
+}
+
+/** 扩展反馈类型（提交时三选一） */
+export type ExtensionFeedbackKind = 'bug' | 'idea' | 'question'
+
+/**
+ * 一条扩展反馈（后端 feedback.rs::ExtensionFeedback）。
+ * 公开列表接口不返回 contact / diagnostics / app_version / hidden —— 那几个字段只给开发者收件箱。
+ */
+export interface ExtensionFeedback {
+  id: number
+  kind: ExtensionFeedbackKind
+  /** 提交时的展示名；null = 匿名 */
+  author_name: string | null
+  body: string
+  /** open（待处理）/ replied（已回复）/ resolved（已解决） */
+  status: 'open' | 'replied' | 'resolved'
+  /** 开发者公开回复 */
+  reply: string | null
+  replied_at: number | null
+  /** 提交时的扩展版本（老数据可能为空） */
+  ext_version: string | null
+  created_at: number
+  // ---- 仅开发者收件箱返回 ----
+  /** 联系方式（仅开发者与平台管理员可见） */
+  contact?: string | null
+  /** 诊断信息（仅开发者与平台管理员可见） */
+  diagnostics?: string | null
+  app_version?: string | null
+  hidden?: boolean
+}
+
+/** 收件箱里一个已发布扩展的未读数（feedback_inbox_unread 返回） */
+export interface FeedbackUnreadExtension {
+  ext_id: string
+  name: string
+  version: string
+  unread: number
+}
+
+export interface FeedbackUnread {
+  total: number
+  extensions: FeedbackUnreadExtension[]
+}
+
+/** 公开反馈列表的一页（total = 全部条数，不受 limit 截断） */
+export interface ExtensionFeedbackPage {
+  total: number
+  items: ExtensionFeedback[]
 }
 
 /** 扩展打包结果（pack_extension_archive 返回） */
@@ -755,11 +909,51 @@ export interface Tag {
   id: number
   name: string
   created_at: string
+  /** 内置标签（「剪藏」）不可改名/删除 */
+  builtin: boolean
+}
+
+/** 笔记文件夹（单归属、可嵌套；builtin = 内置「剪藏」，ADR 0015） */
+export interface NoteFolder {
+  id: number
+  name: string
+  parent_id: number | null
+  sort_order: number
+  builtin: boolean
+  created_at: string
+}
+
+/** 双链出链项（to_note_id = null 表示未链接提及） */
+export interface NoteLinkOut {
+  to_title: string
+  to_note_id: number | null
+}
+
+/** 双链入链项 */
+export interface NoteLinkIn {
+  from_note_id: number
+  from_title: string
+}
+
+export interface NoteLinks {
+  outgoing: NoteLinkOut[]
+  incoming: NoteLinkIn[]
+}
+
+/** 孤儿图片清理报告（dry_run 先出报告，确认后真删） */
+export interface NoteImageGcReport {
+  dry_run: boolean
+  total_files: number
+  referenced: number
+  orphan_files: string[]
+  removed: number
+  failed: number
 }
 
 export interface InitialData {
   resources: Resource[]
   notes: Note[]
+  note_folders: NoteFolder[]
   todos: Todo[]
   stickies: Sticky[]
   detached: DetachedSticky[]
@@ -811,6 +1005,41 @@ export interface InstalledAppInfo {
   icon: string | null
 }
 
+/** 桌面扫描结果项；kind 为展示分类，`folder` 导入速达时归入 `file` 大类 */
+export interface DesktopEntry {
+  name: string
+  target: string
+  icon: string | null
+  kind: 'app' | 'web' | 'file' | 'folder'
+  /** 桌面快捷方式原始路径（仅 .lnk/.url 有），供「导入后清理桌面快捷方式」 */
+  source: string | null
+}
+
+/** 浏览器书签项（Chromium 系 Bookmarks JSON） */
+export interface BrowserBookmark {
+  name: string
+  target: string
+  folder: string
+  browser: string
+}
+
+/** 各浏览器配置文件（profile 目录）的原始书签条数（去重前），解释「x-hub 计数 ≠ 浏览器收藏夹计数」 */
+export interface BrowserProfileStat {
+  browser: string
+  /** 配置目录名（Default / Profile 3…） */
+  profile: string
+  count: number
+}
+
+/** 书签扫描结果：条目 + 数量口径（重复合并 / 无效跳过 / 超限截断） */
+export interface BrowserBookmarkScan {
+  items: BrowserBookmark[]
+  profiles: BrowserProfileStat[]
+  duplicates: number
+  skipped: number
+  truncated: number
+}
+
 export interface SystemInfo {
   cpuUsage: number
   memUsedMb: number
@@ -836,8 +1065,15 @@ export interface ChatSession {
 export interface ChatMessage {
   id: number
   session_id: number
-  role: 'user' | 'assistant'
+  /** 一次用户输入 = 一个 turn；时间线 UI 按它分组（M2+M3 起） */
+  turn_id?: string | null
+  role: 'user' | 'assistant' | 'tool'
   content: string
+  /** assistant 消息携带的工具调用请求（JSON 数组文本） */
+  tool_calls?: string | null
+  tool_call_id?: string | null
+  tool_name?: string | null
+  tool_status?: 'ok' | 'error' | 'denied' | 'cancelled' | null
   created_at: string
 }
 
@@ -855,20 +1091,85 @@ export interface ChatModelConfig {
 /** 平台免费额度在界面上的单一入口名（与后端 `chat.rs::PLATFORM_ENTRY_NAME` 是同一个值，改动需两端同步） */
 export const PLATFORM_ENTRY_NAME = 'x-hub 平台'
 
+/** 供应商预设（后台 /admin/ai/provider-presets 可配；客户端拉取失败时回落内置清单） */
+export interface ProviderPreset {
+  name: string
+  baseUrl: string
+  /** 申请 API Key 的指引页（空 = 不显示「获取 Key」入口） */
+  keyGuideUrl: string
+  /** 备注说明（如免费额度、计费方式），空 = 无 */
+  note: string
+}
+
 /** 是否平台额度条目（写入时定死 `platform:` 前缀；旧条目可能只有 provider_name 标识，一并认） */
 export function isPlatformModel(m: ChatModelConfig): boolean {
   return m.id.startsWith('platform:') || (m.provider_name ?? '').trim() === PLATFORM_ENTRY_NAME
+}
+
+/** 一轮对话的 token 用量（agent 多轮工具循环为全部模型调用之和；字段与后端 ChatUsage 对齐） */
+export interface ChatUsage {
+  input: number
+  output: number
+  cache_read: number
+  reasoning: number
 }
 
 export type ChatStreamEvent =
   | { type: 'chunk'; content: string }
   | { type: 'done'; message: ChatMessage; session: ChatSession }
   | { type: 'error'; message: string; partial: string }
+  // ---- Agent 循环事件（#t44；工具卡片/时间线/审批卡片的渲染在 #t46）----
+  /** 回合已开始（turn_id 后端生成，开工即推）：停止键据此立刻可用 */
+  | { type: 'turnStart'; turnId: string }
+  /** 模型发起的工具调用已获准执行 */
+  | {
+      type: 'toolCall'
+      turnId: string
+      callId: string
+      name: string
+      /** 模型产出的参数 JSON 原文 */
+      args: string
+      /** read / write / dangerous */
+      level: string
+    }
+  /** 工具执行完毕（detail 为回给模型的完整结果，UI 折叠展示） */
+  | { type: 'toolResult'; callId: string; ok: boolean; summary: string; detail: string }
+  /** Ask 档等待用户确认；用 respondAgentApproval(callId, once|always|deny) 回答 */
+  | {
+      type: 'approvalRequest'
+      turnId: string
+      callId: string
+      name: string
+      args: string
+      level: string
+    }
+  /** 一轮对话（turn）收尾：最终回复已落库，usage 为全部模型调用之和 */
+  | {
+      type: 'turnDone'
+      turnId: string
+      message: ChatMessage
+      session: ChatSession
+      usage: ChatUsage
+      toolCount: number
+    }
+
+/** 挂起中的审批快照（listAgentApprovals 返回；字段与 approvalRequest 事件一致） */
+export interface AgentApprovalAsk {
+  sessionId: number
+  turnId: string
+  callId: string
+  name: string
+  args: string
+  /** read / write / dangerous */
+  level: string
+}
 
 export const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 export const tauriApi = {
   getInitialData: () => invoke<InitialData>('get_initial_data'),
+  /** 速达资源全量清单（resources-changed 刷新用） */
+  listResources: () => invoke<Resource[]>('list_resources'),
   /** 轻量配置读取（AI 对话独立窗唤起用）：只拉 config，不拉九类业务数据 */
   getUiConfig: () => invoke<AppConfig>('get_ui_config'),
   createResource: (payload: {
@@ -878,6 +1179,10 @@ export const tauriApi = {
     category?: string | null
     icon?: string | null
     args?: string | null
+    zoneId?: number | null
+    description?: string | null
+    remark?: string | null
+    remarkLabel?: string | null
   }) => invoke<Resource>('create_resource', {
     kind: payload.kind,
     name: payload.name,
@@ -885,6 +1190,10 @@ export const tauriApi = {
     category: payload.category ?? null,
     icon: payload.icon ?? null,
     args: payload.args ?? null,
+    zoneId: payload.zoneId ?? null,
+    description: payload.description ?? null,
+    remark: payload.remark ?? null,
+    remarkLabel: payload.remarkLabel ?? null,
   }),
   updateResource: (payload: {
     id: number
@@ -894,6 +1203,10 @@ export const tauriApi = {
     category?: string | null
     icon?: string | null
     args?: string | null
+    zoneId?: number | null
+    description?: string | null
+    remark?: string | null
+    remarkLabel?: string | null
   }) => invoke<Resource>('update_resource', {
     id: payload.id,
     kind: payload.kind,
@@ -902,10 +1215,18 @@ export const tauriApi = {
     category: payload.category ?? null,
     icon: payload.icon ?? null,
     args: payload.args ?? null,
+    zoneId: payload.zoneId ?? null,
+    description: payload.description ?? null,
+    remark: payload.remark ?? null,
+    remarkLabel: payload.remarkLabel ?? null,
   }),
   deleteResource: (id: number) => invoke<void>('delete_resource', { id }),
+  getResourceRemark: (resourceId: number) =>
+    invoke<string | null>('get_resource_remark', { resourceId }),
   reorderResources: (ids: number[]) => invoke<void>('reorder_resources', { ids }),
   launchResource: (id: number) => invoke<void>('launch_resource', { id }),
+  launchResourceAsAdmin: (id: number) => invoke<void>('launch_resource_as_admin', { id }),
+  revealResourceInExplorer: (id: number) => invoke<void>('reveal_resource_in_explorer', { id }),
   listInstalledBrowsers: () => invoke<InstalledBrowser[]>('list_installed_browsers'),
   openUrlWithBrowser: (id: number, browserExe: string) =>
     invoke<void>('open_url_with_browser', { id, browserExe }),
@@ -919,7 +1240,25 @@ export const tauriApi = {
   reorderSubcategories: (kind: 'app' | 'web' | 'file', ids: number[]) =>
     invoke<void>('reorder_subcategories', { kind, ids }),
   setDefaultSubcategory: (id: number) => invoke<void>('set_default_subcategory', { id }),
-  setSudaWebOpenMode: (mode: 'panel' | 'window') =>
+  // ---- 速达分区（「全部」tab 自定义成组陈列，独立于小类）----
+  listZones: () => invoke<ResourceZone[]>('list_zones'),
+  createZone: (name: string) => invoke<ResourceZone>('create_zone', { name }),
+  renameZone: (id: number, name: string) => invoke<void>('rename_zone', { id, name }),
+  deleteZone: (id: number) => invoke<void>('delete_zone', { id }),
+  reorderZones: (ids: number[]) => invoke<void>('reorder_zones', { ids }),
+  /** 调整分区框尺寸（卡片格数 1..=12；拖拽缩放已按格吸附，这里落最终值） */
+  resizeZone: (id: number, cols: number, rows: number) =>
+    invoke<void>('resize_zone', { id, cols, rows }),
+  /** 设置分区级图标缩放覆盖（issue #37）；scale=null 清除覆盖、跟随全局 suda_icon_scale */
+  setZoneScale: (id: number, scale: number | null) =>
+    invoke<void>('set_zone_scale', { id, scale }),
+  /** 批量改分区归属（右键移动/删分区撤销），不动 sort_order；zoneId=null 移回未分区 */
+  setResourcesZone: (ids: number[], zoneId: number | null) =>
+    invoke<void>('set_resources_zone', { ids, zoneId }),
+  /** 分区模式拖拽的原子写回：entries 顺序即全表新 sort_order，每项携带目标分区 */
+  reorderResourcesZoned: (entries: { id: number; zoneId: number | null }[]) =>
+    invoke<void>('reorder_resources_zoned', { entries }),
+  setSudaWebOpenMode: (mode: 'panel' | 'window' | 'system') =>
     invoke<string>('set_suda_web_open_mode', { mode }),
   // ---- 速达「应用内打开网页」（ADR 0011）----
   /** 独立浏览器窗口池：按资源 id 打开（后端校验 Web 类型 + http/https 并写最近使用） */
@@ -953,10 +1292,52 @@ export const tauriApi = {
   sudaPanelForward: () => invoke<void>('suda_panel_forward'),
   sudaPanelReload: () => invoke<void>('suda_panel_reload'),
   createNote: (title: string) => invoke<Note>('create_note', { title }),
+  /** 新建笔记（速记视图口径）：一次性落文件夹/来源/初始正文，folderId=null=树根 */
+  createNoteIn: (title: string, content: string, folderId: number | null, sourceUrl: string) =>
+    invoke<Note>('create_note_in', {
+      title,
+      content,
+      folderId: folderId ?? null,
+      sourceUrl,
+    }),
   updateNote: (id: number, title: string, content: string) =>
     invoke<Note>('update_note', { id, title, content }),
   deleteNote: (id: number) => invoke<void>('delete_note', { id }),
   listNotes: () => invoke<Note[]>('list_notes'),
+  getNote: (noteId: number) => invoke<Note | null>('get_note', { noteId }),
+  // ---- 速记改造：回收站 / 文件夹树 / 图片 GC / 双链 ----
+  trashNote: (id: number) => invoke<void>('trash_note', { id }),
+  restoreNote: (id: number) => invoke<void>('restore_note', { id }),
+  purgeNote: (id: number) => invoke<void>('purge_note', { id }),
+  purgeExpiredNotes: () => invoke<{ purged: number }>('purge_expired_notes'),
+  listTrashedNotes: () => invoke<Note[]>('list_trashed_notes'),
+  listNoteFolders: () => invoke<NoteFolder[]>('list_note_folders'),
+  createNoteFolder: (name: string, parentId: number | null) =>
+    invoke<NoteFolder>('create_note_folder', { name, parentId: parentId ?? null }),
+  renameNoteFolder: (id: number, name: string) =>
+    invoke<void>('rename_note_folder', { id, name }),
+  deleteNoteFolder: (id: number) => invoke<void>('delete_note_folder', { id }),
+  reorderNoteFolders: (moves: { id: number; parent_id: number | null; sort_order: number }[]) =>
+    invoke<void>('reorder_note_folders', { moves }),
+  setNoteFolder: (noteId: number, folderId: number | null) =>
+    invoke<void>('set_note_folder', { noteId, folderId: folderId ?? null }),
+  /** 设置/清除笔记自定义树图标（emoji；icon=null 恢复默认） */
+  setNoteIcon: (id: number, icon: string | null) => invoke<void>('set_note_icon', { id, icon }),
+  /** 一键清空回收站（不可恢复，调用方先确认），返回清除条数 */
+  purgeAllTrashedNotes: () => invoke<number>('purge_all_trashed_notes'),
+  gcOrphanNoteImages: (dryRun: boolean) =>
+    invoke<NoteImageGcReport>('gc_orphan_note_images', { dryRun }),
+  getNoteLinks: (noteId: number) => invoke<NoteLinks>('get_note_links', { noteId }),
+  rebuildNoteLinks: () => invoke<void>('rebuild_note_links'),
+  // ---- 速记导出/导入（限自有产物） ----
+  exportNotes: (dir: string) =>
+    invoke<{ exported: number; images: number; failed: string[]; dir: string }>('export_notes', { dir }),
+  importNotes: (dir: string, opts?: { overwrite?: boolean }) =>
+    invoke<{ imported: number; skipped: number; failed: string[]; cancelled: boolean }>('import_notes', {
+      dir,
+      opts: opts ?? { overwrite: false },
+    }),
+  importNotesCancel: () => invoke<void>('import_notes_cancel'),
   searchAll: (keyword: string) => invoke<SearchResult>('search_all', { keyword }),
   listTodos: () => invoke<Todo[]>('list_todos'),
   createTodo: (title: string, parentId?: number | null, createdAt?: string) =>
@@ -974,6 +1355,9 @@ export const tauriApi = {
     invoke<Todo>('schedule_todo', { id, dueAt, remindAt }),
   /** 待办拖拽排序：按传入顺序写入手动排序位（前端按分组计算完整顺序） */
   reorderTodoOrders: (ids: number[]) => invoke<void>('reorder_todo_orders', { ids }),
+  /** 跨父拖拽：子待办改挂到另一个顶级父待办，并重写目标父下子项顺序 */
+  moveTodoChild: (id: number, newParentId: number, orderedIds: number[]) =>
+    invoke<Todo>('move_todo_child', { id, newParentId, orderedIds }),
   /** 设置待办描述（轻量 Markdown） */
   setTodoDescription: (id: number, description: string) =>
     invoke<Todo>('set_todo_description', { id, description }),
@@ -1028,9 +1412,24 @@ export const tauriApi = {
     invoke<void>('delete_detached_sticky', { slot }),
   parseDroppedPath: (path: string) => invoke<DroppedAppInfo>('parse_dropped_path', { path }),
   scanInstalledApps: () => invoke<InstalledAppInfo[]>('scan_installed_apps'),
+  /** 扫描用户桌面一层（不递归）：快捷方式/网页/应用/文件/文件夹 */
+  scanDesktop: () => invoke<DesktopEntry[]>('scan_desktop'),
+  /** 删除桌面上的快捷方式（仅 .lnk/.url，且必须是用户桌面直接子项）；返回删除数量 */
+  deleteDesktopShortcuts: (paths: string[]) =>
+    invoke<number>('delete_desktop_shortcuts', { paths }),
+  /** 读取 Chromium 系浏览器书签（Chrome/Edge/Brave/Chromium），不读历史；dedupe=false 保留同一网址的重复条目 */
+  scanBrowserBookmarks: (dedupe: boolean) =>
+    invoke<BrowserBookmarkScan>('scan_browser_bookmarks', { dedupe }),
+  /** 批量抓取网页图标（favicon）：返回 原样 target → 图标绝对路径（抓不到为 null）；同域名只抓一次 */
+  fetchFavicons: (targets: string[]) =>
+    invoke<Record<string, string | null>>('fetch_favicons', { targets }),
   getRunningProcesses: () => invoke<string[]>('get_running_processes'),
   importIconFile: (source: string) =>
     invoke<string | null>('import_icon_file', { source }),
+  /** 手动修复图标缓存：全量检查速达自动提取的图标（手动导入/favicon 不动），
+   *  重提模糊/鬼影缓存；返回 检查数 / 重提数 / 失败数（失败保留旧图） */
+  sweepStaleIcons: () =>
+    invoke<{ scanned: number; reextracted: number; failed: number }>('sweep_stale_icons'),
   importWallpaper: (source: string) =>
     invoke<string>('import_wallpaper', { source }),
   /** 清理壁纸目录中当前配置（亮/暗）均未引用的文件；前端先改配置再调用 */
@@ -1038,10 +1437,14 @@ export const tauriApi = {
   /** 保存笔记图片（base64，不含 data: 前缀）：落盘 notes/images，返回 xhub-note 协议 URL */
   importNoteImage: (dataB64: string, ext: string) =>
     invoke<string>('import_note_image', { dataB64, ext }),
+  /** 复制笔记内嵌图片到系统剪贴板（xhub-note URL，后端按协议同款口径校验文件名） */
+  copyNoteImage: (url: string) => invoke<void>('copy_note_image', { url }),
   inspectPath: (path: string) =>
     invoke<{ name: string; is_dir: boolean }>('inspect_path', { path }),
   listTags: () => invoke<Tag[]>('list_tags'),
   createTag: (name: string) => invoke<Tag>('create_tag', { name }),
+  /** 笔记标签改名（内置标签后端拒绝，FORBIDDEN_BUILTIN/TAG_EXISTS 前缀报错） */
+  renameTag: (id: number, name: string) => invoke<void>('rename_tag', { id, name }),
   deleteTag: (id: number) => invoke<void>('delete_tag', { id }),
   getNoteTags: (noteId: number) => invoke<Tag[]>('get_note_tags', { noteId }),
   setNoteTags: (noteId: number, tagIds: number[]) =>
@@ -1059,6 +1462,12 @@ export const tauriApi = {
     invoke<void>('set_always_on_top_config', { value }),
   getGlobalShortcut: () => invoke<string>('get_global_shortcut'),
   setGlobalShortcut: (value: string) => invoke<string>('set_global_shortcut', { value }),
+  setSearchShortcut: (value: string) => invoke<string>('set_search_shortcut', { value }),
+  setChatShortcut: (value: string) => invoke<string>('set_chat_shortcut', { value }),
+  setNotesShortcut: (value: string) => invoke<string>('set_notes_shortcut', { value }),
+  /** 启用/禁用某个可自定义全局快捷键（禁用保留键值，只注销热键） */
+  setShortcutEnabled: (kind: 'main' | 'clipboard' | 'search' | 'chat' | 'notes', enabled: boolean) =>
+    invoke<void>('set_shortcut_enabled', { kind, enabled }),
   getRunAtStartup: () =>
     invoke<AutostartStatus>('get_run_at_startup'),
   setRunAtStartup: (enabled: boolean) => invoke<void>('set_run_at_startup', { enabled }),
@@ -1136,9 +1545,43 @@ export const tauriApi = {
     channel.onmessage = onEvent
     return invoke<void>('send_chat_message', { sessionId, content, onEvent: channel })
   },
+  /** Agent 模式发消息（#t44）：带工具循环；过程事件与 TurnDone 经 onEvent 推送。
+   *  permissionMode：readonly | ask | full（对话框快捷切换；缺省后端回落默认档） */
+  sendAgentMessage: (
+    sessionId: number,
+    content: string,
+    permissionMode: 'readonly' | 'ask' | 'full' | null,
+    onEvent: (e: ChatStreamEvent) => void,
+  ) => {
+    const channel = new Channel<ChatStreamEvent>()
+    channel.onmessage = onEvent
+    return invoke<void>('send_agent_message', {
+      sessionId,
+      content,
+      permissionMode,
+      onEvent: channel,
+    })
+  },
+  /** 回答工具审批（Ask 档内联卡片）：answer = once | always | deny（其他值一律按 deny）。
+   *  turnId 用于并发回合同 callId 撞车时精确路由 */
+  respondAgentApproval: (turnId: string, callId: string, answer: 'once' | 'always' | 'deny') =>
+    invoke<void>('respond_agent_approval', { turnId, callId, answer }),
+  /** 查询会话仍在等待确认的审批（面板重开/切回会话时还原 awaiting 卡片，0.9.0） */
+  listAgentApprovals: (sessionId: number) =>
+    invoke<AgentApprovalAsk[]>('list_agent_approvals', { sessionId }),
+  /** 用户中断 Agent 回合（已执行的工具不回滚，§4） */
+  cancelAgentTurn: (turnId: string) => invoke<void>('cancel_agent_turn', { turnId }),
+  /** 笔记 AI 深度整理：无会话、不落库的一次性流式变换；返回值即完整结果（Chunk 经 onEvent 增量推送） */
+  aiTransformNote: (content: string, onEvent: (e: ChatStreamEvent) => void) => {
+    const channel = new Channel<ChatStreamEvent>()
+    channel.onmessage = onEvent
+    return invoke<string>('ai_transform_note', { content, onEvent: channel })
+  },
   getChatModels: () => invoke<ChatModelConfig[]>('get_chat_models'),
   /** 平台可用模型（「使用平台免费额度」；需登录账号） */
   platformModels: () => invoke<string[]>('platform_models'),
+  /** 供应商预设（「添加供应商」快速填充；后台可配，需登录账号。失败时调用方回落内置清单） */
+  platformProviderPresets: () => invoke<ProviderPreset[]>('platform_provider_presets'),
   saveChatModels: (models: ChatModelConfig[]) => invoke<ChatModelConfig[]>('save_chat_models', { models }),
   fetchChatProviderModels: (baseUrl: string, apiKey: string, keyId?: string) =>
     invoke<string[]>('fetch_chat_provider_models', { baseUrl, apiKey, keyId }),
@@ -1155,7 +1598,8 @@ export const tauriApi = {
     invoke<void>('chat_window_set_pinned', { pinned }),
   chatWindowSaveMode: (enabled: boolean) =>
     invoke<void>('chat_window_save_mode', { enabled }),
-  chatWindowOpenSettings: () => invoke<void>('chat_window_open_settings'),
+  chatWindowOpenSettings: (section?: 'providers' | 'account') =>
+    invoke<void>('chat_window_open_settings', { section: section ?? 'providers' }),
   getAppInfo: () => invoke<AppInfo>('get_app_info'),
   createCountdown: (payload: {
     name: string
@@ -1217,6 +1661,7 @@ export const tauriApi = {
   setClipboardPasteMethod: (method: string) => invoke<string>('set_clipboard_paste_method', { method }),
   clipboardGetInfo: () => invoke<ClipboardInfo>('clipboard_get_info'),
   setClipboardShortcut: (value: string) => invoke<string>('set_clipboard_shortcut', { value }),
+  snoozeUpdate: () => invoke<void>('snooze_update'),
   setClipboardRetention: (maxItems: number, ttlDays: number) =>
     invoke<void>('set_clipboard_retention', { maxItems, ttlDays }),
   // ---- 在线服务 ----
@@ -1267,7 +1712,8 @@ export const tauriApi = {
   /** 撤销某台设备（换机/设备丢失时用） */
   accountRevokeDevice: (id: number) => invoke<unknown>('account_revoke_device', { id }),
   // ---- 扩展发布（打包上传 / 我的提交 / 撤回） ----
-  /** newVersion 非空时，Rust 端会先把它写回扩展 manifest.json（须大于当前版本）再打包上传 */
+  /** newVersion 非空时，Rust 端会先把它写回扩展 manifest.json（须大于当前版本）再打包上传；
+   *  author 非空且与 manifest 当前署名不同时同样先回写 `author` 字段（市场卡片与详情页展示用它） */
   devSubmit: (
     id: string,
     changelog?: string,
@@ -1275,6 +1721,8 @@ export const tauriApi = {
     homepage?: string,
     screenshots?: string[],
     newVersion?: string,
+    author?: string,
+    category?: string,
   ) =>
     invoke<SubmitResult>('dev_submit', {
       id,
@@ -1283,9 +1731,18 @@ export const tauriApi = {
       homepage: homepage ?? null,
       screenshots: screenshots && screenshots.length ? screenshots : null,
       newVersion: newVersion ?? null,
+      author: author ?? null,
+      category: category ?? null,
     }),
+  /** 安装上报（前端装成后调用）：返回服务端是否新建了计数（true = 本次安装被计数，可就地 +1）；失败返回 false 不报错 */
+  reportMarketInstall: (id: string) => invoke<boolean>('report_market_install', { extId: id }),
   /** 读本地图片为 data URL（发布弹窗的截图缩略图预览用；作者选的图不在资产白名单目录里） */
   readImageDataUrl: (path: string) => invoke<string>('read_image_data_url', { path }),
+  /**
+   * 「引用上一版截图」：下载市场清单里该扩展已上架版本的截图 URL 到本地临时文件。
+   * 返回成功下载的本地路径列表（失效/非图片的 URL 会被跳过；全部失败时 reject）。
+   */
+  fetchRemoteScreenshots: (urls: string[]) => invoke<string[]>('fetch_remote_screenshots', { urls }),
   devListSubmissions: (page?: number, pageSize?: number) =>
     invoke<DevSubmissionList>('dev_list_submissions', {
       page: page ?? null,
@@ -1321,6 +1778,41 @@ export const tauriApi = {
   /** 从市场更新扩展（校验 + 版本比较 + 备份 + 保留用户点文件 + 原子替换 + 回滚），返回扩展 id */
   updateFromMarket: (extension: MarketExtension) =>
     invoke<string>('update_extension', { extension }),
+  // ---- 扩展反馈（平台托管、公开可见） ----
+  /** 提交扩展反馈（匿名可；登录时服务端记用户名）。返回反馈 id */
+  submitExtensionFeedback: (payload: {
+    extId: string
+    kind: ExtensionFeedbackKind
+    body: string
+    contact?: string
+    diagnostics?: string
+    appVersion?: string
+    extVersion?: string
+  }) =>
+    invoke<number>('submit_extension_feedback', {
+      extId: payload.extId,
+      kind: payload.kind,
+      body: payload.body,
+      contact: payload.contact ?? null,
+      diagnostics: payload.diagnostics ?? null,
+      appVersion: payload.appVersion ?? null,
+      extVersion: payload.extVersion ?? null,
+    }),
+  /** 某扩展的公开反馈列表（匿名可读；不含联系方式与诊断） */
+  listExtensionFeedback: (extId: string) =>
+    invoke<ExtensionFeedbackPage>('list_extension_feedback', { extId }),
+  /** 我发布的扩展与未读数（未登录返回全 0，不报错） */
+  feedbackInboxUnread: () => invoke<FeedbackUnread>('feedback_inbox_unread'),
+  /** 开发者收件箱完整列表（需登录且为扩展所有者；含联系方式与诊断） */
+  feedbackInboxList: (extId: string) =>
+    invoke<ExtensionFeedback[]>('feedback_inbox_list', { extId }),
+  /** 把这批反馈标记为已读（服务端水位推到当前最大 id） */
+  feedbackMarkRead: (extId: string) => invoke<void>('feedback_mark_read', { extId }),
+  /** 公开回复（可同时标记为已解决） */
+  feedbackReply: (id: number, reply: string, resolved = false) =>
+    invoke<void>('feedback_reply', { id, reply, resolved }),
+  /** 隐藏 / 恢复一条反馈（软删：公开面消失，管理员仍可见） */
+  feedbackHide: (id: number, hidden = true) => invoke<void>('feedback_hide', { id, hidden }),
   // ---- 应用更新 ----
   /** 检查应用更新（拉取 update.json + Ed25519 验签 + 版本比较），失败静默返回无更新。
    * `manual`：About 页手动触发时传 true——忽略「跳过此版本」记录，让用户能再次主动获取该版本。 */

@@ -62,7 +62,54 @@ pub fn list_installed() -> Vec<InstalledBrowser> {
 
 #[cfg(not(target_os = "windows"))]
 pub fn list_installed() -> Vec<InstalledBrowser> {
-    Vec::new()
+    #[cfg(target_os = "linux")]
+    {
+        list_installed_linux()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Vec::new()
+    }
+}
+
+/// 扫描常见浏览器可执行文件路径（Ubuntu / Debian 系）
+#[cfg(target_os = "linux")]
+fn list_installed_linux() -> Vec<InstalledBrowser> {
+    use std::collections::HashSet;
+    const CANDIDATES: &[(&str, &str)] = &[
+        ("google-chrome", "Google Chrome"),
+        ("google-chrome-stable", "Google Chrome"),
+        ("chromium", "Chromium"),
+        ("chromium-browser", "Chromium"),
+        ("firefox", "Firefox"),
+        ("firefox-esr", "Firefox ESR"),
+        ("brave-browser", "Brave"),
+        ("microsoft-edge", "Microsoft Edge"),
+        ("microsoft-edge-stable", "Microsoft Edge"),
+        ("vivaldi", "Vivaldi"),
+        ("opera", "Opera"),
+    ];
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let dirs: Vec<_> = std::env::split_paths(&path_env).collect();
+    for (bin, name) in CANDIDATES {
+        for dir in &dirs {
+            let p = dir.join(bin);
+            if p.is_file() {
+                let exe = p.to_string_lossy().into_owned();
+                if seen.insert(exe.clone()) {
+                    result.push(InstalledBrowser {
+                        name: (*name).to_string(),
+                        exe,
+                    });
+                }
+                break;
+            }
+        }
+    }
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+    result
 }
 
 /// 从启动命令中解析 exe 路径：`"C:\...\chrome.exe" --single-argument %1` → 引号内路径

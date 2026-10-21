@@ -7,7 +7,7 @@ import { isTauri, type Todo } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useTheme } from '../composables/useTheme'
 import { parseTodoItems } from '../utils/todoParse'
-import { compareByOrder } from '../utils/todoSchedule'
+import { comparePinnedFirst } from '../utils/todoSchedule'
 import { useTodoChildren } from '../composables/useTodoChildren'
 import TodoRow from './TodoRow.vue'
 
@@ -58,9 +58,10 @@ onBeforeUnmount(() => {
 
 const input = ref('')
 
-// 与待办卡片同一排序规则：手动拖过的（sort_order）优先，其余按创建时间倒序
+// 与待办卡片同一排序规则的平铺版：置顶条目浮到最前（浮窗不分组），
+// 其余手动拖过的（sort_order）优先，再按创建时间倒序
 const pendingTodos = computed(() =>
-  store.state.todos.filter((t) => !t.done && t.parent_id == null).sort(compareByOrder),
+  store.state.todos.filter((t) => !t.done && t.parent_id == null).sort(comparePinnedFirst),
 )
 
 async function onAdd() {

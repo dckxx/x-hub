@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ArrowRight, CalendarDays, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { ArrowRight, CalendarDays, Check, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Todo, TodoOccurrence } from '../api/tauri'
-import { calendarGrid, dueBadge, isoKey } from '../utils/todoSchedule'
+import { calendarGrid, doneMetaLabel, dueBadge, isoKey, parseServerDate } from '../utils/todoSchedule'
 
 /**
  * 工作台「日历」模块：月历形态展示待办分布（含周期待办的**虚拟实例**）。
@@ -25,16 +25,42 @@ const monthLabel = computed(() => `${cursor.value.getFullYear()} 年 ${cursor.va
 
 const topTodos = computed(() => store.state.todos.filter((t) => t.parent_id == null))
 
+/** 未完成且截止日早于今天（红色 chip 与格子红底标记共用的唯一口径） */
+const isOverdue = (t: Todo) => !t.done && dueBadge(t, today.value)?.kind === 'over'
+
+/** 真实条目落格：未完成按 due_at；**已完成也显示**——有截止落原日期，
+ *  没截止则落在完成当天（completed_at，UTC 字符串需补 Z 解析），用删除线 + ✓ 淡显。
+ *  同一格内未完成排在已完成前面，未完成内部**逾期优先**——MAX_CHIPS 截断时
+ *  红色 chip 不会被正常条目挤进「+N」（同天混合逾期与正常时的唯一诚实显示方式）。 */
 const realByDay = computed(() => {
   const map = new Map<string, Todo[]>()
   for (const t of topTodos.value) {
-    if (t.done || t.due_at == null) continue
-    const key = isoKey(new Date(t.due_at))
+    const at = t.due_at ?? (t.done ? parseServerDate(t.completed_at)?.getTime() ?? null : null)
+    if (at == null) continue
+    const key = isoKey(new Date(at))
     const list = map.get(key)
     if (list) list.push(t)
     else map.set(key, [t])
   }
+  for (const list of map.values()) {
+    list.sort((a, b) => {
+      const d = Number(a.done) - Number(b.done)
+      if (d !== 0) return d
+      return Number(isOverdue(b)) - Number(isOverdue(a))
+    })
+  }
   return map
+})
+
+/** 含未完成逾期待办的日期（格子淡红底标记）：按**全量**条目判定（不按截断后的 chip），
+ *  红标记不因截断丢失；周期待办虚拟实例不参与（与 chip 的 late 口径一致）。
+ *  全部完成后 isOverdue 不再命中，标记随 done 状态自动消退。 */
+const overdueByDay = computed(() => {
+  const set = new Set<string>()
+  for (const [key, list] of realByDay.value) {
+    if (list.some(isOverdue)) set.add(key)
+  }
+  return set
 })
 
 const virtualByDay = computed(() => {
@@ -101,24 +127,52 @@ function shift(delta: number, e: MouseEvent) {
   cursor.value = d
 }
 
-/** 每格最多渲染的 chip 数（真实条目优先，剩余额度给虚拟实例） */
-const MAX_CHIPS = 2
+/** 横排只显示一条标题，真实条目优先，其余合并为 +N。 */
+const MAX_CHIPS = 1
 
-/** 每格要渲染的 chip 与「还有几条」：真实 + 虚拟合计口径，
- *  余数必须按**实际渲染条数**算——真实 2 条 + 虚拟 2 条时只画 2 条、显示 +2，
- *  不能按「各自截断」算成画 4 条还显示 +2。 */
+/**
+ * 每格的 chip：**未完成永远优先占位**，已完成只在「这天没有未完成」时占位一条；
+ * 其余已完成不进 `+N`，而是降级成尾部 `✓N` 计数——计划条目不能被完成记录挤掉，
+ * 但「这天完成了 N 件」仍然可感知（悬停 tooltip 给完整清单与完成时刻）。
+ */
 const chipsByDay = computed(() => {
-  const map = new Map<string, { real: Todo[]; virtual: TodoOccurrence[]; more: number }>()
+  const map = new Map<string, { real: Todo[]; virtual: TodoOccurrence[]; more: number; done: number }>()
   for (const c of cells.value) {
-    const real = realByDay.value.get(c.key) ?? []
+    const all = realByDay.value.get(c.key) ?? []
+    const undone = all.filter((t) => !t.done)
+    const doneList = all.filter((t) => t.done)
+    const realShown = undone.slice(0, MAX_CHIPS)
+    const doneShown =
+      realShown.length < MAX_CHIPS ? doneList.slice(0, MAX_CHIPS - realShown.length) : []
     const virtual = virtualByDay.value.get(c.key) ?? []
-    const realShown = real.slice(0, MAX_CHIPS)
-    const virtualShown = virtual.slice(0, Math.max(0, MAX_CHIPS - realShown.length))
+    const virtualShown = virtual.slice(
+      0,
+      Math.max(0, MAX_CHIPS - realShown.length - doneShown.length),
+    )
     map.set(c.key, {
-      real: realShown,
+      real: [...realShown, ...doneShown],
       virtual: virtualShown,
-      more: real.length + virtual.length - realShown.length - virtualShown.length,
+      more: undone.length - realShown.length + (virtual.length - virtualShown.length),
+      done: doneList.length - doneShown.length,
     })
+  }
+  return map
+})
+
+const summaryByDay = computed(() => {
+  const map = new Map<string, string>()
+  for (const c of cells.value) {
+    // 已完成条目写清「截止 … · 完成于 …」或「完成于 …（原无截止）」：
+    // 同一个格子里，这两种落格原因必须能分辨（有截止的落原日期，没截止的落完成当天）。
+    const titles = (realByDay.value.get(c.key) ?? []).map((t) =>
+      t.done
+        ? `${t.title}（${doneMetaLabel(t, today.value)}）`
+        : `${t.title}${isOverdue(t) ? '（逾期）' : ''}`,
+    )
+    titles.push(...(virtualByDay.value.get(c.key) ?? []).map((o) =>
+      `${titleOf.value.get(o.todo_id) ?? '周期待办'}（周期实例）`,
+    ))
+    if (titles.length) map.set(c.key, `${c.key}\n${titles.join('\n')}`)
   }
   return map
 })
@@ -148,7 +202,8 @@ const chipsByDay = computed(() => {
         v-for="c in cells"
         :key="c.key"
         class="tc-cell"
-        :class="{ out: c.out, today: c.today }"
+        :class="{ out: c.out, today: c.today, 'has-overdue': overdueByDay.has(c.key) }"
+        :title="summaryByDay.get(c.key)"
       >
         <span class="tc-day">{{ c.day }}</span>
         <div class="tc-chips">
@@ -156,18 +211,31 @@ const chipsByDay = computed(() => {
             v-for="t in (chipsByDay.get(c.key)?.real ?? [])"
             :key="'r' + t.id"
             class="tc-chip real"
-            :class="{ late: dueBadge(t, today)?.kind === 'over' }"
-            :title="t.title"
-          >{{ t.title }}</span>
+            :class="{ done: t.done, late: isOverdue(t) }"
+            :title="t.done ? doneMetaLabel(t, today) : undefined"
+          >
+            <Check
+              v-if="t.done"
+              class="tc-chip-check"
+              :size="9"
+              :stroke-width="3"
+              aria-hidden="true"
+            />
+            <span class="tc-chip-title">{{ t.title }}</span>
+          </span>
           <span
             v-for="o in (chipsByDay.get(c.key)?.virtual ?? [])"
             :key="'v' + o.todo_id + o.at_ms"
             class="tc-chip virtual"
-            :title="`${titleOf.get(o.todo_id) ?? '周期待办'}（虚拟实例）`"
-          >{{ titleOf.get(o.todo_id) ?? '周期待办' }}</span>
+          ><span class="tc-chip-title">{{ titleOf.get(o.todo_id) ?? '周期待办' }}</span></span>
           <span v-if="(chipsByDay.get(c.key)?.more ?? 0) > 0" class="tc-more-cnt">
             +{{ chipsByDay.get(c.key)?.more }}
           </span>
+          <span
+            v-if="(chipsByDay.get(c.key)?.done ?? 0) > 0"
+            class="tc-done-cnt"
+            :title="summaryByDay.get(c.key)"
+          >✓{{ chipsByDay.get(c.key)?.done }}</span>
         </div>
       </div>
     </div>
@@ -185,24 +253,33 @@ const chipsByDay = computed(() => {
 }
 .tc-header {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 6px;
   margin-bottom: 6px;
 }
 .tc-title {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
   margin: 0;
   font-size: 0.8125rem;
   font-weight: 600;
+  white-space: nowrap;
   color: var(--text-1);
 }
+.tc-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tc-title :deep(svg) {
+  flex-shrink: 0;
   color: var(--brand-500);
 }
 .tc-month {
   font-size: 0.6875rem;
+  white-space: nowrap;
   color: var(--text-3);
 }
 .tc-spacer {
@@ -214,6 +291,7 @@ const chipsByDay = computed(() => {
   justify-content: center;
   width: 22px;
   height: 22px;
+  flex-shrink: 0;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -232,16 +310,21 @@ const chipsByDay = computed(() => {
   min-height: 0;
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  grid-auto-rows: minmax(0, 1fr);
+  grid-template-rows: 14px repeat(6, minmax(0, 1fr));
   gap: 2px;
 }
 .tc-dow {
   font-size: 0.5625rem;
+  line-height: 14px;
   font-weight: 700;
   color: var(--text-4);
   text-align: center;
 }
 .tc-cell {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
   min-height: 0;
   padding: 2px 3px;
   border: 1px solid var(--border-soft);
@@ -255,28 +338,53 @@ const chipsByDay = computed(() => {
 .tc-cell.today {
   border-color: var(--brand-500);
 }
+/* 含未完成逾期待办的日期：淡红底扫视信号（issue #29）。用底色而非边框——
+ * 与「今天」的品牌色边框分属不同视觉通道，今天恰有逾期时两者叠加不冲突；
+ * 色调压得比 late chip 的实底轻一档，格内红 chip 仍靠描边区分。 */
+.tc-cell.has-overdue {
+  background: color-mix(in srgb, var(--c-red-soft) 50%, var(--bg-card-soft));
+}
 .tc-day {
+  flex-shrink: 0;
+  /* 独立行盒避免继承正文行高，紧凑格子也能容纳完整日期。 */
+  display: block;
   font-size: 0.5625rem;
+  line-height: 12px;
   color: var(--text-4);
   font-variant-numeric: tabular-nums;
 }
 .tc-chips {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
 }
 .tc-chip {
-  display: block;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
   padding: 0 3px;
-  font-size: 0.5rem;
-  line-height: 1.5;
+  font-size: 0.6875rem;
+  line-height: 14px;
   border-radius: 3px;
   border: 1px solid var(--brand-500);
   background: var(--brand-50);
   color: var(--text-1);
   overflow: hidden;
+  white-space: nowrap;
+}
+.tc-chip-title {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 已完成的 ✓ 是主识别信号：11px 字号下删除线太弱，单靠它分不清「完成」与「普通灰字」 */
+.tc-chip-check {
+  flex-shrink: 0;
 }
 .tc-chip.virtual {
   border-style: dashed;
@@ -288,8 +396,47 @@ const chipsByDay = computed(() => {
   background: var(--c-red-soft);
   color: var(--c-red-ink);
 }
+.tc-chip.done {
+  border-color: var(--border-soft);
+  background: transparent;
+  color: var(--text-4);
+  text-decoration: line-through;
+}
 .tc-more-cnt {
+  flex-shrink: 0;
   font-size: 0.5rem;
   color: var(--text-4);
+}
+/* 已完成的计数尾巴（不占 chip 位）：+N = 还有未完成/周期实例，✓N = 这天完成了 N 件 */
+.tc-done-cnt {
+  flex-shrink: 0;
+  font-size: 0.5rem;
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+}
+/* 宿主 .dash-cell 已提供尺寸容器；窄卡片将月份放到第二行。
+ * 隐藏标题时沿用悬浮工具栏，避免改变其定位与交互。 */
+@container (max-width: 320px) {
+  .tc-header:not(.hd-float) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 22px 22px;
+    row-gap: 2px;
+  }
+  .tc-header:not(.hd-float) .tc-title {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .tc-header:not(.hd-float) .tc-month {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    line-height: 14px;
+  }
+  .tc-header:not(.hd-float) .tc-nav {
+    grid-row: 1;
+  }
+  .tc-header:not(.hd-float) .tc-spacer,
+  .tc-header:not(.hd-float) .tc-more {
+    display: none;
+  }
 }
 </style>

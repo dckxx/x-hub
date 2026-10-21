@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::Emitter;
 use tauri::Manager;
@@ -48,6 +48,12 @@ const PENDING_FILE: &str = ".pending.json";
 /// 下载互斥标志：同一时刻只允许一个 download_update 在跑。
 /// 并发触发会各自 File::create 截断同一临时文件互踩，必须拒绝而非排队
 static DOWNLOAD_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// 「稍后再提示」补检去重：每点一次递增代数，只有代数仍最新的那个补检任务
+/// 到期才真正执行检查。连点「稍后再提示」时暂停窗口本来就顺延到最后一次点击
+/// （`update_snooze_until_ms` 覆盖写），这里再让旧的补检任务到点后自行退出，
+/// 避免排出一串同一时刻的重复检查。
+static SNOOZE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// download_update 的守卫：任何退出路径（含 ? / panic 展开）都复位互斥标志
 struct DownloadGuard;
@@ -194,7 +200,15 @@ async fn fetch_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Str
         .await
         .map_err(|e| format!("通信失败：{e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        // 升级清单走平台服务端（v0.6.1 起）：4xx/5xx 是 JSON `{error, message}`，
+        // 优先带出服务端的可读 message；包下载（COS 直连）非 JSON 时退回状态码
+        let msg = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+            .unwrap_or_else(|| format!("HTTP {status}"));
+        return Err(msg);
     }
     let bytes = resp.bytes().await.map_err(|e| format!("读取响应失败: {e}"))?;
     Ok(bytes.to_vec())
@@ -316,6 +330,15 @@ pub async fn check_for_update(
         log::info!("版本 v{} 已被用户跳过，不再提示", manifest.version);
         return Ok(UpdateInfo::none(&current));
     }
+    // 「稍后再提示」：暂停窗口内自动检查不弹（见 snooze_update；手动检查不受影响）。
+    // 到期后由 snooze_update 安排的补检或 4h 周期循环再次提示。
+    if !manual {
+        let snooze_until = crate::config::load().update_snooze_until_ms;
+        if snooze_until > 0 && now_epoch_ms() < snooze_until {
+            log::info!("更新提示处于「稍后再提示」暂停窗口内，本轮不弹");
+            return Ok(UpdateInfo::none(&current));
+        }
+    }
     let (entry, portable) = match platform_entry(&manifest) {
         Some(p) => p,
         None => {
@@ -344,6 +367,52 @@ pub async fn check_for_update(
     Ok(info)
 }
 
+fn now_epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 「稍后再提示」：把更新弹窗暂停 30 分钟（写 `update_snooze_until_ms`），到点后
+/// 主动补一次自动检查。为什么补检：静默检查循环是 4h 一跳，不补检的话「稍后」
+/// 实际会变成「最多 4 小时后」。手动检查（About 页）不受暂停窗口影响。
+#[tauri::command]
+pub fn snooze_update(app: tauri::AppHandle) -> Result<(), String> {
+    const SNOOZE_MINUTES: i64 = 30;
+    {
+        let _guard = crate::config::lock();
+        let mut cfg = crate::config::load();
+        cfg.update_snooze_until_ms = now_epoch_ms() + SNOOZE_MINUTES * 60_000;
+        crate::config::save(&cfg)?;
+    }
+    // 取一个本次点击专属的代数；期间又点了「稍后再提示」的话代数会变大，
+    // 本任务到点后据此直接退出，只留最新一次去补检
+    let generation = SNOOZE_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs((SNOOZE_MINUTES * 60) as u64)).await;
+        if SNOOZE_GENERATION.load(Ordering::Acquire) != generation {
+            log::info!("「稍后再提示」期间有更新的点击，本次补检跳过（已由最新那次顺延）");
+            return;
+        }
+        // 补检同受「自动检查更新」总开关控制（与 lib.rs 静默循环同口径）：用户在暂停
+        // 窗口内关掉开关就是不想再被打扰，到期补检不能成为绕过开关的旁路
+        if !crate::config::load().auto_update_enabled {
+            log::info!("「稍后再提示」到期补检被跳过：自动检查更新已关闭");
+            return;
+        }
+        if let Ok(info) = check_for_update(handle, None).await {
+            log::info!(
+                "「稍后再提示」到期补检：{}",
+                if info.available { "仍有更新" } else { "无更新" }
+            );
+        }
+    });
+    log::info!("更新提示已推迟 {} 分钟", SNOOZE_MINUTES);
+    Ok(())
+}
+
 /// 下载可用更新（`check_for_update` 命中后调用）。
 /// 重新拉取清单并验签（保证下载依据仍是最新签名清单）→ 取对应平台条目 →
 /// 流式下载 → 边下边算 sha256 校验 → 写 `updates/<version>/x-hub.zip` →
@@ -351,6 +420,12 @@ pub async fn check_for_update(
 ///
 /// 前端传入 `version` 仅为目标版本校验：下载时若清单中的目标版本与请求不符
 /// 则中止（防并发/竞态下下载旧条目）。
+///
+/// ⚠️ 本命令是**用户确认后的手动路径**，全工程唯一调用点是 UpdateCheckDialog 的
+/// 「立即更新」按钮——因此**执行点不查 `auto_update_enabled`**（那个开关只约束
+/// 「自动检查」，与 About 页手动「检查更新」按钮同语义空间，关掉开关后手动下载
+/// 必须仍然可用）。**不要从任何自动流程直接调用本命令**：将来若新增自动下载，
+/// 必须像 check_for_update 的 `manual` 参数一样先过开关闸（反馈 2026-10-01）。
 #[tauri::command]
 pub async fn download_update(
     app: tauri::AppHandle,
@@ -792,12 +867,21 @@ pub fn apply_pending_update(app: &tauri::AppHandle, current_version: &str) {
     //    注意：新实例插件 setup（CreateMutexW）前必须释放 single-instance
     //    互斥与隐藏窗口，否则被判第二实例自杀退出——升级后「没有自动重启」
     //    的根因（relaunch_app 内部「先 spawn 成功再 destroy」保证顺序）。
-    relaunch_app(app);
+    //    参数原样透传（strip_hidden_arg=false）：开机自启静默实例装完更新仍驻托盘。
+    relaunch_app(app, false);
 }
 
 /// 重启当前进程（以磁盘上的 exe 重新拉起后退出当前进程）。
-/// 供三处共用：① updater 自替换成功后接管启动；② 「立即重启」按钮
+/// 供两处共用：① updater 自替换成功后接管启动；② 「立即重启」按钮
 /// （restart_app 命令，数据目录迁移/更新就绪后重启）。
+///
+/// `strip_hidden_arg` = 是否剥掉 `--autostart-hidden` 再拉起：
+/// - 「立即重启」（用户主动点）传 **true**：开机自启的实例带该参数静默驻托盘，用户
+///   从托盘打开使用后点「立即重启」装更新，若原样透传该参数，新进程装完直接隐回
+///   托盘——表现为「更新后自动最小化，还得手动再开一次」。剥掉后新进程正常启动，
+///   前端 main.ts 的启动逻辑会直接显示主窗口并抢焦点。
+/// - 启动期自替换（apply_pending_update）传 **false** 原样透传：开机静默升级的
+///   场景下新进程保持静默驻托盘，不弹窗打扰。
 ///
 /// single-instance 插件的 mutex（`x-hub-sim`）与隐藏窗口在插件 setup 时创建，
 /// 正常由插件的 `RunEvent::Exit` on_event 销毁。但这里是用 `std::process::exit(0)`
@@ -814,7 +898,13 @@ pub fn apply_pending_update(app: &tauri::AppHandle, current_version: &str) {
 ///   继续运行但互斥与窗口已释放：插件判定第二实例依赖「mutex 存在 + 能找到隐藏
 ///   窗口」，两者都没了之后再手动开一个实例不会被拦截——出现双实例（明确不接受）。
 ///   所以失败路径绝不触碰 destroy，本进程仍是受保护的唯一主实例。
-pub fn relaunch_app(app: &tauri::AppHandle) {
+pub fn relaunch_app(app: &tauri::AppHandle, strip_hidden_arg: bool) {
+    // 重启前补一次窗口几何保存：relaunch 走 std::process::exit(0) 硬退，不触发
+    // CloseRequested（此前唯一的保存时机）——长期驻留副屏、从不点 × 的用户，
+    // config 里存的还是很久以前的坐标，升级/重启后窗口被恢复回老位置（主屏）。
+    // 启动早期 apply_pending_update 路径窗口尚未显示，persist 内部 is_visible
+    // 守卫直接跳过，不会用默认几何覆盖好数据。
+    crate::persist_window_state(app);
     // 直接 exit(0) 不会触发 RunEvent::Exit，service 后端子进程需在此手动停掉，
     // 否则 Node 子进程残留（标准退出路径由 lib.rs RunEvent::Exit → stop_all 兜底）。
     // setup 早期（apply_pending_update 路径）ServiceState 尚未 manage：try_state 判空跳过。
@@ -825,8 +915,17 @@ pub fn relaunch_app(app: &tauri::AppHandle) {
         log::error!("重启失败：无法定位当前 exe");
         return;
     };
+    // 当前进程的启动参数原样带给新进程；strip_hidden_arg 时剥掉自启动静默参数
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if strip_hidden_arg {
+        let before = args.len();
+        args.retain(|a| a.as_os_str() != std::ffi::OsStr::new(crate::autostart::HIDDEN_ARG));
+        if args.len() != before {
+            log::info!("重启已剥掉自启动静默参数，新进程将直接显示主窗口");
+        }
+    }
     match std::process::Command::new(&exe)
-        .args(std::env::args_os().skip(1))
+        .args(&args)
         .spawn()
     {
         Ok(_) => {

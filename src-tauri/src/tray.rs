@@ -21,8 +21,9 @@ fn build_menu(app: &AppHandle, prefix: &str) -> tauri::Result<Menu<tauri::Wry>> 
     let show_item = MenuItem::with_id(app, format!("{prefix}show"), "显示主窗口", true, None::<&str>)?;
     let hide_item = MenuItem::with_id(app, format!("{prefix}hide"), "隐藏主窗口", true, None::<&str>)?;
     let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
+    let restart_item = MenuItem::with_id(app, format!("{prefix}restart"), "重启", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, format!("{prefix}quit"), "退出", true, None::<&str>)?;
-    Menu::with_items(app, &[&show_item, &hide_item, &separator, &quit_item])
+    Menu::with_items(app, &[&show_item, &hide_item, &separator, &restart_item, &quit_item])
 }
 
 pub fn setup(app: &tauri::App) -> tauri::Result<()> {
@@ -46,6 +47,13 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
                 }
                 "hide" => {
                     hide_window(app);
+                }
+                "restart" => {
+                    log::info!("托盘重启，拉起新进程");
+                    // 统一走 updater::relaunch_app（补存窗口几何/停 service/释放
+                    // single-instance 互斥/清托盘图标防幽灵）；strip_hidden_arg=true
+                    // 与 restart_app 命令同口径：用户主动点的重启，新进程直接弹主窗
+                    crate::updater::relaunch_app(app, true);
                 }
                 "quit" => {
                     log::info!("托盘退出，应用结束");
@@ -74,6 +82,10 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
         }
         "fb-hide" => {
             hide_window(app);
+        }
+        "fb-restart" => {
+            log::info!("悬浮球菜单重启，拉起新进程");
+            crate::updater::relaunch_app(app, true);
         }
         "fb-quit" => {
             log::info!("悬浮球菜单退出，应用结束");

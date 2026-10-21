@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { computed, inject } from 'vue'
-import { Puzzle } from 'lucide-vue-next'
-import { useExtensionFrame } from '../composables/useExtensionFrame'
+import { computed, inject, ref } from 'vue'
+import { MessageSquare, Puzzle } from 'lucide-vue-next'
+import {
+  isUnauthorizedMessage,
+  requestOpenExtensionSettings,
+  useExtensionFrame,
+} from '../composables/useExtensionFrame'
+import ExtensionFeedbackDialog from './ExtensionFeedbackDialog.vue'
 
 const props = defineProps<{
   extId: string
@@ -42,6 +47,13 @@ const { frameRef, loading, error } = useExtensionFrame(
 )
 // frameRef 仅用于模板 ref 绑定（vue-tsc 不把模板 ref 计为读取，此处显式保留引用通过 noUnusedLocals）
 void frameRef
+
+// service 后端未授权时宿主直接拦截入口加载（扩展页面不会运行）：
+// 错误态给「去授权」直达权限设置，用户不必自己找入口
+const unauthorized = computed(() => isUnauthorizedMessage(error.value))
+
+// 加载失败 / 未授权时的反馈入口：出错当下最想反馈，诊断信息默认勾选
+const feedbackOpen = ref(false)
 </script>
 
 <template>
@@ -58,7 +70,16 @@ void frameRef
     </div>
     <div v-else-if="error" class="ev-state">
       <p class="ev-error">{{ error }}</p>
-      <button class="ghost-btn" type="button" @click="emit('close')">返回</button>
+      <div class="ev-actions">
+        <button v-if="unauthorized" class="ghost-btn" type="button" @click="requestOpenExtensionSettings(extId)">
+          去授权
+        </button>
+        <button class="ghost-btn" type="button" @click="feedbackOpen = true">
+          <MessageSquare :size="14" :stroke-width="2" aria-hidden="true" />
+          反馈问题
+        </button>
+        <button class="ghost-btn" type="button" @click="emit('close')">返回</button>
+      </div>
     </div>
     <iframe
       v-show="!loading && !error"
@@ -66,6 +87,13 @@ void frameRef
       class="ev-frame"
       title="扩展视图"
       sandbox="allow-scripts allow-same-origin allow-downloads"
+    />
+
+    <!-- 出错态反馈：只拿得到 extId，扩展名/版本由弹窗按 id 现查；诊断默认勾选 -->
+    <ExtensionFeedbackDialog
+      v-model:visible="feedbackOpen"
+      :ext-id="extId"
+      :default-diagnostics="true"
     />
   </div>
 </template>
@@ -78,13 +106,10 @@ void frameRef
   flex-direction: column;
   overflow: hidden;
 }
-/* module 卡片：复用宿主 .card 玻璃表面 + 边框 + 圆角 + 阴影，与工作台其他卡片严格统一 */
-.extension-view.card {
-  background: var(--frost-surface);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--frost-edge), var(--shadow-card);
-}
+/* module 卡片的外观（玻璃面/边框/圆角/阴影）完全走全局 .card：scoped 禁止重声明
+   background/border/border-radius/box-shadow——scoped [data-v] 的特异性会压过 style.css
+   里透底态/沉浸模式等 html[data-*] 变体规则，曾导致透底态下全工作台唯独扩展卡保留白描边；
+   要差异化外观就自建独立类（同 .modal-card），不要在 .card 上叠写 */
 .ev-header {
   flex: 0 0 auto;
   display: flex;
@@ -132,6 +157,11 @@ void frameRef
   gap: 12px;
   color: var(--text-3);
   font-size: 0.8125rem;
+}
+.ev-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .ev-error {
   color: var(--c-red);

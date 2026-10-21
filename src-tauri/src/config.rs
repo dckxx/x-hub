@@ -90,6 +90,10 @@ pub struct AppConfig {
     /// 工作台自定义布局（placements JSON 数组字符串；空串 = 未自定义，回退推荐布局）
     #[serde(default)]
     pub dashboard_layout: String,
+    /// 用户保存的默认布局快照（placements JSON 数组字符串；空串 = 未保存过，恢复默认不可用）。
+    /// 独立于生效布局：编辑器里改布局不影响快照，恢复默认永远回到保存那一刻的样子
+    #[serde(default)]
+    pub dashboard_default_layout: String,
     /// 倒计时到点提示音（默认关闭）
     pub countdown_sound: bool,
     /// 时钟卡片语录（工作台时间卡片下方显示的一句话，空串时回退默认）
@@ -101,6 +105,23 @@ pub struct AppConfig {
     /// 联网功能总开关（默认开启）：有网显示在线内容、无网自动隐藏；关闭后完全不发起网络请求
     #[serde(default = "default_true")]
     pub online_enabled: bool,
+    /// Agent 权限三档（#t47）：readonly / ask / full；对话框可临时切换，这里是持久默认档
+    #[serde(default = "default_agent_permission_mode")]
+    pub agent_permission_mode: String,
+    /// 「AI 助手 → 关于我」：用户自填档案，agent system prompt 只读注入（空 = 整段省略，计划 §4）
+    #[serde(default)]
+    pub agent_about_me: String,
+    /// 完全权限档下危险操作仍逐次提示（子开关，默认关；2026-10-13 拍板：完全权限=风险自担）
+    #[serde(default)]
+    pub agent_prompt_on_dangerous: bool,
+    /// AI 助手调用扩展工具的总开关（默认开）：关闭后 extension_tool_list/call 一律返回空/拒绝，
+    /// 扩展在 manifest.agent.tools 声明的工具不再进入聚合清单
+    #[serde(default = "default_true")]
+    pub agent_ext_tools_enabled: bool,
+    /// 每扩展授权（缺项 = 允许）：扩展设置弹窗「允许 AI 助手调用」写入；
+    /// 键为扩展 id，false = 该扩展声明的 AI 工具整体退出聚合清单（运行时审批三档照常兜底）
+    #[serde(default)]
+    pub agent_ext_tool_grants: std::collections::HashMap<String, bool>,
     /// 隐藏窗口降低内存占用（默认开启）：窗口隐藏时把 WebView2 内存目标级别设为
     /// Low（弃缓存换页、脚本照常运行），显示前恢复 Normal。见 webview_mem.rs
     #[serde(default = "default_true")]
@@ -150,6 +171,27 @@ pub struct AppConfig {
     pub chat_window_pinned: bool,
     /// 剪贴板历史全局呼出快捷键（默认 Ctrl+Alt+V，可配置）
     pub clipboard_shortcut: String,
+    /// 全局搜索呼出快捷键（默认 Ctrl+K，可配置，全局注册）
+    #[serde(default = "default_search_shortcut")]
+    pub search_shortcut: String,
+    /// AI 对话呼出快捷键（默认 Ctrl+Shift+K，可配置，全局注册）
+    #[serde(default = "default_chat_shortcut")]
+    pub chat_shortcut: String,
+    /// 速记呼出快捷键（默认 Ctrl+Shift+N，可配置，全局注册；唤起主窗→切速记→聚焦新建）
+    #[serde(default = "default_notes_shortcut")]
+    pub notes_shortcut: String,
+    /// 各全局快捷键是否启用（默认开）。关掉 = 注销该热键且不再注册，但**保留已录的键值**，
+    /// 重新打开即恢复——比「清空键值」更明确，也不会因录错删空而悄悄失效。
+    #[serde(default = "default_true")]
+    pub global_shortcut_enabled: bool,
+    #[serde(default = "default_true")]
+    pub clipboard_shortcut_enabled: bool,
+    #[serde(default = "default_true")]
+    pub search_shortcut_enabled: bool,
+    #[serde(default = "default_true")]
+    pub chat_shortcut_enabled: bool,
+    #[serde(default = "default_true")]
+    pub notes_shortcut_enabled: bool,
     /// 剪贴板历史最大条数（含置顶；置顶豁免自动清理但计入上限）
     pub clipboard_max_items: i64,
     /// 非置顶记录的保留天数
@@ -159,7 +201,7 @@ pub struct AppConfig {
     /// 粘贴快捷键方式：auto(自动检测终端) / ctrl_v / ctrl_shift_v / shift_insert
     #[serde(default = "default_paste_method")]
     pub clipboard_paste_method: String,
-    /// 速达网页条目默认打开方式：panel(主窗内嵌面板) / window(独立应用内浏览器窗口)
+    /// 速达网页条目默认打开方式：panel(主窗内嵌面板) / window(独立应用内浏览器窗口) / system(系统默认浏览器)
     #[serde(default = "default_suda_web_open_mode")]
     pub suda_web_open_mode: String,
     /// 工作台「自定义速达」槽位内容配置（suda1..suda4，见 struct 注释）
@@ -169,6 +211,10 @@ pub struct AppConfig {
     /// 隐藏时整个面板区域只渲染网页，返回速达走左侧导航）
     #[serde(default)]
     pub suda_panel_toolbar: bool,
+    /// 速达卡片/图标全局缩放档位（issue #37）：0.8 小 / 1.0 标准 / 1.2 大 / 1.4 特大。
+    /// 分区级可经 resource_zones.scale 覆盖（null = 跟随此全局值）
+    #[serde(default = "one")]
+    pub suda_icon_scale: f64,
     /// 记录剪贴板图片（复制图片时落盘快照进历史，默认开启）
     #[serde(default = "default_true")]
     pub clipboard_image_enabled: bool,
@@ -184,6 +230,9 @@ pub struct AppConfig {
     /// 速记模块字体缩放系数（默认 1.0）
     #[serde(default = "one")]
     pub font_notes: f64,
+    /// 速记回收站保留天数（0 = 永久保留，默认）。启动时与设置变更时按此清理回收站
+    #[serde(default)]
+    pub note_trash_retention_days: i64,
     /// 提示词模块字体缩放系数（默认 1.0）
     #[serde(default = "one")]
     pub font_prompt: f64,
@@ -197,12 +246,25 @@ pub struct AppConfig {
     /// service 扩展运行时策略：auto（自动检测，默认）/ builtin（始终内置）/ system（始终系统）
     #[serde(default = "default_runtime_strategy")]
     pub runtime_strategy: String,
+    /// 全局自动信任 service 扩展（默认关闭）：开启后新装/更新版本的 service 扩展无需逐个
+    /// 「去授权」即可运行本地后端。⚠️ 显式拒绝优先：某扩展在弹窗里被用户单独关掉
+    /// 「运行本地后端」时，即使本开关开着也不放行（见 extension::permission_granted）
+    #[serde(default)]
+    pub service_auto_trust: bool,
     /// 固定到左侧栏的扩展 id 列表（点击侧栏菜单即在主区打开对应扩展）
     #[serde(default)]
     pub sidebar_extensions: Vec<String>,
     /// 扩展「默认打开方式」映射：extId → view / window / drawer（未设置时默认 view）
     #[serde(default)]
     pub extension_open_modes: std::collections::HashMap<String, String>,
+    /// 扩展「链接打开方式」映射：extId → inapp（应用内浏览器，默认）/ browser（系统默认浏览器）。
+    /// 门控 runtime.openExternal：扩展页里的外链按此分流
+    #[serde(default)]
+    pub extension_link_modes: std::collections::HashMap<String, String>,
+    /// 扩展中心「已安装 / 我的扩展」列表的点击行为（两种用户习惯，做成可配）：
+    /// `detail`（默认）= 点行打开详情、右侧 ▶ 按钮打开扩展；`open` = 点行直接打开、右侧改 ⋯ 按钮看详情
+    #[serde(default = "default_extension_row_click")]
+    pub extension_row_click: String,
     /// ⚠️ **已废弃、不再被读取**（v0.6.1）：市场清单地址的唯一真相源是内置常量
     /// [`market_registry_url`]——从 v0.6.1 起客户端**不再直连对象存储**，清单/包/截图一律走
     /// 平台服务端接口（`x-hub-server` 的 `src/modules/market`，服务端再代理 COS）。
@@ -247,14 +309,16 @@ pub struct AppConfig {
     /// 用户「跳过此版本」记录的版本号（空 = 未跳过）；check 命中时若与清单版本一致则不再提示
     #[serde(default)]
     pub skipped_update_version: String,
+    /// 「稍后再提示」暂停到点（epoch 毫秒，0 = 未暂停）：到期前自动检查不弹更新弹窗
+    #[serde(default)]
+    pub update_snooze_until_ms: i64,
     /// 桌面悬浮球总开关（ADR 0004，默认开启）：主窗口隐藏时在桌面显示悬浮球
     #[serde(default = "default_true")]
     pub floating_ball_enabled: bool,
-    /// 悬浮球贴边自动隐藏：拖到屏幕边缘附近松手 → 球心落在屏边，只露出半个球体；
-    /// 悬停时球体完整滑出。取代旧「贴边吸附」（用户反馈吸附从未生效，改为本交互）。
+    /// 悬浮球贴边自动隐藏：Windows 拖到屏幕边缘附近松手 → 半隐；Linux 暂不支持，固定关闭。
     /// alias：v0.5.2 及更早字段名为 floating_ball_snap，用户显式关闭过的偏好经别名
     /// 自动迁移（同 theme→theme_mode 先例），否则升级后被丢弃回落 default_true
-    #[serde(default = "default_true", alias = "floating_ball_snap")]
+    #[serde(default = "default_floating_ball_auto_hide", alias = "floating_ball_snap")]
     pub floating_ball_auto_hide: bool,
     /// 与主窗口同时显示：默认 false = 球仅在主窗隐藏/最小化时出现；
     /// 开启后球常驻桌面，主窗显示也不隐藏（sync_with_main 读此字段联动）
@@ -288,6 +352,21 @@ fn default_suda_web_open_mode() -> String {
     "panel".to_string()
 }
 
+/// 全局搜索呼出快捷键默认值（与 shortcut.rs 的 DEFAULT_SEARCH_SHORTCUT 同源）
+fn default_search_shortcut() -> String {
+    crate::shortcut::DEFAULT_SEARCH_SHORTCUT.to_string()
+}
+
+/// AI 对话呼出快捷键默认值（与 shortcut.rs 的 DEFAULT_CHAT_SHORTCUT 同源）
+fn default_chat_shortcut() -> String {
+    crate::shortcut::DEFAULT_CHAT_SHORTCUT.to_string()
+}
+
+/// 速记呼出快捷键默认值（与 shortcut.rs 的 DEFAULT_NOTES_SHORTCUT 同源）
+fn default_notes_shortcut() -> String {
+    crate::shortcut::DEFAULT_NOTES_SHORTCUT.to_string()
+}
+
 /// 通知驻留时长默认 5 秒
 fn default_notice_duration_ms() -> i64 {
     5000
@@ -317,6 +396,22 @@ fn default_true() -> bool {
     true
 }
 
+fn floating_ball_auto_hide_default_for(is_linux: bool) -> bool {
+    floating_ball_auto_hide_for(true, is_linux)
+}
+
+pub(crate) fn floating_ball_auto_hide_for(requested: bool, is_linux: bool) -> bool {
+    requested && !is_linux
+}
+
+fn default_floating_ball_auto_hide() -> bool {
+    floating_ball_auto_hide_default_for(cfg!(target_os = "linux"))
+}
+
+fn default_agent_permission_mode() -> String {
+    "ask".to_string()
+}
+
 fn default_wallpaper_veil() -> f64 {
     0.3
 }
@@ -333,6 +428,10 @@ fn default_note_editor_mode() -> String {
     "wysiwyg".to_string()
 }
 
+fn default_extension_row_click() -> String {
+    "detail".to_string()
+}
+
 /// x-hub 平台服务端地址（账号登录 / 平台额度 / 申请开发者 / 发布扩展 / 市场清单 / 升级清单都基于它）。
 ///
 /// **唯一真相源，且刻意不可配置**：正式域名启用后，设置页的「服务器地址」入口已移除
@@ -346,12 +445,20 @@ pub const DEFAULT_SERVER_URL: &str = "https://x-hub.xfactor.top";
 /// 市场清单接口路径（服务端代理，客户端不再知道 COS 在哪里）。
 pub const MARKET_REGISTRY_PATH: &str = "/api/v1/market/registry";
 
+/// 市场安装上报接口路径（匿名 fire-and-forget；服务端按「机器 × 扩展」去重计数）。
+pub const MARKET_INSTALL_PATH: &str = "/api/v1/market/install";
+
 /// 应用升级清单接口路径（同上）。
 pub const UPDATE_MANIFEST_PATH: &str = "/api/v1/app/update";
 
 /// 市场清单地址（平台服务端接口，`.sig` 为同级 `{url}.sig`）。
 pub fn market_registry_url() -> String {
     format!("{DEFAULT_SERVER_URL}{MARKET_REGISTRY_PATH}")
+}
+
+/// 市场安装上报地址（与清单同源；失败静默，不影响安装本身）。
+pub fn market_install_url() -> String {
+    format!("{DEFAULT_SERVER_URL}{MARKET_INSTALL_PATH}")
 }
 
 /// 应用升级清单地址（平台服务端接口，`.sig` 为同级 `{url}.sig`）。
@@ -394,17 +501,23 @@ impl Default for AppConfig {
             global_shortcut: crate::shortcut::DEFAULT_TOGGLE_SHORTCUT.to_string(),
             dashboard_mid_content: "countdown".to_string(),
             dashboard_layout: String::new(),
+            dashboard_default_layout: String::new(),
             countdown_sound: false,
             clock_quote: String::new(),
             notice_duration_ms: default_notice_duration_ms(),
             online_enabled: true,
+            agent_permission_mode: default_agent_permission_mode(),
+            agent_about_me: String::new(),
+            agent_prompt_on_dangerous: false,
+            agent_ext_tools_enabled: true,
+            agent_ext_tool_grants: std::collections::HashMap::new(),
             webview_mem_low_on_hide: true,
             weather_city: String::new(),
             weather_lat: 0.0,
             weather_lng: 0.0,
             quote_source: "online".to_string(),
             chat_models: default_chat_models(),
-            chat_panel_width: 420.0,
+            chat_panel_width: 450.0,
             chat_panel_open: false,
             chat_panel_side: "right".to_string(),
             chat_panel_height: 380.0,
@@ -416,6 +529,14 @@ impl Default for AppConfig {
             chat_window_y: None,
             chat_window_pinned: false,
             clipboard_shortcut: crate::shortcut::DEFAULT_CLIPBOARD_SHORTCUT.to_string(),
+            search_shortcut: crate::shortcut::DEFAULT_SEARCH_SHORTCUT.to_string(),
+            chat_shortcut: crate::shortcut::DEFAULT_CHAT_SHORTCUT.to_string(),
+            notes_shortcut: crate::shortcut::DEFAULT_NOTES_SHORTCUT.to_string(),
+            global_shortcut_enabled: true,
+            clipboard_shortcut_enabled: true,
+            search_shortcut_enabled: true,
+            chat_shortcut_enabled: true,
+            notes_shortcut_enabled: true,
             clipboard_max_items: 500,
             clipboard_ttl_days: 7,
             clipboard_paused: false,
@@ -423,17 +544,22 @@ impl Default for AppConfig {
             suda_web_open_mode: "panel".to_string(),
             suda_custom_modules: Vec::new(),
             suda_panel_toolbar: false,
+            suda_icon_scale: 1.0,
             clipboard_image_enabled: true,
             clipboard_file_enabled: true,
             font_scale: 1.0,
             font_sticky: 1.0,
             font_notes: 1.0,
+            note_trash_retention_days: 0,
             font_prompt: 1.0,
             font_todo: 1.0,
             note_editor_mode: default_note_editor_mode(),
             runtime_strategy: "auto".to_string(),
+            service_auto_trust: false,
             sidebar_extensions: Vec::new(),
             extension_open_modes: std::collections::HashMap::new(),
+            extension_link_modes: std::collections::HashMap::new(),
+            extension_row_click: default_extension_row_click(),
             // 废弃字段（不再被读取）：市场清单地址真相源是 config::market_registry_url()
             market_endpoint: String::new(),
             dev_mode_enabled: false, // 已废弃字段：仅为兼容旧 app.json 保留，不再读取
@@ -447,8 +573,9 @@ impl Default for AppConfig {
             auto_update_enabled: true,
             update_interval_hours: default_update_interval_hours(),
             skipped_update_version: String::new(),
+            update_snooze_until_ms: 0,
             floating_ball_enabled: true,
-            floating_ball_auto_hide: true,
+            floating_ball_auto_hide: default_floating_ball_auto_hide(),
             floating_ball_with_main: false,
             floating_ball_buttons: default_floating_ball_buttons(),
             floating_ball_x: None,
@@ -525,6 +652,11 @@ fn normalize(config: &mut AppConfig) -> bool {
     if migrate_legacy_endpoints(config) {
         changed = true;
     }
+    let auto_hide = floating_ball_auto_hide_for(config.floating_ball_auto_hide, cfg!(target_os = "linux"));
+    if config.floating_ball_auto_hide != auto_hide {
+        config.floating_ball_auto_hide = auto_hide;
+        changed = true;
+    }
     changed
 }
 
@@ -594,6 +726,8 @@ const BACKEND_MANAGED_FIELDS: &[&str] = &[
     "skill_roots",
     // 「跳过此版本」：只经 skip_update_version 变更
     "skipped_update_version",
+    // 「稍后再提示」暂停到期时间：只经 snooze_update 变更
+    "update_snooze_until_ms",
     // 已废弃的两个端点字段（v0.6.1）：真相源是内置常量，只由 migrate_legacy_endpoints 归一
     "market_endpoint",
     "update_endpoint",
@@ -626,6 +760,10 @@ pub fn merge_disk_authoritative(merged: &mut AppConfig, disk: &AppConfig) {
     merged.update_endpoint = disk.update_endpoint.clone();
     merged.skill_roots = disk.skill_roots.clone();
     merged.skipped_update_version = disk.skipped_update_version.clone();
+    // 「稍后再提示」到期时间由 snooze_update 命令独占写盘，前端快照里只有启动时的旧值；
+    // 不合并的话，暂停窗口内保存任意设置（save_config 整份快照落盘）都会把它冲回旧值，
+    // 「稍后再提示」被悄悄取消、更新弹窗下一轮自动检查又弹出来
+    merged.update_snooze_until_ms = disk.update_snooze_until_ms;
 }
 
 pub fn save(config: &AppConfig) -> Result<(), String> {
@@ -663,6 +801,17 @@ mod tests {
         assert_eq!(c.global_shortcut, crate::shortcut::DEFAULT_TOGGLE_SHORTCUT);
         assert_eq!(c.dashboard_mid_content, "countdown");
         assert_eq!(c.note_editor_mode, "wysiwyg");
+        assert_eq!(c.floating_ball_auto_hide, !cfg!(target_os = "linux"));
+        assert!(!floating_ball_auto_hide_default_for(true));
+        assert!(floating_ball_auto_hide_default_for(false));
+    }
+
+    #[test]
+    fn floating_ball_auto_hide_is_disabled_only_for_linux() {
+        assert!(!floating_ball_auto_hide_for(true, true));
+        assert!(!floating_ball_auto_hide_for(false, true));
+        assert!(floating_ball_auto_hide_for(true, false));
+        assert!(!floating_ball_auto_hide_for(false, false));
     }
 
     #[test]
@@ -671,6 +820,20 @@ mod tests {
         value.as_object_mut().unwrap().remove("note_editor_mode");
         let loaded: AppConfig = serde_json::from_value(value).unwrap();
         assert_eq!(loaded.note_editor_mode, "wysiwyg");
+    }
+
+    #[test]
+    fn auto_update_default_consistent_across_serde_and_default_impl() {
+        // 两级默认值必须一致：serde 字段默认（app.json 缺字段时取 default_true）与
+        // Default impl（首次生成/文件损坏回退）若漂移，会出现「新装用户与老用户升级后
+        // 的默认行为不同」——曾在外部反馈（2026-10-01）中作为问题 3 提出，此处锁住
+        assert_eq!(default_true(), true);
+        assert!(AppConfig::default().auto_update_enabled);
+        let from_empty: AppConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            from_empty.auto_update_enabled,
+            AppConfig::default().auto_update_enabled
+        );
     }
 
     #[test]
@@ -683,6 +846,7 @@ mod tests {
         config.window.width = 1280.0;
         config.window.x = Some(100.0);
         config.window.always_on_top = true;
+        config.floating_ball_auto_hide = true;
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("app.json");
@@ -696,6 +860,10 @@ mod tests {
         assert_eq!(loaded.window.width, 1280.0);
         assert_eq!(loaded.window.x, Some(100.0));
         assert!(loaded.window.always_on_top);
+        assert_eq!(
+            loaded.floating_ball_auto_hide,
+            !cfg!(target_os = "linux")
+        );
     }
 
     #[test]
@@ -825,6 +993,7 @@ mod tests {
             dev_mode_enabled: true,
             skill_roots: vec!["E:\\skills-custom".to_string()],
             skipped_update_version: "9.9.9".to_string(),
+            update_snooze_until_ms: 1_893_456_000_000,
             ..AppConfig::default()
         }
     }
@@ -892,6 +1061,7 @@ mod tests {
         assert_eq!(merged.dev_mode_enabled, disk.dev_mode_enabled);
         assert_eq!(merged.skill_roots, disk.skill_roots);
         assert_eq!(merged.skipped_update_version, disk.skipped_update_version);
+        assert_eq!(merged.update_snooze_until_ms, disk.update_snooze_until_ms);
     }
 
     /// 清单漏登就是这条红：任何登记在案的名字都必须是 `AppConfig` 真实存在的字段，

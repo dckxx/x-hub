@@ -654,122 +654,6 @@ fn save_image_snapshot(
     Some(path.to_string_lossy().into_owned())
 }
 
-/// 快照字节按目标扩展名转码（png/bmp 两种，格式一致则原样返回）：
-/// 截图类应用只往剪贴板写 CF_DIB 位图，快照因此落成 .bmp——导出为 .png 时在
-/// 这里重编码。32bpp DIB 的 alpha 字节是 GDI 的未初始化值（通常整图为 0），
-/// 直接转码会得到整张全透明的 PNG，故 BMP 源 alpha 全 0 时按不透明处理
-/// （PNG 源不动，那是真透明）。
-pub fn transcode_image_bytes(bytes: &[u8], dest_ext: &str) -> Result<Vec<u8>, String> {
-    let src_is_bmp = bytes.len() > 2 && &bytes[0..2] == b"BM";
-    let src_is_png = bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
-    let src = if src_is_bmp {
-        "bmp"
-    } else if src_is_png {
-        "png"
-    } else {
-        return Err("图片快照不是 BMP/PNG 格式".into());
-    };
-    let dest = dest_ext.trim_start_matches('.').to_ascii_lowercase();
-    if dest.is_empty() || src == dest {
-        return Ok(bytes.to_vec());
-    }
-    let img = image::load_from_memory(bytes).map_err(|e| format!("解码图片失败: {}", e))?;
-    let img = if src_is_bmp { normalize_bmp_alpha(img) } else { img };
-    let fmt = match dest.as_str() {
-        "png" => image::ImageFormat::Png,
-        "bmp" => image::ImageFormat::Bmp,
-        other => return Err(format!("不支持的导出格式: {}", other)),
-    };
-    let mut out = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut out, fmt)
-        .map_err(|e| format!("编码图片失败: {}", e))?;
-    Ok(out.into_inner())
-}
-
-/// BMP 解码结果的 alpha 兜底：整图 alpha 全 0 视为不透明，
-/// 有任一非 0 则是真 alpha 通道，原样保留
-fn normalize_bmp_alpha(img: image::DynamicImage) -> image::DynamicImage {
-    let mut rgba = img.to_rgba8();
-    if !rgba.pixels().any(|p| p[3] != 0) {
-        for p in rgba.pixels_mut() {
-            p[3] = 255;
-        }
-    }
-    image::DynamicImage::ImageRgba8(rgba)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 构造 32bpp BI_RGB 的 BMP 文件字节（自底向上像素序，同 GDI 写剪贴板的形态）
-    fn bmp32_file(width: u32, height: u32, px: &[[u8; 4]]) -> Vec<u8> {
-        let mut dib = Vec::new();
-        dib.extend_from_slice(&40u32.to_le_bytes()); // biSize = BITMAPINFOHEADER
-        dib.extend_from_slice(&(width as i32).to_le_bytes());
-        dib.extend_from_slice(&(height as i32).to_le_bytes());
-        dib.extend_from_slice(&1u16.to_le_bytes()); // planes
-        dib.extend_from_slice(&32u16.to_le_bytes()); // bitCount
-        dib.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
-        dib.extend_from_slice(&(width * height * 4).to_le_bytes()); // sizeImage
-        dib.extend_from_slice(&0u32.to_le_bytes()); // xPelsPerMeter
-        dib.extend_from_slice(&0u32.to_le_bytes()); // yPelsPerMeter
-        dib.extend_from_slice(&0u32.to_le_bytes()); // clrUsed
-        dib.extend_from_slice(&0u32.to_le_bytes()); // clrImportant
-        for row in (0..height as usize).rev() {
-            for col in 0..width as usize {
-                let [r, g, b, a] = px[row * width as usize + col];
-                // BMP 像素字节序是小端 DWORD 的 B,G,R,A
-                dib.extend_from_slice(&[b, g, r, a]);
-            }
-        }
-        dib_to_bmp(&dib)
-    }
-
-    #[test]
-    fn transcode_bmp_to_png_preserves_pixels() {
-        let px = [
-            [255, 0, 0, 255],
-            [0, 255, 0, 255],
-            [0, 0, 255, 255],
-            [255, 255, 255, 255],
-        ];
-        let bmp = bmp32_file(2, 2, &px);
-        let png = transcode_image_bytes(&bmp, ".png").expect("转码应成功");
-        assert!(png.starts_with(&[0x89, b'P', b'N', b'G']));
-        let decoded = image::load_from_memory(&png).unwrap().to_rgba8();
-        // 自底向上的存储经解码还原为自顶向下，逐像素一致
-        for (i, e) in px.iter().enumerate() {
-            assert_eq!(decoded.get_pixel((i % 2) as u32, (i / 2) as u32).0, *e);
-        }
-    }
-
-    #[test]
-    fn transcode_bmp_zero_alpha_becomes_opaque() {
-        let px = [[10, 20, 30, 0], [40, 50, 60, 0], [70, 80, 90, 0], [1, 2, 3, 0]];
-        let bmp = bmp32_file(2, 2, &px);
-        let png = transcode_image_bytes(&bmp, "png").unwrap();
-        let decoded = image::load_from_memory(&png).unwrap().to_rgba8();
-        for p in decoded.pixels() {
-            assert_eq!(p[3], 255, "alpha 全 0 的 DIB 应按不透明导出");
-        }
-        assert_eq!(decoded.get_pixel(0, 0).0, [10, 20, 30, 255]);
-    }
-
-    #[test]
-    fn transcode_same_format_passthrough() {
-        let bmp = bmp32_file(2, 2, &[[1, 2, 3, 255]; 4]);
-        assert_eq!(transcode_image_bytes(&bmp, "bmp").unwrap(), bmp);
-
-        let mut png = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(1, 1)
-            .write_to(&mut png, image::ImageFormat::Png)
-            .unwrap();
-        let bytes = png.into_inner();
-        assert_eq!(transcode_image_bytes(&bytes, ".png").unwrap(), bytes);
-    }
-}
-
 /// 分配 Global 内存并写入字节、SetClipboardData（调用方需已 OpenClipboard 且 EmptyClipboard）
 unsafe fn set_global_data(format: u32, data: &[u8]) -> Result<(), String> {
     let mem = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, data.len());
@@ -790,19 +674,48 @@ unsafe fn set_global_data(format: u32, data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// 写入图片到剪贴板：BMP 快照写 CF_DIB，PNG 快照写 PNG 剪贴板格式。
+/// 剪贴板图片载荷 + 它该落的剪贴板格式，一次判定同时产出（BMP → CF_DIB，其余 → PNG 格式），
+/// 写入侧不再各自嗅探文件头——格式判定只此一处，加新直通格式不会两处失同步
+enum ClipboardImagePayload {
+    /// BMP 剥掉 14 字节文件头后的 DIB，写 CF_DIB
+    Dib(Vec<u8>),
+    /// PNG 原始字节或转码产物，写 PNG 剪贴板格式
+    Png(Vec<u8>),
+}
+
+impl ClipboardImagePayload {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Dib(d) | Self::Png(d) => d,
+        }
+    }
+}
+
+/// 图片文件字节 → 写入剪贴板的载荷：BMP 剥 14 字节文件头成 CF_DIB；PNG 原样；
+/// 其它格式（笔记图片的 jpg/webp/gif 等）解码重编码成 PNG——PNG 剪贴板格式里放
+/// 别的编码字节，读取方按 PNG 解码必然拿到坏图。gif 只取首帧（位图剪贴板带不走动画）。
+fn clipboard_image_payload(bytes: &[u8]) -> Result<ClipboardImagePayload, String> {
+    if bytes.len() > 2 && &bytes[0..2] == b"BM" {
+        return Ok(ClipboardImagePayload::Dib(bmp_to_dib(bytes).to_vec()));
+    }
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
+        return Ok(ClipboardImagePayload::Png(bytes.to_vec()));
+    }
+    let img = image::load_from_memory(bytes).map_err(|e| format!("解码图片失败: {}", e))?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png)
+        .map_err(|e| format!("编码图片失败: {}", e))?;
+    Ok(ClipboardImagePayload::Png(out.into_inner()))
+}
+
+/// 写入图片到剪贴板：BMP 写 CF_DIB，其余写 PNG 剪贴板格式（jpg/webp/gif 先转码 PNG）。
 /// 写回后记录回声指纹，抑制监听线程重复入库。
 pub fn set_clipboard_image(path: &str) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("读取图片快照失败: {}", e))?;
-    let is_bmp = bytes.len() > 2 && &bytes[0..2] == b"BM";
-    let data: Vec<u8> = if is_bmp {
-        bmp_to_dib(&bytes).to_vec()
-    } else {
-        bytes.clone()
-    };
+    let payload = clipboard_image_payload(&bytes)?;
     // 回声指纹基于「写回剪贴板的实际字节」（PNG 原始字节 / 剥掉文件头的 DIB），
     // 与监听端读到的一致，确保粘贴后能被正确识别为自身写入回声。
-    let hash = hash_bytes(&data);
+    let hash = hash_bytes(payload.bytes());
     unsafe {
         if OpenClipboard(std::ptr::null_mut()) == 0 {
             return Err("无法打开系统剪贴板".into());
@@ -811,14 +724,15 @@ pub fn set_clipboard_image(path: &str) -> Result<(), String> {
             CloseClipboard();
             return Err("无法清空系统剪贴板".into());
         }
-        let result = if is_bmp {
-            set_global_data(CF_DIB as u32, &data)
-        } else {
-            let fmt = RegisterClipboardFormatW(windows_sys::core::w!("PNG"));
-            if fmt == 0 {
-                Err("无法注册 PNG 格式".into())
-            } else {
-                set_global_data(fmt, &data)
+        let result = match payload {
+            ClipboardImagePayload::Dib(data) => set_global_data(CF_DIB as u32, &data),
+            ClipboardImagePayload::Png(data) => {
+                let fmt = RegisterClipboardFormatW(windows_sys::core::w!("PNG"));
+                if fmt == 0 {
+                    Err("无法注册 PNG 格式".into())
+                } else {
+                    set_global_data(fmt, &data)
+                }
             }
         };
         CloseClipboard();
@@ -1733,4 +1647,48 @@ pub fn start_monitor(app: AppHandle) {
             UnregisterClassW(LISTENER_CLASS, hinstance);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clipboard::image_codec::tests::bmp32_file;
+
+    /// BMP 载荷剥文件头、PNG 载荷原样直通（写剪贴板不做无谓重编码）
+    #[test]
+    fn clipboard_payload_bmp_strips_header_png_passthrough() {
+        let bmp = bmp32_file(2, 2, &[[5, 6, 7, 255]; 4]);
+        assert_eq!(
+            clipboard_image_payload(&bmp).unwrap().bytes(),
+            &bmp[14..],
+            "BMP 载荷应为剥掉 14 字节文件头的 CF_DIB"
+        );
+
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(1, 1)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = png.into_inner();
+        assert_eq!(clipboard_image_payload(&bytes).unwrap().bytes(), bytes);
+    }
+
+    /// 非 BMP/PNG 源（笔记图片的 jpg/webp/gif 等）必须转码成 PNG 再上剪贴板：
+    /// PNG 剪贴板格式里放 JPEG 字节，读取方按 PNG 解码必然拿到坏图
+    #[test]
+    fn clipboard_payload_transcodes_other_formats_to_png() {
+        let mut jpg = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(3, 2)
+            .write_to(&mut jpg, image::ImageFormat::Jpeg)
+            .unwrap();
+        let payload = clipboard_image_payload(&jpg.into_inner())
+            .expect("JPEG 应转码为 PNG 载荷")
+            .bytes()
+            .to_vec();
+        assert!(payload.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]));
+        let decoded = image::load_from_memory(&payload).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (3, 2));
+
+        // 坏字节（既不是 BMP/PNG 也解不出图）明确报错，不静默写坏数据
+        assert!(clipboard_image_payload(b"not an image").is_err());
+    }
 }

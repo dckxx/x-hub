@@ -26,7 +26,14 @@ let confirmTimer: ReturnType<typeof setTimeout> | null = null
 
 const skill = computed(() => overview.value?.skill ?? null)
 const targets = computed(() => overview.value?.targets ?? [])
+/** 检测到但还没装的目录数（一键安装的对象） */
 const pendingCount = computed(() => targets.value.filter((t) => !t.installed).length)
+/** 已装但内容落后于当前客户端的目录数（一键更新的对象；外来同名目录需逐个确认，不并入） */
+const outdatedCount = computed(
+  () => targets.value.filter((t) => t.installed && !t.up_to_date && !t.foreign).length,
+)
+/** 一键更新进行中 */
+const updatingAll = ref(false)
 
 async function load() {
   if (!isTauri()) return
@@ -141,6 +148,30 @@ async function installAll() {
   showToast(`已安装到 ${ok}/${pending.length} 个目录`)
 }
 
+/** 一键更新：把所有「本客户端装的、内容已落后」的目录更新到当前版本 */
+async function updateAll() {
+  const outdated = targets.value.filter((t) => t.installed && !t.up_to_date && !t.foreign)
+  if (!outdated.length) return
+  updatingAll.value = true
+  let ok = 0
+  for (const t of outdated) {
+    try {
+      overview.value = await tauriApi.installSkill(t.path, true)
+      ok += 1
+    } catch (e) {
+      showToast(`${t.label} 更新失败：${String(e)}`)
+    }
+  }
+  updatingAll.value = false
+  showToast(`已更新 ${ok}/${outdated.length} 个目录`)
+}
+
+/** 主按钮：有没装的 → 一键安装；全装了但有落后的 → 一键更新；都齐了 → 已全部安装（置灰） */
+function onPrimaryAction() {
+  if (pendingCount.value) void installAll()
+  else if (outdatedCount.value) void updateAll()
+}
+
 /** 选择自定义目录安装（撞同名时按钮变为「确认覆盖」） */
 async function pickCustom() {
   if (opPath.value) return
@@ -191,7 +222,7 @@ onMounted(() => {
     <h3 class="sv-sec-title">Skills</h3>
 
     <p class="skill-hint">
-      把「扩展开发技能包」装到本机 AI 编码助手（Claude Code / DSH / Codex 等）的 skills 目录，装完后对助手说「用 x-hub-extension 给我做一个 XX 扩展」即可。
+      把「扩展开发技能包」装到本机 AI 编码助手（Claude Code / ZCode / Codex / 豆包 等）的 skills 目录，装完后对助手说「用 x-hub-extension 给我做一个 XX 扩展」即可。
     </p>
 
     <!-- 内置技能包卡片 -->
@@ -209,11 +240,21 @@ onMounted(() => {
         <button
           class="pill-btn"
           type="button"
-          :disabled="installingAll || !!opPath || !pendingCount"
-          @click="installAll"
+          :disabled="installingAll || updatingAll || !!opPath || (!pendingCount && !outdatedCount)"
+          @click="onPrimaryAction"
         >
           <Download :size="14" :stroke-width="2" />
-          {{ installingAll ? '安装中…' : pendingCount ? `一键安装（${pendingCount}）` : '已全部安装' }}
+          {{
+            installingAll
+              ? '安装中…'
+              : updatingAll
+                ? '更新中…'
+                : pendingCount
+                  ? `一键安装（${pendingCount}）`
+                  : outdatedCount
+                    ? `一键更新（${outdatedCount}）`
+                    : '已全部安装'
+          }}
         </button>
         <button class="ghost-btn data-btn" type="button" :disabled="!!opPath" @click="pickCustom">
           <FolderPlus :size="14" :stroke-width="2" />
@@ -224,7 +265,7 @@ onMounted(() => {
 
     <h4 class="sv-subtitle">检测到的助手目录</h4>
     <p v-if="!targets.length" class="skill-empty">
-      没检测到 Claude Code / DSH / Codex 的 skills 目录。可用上面的「选择目录安装」装到自定义位置。
+      没检测到已知 AI 助手的 skills 目录。可用上面的「选择目录安装」装到自定义位置。
     </p>
 
     <div v-for="t in targets" :key="t.path" class="setting-row">

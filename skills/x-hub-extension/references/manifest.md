@@ -26,15 +26,16 @@
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `entry` | `{ [surface]: string }` | 各形态入口，**值统一是 HTML 文件**（相对扩展目录） |
-| `icon` | string | 图标（相对路径，SVG 或 PNG） |
+| `icon` | string | 图标（相对路径，SVG 或 PNG）。**必须自带配色**：宿主经 `<img>` 渲染图标，SVG 的 `currentColor` 会回落为纯黑，暗色主题/壁纸态看不清——用「品牌色圆角方块底 + 白/浅色字形」或中高明度字形，别交付纯黑/纯白透明底图标（见 pitfalls 24） |
 | `minSize` | `{ w, h }` | window / drawer 建议尺寸 |
 | `description` | string | 一句话描述 |
+| `author` | string | 作者署名。市场卡片与详情页会展示它；没填会显示占位符「—」。发布弹窗里也能补填（会写回 manifest.json），但推荐生成时就填好 |
 
 **每个声明的 entry 都必须有真实文件**，否则扩展打不开。
 
 ## 权限 `permissions`
 
-可选值：`data:read`、`data:write`、`fs`、`clipboard`、`network`、`open-url`（用默认浏览器打开外链）、`system`（保留，宿主暂无对应能力）、`notify`、`events`（广播自定义事件）、`shared-storage`（跨扩展共享存储）。
+可选值：`data:read`、`data:write`、`fs`、`clipboard`（读写系统剪贴板文本）、`network`、`open-url`（用默认浏览器打开外链）、`system`（保留，宿主暂无对应能力）、`notify`（推送右下角通知）、`events`（广播自定义事件）、`shared-storage`（扩展共享存储：`get/set/remove` 由宿主自动放进 `ext:<扩展 id>:` 命名空间，跨扩展读取用 `getFrom(ownerId, key)`，见 bridge-api.md）。
 
 没声明就调用会被拒（`PERMISSION_DENIED`）。各权限与桥 API 的对应关系见 `bridge-api.md`。
 
@@ -57,6 +58,43 @@
 | `expose` | string[] | 暴露给其它扩展调用的方法名；本扩展内用 `xhub.expose(method, fn)` 注册，其它扩展用 `xhub.runtime.callExtension(id, method, payload)` 调用 |
 | `actions` | `{ id, title, surface }[]` | 快捷动作：扩展中心每个扩展行会渲染动作按钮，点击打开对应形态 |
 | `config` | `{ [key]: any }` | **作者默认配置**。用户在扩展设置里改的值写在扩展目录的 `.config.json`（覆盖优先、升级扩展不冲掉）；扩展侧只用 `xhub.config.*` 读写，**别自己读配置文件** |
+
+## AI 助手工具 `agent.tools`（仅 service 扩展）
+
+让内置 AI 助手能查你的数据、调你的功能。**宿主不知道扩展里有什么**——靠扩展在 manifest 里自描述：
+每条声明告诉模型「我叫什么、什么时候该调我、参数长什么样、返回长什么样」，宿主聚合后经
+`extension_tool_list` / `extension_tool_call` 两个内置 Agent 工具暴露给模型。
+
+```jsonc
+{
+  "runtime": "service",
+  "agent": {
+    "tools": [
+      {
+        "name": "list_orders",                  // 扩展内唯一，[a-z0-9_-]
+        "description": "查询用户的订单列表，可按状态过滤",  // 模型判断何时调用的唯一依据，写清用途与返回内容
+        "level": "read",                        // read（默认）/ write / dangerous —— AI 审批档
+        "parameters": {                         // JSON Schema（缺省 = 无参）
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "description": "pending / done" }
+          }
+        },
+        "returns": "{ orders: [{ id, title, status }] }"  // 可选：返回形状说明，帮模型免试调
+      }
+    ]
+  }
+}
+```
+
+约定与铁律：
+
+- **仅 `runtime: "service"` 可声明**：后端由宿主托管常驻，AI 随时可调；web 扩展的页面没打开就无人应答，不支持。
+- **后端实现一个固定端点**：`POST /xhub/agent-tool`，body `{"tool": "...", "args": {...}}`（请求头带 `X-XHub-Ext-Id` 供日志溯源），**2xx 响应体（任意 JSON）就是工具结果**；非 2xx 时把原因写进 body 的 `error` 或 `message` 字段。写法见 `service.md`。
+- **`level` 是给 AI 的审批档，与 `permissions` 是两套体系**：`read` 只读模式可用；`write`/`dangerous` 会被宿主弹卡向用户确认（会话内可「允许一次/一直允许」）。按真实影响声明——「删数据」标 read 等于让 AI 免确认删数据。
+- **响应体上限 256 KB**：大清单在工具内分页/截断，超限直接报错。
+- 用户可以在 设置 → AI 助手 关总开关，或在扩展设置的「AI 助手」区块单独关掉本扩展；不合格的声明（空描述/非法字符/越档 level）宿主会跳过并在日志里说明。
+- `description` 与 `returns` 会原文进模型上下文：别塞密钥等敏感内容，也别写营销话术。
 
 ## service 专属 `backend`
 

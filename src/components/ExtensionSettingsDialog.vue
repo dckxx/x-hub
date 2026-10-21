@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, inject, ref, watch } from 'vue'
-import { Trash2, X, FolderOpen } from 'lucide-vue-next'
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { FolderOpen, MessageSquare, Trash2, X } from 'lucide-vue-next'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
 import { tauriApi, type ExtensionEntry } from '../api/tauri'
 import { useStore } from '../stores/workbench'
+import ExtensionFeedbackDialog from './ExtensionFeedbackDialog.vue'
 
 const props = defineProps<{ extension: ExtensionEntry | null }>()
 const emit = defineEmits<{
@@ -15,6 +16,15 @@ const emit = defineEmits<{
 const cardRef = ref<HTMLElement | null>(null)
 const visible = computed(() => props.extension !== null)
 useFocusTrap(visible, cardRef)
+
+// Esc 关闭：弹窗可见时才响应（同屏多个 Esc 监听互不干扰，各自只管自己的弹窗）
+function onKeydown(e: KeyboardEvent) {
+  // 反馈弹窗叠在上面时由它自己处理 Esc，别把本弹窗一起关掉
+  if (feedbackOpen.value) return
+  if (e.key === 'Escape' && visible.value) emit('close')
+}
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 const showToast = inject<(msg: string, action?: { label: string; onClick: () => void }) => void>(
   'showToast',
@@ -29,6 +39,9 @@ const confirming = ref(false)
 const uninstalling = ref(false)
 const perms = ref<Record<string, boolean>>({})
 const permsLoading = ref(false)
+// 反馈只对市场扩展开放：「我的扩展」源码目录没有市场身份，提交会被服务端判为未知扩展
+const feedbackOpen = ref(false)
+const canFeedback = computed(() => ext.value?.source === 'installed')
 
 watch(
   () => props.extension,
@@ -36,6 +49,7 @@ watch(
     confirming.value = false
     uninstalling.value = false
     perms.value = {}
+    feedbackOpen.value = false
     if (!e || e.invalid) return
     permsLoading.value = true
     try {
@@ -97,6 +111,21 @@ function runtimeLabel(runtime: 'web' | 'service'): string {
   return runtime === 'service' ? 'service（含本地后端进程）' : 'web（纯前端）'
 }
 
+// ---- AI 助手：manifest.agent.tools 声明的工具 + 每扩展授权（缺省允许） ----
+const agentTools = computed(() => ext.value?.agent_tools ?? [])
+const agentGranted = computed(() =>
+  ext.value ? store.state.config.agent_ext_tool_grants?.[ext.value.id] ?? true : true,
+)
+
+function agentLevelLabel(level: 'read' | 'write' | 'dangerous'): string {
+  return level === 'write' ? '写' : level === 'dangerous' ? '危险' : '读'
+}
+
+function toggleAgentGrant() {
+  if (!ext.value) return
+  store.setExtensionAgentGrant(ext.value.id, !agentGranted.value)
+}
+
 const store = useStore()
 
 // 固定到侧栏：点击左栏菜单即在主区打开该扩展（view 形态）
@@ -109,12 +138,13 @@ function togglePinned() {
   store.setSidebarExtension(ext.value.id, !pinnedSidebar.value)
 }
 
-// 默认打开方式：视图 / 窗口 / 抽屉（侧栏点击等入口按此打开）
+// 默认打开方式：软件内（主区视图）/ 独立窗口 / 抽屉——
+// 扩展中心点开、左栏固定菜单等入口都按此打开（默认「软件内」）
 const openMode = computed(() => store.state.config.extension_open_modes?.[ext.value?.id ?? ''] ?? 'view')
 
 const OPEN_MODES = [
-  { value: 'view', label: '视图' },
-  { value: 'window', label: '窗口' },
+  { value: 'view', label: '软件内' },
+  { value: 'window', label: '独立窗口' },
   { value: 'drawer', label: '抽屉' },
 ] as const
 
@@ -123,6 +153,22 @@ function setOpenMode(mode: (typeof OPEN_MODES)[number]['value']) {
   store.setExtensionOpenMode(ext.value.id, mode)
   const label = OPEN_MODES.find((m) => m.value === mode)?.label ?? mode
   showToast(`已设为默认在「${label}」打开`)
+}
+
+// 链接打开方式：扩展页里的外链（xhub.openExternal）怎么打开——
+// 软件内 = 应用内置浏览器窗口（默认）；浏览器 = 系统默认浏览器
+const linkMode = computed(() => store.state.config.extension_link_modes?.[ext.value?.id ?? ''] ?? 'inapp')
+
+const LINK_MODES = [
+  { value: 'inapp', label: '软件内' },
+  { value: 'browser', label: '浏览器' },
+] as const
+
+function setLinkMode(mode: (typeof LINK_MODES)[number]['value']) {
+  if (!ext.value) return
+  store.setExtensionLinkMode(ext.value.id, mode)
+  const label = LINK_MODES.find((m) => m.value === mode)?.label ?? mode
+  showToast(`扩展内链接已改为用「${label}」打开`)
 }
 
 /** 在系统文件管理器中打开扩展目录（开发调试用） */
@@ -159,7 +205,7 @@ async function confirmUninstall() {
 <template>
   <Teleport to="body">
     <Transition name="mask">
-      <div v-if="ext" class="modal-mask">
+      <div v-if="ext" class="modal-mask" @click.self="emit('close')">
         <div
           ref="cardRef"
           class="modal-card es-card"
@@ -169,7 +215,7 @@ async function confirmUninstall() {
         >
           <header class="es-head">
             <div class="es-head-left">
-              <div class="es-icon" :style="{ background: accent?.soft }">
+              <div class="es-icon" :style="ext.icon ? {} : { background: accent?.soft }">
                 <img
                   v-if="ext.icon"
                   :src="iconSrc(ext.icon)"
@@ -219,7 +265,13 @@ async function confirmUninstall() {
 
             <section class="es-block">
               <h3 class="es-block-title">权限</h3>
-              <p v-if="ext.runtime === 'service'" class="es-empty">本地后端可读取你有权限访问的文件并联网，未受系统沙箱隔离。仅在信任作者与当前版本时开启；更新版本后需重新授权。关闭网络权限也会停止后端。</p>
+              <p v-if="ext.runtime === 'service'" class="es-empty">
+                本地后端可读取你有权限访问的文件并联网，未受系统沙箱隔离。仅在信任作者与当前版本时开启；关闭网络权限也会停止后端。
+                <template v-if="store.state.config.service_auto_trust">
+                  已开启「自动信任 service 扩展」（设置 → 扩展）：新装或更新后无需逐个确认即可运行后端；在此处单独关闭可拒绝该扩展的后端，且优先于全局开关。
+                </template>
+                <template v-else>更新版本后需重新授权。</template>
+              </p>
               <div v-if="Object.keys(perms).length" class="es-perm-list">
                 <div v-for="p in Object.keys(perms)" :key="p" class="es-perm-row" :title="p">
                   <span class="es-perm-name">{{ permissionLabel(p) }}</span>
@@ -237,6 +289,38 @@ async function confirmUninstall() {
                 </div>
               </div>
               <p v-else class="es-empty">无权限申请</p>
+            </section>
+
+            <!-- AI 助手：manifest.agent.tools 声明的工具展示 + 每扩展授权开关。
+                 声明了工具才渲染整块（web 扩展一期不支持声明，永远看不到这块） -->
+            <section v-if="!ext.invalid && agentTools.length > 0" class="es-block">
+              <h3 class="es-block-title">AI 助手</h3>
+              <p class="es-empty es-agent-hint">
+                本扩展向 AI 助手声明了 {{ agentTools.length }} 个工具；AI 调用时按各工具声明的档位受同一套审批约束（写/危险操作会先征求你的确认）。
+              </p>
+              <ul class="es-agent-tools">
+                <li v-for="t in agentTools" :key="t.name" class="es-agent-tool">
+                  <span class="es-agent-level" :class="`lv-${t.level}`">{{ agentLevelLabel(t.level) }}</span>
+                  <span class="es-agent-body">
+                    <span class="es-agent-name">{{ t.name }}</span>
+                    <span class="es-agent-desc">{{ t.description }}</span>
+                  </span>
+                </li>
+              </ul>
+              <div class="es-perm-row">
+                <span class="es-setting-name">允许 AI 助手调用本扩展的工具</span>
+                <button
+                  class="toggle"
+                  role="switch"
+                  type="button"
+                  :aria-checked="agentGranted"
+                  :class="{ on: agentGranted }"
+                  @click="toggleAgentGrant"
+                >
+                  <span class="toggle-knob"></span>
+                </button>
+              </div>
+              <p class="es-empty es-openmode-hint">关闭后本扩展声明的工具不再出现在 AI 助手可调用清单里（对话进行中已获会话授权的调用不受影响）。</p>
             </section>
 
             <section v-if="!ext.invalid" class="es-block">
@@ -258,6 +342,23 @@ async function confirmUninstall() {
                   </div>
                 </dd>
               </div>
+              <div class="es-kv-row es-openmode-row">
+                <dt>链接打开方式</dt>
+                <dd>
+                  <div class="es-seg" role="group" aria-label="链接打开方式">
+                    <button
+                      v-for="m in LINK_MODES"
+                      :key="m.value"
+                      class="es-seg-btn"
+                      :class="{ active: linkMode === m.value }"
+                      type="button"
+                      @click="setLinkMode(m.value)"
+                    >
+                      {{ m.label }}
+                    </button>
+                  </div>
+                </dd>
+              </div>
               <div class="es-perm-row">
                 <span class="es-setting-name">在左侧栏固定此扩展</span>
                 <button
@@ -271,16 +372,28 @@ async function confirmUninstall() {
                   <span class="toggle-knob"></span>
                 </button>
               </div>
-              <p class="es-empty es-openmode-hint">固定后，点击左栏菜单即按上方「打开方式」打开该扩展。</p>
+              <p class="es-empty es-openmode-hint">从扩展中心点开、或点击左栏固定菜单时，都按上方「打开方式」打开该扩展（默认软件内打开）；扩展内的外部链接按「链接打开方式」打开（默认软件内的应用内浏览器）。</p>
             </section>
           </div>
 
           <footer class="es-foot">
             <template v-if="!confirming">
-              <button class="es-danger-btn" type="button" @click="confirming = true">
-                <Trash2 :size="14" :stroke-width="2" aria-hidden="true" />
-                卸载扩展
-              </button>
+              <div class="es-foot-row">
+                <button
+                  v-if="canFeedback"
+                  class="ghost-btn"
+                  type="button"
+                  @click="feedbackOpen = true"
+                >
+                  <MessageSquare :size="14" :stroke-width="2" aria-hidden="true" />
+                  反馈问题
+                </button>
+                <span class="es-foot-spacer"></span>
+                <button class="es-danger-btn" type="button" @click="confirming = true">
+                  <Trash2 :size="14" :stroke-width="2" aria-hidden="true" />
+                  卸载扩展
+                </button>
+              </div>
             </template>
             <template v-else>
               <p class="es-confirm-tip">
@@ -310,6 +423,15 @@ async function confirmUninstall() {
         </div>
       </div>
     </Transition>
+
+    <!-- 提交反馈弹窗：与设置弹窗叠加（焦点陷阱按栈顶让位，Esc 由它自己消费） -->
+    <ExtensionFeedbackDialog
+      v-model:visible="feedbackOpen"
+      :ext-id="ext?.id ?? ''"
+      :ext-name="ext?.name ?? null"
+      :ext-version="ext?.version ?? null"
+      :runtime="ext?.runtime ?? null"
+    />
   </Teleport>
 </template>
 
@@ -493,6 +615,59 @@ async function confirmUninstall() {
   color: var(--text-1);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+.es-agent-hint {
+  padding: 2px 0 6px;
+}
+.es-agent-tools {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.es-agent-tool {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.es-agent-level {
+  flex-shrink: 0;
+  margin-top: 1px;
+  font-size: 0.6875rem;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: var(--radius-pill);
+  font-weight: 600;
+}
+.es-agent-level.lv-read {
+  color: var(--c-green-ink);
+  background: var(--c-green-soft);
+}
+.es-agent-level.lv-write {
+  color: var(--c-orange-ink);
+  background: var(--c-orange-soft);
+}
+.es-agent-level.lv-dangerous {
+  color: var(--c-red-ink);
+  background: var(--c-red-soft);
+}
+.es-agent-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.es-agent-name {
+  font-size: 0.8125rem;
+  color: var(--text-1);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.es-agent-desc {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  line-height: 1.45;
+}
 .toggle {
   flex-shrink: 0;
   width: 40px;
@@ -540,8 +715,15 @@ async function confirmUninstall() {
   font-size: 0.8125rem;
   color: var(--text-1);
 }
+/* 打开方式 / 链接打开方式：标签在左、分段控件贴右，与「在左侧栏固定此扩展」那行对齐；
+   dt 不锁 72px（「链接打开方式」六字会折行），改 nowrap 自适应 */
 .es-openmode-row {
   align-items: center;
+  justify-content: space-between;
+}
+.es-openmode-row dt {
+  width: auto;
+  white-space: nowrap;
 }
 .es-seg {
   display: inline-flex;
@@ -574,6 +756,14 @@ async function confirmUninstall() {
   flex-direction: column;
   gap: 10px;
   padding: 4px 18px 18px;
+}
+.es-foot-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.es-foot-spacer {
+  flex: 1;
 }
 .es-confirm-tip {
   margin: 0;

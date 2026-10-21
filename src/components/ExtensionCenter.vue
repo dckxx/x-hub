@@ -1,8 +1,27 @@
+<script lang="ts">
+// jumpSettings 的消费水位（已处理到的 nonce）。必须放模块级，不能是 setup 内的 let：
+// 本组件挂在 v-else-if 下，离开扩展中心即卸载、回来即重挂载，实例级变量每次归零后会把
+// 宿主遗留的旧跳转请求（index.vue 的 extensionSettingsJump 消费后从不清回 null）当成
+// 新请求重新消费——表现为「每次回到扩展中心都重弹一次该扩展的设置弹窗」。
+let handledJumpNonce = -1
+</script>
+
 <script setup lang="ts">
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
-import { MoreHorizontal, FolderCog, FolderOpen, PackageOpen, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import {
+  FolderCog,
+  FolderOpen,
+  Inbox,
+  MoreVertical,
+  PackageOpen,
+  Play,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-vue-next'
 import {
   isTauri,
   tauriApi,
@@ -12,13 +31,26 @@ import {
   type MarketExtension,
   type MarketStatus,
   type ExtensionEntry,
+  type FeedbackUnread,
+  type PublishQuota,
 } from '../api/tauri'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
 import { loadExtensionModules } from '../composables/useDashboardLayout'
 import { useAdaptivePolling } from '../composables/useAdaptivePolling'
+import { useQuotaReset } from '../composables/useQuotaReset'
+import { useStore } from '../stores/workbench'
+import {
+  CATEGORY_ALL,
+  categoryFilterValues,
+  installCountText,
+  isOfficialExt,
+  matchesCategory,
+} from '../utils/extensionMeta'
 import ExtensionSettingsDialog from './ExtensionSettingsDialog.vue'
 import MarketDetailDialog from './MarketDetailDialog.vue'
 import ExtensionPublishDialog from './ExtensionPublishDialog.vue'
+import ExtensionFeedbackInbox from './ExtensionFeedbackInbox.vue'
+import AppSelect from './AppSelect.vue'
 
 const showToast = inject<(msg: string, action?: { label: string; onClick: () => void }) => void>(
   'showToast',
@@ -33,11 +65,34 @@ const emit = defineEmits<{
   openSkills: []
 }>()
 
+const store = useStore()
+/** 列表点击行为（设置 → 扩展）：true = 点行直接打开（右侧改 ⋯ 看详情），false = 点行看详情（默认） */
+const rowClickOpens = computed(() => (store.state.config.extension_row_click ?? 'detail') === 'open')
+
+// 外部请求打开某扩展的设置/授权弹窗（扩展页 xhub.openPermissions「去授权」跳转）。
+// 本组件可能尚未挂载或列表未加载完：按 nonce 去重，列表就绪前留待 watch(extensions) 补开
+const props = defineProps<{
+  /** { 扩展 id, 递增序号 }：nonce 变化即一次新请求；null = 无待处理请求 */
+  jumpSettings?: { id: string; nonce: number } | null
+}>()
+
+function tryOpenJumpedSettings() {
+  const j = props.jumpSettings
+  if (!j || j.nonce === handledJumpNonce) return
+  const entry = extensions.value.find((e) => e.id === j.id)
+  if (!entry) return // 列表未就绪/扩展不存在：等列表加载后再试一次
+  handledJumpNonce = j.nonce
+  settingsExt.value = entry
+}
+
+watch(() => props.jumpSettings, tryOpenJumpedSettings)
+
 function onAction(e: ExtensionEntry, surface: string) {
   emit('openSurface', e, surface)
 }
 
-function onRowClick(e: ExtensionEntry) {
+/** 行点击守卫：不可用/禁用/缺依赖时给出原因提示，可打开时执行传入动作 */
+function withRowGuard(e: ExtensionEntry, action: () => void) {
   if (e.invalid) {
     showToast(`「${e.name}」无法打开：${e.error ?? 'manifest 缺失或损坏'}`)
     return
@@ -50,28 +105,129 @@ function onRowClick(e: ExtensionEntry) {
     showToast(`「${e.name}」缺少依赖扩展：${e.missing_dependencies.join('、')}`)
     return
   }
-  emit('open', e)
+  action()
+}
+
+/** 「已安装」行点击：按设置里的点击行为——默认打开**扩展详情**（信息 / 权限 / 打开方式 / 卸载）；
+ *  设为「直接打开」时点行即打开扩展，详情改走右侧 ⋯ 按钮 */
+function onRowClick(e: ExtensionEntry) {
+  withRowGuard(e, () => {
+    if (rowClickOpens.value) {
+      emit('open', e)
+      return
+    }
+    settingsExt.value = e
+  })
+}
+
+/** 「已安装」行 ▶ 按钮：直接打开扩展（按该扩展设置里的「打开方式」） */
+function openInstalledExtension(e: ExtensionEntry) {
+  withRowGuard(e, () => emit('open', e))
+}
+
+/** 「已安装」行 ⋯ 按钮（点击行为 = 直接打开时出现）：打开扩展详情 */
+function openInstalledDetail(e: ExtensionEntry) {
+  withRowGuard(e, () => {
+    settingsExt.value = e
+  })
 }
 
 const extensions = ref<ExtensionEntry[]>([])
 const loading = ref(true)
 const failedIcons = ref(new Set<string>())
 
-/** 已安装清单：「我的扩展」直挂的源码目录不算「已安装」，它们有自己的标签页 */
-const installedExtensions = computed(() => extensions.value.filter((e) => e.source !== 'dev'))
+/** 已安装清单：「我的扩展」直挂的源码目录不算「已安装」，它们有自己的标签页。
+ *  按安装时间（目录创建时间）升序：先装在上、最后安装的在最下面；取不到时间的排最前 */
+const installedExtensions = computed(() =>
+  extensions.value
+    .filter((e) => e.source !== 'dev')
+    .slice()
+    .sort((a, b) => (a.installed_at ?? '').localeCompare(b.installed_at ?? '')),
+)
 
-const visibleCount = computed(() => installedExtensions.value.filter((e) => !e.invalid).length)
+// ---- 分类筛选（已安装 / 可升级 / 市场 三个标签页共用一套交互，各自按本页数据出筛选行）----
+// 切标签页回「全部」：三个列表的分类来源不同（manifest / 市场清单），保留旧选择反而容易
+// 出现「切过去什么都没有」的假空态。
+const cat = ref<string>(CATEGORY_ALL)
 
-/** 标签页下的一句话说明：让用户不问「这一页是干嘛的」 */
-const subtitle = computed(() => {
-  if (tab.value === 'installed') {
-    return visibleCount.value ? `已安装 ${visibleCount.value} 个扩展` : '管理已安装的扩展：点开使用，右侧可更新或卸载'
+function catOfEntry(e: ExtensionEntry): string {
+  return (e.category ?? '').trim()
+}
+
+/** 已安装（含可升级）列表的分类筛选行取值 */
+const installedCatChips = computed(() =>
+  categoryFilterValues(installedExtensions.value.map((e) => e.category)),
+)
+/** 已安装列表按当前分类过滤后的结果 */
+const installedFiltered = computed(() =>
+  installedExtensions.value.filter((e) => matchesCategory(e.category, cat.value)),
+)
+
+/** 有更高市场版本的已装扩展（可升级标签页的内容；与「已安装」同口径，只收非 dev 来源） */
+const upgradableExtensions = computed(() => installedExtensions.value.filter((e) => updateFor(e) !== null))
+const upgradableCatChips = computed(() => categoryFilterValues(upgradableExtensions.value.map((e) => e.category)))
+const upgradableFiltered = computed(() =>
+  upgradableExtensions.value.filter((e) => matchesCategory(e.category, cat.value)),
+)
+
+/** 市场列表的分类筛选行取值与过滤结果 */
+const marketCatChips = computed(() => categoryFilterValues(market.value.map((m) => m.category)))
+const marketFiltered = computed(() => market.value.filter((m) => matchesCategory(m.category, cat.value)))
+
+// ---- 市场排序（分类行右侧的下拉；默认排序 = 清单原序，即服务端 upsert 的追加序）----
+const marketSort = ref('default')
+const marketSortOptions = [
+  { value: 'default', label: '默认排序' },
+  { value: 'published', label: '最新发布' },
+  { value: 'installs', label: '最多安装' },
+  { value: 'official', label: '官方优先' },
+] as const
+
+/** 市场列表按当前排序规则排好后的结果（在分类过滤之后套用） */
+const marketSorted = computed<MarketExtension[]>(() => {
+  const list = marketFiltered.value.slice()
+  if (marketSort.value === 'published') {
+    // 本版本上架时间降序；老条目没有 publishedAt 当作最旧（Date.parse 失败归 0）
+    return list.sort((a, b) => (Date.parse(b.publishedAt ?? '') || 0) - (Date.parse(a.publishedAt ?? '') || 0))
   }
-  if (tab.value === 'market') return '发现并安装新扩展'
-  return devMode.value.extensions.length
-    ? `本机源码目录 ${devMode.value.extensions.length} 个，改代码即自动重载`
-    : '添加本机扩展源码目录，边写边看效果'
+  if (marketSort.value === 'installs') {
+    return list.sort((a, b) => (b.installCount ?? 0) - (a.installCount ?? 0))
+  }
+  if (marketSort.value === 'official') {
+    // 官方置顶，同批内按安装量降序
+    return list.sort(
+      (a, b) => Number(isOfficialExt(b)) - Number(isOfficialExt(a)) || (b.installCount ?? 0) - (a.installCount ?? 0),
+    )
+  }
+  return list
 })
+
+/** 当前标签页要展示的卡片数据与筛选行（已安装 / 可升级 共用一张卡片布局） */
+const gridItems = computed<ExtensionEntry[]>(() =>
+  tab.value === 'upgradable' ? upgradableFiltered.value : installedFiltered.value,
+)
+/** 当前标签页的分类筛选行取值 */
+const activeCatChips = computed(() =>
+  tab.value === 'upgradable'
+    ? upgradableCatChips.value
+    : tab.value === 'market'
+      ? marketCatChips.value
+      : installedCatChips.value,
+)
+
+/**
+ * 已装扩展是否官方：**只认市场清单的服务端标记**（official 字段；老清单条目由
+ * isOfficialExt 的 com.x-hub.* 前缀兜底）。清单里查不到的一律不算官方。
+ *
+ * 为什么不对本地 manifest 单独做前缀兜底：官方标是「信任」问题——服务端关卡能拦住
+ * 第三方用保留命名空间**上架**，但拦不住谁在**本地**把 id 写成 com.x-hub.*（开发者自装、
+ * 「我的扩展」直挂都不过关卡）。前缀兜底只对市场条目成立（服务端背书），对本地条目
+ * 一放行，用户自己写的扩展就白捡一个官方标（2026-10-15 用户反馈案例）。
+ */
+function installedIsOfficial(e: ExtensionEntry): boolean {
+  const m = marketById.value.get(e.id)
+  return !!m && isOfficialExt(m)
+}
 
 function accentFor(e: ExtensionEntry) {
   return accentOf(e.name)
@@ -133,9 +289,7 @@ async function openDir(e: ExtensionEntry) {
 }
 
 /** 发布配额（账号级）：展示在扩展管理页，供发布前心里有数；取不到就不显示，不打扰 */
-const quota = ref<{ drafts_remaining?: number; published_remaining?: number; daily_submits_remaining?: number } | null>(
-  null,
-)
+const quota = ref<PublishQuota | null>(null)
 
 async function loadQuota() {
   if (!isTauri()) return
@@ -147,6 +301,13 @@ async function loadQuota() {
     // 未登录 / 服务不可达：静默（配额只是参考信息，不挡任何操作）
   }
 }
+
+/** 每日额度重置时刻：只在「今日次数已用完」时才需要倒计时。
+ *  没耗尽时不启动 1s tick，配额正常时零定时器开销；到点自动重拉配额。 */
+const dailyResetAt = computed(() =>
+  quota.value?.daily_submits_remaining === 0 ? quota.value.daily_reset_at ?? null : null,
+)
+const { countdown: resetCountdown, resetClock } = useQuotaReset(dailyResetAt, () => void loadQuota())
 
 async function load() {
   loading.value = true
@@ -162,6 +323,7 @@ async function load() {
           depends_on: (e as any).depends_on ?? [],
           expose: (e as any).expose ?? [],
           actions: (e as any).actions ?? [],
+          category: (e as any).category ?? null,
         }))
       : []
     // 安装/卸载后同步刷新工作台模块库，让新扩展的 module 形态立即出现在自定义布局中
@@ -207,11 +369,28 @@ async function pollStamp() {
 // 于本窗口操作时变化，失焦期间不可能变；从停止恢复时立即补扫一次（useAdaptivePolling）。
 useAdaptivePolling(pollStamp, { activeMs: 5000 })
 
+// ---- 用户反馈未读（「我的扩展」tab 红点 + 收件箱入口） ----
+// 反馈由平台托管（见 docs/adr 与 AGENTS.md 约定）：这里只轮询「我发布的扩展有没有新反馈」。
+// 60s 一次而不是跟目录戳的 5s —— 反馈不是实时性数据，别让扩展中心常驻每分钟多次网络请求。
+// 未登录 / 网络不可达一律静默：红点是辅助提示，不该打扰主流程。
+const feedbackUnread = ref<FeedbackUnread>({ total: 0, extensions: [] })
+const feedbackInboxOpen = ref(false)
+
+async function pollFeedbackUnread() {
+  if (!isTauri()) return
+  try {
+    feedbackUnread.value = await tauriApi.feedbackInboxUnread()
+  } catch {
+    /* 静默 */
+  }
+}
+useAdaptivePolling(pollFeedbackUnread, { activeMs: 60000 })
+
 function onInstall() {
   switchTab('market')
 }
 
-const tab = ref<'installed' | 'market' | 'dev'>('installed')
+const tab = ref<'installed' | 'upgradable' | 'market' | 'dev'>('installed')
 
 // ---- 我的扩展（「我的扩展」直挂的本机源码目录）----
 // 列表来源是 get_dev_mode_status（注册了哪些目录），**不是**已加载的扩展清单：
@@ -324,6 +503,8 @@ async function uninstallConflicting(d: DevExtensionInfo) {
   }
 }
 
+/** 「我的扩展」行点击：默认打开**扩展详情**（信息 / 权限 / 打开方式），
+ *  不直接跑扩展——打开走右侧「打开扩展」按钮，避免想看信息时把扩展跑起来 */
 function onDevRowClick(d: DevExtensionInfo) {
   if (!devReady(d)) {
     showToast(devDesc(d))
@@ -334,7 +515,14 @@ function onDevRowClick(d: DevExtensionInfo) {
     showToast('该目录尚未加载：请确认 manifest.json 合法且未与已装扩展同 id')
     return
   }
-  onRowClick(e)
+  // 按设置里的点击行为：默认打开详情；设为「直接打开」时点行即跑扩展、详情走右侧 ⋯
+  if (rowClickOpens.value) openDevExtension(e)
+  else onMore(e)
+}
+
+/** 「打开扩展」按钮：与已装标签页点行同口径（emit open，按该扩展的「打开方式」打开） */
+function openDevExtension(e: ExtensionEntry) {
+  emit('open', e)
 }
 const marketStatus = ref<MarketStatus | null>(null)
 const marketLoading = ref(false)
@@ -376,13 +564,99 @@ const appVersion = ref('')
 /** 是否已发起过一次市场加载（成功或失败都置位；避免每次切换 tab 重复拉远端清单） */
 let marketRequested = false
 
-function switchTab(t: 'installed' | 'market' | 'dev') {
+function switchTab(t: 'installed' | 'upgradable' | 'market' | 'dev') {
   tab.value = t
+  // 分类筛选回「全部」：三个列表的分类来源不同（manifest / 市场清单），保留旧选择容易出现假空态
+  cat.value = CATEGORY_ALL
   // 仅首次切到市场才拉取；之后切换不重载（数据缓存于 marketStatus，手动点刷新按钮才重新拉）
   if (t === 'market' && !marketRequested) void loadMarket()
   // 我的扩展：每次切过去都重新取一遍，避免磁盘上的目录被外部改动后状态是旧的
   if (t === 'dev') void loadDevMode()
 }
+
+// ---- 分页（已安装 / 可升级 / 市场三个标签页共用）----
+// 页大小**不是固定值**：按当前窗口实际能摆下几张卡片实时计算（网格列数 × 可视行数），
+// 窗口缩放即重算（ResizeObserver）。每页恰好铺满可视区，翻页脚注常驻右下角不随内容滚走。
+const page = ref(1)
+/** 挂载量测前的初始猜测，首次量测后即被真实值取代 */
+const pageSize = ref(12)
+/** 列表滚动容器（已安装/可升级是 .ec-scroll，市场页复用 .ec-market 本尊）与网格 */
+const listWrapEl = ref<HTMLElement | null>(null)
+const gridEl = ref<HTMLElement | null>(null)
+
+const pagerTotal = computed(() =>
+  tab.value === 'market' ? marketSorted.value.length : gridItems.value.length,
+)
+const pagerPages = computed(() => Math.max(1, Math.ceil(pagerTotal.value / pageSize.value)))
+/** 当前页切片：空态/加载态判断仍用全量列表（gridItems / marketSorted），只有 v-for 用切片 */
+const pagedGridItems = computed<ExtensionEntry[]>(() =>
+  gridItems.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value),
+)
+const pagedMarketSorted = computed<MarketExtension[]>(() =>
+  marketSorted.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value),
+)
+const showPager = computed(() => pagerTotal.value > pageSize.value)
+
+/** 已安装/可升级页的网格单元素兼任滚动容器与网格：函数 ref 把两个量测锚点指向同一节点 */
+function setListEls(el: unknown) {
+  const node = (el as HTMLElement) ?? null
+  listWrapEl.value = node
+  gridEl.value = node
+}
+
+/** 按可视区高度与网格实际列数重算页大小；卡片高度取首张实卡实测值（描述两行截断后同页高度基本一致） */
+function measurePageSize() {
+  const wrap = listWrapEl.value
+  const grid = gridEl.value
+  if (!wrap || !grid) return
+  // 列数从 computed style 反推：auto-fill 拆出的实际轨道数就是当前列数，比按 260px 估算准
+  const cols = getComputedStyle(grid).gridTemplateColumns.split(/\s+/).filter(Boolean).length
+  if (cols < 1) return
+  const first = grid.querySelector<HTMLElement>('.ec-mcard')
+  const cardH = first?.offsetHeight || 150
+  const gap = 10
+  const avail = wrap.clientHeight - 4 // 容器上下 padding 2px
+  const rows = Math.max(1, Math.floor((avail + gap) / (cardH + gap)))
+  // 弹性行距：铺满 rows 行后剩下的那条「缝」，平均摊进行与行的间距（上限基准 2 倍，超了老实留白）。
+  // 卡片尺寸、列数、每页数量都不变，只有行距小范围浮动——缝被吃掉，窗口高度不刚好也不再留白。
+  // 由 rows 的取整方式保证 leftover ≥ 0，因此摊完行距后每页必然仍装得下，不会溢出。
+  const leftover = avail - rows * cardH - (rows - 1) * gap
+  grid.style.rowGap =
+    rows >= 2 && leftover > 0 ? `${Math.min(gap * 2, gap + leftover / (rows - 1)).toFixed(2)}px` : ''
+  const next = Math.max(1, cols * rows)
+  if (next === pageSize.value) return
+  pageSize.value = next
+  // 页变大后当前页可能越界，收敛到最后一页
+  if (page.value > pagerPages.value) page.value = pagerPages.value
+}
+
+let resizeObs: ResizeObserver | null = null
+onBeforeUnmount(() => {
+  resizeObs?.disconnect()
+  resizeObs = null
+})
+
+// 滚动容器随标签页/空态挂卸：ref 变化时重新挂观察；窗口尺寸变化即触发量测
+watch(listWrapEl, (el, prev) => {
+  if (prev && resizeObs) resizeObs.unobserve(prev)
+  if (!el) return
+  resizeObs ??= new ResizeObserver(() => measurePageSize())
+  resizeObs.observe(el)
+  // ResizeObserver 的初始回调是异步的，这里同步量一次，避免首帧页大小错
+  void nextTick(() => measurePageSize())
+})
+
+// 切标签页 / 切分类 / 切排序 / 列表总数变化（装、卸、更新、市场刷新）：回第 1 页并按新内容重新量测
+// （排序会重排首卡，卡片高度随内容变化，行距与每页数量必须重新量）
+watch([tab, cat, marketSort, () => pagerTotal.value], () => {
+  page.value = 1
+  void nextTick(() => measurePageSize())
+})
+
+// 翻页后若容器仍有残余滚动（单卡超高兜底），回到顶部
+watch(page, () => {
+  if (listWrapEl.value) listWrapEl.value.scrollTop = 0
+})
 
 async function loadMarket() {
   if (marketLoading.value) return // 防重入（并行触发 / 加载中）
@@ -463,6 +737,11 @@ async function installFromMarket(m: MarketExtension) {
     const id = await tauriApi.installFromMarket(m)
     showToast(`已安装「${id}」`)
     await load()
+    // 安装量就地 +1：await 上报结果，服务端说「新建了计数」才加（同机重装 counted=false 不加）。
+    // 直接改 marketStatus 里的条目——市场卡片、详情弹窗、安装量排序共用同一份响应式数据，
+    // 会跟着更新，免去手动刷新；上报失败静默（不 +1），下次刷新拿到服务端口径
+    const counted = await tauriApi.reportMarketInstall(id).catch(() => false)
+    if (counted) bumpInstallCount(id)
   } catch (e) {
     showToast(`安装失败：${String(e)}`)
   } finally {
@@ -471,6 +750,12 @@ async function installFromMarket(m: MarketExtension) {
     installingId.value = null
     installingProgress.value = null
   }
+}
+
+/** 市场清单里该扩展的安装量 +1（reportMarketInstall 返回「新计数」后调用） */
+function bumpInstallCount(id: string) {
+  const item = marketStatus.value?.extensions.find((m) => m.id === id)
+  if (item) item.installCount = (item.installCount ?? 0) + 1
 }
 
 /** 清单条目是否命中撤销列表（`id@version`，大小写不敏感、容忍条目空白） */
@@ -594,6 +879,8 @@ async function onLocalFileInstall() {
 }
 
 const settingsExt = ref<ExtensionEntry | null>(null)
+// 跳转补开：扩展列表就绪（或变化）后若仍有未处理的 jumpSettings 请求，再试一次
+watch(extensions, tryOpenJumpedSettings)
 /** 发布弹窗的目标扩展（开发中的扩展可用；已装扩展也可重发新版本） */
 const publishTarget = ref<ExtensionEntry | null>(null)
 
@@ -616,6 +903,16 @@ function onMore(e: ExtensionEntry) {
             已安装
           </button>
           <button
+            class="ec-tab ec-tab-upgradable"
+            :class="{ active: tab === 'upgradable' }"
+            type="button"
+            @click="switchTab('upgradable')"
+          >
+            可升级
+            <!-- 红点：有可升级扩展时提醒（正在本页时隐藏，列表本身就是提醒） -->
+            <span v-if="upgradableExtensions.length > 0 && tab !== 'upgradable'" class="ec-tab-dot"></span>
+          </button>
+          <button
             class="ec-tab"
             :class="{ active: tab === 'market' }"
             type="button"
@@ -630,12 +927,43 @@ function onMore(e: ExtensionEntry) {
             @click="switchTab('dev')"
           >
             我的扩展
+            <!-- 红点：有未读反馈时提醒（收件箱开着时隐藏，用户正在看） -->
+            <span
+              v-if="feedbackUnread.total > 0 && !feedbackInboxOpen"
+              class="ec-tab-dot"
+            ></span>
           </button>
         </div>
-        <p class="ec-subtitle">{{ subtitle }}</p>
       </div>
+      <!-- 顶部统计行已移除：数量统一看右下角分页脚注的「共 N 个」，头部更矮、列表整体上移 -->
       <div class="ec-actions">
+        <!-- 市场清单的更新时间与刷新：跟「安装扩展」同一排，只在市场页出现 -->
+        <template v-if="tab === 'market'">
+          <span class="ec-market-updated" :title="marketStatus?.last_updated || '尚未刷新'">
+            上次更新：{{ marketUpdatedText() }}
+          </span>
+          <button class="ghost-btn" type="button" :disabled="marketLoading" @click="loadMarket">
+            <RefreshCw
+              :size="12"
+              :stroke-width="2"
+              aria-hidden="true"
+              :class="{ spin: marketLoading }"
+            />
+            {{ marketLoading ? '刷新中…' : '刷新' }}
+          </button>
+        </template>
         <template v-if="tab === 'dev'">
+          <button
+            class="ghost-btn ec-feedback-btn"
+            type="button"
+            @click="feedbackInboxOpen = true"
+          >
+            <Inbox :size="14" :stroke-width="2" aria-hidden="true" />
+            用户反馈
+            <span v-if="feedbackUnread.total > 0" class="ec-feedback-badge">
+              {{ feedbackUnread.total }}
+            </span>
+          </button>
           <button class="pill-btn" type="button" :disabled="devBusy" @click="pickDevDir">
             <FolderCog :size="14" :stroke-width="2" aria-hidden="true" />
             选择目录
@@ -651,115 +979,191 @@ function onMore(e: ExtensionEntry) {
             导入扩展包
           </button>
         </template>
-        <!-- 发布配额：账号级的（不限当前扩展、不限来源），放在扩展管理页比塞进发布弹窗更好找。
-             ⚠️ 三个数都是**剩余**额度（服务端只回剩余、不回上限，见 PRD），文案必须写成「还可…」——
-             写成「待处理 5」会被读成「已经有 5 条待处理」（实际含义是「还能再提交 5 条」）。 -->
-        <p v-if="quota" class="ec-quota" title="发布扩展的平台配额（全账号共用；数字是还能用的额度）">
-          发布配额：待处理还可
-          <b :class="{ full: quota.drafts_remaining === 0 }">{{ quota.drafts_remaining ?? '—' }}</b> 条 · 今日还可提交
-          <b :class="{ full: quota.daily_submits_remaining === 0 }">{{ quota.daily_submits_remaining ?? '—' }}</b> 次 · 在架还可新增
-          <b :class="{ full: quota.published_remaining === 0 }">{{ quota.published_remaining ?? '—' }}</b> 个
-        </p>
       </div>
     </header>
 
-    <template v-if="tab === 'installed'">
-      <div v-if="loading" class="ec-empty">
+    <!-- 分类筛选行（已安装 / 可升级 / 市场 共用交互，各自按本页数据出分类；默认「全部」）；
+         市场页右侧多一个排序下拉 -->
+    <div v-if="tab !== 'dev'" class="ec-cats">
+      <button
+        v-for="c in activeCatChips"
+        :key="c"
+        class="ec-cat"
+        :class="{ active: cat === c }"
+        type="button"
+        @click="cat = c"
+      >
+        {{ c }}
+      </button>
+      <div v-if="tab === 'market'" class="ec-cats-sort">
+        <AppSelect
+          v-model="marketSort"
+          :options="marketSortOptions"
+          compact
+          aria-label="排序方式"
+          class="ec-sort-select"
+        />
+      </div>
+    </div>
+
+    <!-- 已安装 / 可升级：与市场同一套卡片网格排版（点卡片按设置分流 详情 / 直接打开） -->
+    <template v-if="tab === 'installed' || tab === 'upgradable'">
+      <div v-if="tab === 'installed' && loading" class="ec-empty">
         <p>正在扫描扩展…</p>
       </div>
 
-      <div v-else-if="installedExtensions.length === 0" class="ec-empty">
+      <div v-else-if="tab === 'installed' && installedExtensions.length === 0" class="ec-empty">
         <PackageOpen :size="40" :stroke-width="1.5" aria-hidden="true" />
         <h3>还没有安装任何扩展</h3>
         <p>到「市场」挑一个装上，工作台就能扩展出你需要的功能</p>
         <button class="pill-btn" type="button" @click="onInstall">去市场看看</button>
       </div>
 
-      <div v-else class="ec-list">
+      <div v-else-if="gridItems.length === 0" class="ec-empty">
+        <PackageOpen :size="40" :stroke-width="1.5" aria-hidden="true" />
+        <h3>
+          {{
+            tab === 'upgradable'
+              ? installedExtensions.length === 0
+                ? '还没有安装任何扩展'
+                : '所有扩展都已是最新版本'
+              : cat === CATEGORY_ALL
+                ? '没有已安装的扩展'
+                : `「${cat}」分类下暂无扩展`
+          }}
+        </h3>
+        <p v-if="tab === 'upgradable' && installedExtensions.length > 0">有新版本时，扩展会出现在这里提醒你更新</p>
+        <button
+          v-if="tab === 'upgradable' && installedExtensions.length === 0"
+          class="pill-btn"
+          type="button"
+          @click="onInstall"
+        >
+          去市场看看
+        </button>
+      </div>
+
+      <!-- 单元素兼任滚动容器与网格（.ec-scroll 管滚动与弹性占位，.ec-market-list 管网格）；
+           listWrapEl / gridEl 两个 ref 指向同一节点，供 measurePageSize 量测 -->
+      <div v-else class="ec-market-list ec-scroll" :ref="setListEls">
         <div
-          v-for="e in installedExtensions"
+          v-for="e in pagedGridItems"
           :key="e.id"
-          class="ec-row"
-          :class="{ invalid: e.invalid, disabled: e.disabled, clickable: !e.invalid && !e.disabled }"
+          class="ec-mcard"
+          :class="{
+            invalid: e.invalid,
+            disabled: e.disabled,
+            clickable: !e.invalid && !e.disabled,
+            'has-official': installedIsOfficial(e),
+          }"
           role="button"
           :tabindex="e.invalid || e.disabled ? undefined : 0"
           @click="onRowClick(e)"
           @keydown.enter="onRowClick(e)"
         >
-          <div class="ec-icon" :style="{ background: accentFor(e).soft }">
-            <img
-              v-if="showImg(e)"
-              :src="iconSrc(e.icon!)"
-              :alt="e.name"
-              draggable="false"
-              @error="onImgError(e)"
-            />
-            <span v-else :style="{ color: accentFor(e).text }">{{ initial(e) }}</span>
+          <!-- 官方标识：贴卡片右上角（缩小档），名称行微下移到徽标下沿之下，版本号贴最右=徽标正下方 -->
+          <span v-if="installedIsOfficial(e)" class="ec-official" title="官方扩展（平台官方自营）">
+            <ShieldCheck :size="10" :stroke-width="2.2" aria-hidden="true" />
+            官方
+          </span>
+          <div class="ec-mcard-head">
+            <div class="ec-mcard-title">
+              <span class="ec-mcard-icon" :style="showImg(e) ? {} : { background: accentFor(e).soft }">
+                <img
+                  v-if="showImg(e)"
+                  :src="iconSrc(e.icon!)"
+                  :alt="e.name"
+                  draggable="false"
+                  @error="onImgError(e)"
+                />
+                <span v-else :style="{ color: accentFor(e).text }">{{ initial(e) }}</span>
+              </span>
+              <span class="ec-mcard-name" :title="e.name">{{ e.name }}</span>
+            </div>
+            <span class="ec-version">v{{ e.version || '—' }}</span>
           </div>
 
-          <div class="ec-meta">
-            <div class="ec-name-line">
-              <span class="ec-name">{{ e.name }}</span>
-              <span v-if="isInstalledRevoked(e)" class="ec-tag ec-tag-revoked">已下架</span>
-              <span v-if="e.invalid" class="ec-tag ec-tag-invalid">不可用</span>
-              <template v-else>
-                <span v-if="e.disabled" class="ec-tag ec-tag-disabled">已禁用</span>
-                <span v-if="e.missing_capabilities.length" class="ec-tag ec-tag-warn">缺能力</span>
-                <span v-if="e.missing_dependencies.length" class="ec-tag ec-tag-warn">缺依赖</span>
-                <span v-if="e.runtime === 'service'" class="ec-tag ec-tag-service">service</span>
-                <span class="ec-tag ec-tag-kind">{{ kindLabel(e.kind) }}</span>
-              </template>
-            </div>
-            <p class="ec-desc" :title="descText(e)">
-              {{ descText(e) }}
-            </p>
-            <p v-if="isInstalledRevoked(e)" class="ec-revoked-note">
-              该版本已被平台下架，建议尽快卸载。平台不会自动卸载或禁用你本机已装的扩展。
-            </p>
-            <div v-if="e.actions.length" class="ec-actions-row">
+          <div class="ec-tagline">
+            <span v-if="isInstalledRevoked(e)" class="ec-tag ec-tag-revoked">已下架</span>
+            <span v-if="e.invalid" class="ec-tag ec-tag-invalid">不可用</span>
+            <template v-else>
+              <span v-if="e.disabled" class="ec-tag ec-tag-disabled">已禁用</span>
+              <span v-if="e.missing_capabilities.length" class="ec-tag ec-tag-warn">缺能力</span>
+              <span v-if="e.missing_dependencies.length" class="ec-tag ec-tag-warn">缺依赖</span>
+              <span v-if="e.runtime === 'service'" class="ec-tag ec-tag-service">service</span>
+              <span class="ec-tag ec-tag-kind">{{ kindLabel(e.kind) }}</span>
+              <span v-if="catOfEntry(e)" class="ec-tag ec-tag-cat">{{ catOfEntry(e) }}</span>
+            </template>
+          </div>
+
+          <p class="ec-mcard-desc" :title="descText(e)">{{ descText(e) }}</p>
+          <p v-if="isInstalledRevoked(e)" class="ec-revoked-note">该版本已被平台下架，建议尽快卸载。</p>
+          <div v-if="e.actions.length" class="ec-actions-row">
+            <button
+              v-for="a in e.actions"
+              :key="a.id"
+              class="ec-action-btn"
+              type="button"
+              :title="`${a.title}（打开 ${kindLabel(a.surface)}）`"
+              @click.stop="onAction(e, a.surface)"
+            >
+              {{ a.title }}
+            </button>
+          </div>
+
+          <div class="ec-mcard-foot">
+            <span class="ec-mcard-author" :title="e.author || '未知作者'">{{ e.author || '未知作者' }}</span>
+            <div class="ec-mcard-btns">
               <button
-                v-for="a in e.actions"
-                :key="a.id"
-                class="ec-action-btn"
+                v-if="updateFor(e)"
+                class="ghost-btn ec-btn-update"
                 type="button"
-                :title="`${a.title}（打开 ${kindLabel(a.surface)}）`"
-                @click.stop="onAction(e, a.surface)"
+                :disabled="updatingId === e.id"
+                :title="`升级到 v${updateFor(e)!.version}`"
+                @click.stop="updateFromMarket(updateFor(e)!)"
               >
-                {{ a.title }}
+                {{ updateBtnText(e) }}
+              </button>
+              <button
+                class="ec-more"
+                type="button"
+                :disabled="e.invalid"
+                :aria-label="`打开 ${e.name} 所在目录`"
+                :title="e.invalid ? '此扩展目录不可用' : `打开所在目录：${e.dir}`"
+                @click.stop="e.invalid ? undefined : openDir(e)"
+              >
+                <FolderOpen :size="15" :stroke-width="2" aria-hidden="true" />
+              </button>
+              <button
+                v-if="!rowClickOpens"
+                class="ec-more"
+                type="button"
+                :disabled="e.invalid || e.disabled"
+                :aria-label="`打开 ${e.name}`"
+                :title="`打开 ${e.name}（按扩展设置里的「打开方式」打开，默认软件内）`"
+                @click.stop="openInstalledExtension(e)"
+              >
+                <Play :size="15" :stroke-width="2" aria-hidden="true" />
+              </button>
+              <button
+                v-else
+                class="ec-more"
+                type="button"
+                :disabled="e.invalid"
+                :aria-label="`查看 ${e.name} 详情`"
+                :title="`查看 ${e.name} 详情（信息 / 权限 / 打开方式 / 卸载）`"
+                @click.stop="openInstalledDetail(e)"
+              >
+                <MoreVertical :size="15" :stroke-width="2" aria-hidden="true" />
               </button>
             </div>
           </div>
 
-          <div class="ec-right">
-            <button
-              v-if="updateFor(e)"
-              class="ec-update-btn"
-              type="button"
-              :disabled="updatingId === e.id"
-              @click.stop="updatingId === e.id ? undefined : updateFromMarket(updateFor(e)!)"
-            >
-              {{ updateBtnText(e) }}
-            </button>
-            <span class="ec-version">v{{ e.version || '—' }}</span>
-            <button
-              class="ec-more"
-              type="button"
-              :disabled="e.invalid"
-              :aria-label="`打开 ${e.name} 所在目录`"
-              :title="e.invalid ? '此扩展目录不可用' : `打开所在目录：${e.dir}`"
-              @click.stop="e.invalid ? undefined : openDir(e)"
-            >
-              <FolderOpen :size="16" :stroke-width="2" aria-hidden="true" />
-            </button>
-            <button
-              class="ec-more"
-              type="button"
-              :aria-label="`${e.name} 设置`"
-              :data-tip="`${e.name} 设置`"
-              @click.stop="onMore(e)"
-            >
-              <MoreHorizontal :size="16" :stroke-width="2" aria-hidden="true" />
-            </button>
+          <div v-if="updatingId === e.id && updatingProgress" class="ec-mcard-progress">
+            <div
+              class="ec-mcard-progress-inner"
+              :style="{ transform: `scaleX(${progressPercent(updatingProgress) / 100})` }"
+            ></div>
           </div>
         </div>
       </div>
@@ -773,10 +1177,29 @@ function onMore(e: ExtensionEntry) {
         </p>
         <p class="ec-hint-line">
           这类扩展<b>不复制进「已安装」</b>，也不参与市场更新与卸载；移除目录即撤销，磁盘上的源码不动。
+          点扩展行按设置里的<b>「点击扩展行时」</b>打开：默认打开<b>详情</b>（信息 / 权限 / 打开方式），或直接打开扩展。
         </p>
         <p class="ec-hint-line">
           想<b>快速开发自己的扩展</b>？先去「<b>设置 → 扩展 → Skills</b>」安装<b>扩展开发 Skill</b>，让 AI 助手陪你从零把它做出来。
           <button class="ec-hint-jump" type="button" @click="emit('openSkills')">点击跳转&gt;&gt;</button>
+        </p>
+        <!-- 发布配额：账号级的（不限当前扩展、不限来源），只跟发布入口（本页）走。
+             ⚠️ 三个数都是**剩余**额度（服务端只回剩余、不回上限，见 PRD），文案必须写成「还可…」。
+             放在提示框里而不是头部操作区：配额行只在本页出现，放头部会让头部多一行，
+             切到本页时整个页面往下挪一截（头部高度必须各标签页一致）。 -->
+        <p v-if="quota" class="ec-quota" title="发布扩展的平台配额（全账号共用；数字是还能用的额度）">
+          发布配额：待处理还可
+          <b :class="{ full: quota.drafts_remaining === 0 }">{{ quota.drafts_remaining ?? '—' }}</b> 条 · 今日还可提交
+          <b :class="{ full: quota.daily_submits_remaining === 0 }">{{ quota.daily_submits_remaining ?? '—' }}</b> 次 · 在架还可新增
+          <b :class="{ full: quota.published_remaining === 0 }">{{ quota.published_remaining ?? '—' }}</b> 个
+          <!-- 每日额度用尽时给倒计时：服务端只在配额视图里回 daily_reset_at（旧服务端没有该字段，
+               此时不显示，退回「今天不能再发」的原文案）。到点由 useQuotaReset 自动重拉配额。 -->
+          <span
+            v-if="quota.daily_submits_remaining === 0 && quota.daily_reset_at"
+            class="ec-quota-reset"
+          >
+            今日提交次数已用完 · 重置于 {{ resetClock }}（{{ resetCountdown }}）
+          </span>
         </p>
       </div>
 
@@ -804,7 +1227,7 @@ function onMore(e: ExtensionEntry) {
           @click="onDevRowClick(d)"
           @keydown.enter="onDevRowClick(d)"
         >
-          <div class="ec-icon" :style="{ background: devAccent(d).soft }">
+          <div class="ec-icon" :style="devEntryFor(d)?.icon ? {} : { background: devAccent(d).soft }">
             <img
               v-if="devEntryFor(d)?.icon"
               :src="iconSrc(devEntryFor(d)!.icon!)"
@@ -844,14 +1267,26 @@ function onMore(e: ExtensionEntry) {
               <FolderOpen :size="16" :stroke-width="2" aria-hidden="true" />
             </button>
             <button
-              v-if="devEntryFor(d)"
+              v-if="devEntryFor(d) && !rowClickOpens"
               class="ec-more"
               type="button"
-              :aria-label="`${d.name || d.id} 设置`"
-              :data-tip="`${d.name || d.id} 设置`"
+              :aria-label="`打开 ${d.name || d.id}`"
+              :data-tip="`打开 ${d.name || d.id}`"
+              :title="`打开 ${d.name || d.id}（按扩展设置里的「打开方式」打开，默认软件内）`"
+              @click.stop="openDevExtension(devEntryFor(d)!)"
+            >
+              <Play :size="16" :stroke-width="2" aria-hidden="true" />
+            </button>
+            <button
+              v-else-if="devEntryFor(d)"
+              class="ec-more"
+              type="button"
+              :aria-label="`查看 ${d.name || d.id} 详情`"
+              :data-tip="`查看 ${d.name || d.id} 详情`"
+              :title="`查看 ${d.name || d.id} 详情（信息 / 权限 / 打开方式）`"
               @click.stop="onMore(devEntryFor(d)!)"
             >
-              <MoreHorizontal :size="16" :stroke-width="2" aria-hidden="true" />
+              <MoreVertical :size="16" :stroke-width="2" aria-hidden="true" />
             </button>
             <button
               v-if="d.conflict"
@@ -879,21 +1314,7 @@ function onMore(e: ExtensionEntry) {
       </div>
     </div>
 
-    <div v-else class="ec-market">
-      <div class="ec-market-toolbar">
-        <span class="ec-market-updated" :title="marketStatus?.last_updated || '尚未刷新'">
-          上次更新：{{ marketUpdatedText() }}
-        </span>
-        <button class="ghost-btn" type="button" :disabled="marketLoading" @click="loadMarket">
-          <RefreshCw
-            :size="12"
-            :stroke-width="2"
-            aria-hidden="true"
-            :class="{ spin: marketLoading }"
-          />
-          {{ marketLoading ? '刷新中…' : '刷新' }}
-        </button>
-      </div>
+    <div v-else class="ec-market" ref="listWrapEl">
       <div v-if="marketStatus?.error" class="ec-market-warn">
         <span>市场源异常：{{ marketErrorText() }}</span>
         <button class="ghost-btn" type="button" :disabled="marketLoading" @click="loadMarket">
@@ -910,11 +1331,21 @@ function onMore(e: ExtensionEntry) {
           <h3>市场暂无内容</h3>
           <button class="pill-btn" type="button" @click="loadMarket">刷新市场</button>
         </div>
-        <div v-else class="ec-market-list">
-          <div v-for="m in market" :key="m.id" class="ec-mcard">
+        <div v-else-if="marketFiltered.length === 0" class="ec-empty">
+          <PackageOpen :size="40" :stroke-width="1.5" aria-hidden="true" />
+          <h3>「{{ cat }}」分类下暂无扩展</h3>
+          <p>换个分类，或等作者发布该分类的作品</p>
+        </div>
+        <div v-else class="ec-market-list" ref="gridEl">
+          <div v-for="m in pagedMarketSorted" :key="m.id" class="ec-mcard" :class="{ 'has-official': isOfficialExt(m) }">
+            <!-- 官方标识：贴卡片右上角（上/右 0 边距），标题行让出右上位避免压住标题名 -->
+            <span v-if="isOfficialExt(m)" class="ec-official" title="官方扩展（平台官方自营）">
+              <ShieldCheck :size="11" :stroke-width="2.2" aria-hidden="true" />
+              官方
+            </span>
             <div class="ec-mcard-head">
               <div class="ec-mcard-title">
-                <span class="ec-mcard-icon" :style="{ background: accentOf(m.name).soft }">
+                <span class="ec-mcard-icon" :style="m.icon && !marketFailedIcons.has(m.id) ? {} : { background: accentOf(m.name).soft }">
                   <img
                     v-if="m.icon && !marketFailedIcons.has(m.id)"
                     :src="m.icon"
@@ -928,10 +1359,17 @@ function onMore(e: ExtensionEntry) {
               </div>
               <span class="ec-version">v{{ m.version }}</span>
             </div>
+            <div class="ec-tagline">
+              <span v-if="m.runtime === 'service'" class="ec-tag ec-tag-service">service</span>
+              <span v-if="m.category" class="ec-tag ec-tag-cat">{{ m.category }}</span>
+            </div>
             <p class="ec-mcard-desc" :title="m.description || m.id">{{ m.description || m.id }}</p>
             <p v-if="m.changelog" class="ec-mcard-changelog" :title="m.changelog">更新：{{ m.changelog }}</p>
             <div class="ec-mcard-foot">
-              <span class="ec-mcard-author">{{ m.author || '—' }}</span>
+              <span class="ec-mcard-author" :title="m.author || '未知作者'">{{ m.author || '未知作者' }}</span>
+              <span class="ec-mcard-installs" :title="`安装 ${m.installCount ?? 0} 次（按设备去重）`">
+                {{ installCountText(m.installCount) }}
+              </span>
               <div class="ec-mcard-btns">
                 <button class="ghost-btn" type="button" @click="openDetail(m)">详情</button>
                 <button
@@ -975,6 +1413,22 @@ function onMore(e: ExtensionEntry) {
       </template>
     </div>
 
+    <!-- 分页脚注：已安装 / 可升级 / 市场三个标签页共用，常驻右下角（在滚动区外，不随列表滚走）。
+         每页数量不固定，由当前窗口能摆下的卡片数实时决定（见 measurePageSize）；
+         「我的扩展」是短列表，不参与分页 -->
+    <div v-if="tab !== 'dev' && showPager" class="ec-pager">
+      <span class="ec-pager-info">共 {{ pagerTotal }} 个</span>
+      <div class="ec-pager-nav">
+        <button class="ec-pager-btn" type="button" :disabled="page <= 1" @click="page--">
+          上一页
+        </button>
+        <span class="ec-pager-page">{{ page }} / {{ pagerPages }}</span>
+        <button class="ec-pager-btn" type="button" :disabled="page >= pagerPages" @click="page++">
+          下一页
+        </button>
+      </div>
+    </div>
+
     <ExtensionSettingsDialog
       :extension="settingsExt"
       @close="settingsExt = null"
@@ -1007,6 +1461,12 @@ function onMore(e: ExtensionEntry) {
 
     <!-- 发布扩展：本机打包 → 上传平台 → 展示服务端返回的关卡逐项结论（客户端只问不判） -->
     <ExtensionPublishDialog :extension="publishTarget" @close="publishTarget = null" />
+
+    <!-- 用户反馈收件箱：我发布的扩展收到的公开反馈（回复 / 标记已解决 / 隐藏） -->
+    <ExtensionFeedbackInbox
+      v-model:visible="feedbackInboxOpen"
+      @read="pollFeedbackUnread"
+    />
   </div>
 </template>
 
@@ -1035,6 +1495,7 @@ function onMore(e: ExtensionEntry) {
   gap: 4px;
 }
 .ec-tab {
+  position: relative;
   padding: 4px 12px;
   border: 0;
   border-radius: var(--radius-pill);
@@ -1052,10 +1513,67 @@ function onMore(e: ExtensionEntry) {
   background: var(--brand-50);
   color: var(--brand-500);
 }
-.ec-subtitle {
-  margin: 2px 0 0;
-  font-size: 0.75rem;
+/* 「可升级」标签页的红点提醒：有可升级扩展且不在本页时出现 */
+.ec-tab-dot {
+  position: absolute;
+  top: 1px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--c-red);
+}
+/* 「我的扩展」页的反馈入口：未读计数药丸跟在按钮文字后 */
+.ec-feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ec-feedback-badge {
+  font-size: 0.625rem;
+  font-weight: 700;
+  line-height: 1.5;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--c-red);
+  color: #fff;
+}
+/* 分类筛选行：全部 + 各分类，单选，样式口径与标签页一致但更轻 */
+.ec-cats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.ec-cat {
+  padding: 3px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-pill);
+  background: transparent;
   color: var(--text-3);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 150ms ease-out, color 150ms ease-out, border-color 150ms ease-out;
+}
+.ec-cat:hover {
+  color: var(--text-1);
+  border-color: var(--text-4, var(--border-soft));
+}
+.ec-cat.active {
+  background: var(--brand-50);
+  border-color: var(--brand-500);
+  color: var(--brand-500);
+}
+/* 市场页的排序下拉：贴分类行右侧（放不下时自动换行仍靠右） */
+.ec-cats-sort {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.ec-sort-select {
+  width: 118px;
 }
 .ec-actions {
   display: flex;
@@ -1065,9 +1583,9 @@ function onMore(e: ExtensionEntry) {
   gap: 8px;
   flex-shrink: 0;
 }
-/* 发布配额：账号级余量（不限当前扩展），占满一行右对齐；归零的那项标红加粗，一眼看出被什么卡住 */
+/* 发布配额：账号级余量（不限当前扩展），挂在「我的扩展」提示框末行右对齐；
+   归零的那项标红加粗，一眼看出被什么卡住 */
 .ec-quota {
-  flex-basis: 100%;
   margin: 0;
   text-align: right;
   font-size: 0.6875rem;
@@ -1080,6 +1598,14 @@ function onMore(e: ExtensionEntry) {
 }
 .ec-quota b.full {
   color: var(--c-red-ink);
+}
+/* 每日额度用尽后的重置倒计时：单独一行，不与「剩余数量」混排 */
+.ec-quota-reset {
+  display: block;
+  margin-top: 2px;
+  font-weight: 600;
+  color: var(--c-red-ink);
+  font-variant-numeric: tabular-nums;
 }
 
 .ec-empty {
@@ -1178,6 +1704,48 @@ function onMore(e: ExtensionEntry) {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 官方扩展标识：贴卡片右上角（上/右 0 边距），整块压在卡片描边上——
+   -1px 补的是卡片 1px 描边宽度，让徽标外缘与卡片外缘重合；右上圆角取卡片外圆角
+   同值（--radius-lg），曲线与卡片圆角同心重合，看起来像卡片右上角本身染了色。
+   ⚠️ 左下角不能用 --radius-pill（999px）：CSS 圆角缩放规则是「任一边上两角半径之和
+   超过边长，四个角全部等比缩小」——徽标高仅 ~17px，999px 会把右上 12px 一起压成直角；
+   左下用主题半径 -2px 的具体值（10px ≈ 徽标半高，视觉即四分之一圆）。
+   尺寸契约：缩小档（0.6rem + 2px 6px 内边距 + 10px 图标）总高 ~16.5px、总宽 ~43px，
+   与 `.has-official .ec-mcard-head` 的名称行下移量（市场 3px / 紧凑 6px）联动，
+   改字号/内边距要同步那边的值 */
+.ec-official {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  border-radius: 0 var(--radius-lg) 0 calc(var(--radius-lg) - 2px);
+  background: var(--brand-500);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+/* 有徽标的卡片：名称行整体微下移，让行内的版本号落到徽标下沿之下——版本号完全贴右，
+   正好在官方标签正下方（无徽标卡不下移，版本号同样在名称行右端）。
+   徽标缩小档总高 ~16.5px（top:-1px 顶出，下沿 ~15.5px）：市场卡头部 12px 起只补 3px；
+   紧凑卡（已安装/可升级，头部 8px 起）重叠更多，补 6px。改徽标字号/内边距要同步这两个值 */
+.ec-mcard.has-official .ec-mcard-head {
+  margin-top: 3px;
+}
+.ec-scroll .ec-mcard.has-official .ec-mcard-head {
+  margin-top: 6px;
+}
+/* 卡片标题行下的轻量标签行（形态 / 分类 / service 等），与市场卡片共用 */
+.ec-tagline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 18px;
+}
 .ec-tag {
   flex-shrink: 0;
   padding: 1px 7px;
@@ -1193,6 +1761,10 @@ function onMore(e: ExtensionEntry) {
 .ec-tag-kind {
   background: var(--brand-50);
   color: var(--brand-500);
+}
+.ec-tag-cat {
+  background: var(--bg-card-soft);
+  color: var(--text-3);
 }
 .ec-tag-invalid {
   background: var(--c-red-soft);
@@ -1402,25 +1974,12 @@ function onMore(e: ExtensionEntry) {
   gap: 10px;
   padding: 2px;
 }
-.ec-market-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-shrink: 0;
-}
 .ec-market-updated {
   font-size: 0.75rem;
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.ec-market-toolbar .ghost-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
 }
 .spin {
   animation: ec-spin 0.8s linear infinite;
@@ -1433,9 +1992,102 @@ function onMore(e: ExtensionEntry) {
 .ec-market-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  /* 行高只按内容走：不加这条，网格被 flex 拉高时（全屏窗口）多余高度会摊给每一行，
+     卡片跟着被纵向拉长——卡片尺寸必须固定，多余空间留在列表尾部 */
+  align-content: start;
   gap: 10px;
 }
+/* 已安装/可升级的网格兼任滚动容器（市场页的滚动容器是 .ec-market 本尊）：
+   弹性占满剩余高度，内容超出才出滚动条——分页后每页恰好铺满，滚动只是单卡超高的兜底 */
+.ec-market-list.ec-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px;
+}
+/* 已安装/可升级卡片紧凑版（只作用这两个标签页，市场卡维持原样）：
+   收内边距与纵向间距、图标/按钮缩一档——卡片高度固定由内容决定，
+   不随窗口高度变化（拉伸由 .ec-market-list 的 align-content: start 兜住） */
+.ec-scroll .ec-mcard {
+  gap: 5px;
+  padding: 8px 12px;
+}
+.ec-scroll .ec-mcard-icon {
+  width: 24px;
+  height: 24px;
+  font-size: 0.75rem;
+}
+.ec-scroll .ec-mcard-desc {
+  /* 两行截断由基样式的 line-clamp:2 承担。这里用恰好两行高的 max-height 夹住裁剪边界：
+     WebView2 在小数缩放（125%）下会给 -webkit-box 的钳制盒高多算 1-2px（实测盒高 38px、
+     行距 18px），第三行字形上沿从缝里露出一条 2px 毛边；干净引擎里钳制内容高本就是 36px，
+     此条是无操作。勿再加 min-height 撑高——同会破坏裁剪边界（实测） */
+  max-height: calc(2 * 1.5em);
+}
+.ec-scroll .ec-tagline {
+  min-height: 16px;
+}
+.ec-scroll .ec-actions-row {
+  margin-top: 0;
+}
+.ec-scroll .ec-more {
+  width: 26px;
+  height: 26px;
+}
+/* 卡片脚部的更新/目录/打开按钮：全局 .ghost-btn 的 6px 纵向内边距在卡里太高，收一档 */
+.ec-scroll .ec-mcard-foot .ghost-btn {
+  min-width: 56px;
+  padding: 3px 10px;
+  font-size: 0.72rem;
+}
+/* 分页脚注：右下角常驻；口径与分类 chips 一致（pill 描边钮 + 弱化说明文字） */
+.ec-pager {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.ec-pager-info {
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+.ec-pager-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ec-pager-btn {
+  padding: 3px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 150ms ease-out, color 150ms ease-out, border-color 150ms ease-out;
+}
+.ec-pager-btn:hover:not(:disabled) {
+  color: var(--text-1);
+  border-color: var(--text-4, var(--border-soft));
+}
+.ec-pager-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+/* 页码用等宽数字：翻页时数字宽度不跳动 */
+.ec-pager-page {
+  min-width: 44px;
+  text-align: center;
+  font-size: 0.75rem;
+  font-weight: 650;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
 .ec-mcard {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1448,6 +2100,16 @@ function onMore(e: ExtensionEntry) {
 }
 .ec-mcard:hover {
   transform: translateY(-1px);
+}
+/* 已安装/可升级卡片复用市场卡外观，多出三种状态：可点 / 不可用 / 已禁用 */
+.ec-mcard.clickable {
+  cursor: pointer;
+}
+.ec-mcard.invalid {
+  opacity: 0.72;
+}
+.ec-mcard.disabled {
+  opacity: 0.6;
 }
 .ec-mcard-head {
   display: flex;
@@ -1486,6 +2148,14 @@ function onMore(e: ExtensionEntry) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* 安装次数：作者右侧的弱化数字，市场卡片与详情共用口径（extensionMeta.installCountText） */
+.ec-mcard-installs {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  color: var(--text-4, var(--text-3));
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .ec-mcard code {
   font-size: 0.72rem;

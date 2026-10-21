@@ -66,6 +66,20 @@ pub struct MarketExtension {
     /// 老清单没有这个字段 → 空数组 → 详情页显示「作者未提供截图」
     #[serde(default)]
     pub screenshots: Vec<String>,
+    /// 分类（发布时作者自选、随 manifest 透传；市场/已安装列表的分类筛选用）
+    #[serde(default)]
+    pub category: Option<String>,
+    /// 本版本上架时间（ISO8601；客户端市场「按发布时间」排序用，老条目可能没有 = 排最旧）
+    #[serde(default, rename = "publishedAt")]
+    pub published_at: Option<String>,
+    /// 官方扩展标记（发布者为平台方自营账号时由服务端打上；老清单没有该字段 = None，
+    /// 前端对官方保留命名空间 `com.x-hub.*` 前缀另有兜底判定）
+    #[serde(default)]
+    pub official: Option<bool>,
+    /// 安装次数（服务端下发清单时实时聚合注入；按「机器 × 扩展」去重，卸载重装不计）。
+    /// 老清单/本地缓存没有该字段 = None，前端显示占位
+    #[serde(default, rename = "installCount")]
+    pub install_count: Option<u64>,
 }
 
 /// 远端清单顶层结构。
@@ -171,7 +185,15 @@ async fn fetch_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Str
         .await
         .map_err(|e| format!("通信失败：{e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        // 清单/签名都走平台服务端（v0.6.1 起）：4xx/5xx 是 JSON `{error, message}`，
+        // 优先带出服务端的可读 message，别只给「HTTP 503」；非 JSON（不会出现）退回状态码
+        let msg = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+            .unwrap_or_else(|| format!("HTTP {status}"));
+        return Err(msg);
     }
     let bytes = resp.bytes().await.map_err(|e| format!("读取响应失败: {e}"))?;
     Ok(bytes.to_vec())
@@ -328,7 +350,8 @@ fn temp_extract_dir() -> PathBuf {
     std::env::temp_dir().join(format!("xhub-ext-{}-{}", std::process::id(), nanos))
 }
 
-fn to_hex(bytes: &[u8]) -> String {
+/// 字节流转小写 hex（发布截图「引用上一版」也用内容哈希命名，crate 内共用）
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -386,6 +409,69 @@ async fn download_with_progress(
     Ok(buf)
 }
 
+/// 机器标识（32 位小写 hex）：首次使用时随机生成并落盘 `数据根/install.mid`，之后不再变。
+/// 唯一用途是服务端去重/限频（「机器 × 扩展」安装计数、扩展反馈的 24h 限频）——
+/// 不关联账号、不参与其它任何链路。读到损坏/缺失内容时重新生成。
+pub(crate) fn install_mid() -> Option<String> {
+    let path = crate::paths::data_root().join("install.mid");
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        let s = s.trim();
+        if s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Some(s.to_ascii_lowercase());
+        }
+    }
+    let mut buf = [0u8; 16];
+    getrandom::fill(&mut buf).ok()?;
+    let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+    std::fs::write(&path, &hex).ok()?;
+    Some(hex)
+}
+
+/// 上报一次安装：POST {id, mid}，成功时解析服务端的 `counted`（true = 新建了计数行）。
+async fn report_install_once(url: &str, ext_id: &str, mid: &str) -> Result<bool, String> {
+    let client = crate::net::direct()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP 客户端初始化失败: {e}"))?;
+    let resp = client
+        .post(url)
+        .json(&serde_json::json!({ "id": ext_id, "mid": mid }))
+        .send()
+        .await
+        .map_err(|e| format!("通信失败: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let v: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("响应解析失败: {e}"))?;
+    Ok(v.get("counted").and_then(|c| c.as_bool()).unwrap_or(false))
+}
+
+/// 安装上报（Tauri 命令）：前端在「从市场安装成功」后调用并 await，拿 `counted` 就地把
+/// 市场卡片上的安装量 +1，免去手动刷新。任何失败都返回 `Ok(false)` 不报错——计数是
+/// 装饰性数据，绝不能打扰安装成功的反馈；失败时前端不 +1，下次刷新拿到服务端口径。
+/// 服务端按 (ext_id, mid) 主键去重：同机卸载重装返回 counted=false；更新/本地包安装不调这里。
+#[tauri::command]
+pub async fn report_market_install(ext_id: String) -> Result<bool, String> {
+    let Some(mid) = install_mid() else {
+        log::warn!("安装上报跳过：机器标识不可用（数据根不可写？）");
+        return Ok(false);
+    };
+    let url = crate::config::market_install_url();
+    let counted = report_install_once(&url, &ext_id, &mid)
+        .await
+        .unwrap_or_else(|e| {
+            log::warn!("安装上报失败（本次不就地计数）: {ext_id} {e}");
+            false
+        });
+    if counted {
+        log::info!("安装上报完成（新计数）: {ext_id}");
+    }
+    Ok(counted)
+}
+
 /// 从市场下载并安装扩展：下载 → sha256 校验 → 解包 → 校验 manifest → 复制到 extensions/<id>。
 #[tauri::command]
 pub async fn install_from_market(
@@ -419,6 +505,8 @@ pub async fn install_from_market(
         manifest.version,
         extension.download_url
     );
+    // 安装计数上报由前端装成后显式调 `report_market_install`（await 拿 counted 就地 +1）；
+    // 这里不报，避免与命令调用重复请求
     Ok(id)
 }
 
@@ -915,6 +1003,40 @@ mod tests {
             !names.iter().any(|n| n.split('/').last().map_or(false, |f| !f.contains('.') && f.eq_ignore_ascii_case("license"))),
             "包内不得残留无扩展名的 LICENSE：{names:?}"
         );
+    }
+
+    #[test]
+    fn parses_registry_with_category_official_and_install_count() {
+        // 追加字段（category / official / installCount）随 v2 清单下发：新客户端要能读，老客户端忽略
+        let json = serde_json::json!({
+            "schemaVersion": 2,
+            "extensions": [{
+                "id": "com.x-hub.official",
+                "name": "官方扩展",
+                "version": "1.0.0",
+                "downloadUrl": "https://dist/a.xhpack",
+                "category": "效率工具",
+                "official": true,
+                "installCount": 42,
+                "publishedAt": "2026-10-14T08:00:00.000Z"
+            }, {
+                "id": "com.example.plain",
+                "name": "没有新字段的条目",
+                "version": "0.1.0",
+                "downloadUrl": "https://dist/b.xhpack"
+            }]
+        });
+        let r: MarketRegistry = serde_json::from_value(json).unwrap();
+        let official = &r.extensions[0];
+        assert_eq!(official.category.as_deref(), Some("效率工具"));
+        assert_eq!(official.official, Some(true));
+        assert_eq!(official.install_count, Some(42));
+        assert_eq!(official.published_at.as_deref(), Some("2026-10-14T08:00:00.000Z"));
+        let plain = &r.extensions[1];
+        assert_eq!(plain.category, None);
+        assert_eq!(plain.official, None);
+        assert_eq!(plain.install_count, None);
+        assert_eq!(plain.published_at, None);
     }
 
     #[test]

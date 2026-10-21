@@ -16,7 +16,8 @@
 .PARAMETER SignKey
   Ed25519 私钥 PEM 路径（默认取环境变量 XHUB_SIGNING_KEY；与市场清单同一把密钥即可）。
 .PARAMETER Notes
-  版本说明摘要，写进 update.json.notes（默认为空，客户端展示"暂无更新说明"）。
+  版本说明，写进 update.json.notes（缺省自动取 RELEASE_NOTES.md 最新一节的完整内容；
+  客户端更新弹窗原样展示、空间不够可滚动）。
 .PARAMETER MinimumUpgradable
   可升级的最低版本下限（跳级保护；默认 0.1.0）。
 .PARAMETER BaseUrl
@@ -46,6 +47,31 @@ if (-not ($Version -match '^\d+\.\d+\.\d+$')) { throw "Version 需为语义化�
 if (-not $SignKey -and -not (Test-Path -LiteralPath $SignKey)) { throw '缺少签名私钥：请用 -SignKey 指定或设置环境变量 XHUB_SIGNING_KEY' }
 if (-not $BaseUrl) { throw '未指定发布根 URL：请用 -BaseUrl 传入或设置环境变量 XHUB_DIST_BASE_URL' }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw '需要 Node.js（用于 Ed25519 签名）' }
+
+# ---------- 版本说明：缺省取 RELEASE_NOTES.md 最新一节的完整内容 ----------
+# 客户端更新弹窗会原样展示 notes（空间不够可滚动），发版不再手写摘要——
+# 手写摘要 = 用户在弹窗里只能看到一句概括；要写别的摘要时仍可用 -Notes 覆盖。
+if (-not $Notes.Trim()) {
+  $releaseNotesPath = Join-Path $PSScriptRoot '..\RELEASE_NOTES.md'
+  if (Test-Path -LiteralPath $releaseNotesPath) {
+    $sectionLines = @()
+    $inFirstSection = $false
+    foreach ($line in (Get-Content -LiteralPath $releaseNotesPath)) {
+      if ($line -match '^#\s') {
+        if ($inFirstSection) { break }   # 第二个一级标题 = 第一节结束
+        $inFirstSection = $true          # 第一个一级标题 = 最新一节开始
+        continue
+      }
+      if ($inFirstSection) { $sectionLines += $line }
+    }
+    $Notes = (($sectionLines -join "`n").Trim())
+  }
+  if (-not $Notes.Trim()) {
+    Write-Warning '未能从 RELEASE_NOTES.md 提取最新一节（缺文件或为空），notes 将为空串'
+  } else {
+    Write-Host "notes 取自 RELEASE_NOTES.md 最新一节（$($Notes.Length) 字符）"
+  }
+}
 
 # ---------- 目录 ----------
 $winDir = Join-Path $OutDir 'win-x64'

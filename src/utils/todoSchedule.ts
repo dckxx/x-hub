@@ -10,10 +10,11 @@ export interface DueBadge {
   text: string
 }
 
-/** 待办分组序号：0 逾期 → 1 今天 → 2 有日期 → 3 无日期 */
-export const GROUP_COUNT = 4
+/** 待办分组序号（卡片/浮窗/编辑器预览共用）：0 置顶 → 1 逾期 → 2 今天 → 3 有日期 → 4 无日期 */
+export const GROUP_COUNT = 5
 
 export const GROUP_META: ReadonlyArray<{ label: string }> = [
+  { label: '置顶' },
   { label: '逾期' },
   { label: '今天' },
   { label: '有日期' },
@@ -49,12 +50,81 @@ export function fmtHM(ts: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-export function groupOf(t: { due_at: number | null }, today: Date): number {
-  if (t.due_at == null) return 3
+/**
+ * 解析后端时间字符串为本地 Date。
+ * completed_at 是 SQLite strftime 存的 UTC 字符串（无时区后缀，如 2026-09-27 05:34:01.229），
+ * new Date 直读会按本地时区错读，必须补 Z 解析。解析失败返回 null。
+ */
+export function parseServerDate(s: string | null): Date | null {
+  if (!s) return null
+  const d = new Date(s.includes('T') ? s : `${s.replace(' ', 'T')}Z`)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/**
+ * 已完成行的「完成时间」徽标文案。
+ * 相对口径：今天/昨天 带时刻；同年 M月D日 带时刻；跨年补年份。解析失败返回 null（行内隐藏）。
+ */
+export function doneAtLabel(
+  completedAt: string | null,
+  now: Date,
+): { text: string; full: string } | null {
+  const d = parseServerDate(completedAt)
+  if (!d) return null
+  const day = startOfDay(d)
+  const today0 = startOfDay(now)
+  const diff = Math.round((today0.getTime() - day.getTime()) / 86_400_000)
+  const hm = ` ${fmtHM(d.getTime())}`
+  const text =
+    diff === 0
+      ? `今天${hm}`
+      : diff === 1
+        ? `昨天${hm}`
+        : d.getFullYear() === now.getFullYear()
+          ? `${fmtDay(d)}${hm}`
+          : `${d.getFullYear()}年${fmtDay(d)}${hm}`
+  return { text, full: `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日${hm}` }
+}
+
+/**
+ * 完整截止文案（悬停提示/明细用）：`YYYY年M月D日 HH:MM`。
+ * 当天结束（23:5x，日期型截止的约定时刻）不显示时间，避免把「今天做完就行」说成 23:59。
+ */
+export function fmtDueFull(ts: number): string {
+  const d = new Date(ts)
+  const base = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
+  const endOfDay = d.getHours() === 23 && d.getMinutes() > 50
+  return endOfDay ? base : `${base} ${fmtHM(ts)}`
+}
+
+/**
+ * 已完成条目的时间说明（日历 chip / 明细悬停共用）——完成时间与截止时间各占一个名分：
+ *   有截止：`截止 2026年10月16日 18:00 · 完成于 2026年10月17日 14:32`
+ *   无截止：`完成于 2026年10月17日 14:32（原无截止）`
+ * 完成时间缺失（旧数据）时只留「已完成」，不编造时间。
+ */
+export function doneMetaLabel(
+  t: { due_at: number | null; completed_at: string | null },
+  now: Date,
+): string {
+  const done = doneAtLabel(t.completed_at, now)
+  const doneText = done ? `完成于 ${done.full}` : '已完成'
+  if (t.due_at == null) return done ? `${doneText}（原无截止）` : doneText
+  return `截止 ${fmtDueFull(t.due_at)} · ${doneText}`
+}
+
+export function groupOf(
+  t: { pinned?: boolean; due_at: number | null },
+  today: Date,
+): number {
+  // 置顶与日期无关：固定进最顶部「置顶」组（与待办视图 viewGroupOf 同语义）。
+  // 若不独立成组，新增待办按「新的在最上」落进同组会排到置顶条目上面。
+  if (t.pinned) return 0
+  if (t.due_at == null) return 4
   const d = startOfDay(new Date(t.due_at))
-  if (d.getTime() < startOfDay(today).getTime()) return 0
-  if (isoKey(d) === isoKey(today)) return 1
-  return 2
+  if (d.getTime() < startOfDay(today).getTime()) return 1
+  if (isoKey(d) === isoKey(today)) return 2
+  return 3
 }
 
 /**
@@ -75,14 +145,49 @@ export function compareByOrder(
 }
 
 /**
+ * 平铺列表（待办浮窗等不分组的宿主）排序：置顶条目浮到最前，其余按 compareByOrder。
+ * 置顶条目与新增待办共用一个列表时，若不把置顶提前，新建条目会按创建时间倒序盖到它上面。
+ */
+export function comparePinnedFirst(
+  a: { pinned?: boolean; sort_order: number | null; created_at: string },
+  b: { pinned?: boolean; sort_order: number | null; created_at: string },
+): number {
+  const ap = a.pinned === true
+  const bp = b.pinned === true
+  if (ap !== bp) return ap ? -1 : 1
+  return compareByOrder(a, b)
+}
+
+/**
+ * 子待办排序（方向与顶级待办刻意的相反）：
+ * 手动拖过的（sort_order 非空）按 sort_order 升序，未排序的按创建时间**正序**——
+ * 先加的在上、新增的子待办追加到末尾，符合「子任务是往下追加的清单」直觉。
+ * 「已手动排序」与「未排序」混排时（补值失败等异常路径）未排序的排在其后，
+ * 新增子待办同样落在末尾，不会插到已排好的顺序中间。
+ */
+export function compareChildOrder(
+  a: { sort_order: number | null; created_at: string },
+  b: { sort_order: number | null; created_at: string },
+): number {
+  const ao = a.sort_order
+  const bo = b.sort_order
+  if (ao != null && bo != null) return ao - bo
+  if (ao == null && bo == null) return a.created_at.localeCompare(b.created_at)
+  return ao == null ? 1 : -1
+}
+
+/**
  * 截止徽标：逾期(红) → 今天(橙，末尾时段只显「今天」) → 明天(品牌色) → M月D日(灰)
+ * 跨年补年份：截止日不在「当前年」时显示「YYYY年M月D日」，避免跨年条目只看到月日产生歧义。
  */
 export function dueBadge(t: { due_at: number | null }, today: Date): DueBadge | null {
   if (t.due_at == null) return null
   const due = new Date(t.due_at)
   const d = startOfDay(due)
   const today0 = startOfDay(today)
-  if (d.getTime() < today0.getTime()) return { kind: 'over', text: `逾期 ${fmtDay(d)}` }
+  // 「今天/明天」必然是今年（参照日 nearby），只有 over/date 两类可能跨年
+  const y = d.getFullYear() !== today0.getFullYear() ? `${d.getFullYear()}年` : ''
+  if (d.getTime() < today0.getTime()) return { kind: 'over', text: `逾期 ${y}${fmtDay(d)}` }
   const diff = Math.round((d.getTime() - today0.getTime()) / 86_400_000)
   if (diff === 0) {
     // 视为「当天结束」的截止（默认 23:59）不显示具体时间
@@ -90,7 +195,7 @@ export function dueBadge(t: { due_at: number | null }, today: Date): DueBadge | 
     return { kind: 'today', text: endOfDay ? '今天' : `今天 ${fmtHM(t.due_at)}` }
   }
   if (diff === 1) return { kind: 'tmr', text: '明天' }
-  return { kind: 'date', text: fmtDay(d) }
+  return { kind: 'date', text: `${y}${fmtDay(d)}` }
 }
 
 /** 下一个周一：从明天起找（今天恰好是周一时返回下周一，避免「下周一」快捷键选回当天） */
@@ -123,7 +228,7 @@ export function calendarGrid(cursor: Date, today: Date): Array<{ key: string; da
 
 /**
  * 待办视图分组序号：0 置顶 → 1 逾期 → 2 今天 → 3 本周 → 4 本月 → 5 以后 → 6 无日期。
- * 与卡片用的 4 组（GROUP_META）不同：视图有「置顶」区与更细的时间切分，
+ * 与卡片用的 5 组（GROUP_META）不同：视图有「置顶」区与更细的时间切分，
  * 卡片保持轻量，不跟着改。
  */
 export const VIEW_GROUP_COUNT = 7

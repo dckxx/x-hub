@@ -1,16 +1,19 @@
 <script setup lang="ts">
-// 数据与关于大类（存储路径 / 备份恢复 / 关于）
+// 数据与关于大类（存储路径 / 备份恢复 / 速记维护 / 关于）
 //
 // 从 SettingsView.vue 拆出（见该文件顶部说明）：设置页按大类按需加载，
 // 首次打开只需外壳 + 当前大类的代码，切大类时才加载对应面板。
 import { computed, inject, onMounted, ref } from 'vue';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Download, FolderCog, Lock, Upload } from 'lucide-vue-next';
+import { Download, Eraser, FolderCog, FolderOutput, Lock, Upload } from 'lucide-vue-next';
 import { isTauri, tauriApi } from '../../api/tauri';
-import type { DataPathInfo } from '../../api/tauri';
+import type { DataPathInfo, NoteImageGcReport } from '../../api/tauri';
+import { useStore } from '../../stores/workbench';
+import AppSelect from '../AppSelect.vue';
 import AboutSection from '../AboutSection.vue';
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
+const store = useStore()
 
 // ---- 数据存储路径 ----
 const dataPathInfo = ref<DataPathInfo | null>(null)
@@ -105,6 +108,119 @@ async function restoreData() {
   }
 }
 
+// ---- 速记维护：回收站保留天数 / 孤儿图片清理 / 导出导入（docs/speednote-plan.md） ----
+const RETENTION_OPTIONS = [
+  { value: '0', label: '永久保留' },
+  { value: '7', label: '保留 7 天' },
+  { value: '30', label: '保留 30 天' },
+  { value: '90', label: '保留 90 天' },
+  { value: '365', label: '保留 1 年' },
+]
+
+const noteRetention = computed({
+  get: () => String(store.state.config.note_trash_retention_days ?? 0),
+  set: (v: string) => void setNoteRetention(Number(v) || 0),
+})
+
+async function setNoteRetention(days: number) {
+  if (!isTauri()) return
+  try {
+    const r = await store.setNoteTrashRetention(days)
+    showToast(r && r.purged > 0 ? `已清理回收站 ${r.purged} 条过期笔记` : '回收站保留策略已更新')
+  } catch (e) {
+    showToast(`设置失败：${String(e)}`)
+  }
+}
+
+const gcBusy = ref(false)
+const gcReport = ref<NoteImageGcReport | null>(null)
+
+async function scanOrphanImages() {
+  if (!isTauri() || gcBusy.value) return
+  gcBusy.value = true
+  try {
+    gcReport.value = await tauriApi.gcOrphanNoteImages(true)
+  } catch (e) {
+    showToast(`扫描失败：${String(e)}`)
+  } finally {
+    gcBusy.value = false
+  }
+}
+
+async function cleanOrphanImages() {
+  if (!isTauri() || gcBusy.value || !gcReport.value) return
+  gcBusy.value = true
+  try {
+    const r = await tauriApi.gcOrphanNoteImages(false)
+    gcReport.value = r
+    showToast(
+      r.failed > 0
+        ? `已删除 ${r.removed} 张孤儿图片，${r.failed} 张删除失败（可能被占用）`
+        : `已删除 ${r.removed} 张孤儿图片`,
+    )
+  } catch (e) {
+    showToast(`清理失败：${String(e)}`)
+  } finally {
+    gcBusy.value = false
+  }
+}
+
+const exportBusy = ref(false)
+
+async function exportNotes() {
+  if (!isTauri() || exportBusy.value) return
+  const dir = await open({ multiple: false, directory: true, title: '选择导出目录' })
+  if (typeof dir !== 'string') return
+  exportBusy.value = true
+  try {
+    const r = await tauriApi.exportNotes(dir)
+    showToast(
+      r.failed.length > 0
+        ? `导出 ${r.exported} 条笔记（${r.failed.length} 条失败）→ ${r.dir}`
+        : `已导出 ${r.exported} 条笔记、${r.images} 张图片 → ${r.dir}`,
+    )
+  } catch (e) {
+    showToast(`导出失败：${String(e)}`)
+  } finally {
+    exportBusy.value = false
+  }
+}
+
+const importBusy = ref(false)
+const importing = ref(false)
+
+async function importNotes() {
+  if (!isTauri() || importBusy.value) return
+  const dir = await open({ multiple: false, directory: true, title: '选择导入目录（x-hub 导出的产物）' })
+  if (typeof dir !== 'string') return
+  importBusy.value = true
+  importing.value = true
+  try {
+    const r = await tauriApi.importNotes(dir, { overwrite: false })
+    importing.value = false
+    void store.refreshNotes()
+    void store.refreshNoteFolders()
+    const failNote = r.failed.length > 0 ? `，${r.failed.length} 条失败` : ''
+    const cancelNote = r.cancelled ? '（已取消）' : ''
+    showToast(
+      `导入完成：成功 ${r.imported} 条、跳过 ${r.skipped} 条${failNote}${cancelNote}`,
+    )
+  } catch (e) {
+    showToast(`导入失败：${String(e)}`)
+  } finally {
+    importing.value = false
+    importBusy.value = false
+  }
+}
+
+async function cancelImport() {
+  try {
+    await tauriApi.importNotesCancel()
+  } catch {
+    /* 无导入在进行时静默 */
+  }
+}
+
 onMounted(() => {
 
   void loadDataPath()
@@ -155,6 +271,68 @@ onMounted(() => {
               <Upload :size="14" :stroke-width="2" />
               {{ confirmRestore ? '确认恢复？' : '恢复' }}
             </button>
+          </div>
+
+          <h3 class="sv-sec-title gap-above">速记维护</h3>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">回收站保留天数</span>
+              <span class="setting-desc">速记删除先进回收站；到期自动清理（0 = 永久保留），启动与更改设置时生效</span>
+            </div>
+            <AppSelect
+              v-model="noteRetention"
+              :options="RETENTION_OPTIONS"
+              style="width: 140px"
+            />
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">孤儿图片清理</span>
+              <span class="setting-desc">
+                <template v-if="gcReport">
+                  共 {{ gcReport.total_files }} 张图片，{{ gcReport.referenced }} 张被笔记引用
+                  <template v-if="gcReport.orphan_files.length">，{{ gcReport.orphan_files.length }} 张孤儿</template>
+                </template>
+                <template v-else>扫描未被任何笔记引用的图片（含回收站笔记的引用），先扫描后清理</template>
+              </span>
+            </div>
+            <button class="ghost-btn data-btn" :disabled="gcBusy" @click="scanOrphanImages">
+              <Eraser :size="14" :stroke-width="2" />
+              {{ gcBusy ? '处理中…' : gcReport ? '重新扫描' : '扫描' }}
+            </button>
+            <button
+              v-if="gcReport && gcReport.orphan_files.length > 0"
+              class="ghost-btn data-btn"
+              :disabled="gcBusy"
+              @click="cleanOrphanImages"
+            >
+              清理 {{ gcReport.orphan_files.length }} 张
+            </button>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">导出笔记</span>
+              <span class="setting-desc">按文件夹导出为 Markdown（含 front-matter 与图片 assets），可再导入回来</span>
+            </div>
+            <button class="ghost-btn data-btn" :disabled="exportBusy" @click="exportNotes">
+              <FolderOutput :size="14" :stroke-width="2" />
+              {{ exportBusy ? '导出中…' : '导出' }}
+            </button>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">导入笔记</span>
+              <span class="setting-desc">仅支持导入 x-hub 自己导出的产物；来源相同（source_url）的笔记默认跳过</span>
+            </div>
+            <button class="ghost-btn data-btn" :disabled="importBusy" @click="importNotes">
+              <Download :size="14" :stroke-width="2" />
+              {{ importBusy ? '导入中…' : '导入' }}
+            </button>
+            <button v-if="importing" class="ghost-btn data-btn" @click="cancelImport">取消</button>
           </div>
 
           <p class="settings-foot">

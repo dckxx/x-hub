@@ -152,6 +152,10 @@ fn init_panel(app: &AppHandle) {
             let _ = nw_app.emit_to("main", "suda-panel-newwindow", url.as_str());
             NewWindowResponse::Deny
         });
+    // 收缩对象必须精确到「新加入的面板」：快照须在 add_child 之前采集——
+    // setup 阶段主 webview 同样未可见，按可见性过滤会误伤主视图（实测整窗空白）。
+    #[cfg(target_os = "linux")]
+    let before = vbox_webview_ptrs(&main);
     match main.add_child(
         builder,
         LogicalPosition::new(0.0, 0.0),
@@ -159,9 +163,63 @@ fn init_panel(app: &AppHandle) {
     ) {
         Ok(wv) => {
             let _ = wv.hide();
+            #[cfg(target_os = "linux")]
+            shrink_hidden_panel_out_of_layout(&main, &before);
             log::info!("速达网页面板 webview 预创建完成");
         }
         Err(e) => log::warn!("速达网页面板 webview 预创建失败: {e}"),
+    }
+}
+
+/// 收集主窗 vbox 里所有 WebKitWebView 子组件的原始指针（用于新增前后对比）。
+#[cfg(target_os = "linux")]
+fn vbox_webview_ptrs(main: &tauri::Window<tauri::Wry>) -> Vec<usize> {
+    use gtk::prelude::*;
+
+    let mut out = Vec::new();
+    let Ok(gwin) = main.gtk_window() else {
+        return out;
+    };
+    for container in gwin.children() {
+        let Some(box_) = container.dynamic_cast::<gtk::Box>().ok() else {
+            continue;
+        };
+        for child in box_.children() {
+            if child.type_().name() == "WebKitWebView" {
+                out.push(child.as_ptr() as usize);
+            }
+        }
+    }
+    out
+}
+
+/// Linux：隐藏的速达面板 webview 仍参与主窗 vbox 布局——GtkBox 在可见子组件间平分空间，
+/// 且主窗 show 流程的 `show_all` 会把 `hide()` 过的组件重新显示，导致主界面只占窗口上半
+/// （面板占走另一半）。创建后立即把面板从布局中除名：取消 expand、尺寸请求压到 0，
+/// 主 webview 恢复满高。代价：应用内打开网页的面板在 Linux 上暂不可见（已知差异，
+/// 待 wry/tauri 修复子 webview 在 X11 的布局归属后恢复，参见 tauri#15656 一族）。
+#[cfg(target_os = "linux")]
+fn shrink_hidden_panel_out_of_layout(main: &tauri::Window<tauri::Wry>, before: &[usize]) {
+    use gtk::prelude::*;
+
+    let Ok(gwin) = main.gtk_window() else {
+        return;
+    };
+    for container in gwin.children() {
+        let Some(box_) = container.dynamic_cast::<gtk::Box>().ok() else {
+            continue;
+        };
+        for child in box_.children() {
+            // 只收缩 add_child 新增的那一个 webview：用调用前后指针差集识别，
+            // 不能按可见性过滤——setup 阶段主 webview 同样未可见，会误伤
+            if child.type_().name() == "WebKitWebView"
+                && !before.contains(&(child.as_ptr() as usize))
+            {
+                box_.set_child_packing(&child, false, false, 0, gtk::PackType::Start);
+                child.set_size_request(0, 0);
+                log::info!("已将隐藏的速达面板 webview 移出主窗 vbox 布局");
+            }
+        }
     }
 }
 

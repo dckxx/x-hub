@@ -1,9 +1,12 @@
 use crate::models::{ChatMessage, ChatSession};
 use crate::repo::now;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, OptionalExtension, Result};
 
 const SESSION_COLS: &str =
     "id, title, model_name, created_at, updated_at, tokens_input, tokens_output, tokens_cache_read, tokens_reasoning, elapsed_ms";
+
+const MESSAGE_COLS: &str =
+    "id, session_id, turn_id, role, content, tool_calls, tool_call_id, tool_name, tool_status, created_at";
 
 pub fn list_sessions(conn: &Connection) -> Result<Vec<ChatSession>> {
     let mut stmt = conn.prepare(&format!(
@@ -60,10 +63,10 @@ pub fn delete_session(conn: &Connection, id: i64) -> Result<()> {
 }
 
 pub fn list_messages(conn: &Connection, session_id: i64) -> Result<Vec<ChatMessage>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, session_id, role, content, created_at FROM chat_messages
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {MESSAGE_COLS} FROM chat_messages
          WHERE session_id = ?1 ORDER BY id ASC",
-    )?;
+    ))?;
     let rows = stmt.query_map(params![session_id], row_to_message)?;
     rows.collect()
 }
@@ -71,15 +74,27 @@ pub fn list_messages(conn: &Connection, session_id: i64) -> Result<Vec<ChatMessa
 /// 最近 N 条消息（按 id 正序返回，用于发送请求时的上下文窗口）。
 /// 长对话只取最近一段作为模型上下文，避免全量历史带来的内存尖峰与请求体膨胀。
 pub fn list_recent_messages(conn: &Connection, session_id: i64, limit: i64) -> Result<Vec<ChatMessage>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, session_id, role, content, created_at FROM chat_messages
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {MESSAGE_COLS} FROM chat_messages
          WHERE session_id = ?1
          ORDER BY id DESC LIMIT ?2",
-    )?;
+    ))?;
     let rows = stmt.query_map(params![session_id, limit], row_to_message)?;
     let mut msgs: Vec<ChatMessage> = rows.collect::<Result<_, _>>()?;
     msgs.reverse();
     Ok(msgs)
+}
+
+/// 本会话最近一个非空 turn_id（assistant 归组用；一个 turn = 一次用户输入及其全部回复）
+fn last_turn_id(conn: &Connection, session_id: i64) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT turn_id FROM chat_messages
+          WHERE session_id = ?1 AND turn_id IS NOT NULL
+          ORDER BY id DESC LIMIT 1",
+        params![session_id],
+        |row| row.get(0),
+    )
+    .optional()
 }
 
 pub fn add_message(
@@ -88,10 +103,45 @@ pub fn add_message(
     role: &str,
     content: &str,
 ) -> Result<ChatMessage> {
-    let ts = now();
+    // turn 归属：user 开新 turn；assistant 归入本会话最近一个 turn（当前流程 user→assistant 成对；
+    // agent 循环落 tool / 多段 assistant 时显式传 turn_id 走 add_message_ex）
+    let turn_id = if role == "user" {
+        Some(format!("turn_{}", chrono::Utc::now().timestamp_micros()))
+    } else {
+        last_turn_id(conn, session_id)?
+    };
+    add_message_ex(conn, session_id, turn_id.as_deref(), role, content, None, None, None, None)
+}
+
+/// 扩展插入：agent 循环（#t44）落 tool 消息 / 带 tool_calls 的 assistant 消息用。
+/// turn_id 显式传入——一次用户输入产生的全部消息共用同一个 turn。
+#[allow(clippy::too_many_arguments)]
+pub fn add_message_ex(
+    conn: &Connection,
+    session_id: i64,
+    turn_id: Option<&str>,
+    role: &str,
+    content: &str,
+    tool_calls: Option<&str>,
+    tool_call_id: Option<&str>,
+    tool_name: Option<&str>,
+    tool_status: Option<&str>,
+) -> Result<ChatMessage> {
     conn.execute(
-        "INSERT INTO chat_messages (session_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![session_id, role, content, ts],
+        "INSERT INTO chat_messages
+           (session_id, turn_id, role, content, tool_calls, tool_call_id, tool_name, tool_status, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            session_id,
+            turn_id,
+            role,
+            content,
+            tool_calls,
+            tool_call_id,
+            tool_name,
+            tool_status,
+            now()
+        ],
     )?;
     let id = conn.last_insert_rowid();
     get_message(conn, id)
@@ -99,7 +149,7 @@ pub fn add_message(
 
 pub fn get_message(conn: &Connection, id: i64) -> Result<ChatMessage> {
     conn.query_row(
-        "SELECT id, session_id, role, content, created_at FROM chat_messages WHERE id = ?1",
+        &format!("SELECT {MESSAGE_COLS} FROM chat_messages WHERE id = ?1"),
         params![id],
         row_to_message,
     )
@@ -156,9 +206,14 @@ fn row_to_message(row: &rusqlite::Row) -> Result<ChatMessage> {
     Ok(ChatMessage {
         id: row.get(0)?,
         session_id: row.get(1)?,
-        role: row.get(2)?,
-        content: row.get(3)?,
-        created_at: row.get(4)?,
+        turn_id: row.get(2)?,
+        role: row.get(3)?,
+        content: row.get(4)?,
+        tool_calls: row.get(5)?,
+        tool_call_id: row.get(6)?,
+        tool_name: row.get(7)?,
+        tool_status: row.get(8)?,
+        created_at: row.get(9)?,
     })
 }
 
@@ -218,5 +273,65 @@ mod tests {
         let msgs = list_messages(&conn, s.id).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].role, "user");
+    }
+
+    #[test]
+    fn messages_group_into_turns() {
+        // user 开新 turn，assistant 归入最近一个 turn；新一轮 user 再开新 turn
+        let conn = setup();
+        let s = create_session(&conn, "测试", "DeepSeek").unwrap();
+        let u1 = add_message(&conn, s.id, "user", "问题一").unwrap();
+        let a1 = add_message(&conn, s.id, "assistant", "回答一").unwrap();
+        let u2 = add_message(&conn, s.id, "user", "问题二").unwrap();
+        let a2 = add_message(&conn, s.id, "assistant", "回答二").unwrap();
+
+        assert!(u1.turn_id.as_deref().unwrap_or("").starts_with("turn_"));
+        assert_eq!(a1.turn_id, u1.turn_id);
+        assert_ne!(u2.turn_id, u1.turn_id);
+        assert_eq!(a2.turn_id, u2.turn_id);
+    }
+
+    #[test]
+    fn tool_message_roundtrip() {
+        // add_message_ex：带 tool_calls 的 assistant + 对应 tool 结果行，回读字段齐全
+        let conn = setup();
+        let s = create_session(&conn, "测试", "DeepSeek").unwrap();
+        let u = add_message(&conn, s.id, "user", "我的待办有什么").unwrap();
+        let calls = r#"[{"id":"call_1","name":"list_todos","arguments":"{}"}]"#;
+        let a = add_message_ex(
+            &conn,
+            s.id,
+            u.turn_id.as_deref(),
+            "assistant",
+            "",
+            Some(calls),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let t = add_message_ex(
+            &conn,
+            s.id,
+            u.turn_id.as_deref(),
+            "tool",
+            "[]",
+            None,
+            Some("call_1"),
+            Some("list_todos"),
+            Some("ok"),
+        )
+        .unwrap();
+
+        assert_eq!(a.tool_calls.as_deref(), Some(calls));
+        assert_eq!(a.turn_id, u.turn_id);
+        assert_eq!(t.role, "tool");
+        assert_eq!(t.tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(t.tool_name.as_deref(), Some("list_todos"));
+        assert_eq!(t.tool_status.as_deref(), Some("ok"));
+
+        let msgs = list_messages(&conn, s.id).unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert!(msgs.iter().all(|m| m.turn_id == u.turn_id));
     }
 }

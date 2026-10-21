@@ -8,8 +8,25 @@ fn main() {
             .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest()),
     )
     .expect("tauri build failed");
+    emit_build_tag();
     gen_skill_manifest();
     embed_app_manifest();
+}
+
+/// 把「构建时间 + 平台」编译进二进制（`XHUB_BUILD_TAG`）。
+/// 用途：日志里能一眼看出**正在跑的是哪次构建**——排查「明明修了还是复现」时，
+/// 先确认症状来自新二进制（曾出现测试机跑的是旧安装、日志特征对不上，白查一轮）。
+fn emit_build_tag() {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // 不引 chrono：直接给 epoch 秒 + 平台，够区分构建
+    println!(
+        "cargo:rustc-env=XHUB_BUILD_TAG={}-{}",
+        secs,
+        std::env::consts::OS
+    );
 }
 
 /// 内容与 tauri-build 默认应用清单（windows-app-manifest.xml）逐字一致：

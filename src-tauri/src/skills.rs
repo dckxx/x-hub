@@ -141,11 +141,35 @@ fn skill_info() -> SkillInfo {
 /// 自动探测的已知助手 skills 根（仅存在的会被列出）
 fn auto_roots() -> Vec<(&'static str, PathBuf)> {
     let home = dirs::home_dir().unwrap_or_default();
-    vec![
+    let mut roots = vec![
         ("Claude Code", home.join(".claude").join("skills")),
         ("DSH / 通用 Agent", home.join(".agents").join("skills")),
         ("Codex", home.join(".codex").join("skills")),
-    ]
+        ("ZCode", home.join(".zcode").join("skills")),
+        ("WorkBuddy", home.join(".workbuddy").join("skills")),
+    ];
+    // 豆包（桌面版）的用户技能目录在其 Chromium 配置树内：.skills 是内置技能，
+    // .user_skills 才是用户层（安装到内置目录会被升级覆盖）
+    if let Some(local) = dirs::data_local_dir() {
+        roots.push((
+            "豆包",
+            local
+                .join("Doubao")
+                .join("User Data")
+                .join("Default")
+                .join(".doubao")
+                .join("agent_mode")
+                .join("workspace")
+                .join(".user_skills"),
+        ));
+    }
+    roots
+}
+
+/// 规范路径键：canonicalize 成功用真身（解析 junction / symlink），失败回退原路径。
+/// 「通用目录」判定基准——两个根指向同一物理目录时合并为一条，不重复列行。
+fn canon_key(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// 汇总单个目标的状态
@@ -183,21 +207,33 @@ fn target_status(label: &str, root: &Path, kind: &str) -> SkillTarget {
 fn overview() -> SkillOverview {
     let cfg = crate::config::load();
     let mut targets: Vec<SkillTarget> = Vec::new();
+    // 规范路径 → targets 下标：同物理目录只列一行，后来者的名字并进 label
+    //（如 ~/.zcode/skills 是 ~/.agents/skills 的 junction → 显示「DSH / 通用 Agent、ZCode」）
+    let mut by_canon: Vec<(PathBuf, usize)> = Vec::new();
 
     for (label, root) in auto_roots() {
-        if root.is_dir() {
-            targets.push(target_status(label, &root, "auto"));
+        if !root.is_dir() {
+            continue;
         }
+        let key = canon_key(&root);
+        if let Some((_, idx)) = by_canon.iter().find(|(k, _)| *k == key) {
+            targets[*idx].label.push_str(&format!("、{label}"));
+            continue;
+        }
+        by_canon.push((key, targets.len()));
+        targets.push(target_status(label, &root, "auto"));
     }
     for raw in &cfg.skill_roots {
         let root = PathBuf::from(raw);
         if !root.is_dir() {
             continue;
         }
-        // 与自动探测项去重（用户可能手动把自定义目录指到同一处）
-        if targets.iter().any(|t| Path::new(&t.path) == root.as_path()) {
+        let key = canon_key(&root);
+        if let Some((_, idx)) = by_canon.iter().find(|(k, _)| *k == key) {
+            targets[*idx].label.push_str("、自定义目录");
             continue;
         }
+        by_canon.push((key, targets.len()));
         targets.push(target_status("自定义目录", &root, "custom"));
     }
 
@@ -233,10 +269,14 @@ fn write_marker(dir: &Path) -> Result<(), String> {
     std::fs::write(dir.join(MARKER_FILE), text).map_err(|e| format!("IO_ERROR: 写标记失败：{e}"))
 }
 
-/// 自定义目录登记进配置（下次仍能列出；自动探测的根不登记）
+/// 自定义目录登记进配置（下次仍能列出；自动探测的根不登记——按规范路径比，
+/// 自定义目录即使写法不同、只要是同一个物理目录就不重复登记）
 fn register_root(root: &Path) {
-    if auto_roots().iter().any(|(_, p)| p == root) {
-        return;
+    let key = canon_key(root);
+    for (_, p) in auto_roots() {
+        if p.is_dir() && canon_key(&p) == key {
+            return;
+        }
     }
     let _guard = crate::config::lock();
     let mut cfg = crate::config::load();

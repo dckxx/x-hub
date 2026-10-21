@@ -14,7 +14,7 @@ import type { Todo } from '../api/tauri'
  * 调用方需要提供：
  * - `bodyRef`：滚动容器（插入指示线的坐标基准，也是 `data-group` 的查找范围）
  * - `groups`：当前展示的分组（含组内可见顺序）——拖拽只在其中移动
- * - `labelOf`：某条待办属于哪个组（各宿主分组口径不同：卡片 4 组、待办视图 7 组）
+ * - `labelOf`：某条待办属于哪个组（各宿主分组口径不同：卡片 5 组、待办视图 7 组）
  * - `enabled`：是否允许拖拽（卡片只在「未完成」视图开放）
  * - `reorder`：落点后的持久化（一般写 `store.reorderTodos(ids)`）
  *

@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { listen } from '@tauri-apps/api/event'
+import { open, save } from '@tauri-apps/plugin-dialog'
 import type { Note } from '../api/tauri'
+import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import NoteFolderTree from './NoteFolderTree.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
+import ExportNoteDialog from './ExportNoteDialog.vue'
+import { notesOfSubtree, sanitizeExportFilename, type ExportFormat } from '../utils/noteExport'
 
 /**
  * 速记视图（docs/speednote-plan.md §5.1；2026-10-04 用户反馈改为**两栏**）：
@@ -221,6 +226,96 @@ function onConfirmDialogConfirm() {
   void c?.onConfirm()
 }
 
+// ---- 随手导出（树右键：单条笔记 / 整夹；格式 Markdown/HTML/PDF，2026-10-22 #t69） ----
+const showToast = inject<(msg: string) => void>('showToast', () => {})
+const exportTarget = ref<{ kind: 'note' | 'folder'; id: number; title: string } | null>(null)
+const exporting = ref(false)
+const exportProgress = ref<{ done: number; total: number } | null>(null)
+
+function onExportNote(id: number) {
+  const n = store.state.notes.find((x) => x.id === id)
+  if (!n) return
+  exportTarget.value = { kind: 'note', id, title: n.title.trim() || '无标题笔记' }
+}
+
+function onExportFolder(id: number) {
+  const f = store.state.noteFolders.find((x) => x.id === id)
+  if (!f) return
+  exportTarget.value = { kind: 'folder', id, title: f.name }
+}
+
+/** md→html 渲染走动态 import：marked/DOMPurify 不进速记主 chunk（同 TodoRow 悬浮口径） */
+async function renderNoteBody(content: string): Promise<string> {
+  const { renderNoteMarkdown } = await import('../utils/markdownHtml')
+  return renderNoteMarkdown(content)
+}
+
+async function onExportConfirm(format: ExportFormat) {
+  const t = exportTarget.value
+  if (!t || exporting.value || !isTauri()) return
+  try {
+    if (t.kind === 'note') {
+      const note = store.state.notes.find((n) => n.id === t.id)
+      if (!note) return
+      const ext = format === 'markdown' ? 'md' : format
+      const path = await save({
+        title: '导出笔记',
+        defaultPath: sanitizeExportFilename(note.title, ext),
+        filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
+      })
+      if (typeof path !== 'string' || !path) return
+      exporting.value = true
+      exportProgress.value = null
+      const bodyHtml = format === 'markdown' ? undefined : await renderNoteBody(note.content)
+      const r = await tauriApi.exportNoteFile(t.id, path, format, bodyHtml)
+      if (r.failed.length > 0) showToast(`导出失败：${r.failed[0]}`)
+      else showToast(`已导出 → ${r.dir}`)
+    } else {
+      const dir = await open({ multiple: false, directory: true, title: '选择导出目录' })
+      if (typeof dir !== 'string' || !dir) return
+      exporting.value = true
+      exportProgress.value = { done: 0, total: 0 }
+      let bodies: { id: number; html: string }[] = []
+      if (format !== 'markdown') {
+        const list = notesOfSubtree(store.state.notes, store.state.noteFolders, t.id)
+        bodies = []
+        for (const n of list) {
+          bodies.push({ id: n.id, html: await renderNoteBody(n.content) })
+        }
+        exportProgress.value = { done: 0, total: list.length }
+      }
+      const r = await tauriApi.exportNotesOfFolder(t.id, dir, format, bodies)
+      const failNote = r.failed.length > 0 ? `，${r.failed.length} 条失败` : ''
+      const cancelNote = r.cancelled ? '（已取消）' : ''
+      showToast(`导出完成：成功 ${r.exported} 条${failNote}${cancelNote} → ${r.dir}`)
+    }
+  } catch (e) {
+    showToast(`导出失败：${String(e)}`)
+  } finally {
+    exporting.value = false
+    exportProgress.value = null
+    exportTarget.value = null
+  }
+}
+
+function onExportCancelExport() {
+  void tauriApi.exportNotesCancel()
+}
+
+// 批量导出进度（后端逐条 emit；PDF 一条几百毫秒到数秒，必须有反馈）
+let unlistenProgress: (() => void) | null = null
+onMounted(() => {
+  if (!isTauri()) return
+  void listen<{ done: number; total: number }>('note-export-progress', (e) => {
+    exportProgress.value = { done: e.payload.done, total: e.payload.total }
+  }).then((fn) => {
+    unlistenProgress = fn
+  })
+})
+onBeforeUnmount(() => {
+  unlistenProgress?.()
+})
+
 // ---- 编辑器 ----
 function onSaveNote(id: number, title: string, content: string) {
   void store.saveNote(id, title, content)
@@ -275,6 +370,8 @@ defineExpose({ openNote, createNote })
       @move-note="onMoveNote"
       @reorder-notes="onReorderNotes"
       @reorder-folders="onReorderFolders"
+      @export-note="onExportNote"
+      @export-folder="onExportFolder"
     />
 
     <NoteEditor
@@ -296,6 +393,18 @@ defineExpose({ openNote, createNote })
       :tone="confirmState?.tone ?? 'default'"
       @confirm="onConfirmDialogConfirm"
       @cancel="confirmState = null"
+    />
+
+    <!-- 导出弹窗：单条笔记 / 整夹共用（格式三选一；批量时切进度态） -->
+    <ExportNoteDialog
+      :visible="exportTarget != null"
+      :kind="exportTarget?.kind ?? 'note'"
+      :title="exportTarget?.title ?? ''"
+      :busy="exporting"
+      :progress="exportProgress"
+      @confirm="(f) => onExportConfirm(f)"
+      @cancel="exportTarget = null"
+      @cancel-export="onExportCancelExport"
     />
   </section>
 </template>

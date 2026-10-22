@@ -15,6 +15,7 @@ mod countdown_window;
 mod db;
 mod extension;
 mod ext_protocol;
+mod export_render;
 mod favicon;
 mod feedback;
 mod floating_ball;
@@ -828,6 +829,10 @@ pub fn run() {
             // 预创建通知窗（隐藏常驻）：右下角自绘通知，跨 Win10/11 一致（详见 notify.rs）
             notify::init(app.handle());
 
+            // 预创建导出渲染窗（隐藏常驻）：速记导出 PDF 的静默渲染表面，
+            // 挂轻量 export.html（不加载主 SPA），运行期只 navigate/COM（详见 export_render.rs）
+            export_render::init(app.handle());
+
             // AI 对话独立窗口（无条件预创建隐藏常驻，运行期绝不建窗，详见 chat_window.rs）
             chat_window::init(app.handle());
 
@@ -967,6 +972,10 @@ pub fn run() {
             note_io::export_notes,
             note_io::import_notes,
             note_io::import_notes_cancel,
+            // 随手导出（单条/整夹 × Markdown/HTML/PDF，见 note_io.rs #t69）
+            note_io::export_note_file,
+            note_io::export_notes_of_folder,
+            note_io::export_notes_cancel,
             commands::list_todos,
             commands::create_todo,
             commands::toggle_todo,

@@ -57,6 +57,8 @@ const emit = defineEmits<{
   (e: 'restore-note', id: number): void
   (e: 'purge-note', id: number): void
   (e: 'purge-all'): void
+  (e: 'export-note', id: number): void
+  (e: 'export-folder', id: number): void
   (e: 'move-note', noteId: number, folderId: number | null): void
   (e: 'reorder-notes', ids: number[]): void
   (e: 'reorder-folders', moves: { id: number; parent_id: number | null; sort_order: number }[]): void
@@ -453,6 +455,8 @@ function openFolderMenu(f: NoteFolder, e: MouseEvent) {
   const items: ContextMenuItem[] = [
     { label: '新建笔记', onClick: () => emit('create-note-in', f.id) },
     { label: '新建子文件夹', onClick: () => startCreate(f.id) },
+    // 整夹导出紧随常用操作；内置「剪藏」夹同样可导（只受 !builtin 约束的是改名/删除）
+    { label: '导出…', dividerBefore: true, onClick: () => emit('export-folder', f.id) },
   ]
   if (!f.builtin) {
     items.push(
@@ -476,7 +480,10 @@ function openNoteMenu(n: Note, e: MouseEvent) {
     visible: true,
     x: e.clientX,
     y: e.clientY,
-    items: [{ label: '移入回收站', danger: true, onClick: () => emit('trash-note', n.id) }],
+    items: [
+      { label: '导出…', onClick: () => emit('export-note', n.id), dividerBefore: true },
+      { label: '移入回收站', danger: true, onClick: () => emit('trash-note', n.id) },
+    ],
   }
 }
 

@@ -25,11 +25,13 @@ export default defineConfig({
       // 入口（chrome.html / ball.html / notice.html + src/light/*.ts），只挂自己的
       // 组件、不加载完整 SPA 的活堆——隐藏窗口 renderer 从 ~100MB 降到 ~20-30MB。
       // index.html 仍是主窗/对话/剪贴板/浮窗等完整 UI 的入口。
+      // export.html：导出渲染窗占位页（纯静态零脚本，见 export_render.rs）
       input: {
         main: 'index.html',
         chrome: 'chrome.html',
         ball: 'ball.html',
         notice: 'notice.html',
+        export: 'export.html',
       },
       output: {
         codeSplitting: {

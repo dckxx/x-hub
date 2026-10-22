@@ -1339,7 +1339,28 @@ export const tauriApi = {
   rebuildNoteLinks: () => invoke<void>('rebuild_note_links'),
   // ---- 速记导出/导入（限自有产物） ----
   exportNotes: (dir: string) =>
-    invoke<{ exported: number; images: number; failed: string[]; dir: string }>('export_notes', { dir }),
+    invoke<{ exported: number; images: number; failed: string[]; dir: string; cancelled?: boolean }>('export_notes', { dir }),
+  /** 随手导出单条：format = markdown | html | pdf（html/pdf 需传前端渲染好的 bodyHtml） */
+  exportNoteFile: (id: number, path: string, format: 'markdown' | 'html' | 'pdf', bodyHtml?: string) =>
+    invoke<{ exported: number; failed: string[]; dir: string }>('export_note_file', {
+      id,
+      path,
+      format,
+      bodyHtml: bodyHtml ?? null,
+    }),
+  /** 整夹导出：落 <dir>/<文件夹名>/，每条一个文件；批量 PDF 逐条 emit note-export-progress */
+  exportNotesOfFolder: (
+    folderId: number,
+    dir: string,
+    format: 'markdown' | 'html' | 'pdf',
+    bodies: { id: number; html: string }[],
+  ) =>
+    invoke<{ exported: number; images: number; failed: string[]; dir: string; cancelled: boolean }>(
+      'export_notes_of_folder',
+      { folderId, dir, format, bodies },
+    ),
+  /** 取消正在进行的整夹导出（幂等） */
+  exportNotesCancel: () => invoke<void>('export_notes_cancel'),
   importNotes: (dir: string, opts?: { overwrite?: boolean }) =>
     invoke<{ imported: number; skipped: number; failed: string[]; cancelled: boolean }>('import_notes', {
       dir,

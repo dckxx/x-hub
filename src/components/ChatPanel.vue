@@ -9,8 +9,9 @@ import AppSelect from './AppSelect.vue'
 
 const props = defineProps<{
   side?: 'left' | 'right' | 'top' | 'bottom'
-  /** dock = 主窗内嵌抽屉（默认）；window = 独立窗口内嵌（尺寸交给窗口缩放、关闭按钮语义变化） */
-  mode?: 'dock' | 'window'
+  /** dock = 主窗内嵌抽屉（默认）；window = 独立窗口内嵌（尺寸交给窗口缩放、关闭按钮语义变化）；
+   *  view = 侧栏「AI 助手」视图内嵌（会话切换交给视图左栏，本组件隐藏新建/切换入口） */
+  mode?: 'dock' | 'window' | 'view'
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +29,8 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
 // 独立窗口形态：不调 getChatPanel/setChatPanel（那两个只管主窗抽屉尺寸），
 // 拖拽手柄隐藏（缩放交给窗口边缘），头部收起钮变成关闭钮
 const isWindow = computed(() => props.mode === 'window')
+// 侧栏视图形态：会话新建/切换由视图左栏承担（经 defineExpose 驱动），头部只留标题/积分/模型设置
+const isView = computed(() => props.mode === 'view')
 
 // ---- 状态 ----
 const sessions = ref<ChatSession[]>([])
@@ -945,6 +948,15 @@ function focusInput() {
   void nextTick(() => inputEl.value?.focus())
 }
 
+/** 会话重命名（侧栏「AI 助手」视图左栏经 expose 调用；抽屉菜单暂无此入口） */
+async function renameSession(id: number, title: string) {
+  if (!isTauri()) return
+  const trimmed = title.trim()
+  if (!trimmed) return
+  const s = await tauriApi.renameChatSession(id, trimmed)
+  sessions.value = sessions.value.map((x) => (x.id === id ? s : x))
+}
+
 defineExpose({
   refreshModels: () => {
     void loadModels()
@@ -971,12 +983,19 @@ defineExpose({
     mdCache.clear()
   },
   focusInput,
+  // ---- 侧栏「AI 助手」视图（mode=view）左栏会话列表的驱动接口 ----
+  sessions,
+  activeSessionId,
+  openSession,
+  createSession,
+  deleteSession,
+  renameSession,
 })
 </script>
 
 <template>
-  <div class="chat-panel" :class="['side-' + (props.side || 'right'), { 'mode-window': isWindow }]">
-    <div v-if="!isWindow" class="resize-h" @mousedown="onResizeDown"></div>
+  <div class="chat-panel" :class="['side-' + (props.side || 'right'), { 'mode-window': isWindow, 'mode-view': isView }]">
+    <div v-if="!isWindow && !isView" class="resize-h" @mousedown="onResizeDown"></div>
 
     <div class="cp-header">
       <div class="cp-title" :title="currentTitle">{{ currentTitle }}</div>
@@ -993,7 +1012,9 @@ defineExpose({
         剩余 {{ creditRemaining }} 积分
       </button>
       <div class="cp-spacer"></div>
+      <!-- 视图形态：新建/切换会话在左栏列表，这里不再放第二个入口 -->
       <button
+        v-if="!isView"
         ref="addBtnRef"
         class="cp-hbtn cp-add"
         :class="{ open: menuOpen }"
@@ -1009,7 +1030,7 @@ defineExpose({
         <Settings2 :size="15" />
       </button>
       <!-- 独立窗口形态：关闭由外层自制标题栏承担，这里不再放第二个关闭钮 -->
-      <button v-if="!isWindow" class="cp-hbtn" title="收起面板" @click="emit('toggle')">
+      <button v-if="!isWindow && !isView" class="cp-hbtn" title="收起面板" @click="emit('toggle')">
         <PanelRightClose :size="15" />
       </button>
     </div>
@@ -1288,6 +1309,21 @@ defineExpose({
   border-radius: 0;
   box-shadow: none;
   background: transparent;
+}
+
+/* 侧栏「AI 助手」视图形态：作为视图右栏平铺，去抽屉的浮卡观感（描边/圆角/落影）；
+   底色用主题化玻璃 --frost-surface（与工作台卡片同观感）而非 --bg-chat-panel——
+   后者在亮色主题下是 97% 死白，嵌在暗色壁纸上极其突兀（用户反馈） */
+.chat-panel.mode-view,
+.chat-panel.mode-view.side-left,
+.chat-panel.mode-view.side-top,
+.chat-panel.mode-view.side-bottom {
+  border: none;
+  border-radius: 0;
+  /* 左上角与其他面板一致的圆角（抽屉/卡片同为 radius-lg），其余角随视图贴边保持直角 */
+  border-top-left-radius: var(--radius-lg);
+  box-shadow: none;
+  background: var(--frost-surface);
 }
 
 /* 拖拽手柄：水平方位（左右）在侧边，垂直方位（上下）在底边/顶边 */

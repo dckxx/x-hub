@@ -54,6 +54,7 @@ const SettingsView = defineAsyncComponent({
 const PromptManageDialog = defineAsyncComponent(() => import('../components/PromptManageDialog.vue'))
 const SudaCustomEditDialog = defineAsyncComponent(() => import('../components/SudaCustomEditDialog.vue'))
 const ChatPanel = defineAsyncComponent(() => import('../components/ChatPanel.vue'))
+const ChatView = defineAsyncComponent(() => import('../components/ChatView.vue'))
 const ExtensionCenter = defineAsyncComponent(() => import('../components/ExtensionCenter.vue'))
 const ExtensionView = defineAsyncComponent(() => import('../components/ExtensionView.vue'))
 const DashboardLayoutEditor = defineAsyncComponent(() => import('../components/DashboardLayoutEditor.vue'))
@@ -119,11 +120,11 @@ const navigation = [
   { id: 'todos', label: '待办', icon: ListTodo },
   { id: 'notes', label: '速记', icon: FileText },
   { id: 'suda', label: '速达', icon: FolderOpen },
-  { id: 'chat', label: '对话', icon: MessageSquare },
+  { id: 'chat', label: 'AI 助手', icon: MessageSquare },
 ] as const
 
-// 对话入口暂时隐藏（后续恢复），功能仍可通过标题栏按钮 / Ctrl+Shift+K 唤起
-const visibleNavigation = navigation.filter((item) => item.id !== 'chat')
+// 「AI 助手」= 完整侧栏视图（左会话列表 + 右会话框，AI 对话第三形态，见约定 33）
+const visibleNavigation = navigation
 
 // 设置不在顶部导航列表，作为独立入口固定在侧栏左下角，但同样是视图切换逻辑
 // 自定义布局编辑器也是独立视图（从设置进入，完成后回主页面）
@@ -136,12 +137,14 @@ type ViewId =
   | 'suda-web'
 const activeView = ref<ViewId>('dashboard')
 
-// 对话入口：点击侧栏「对话」即唤起右侧面板（面板是主形态，视图仅占位说明）
+// 「AI 助手」入口：切到完整视图并收起抽屉——主窗同一时刻只挂一个 ChatPanel 实例，
+// 双实例会对同一会话各挂一份流式/事件监听（约定 33）
 function onNavClick(id: ViewId) {
-  activeView.value = id
-  if (id === 'chat' && !chatOpen.value) {
-    toggleChat()
+  if (id === 'chat' && chatOpen.value) {
+    chatOpen.value = false
+    persistChatPanelSize()
   }
+  activeView.value = id
 }
 
 // ---- 扩展打开：扩展中心点开某个扩展 → 主区渲染扩展入口（view 形态） ----
@@ -504,8 +507,9 @@ onMounted(async () => {
       if (id.startsWith('view:')) {
         const v = id.slice(5)
         if (v === 'chat') {
+          // 悬浮球「AI 对话」= 切到侧栏视图（纯切换，不再顺带开抽屉；
+          // 独立窗模式下 Rust 侧直接唤起小窗，根本不经这里）
           activeView.value = 'chat'
-          if (!chatOpen.value) toggleChat()
         } else {
           activeView.value = v as ViewId
         }
@@ -1005,12 +1009,12 @@ provide('showToast', showToast)
           />
         </section>
 
-        <!-- 对话：独立视图（完整视图，与右侧面板共用会话数据） -->
-        <section v-else-if="activeView === 'chat'" class="view view-chat" tabindex="-1" aria-label="对话">
-          <div class="view-chat-hint">
-            <MessageSquare :size="20" :stroke-width="1.8" />
-            <p>抽屉面板已是最佳对话形态，可点击标题栏对话按钮或按 Ctrl+Shift+K 唤起（方位可在设置 → AI 助手调整）。</p>
-          </div>
+        <!-- AI 助手：完整视图（左会话列表 + 右会话框，与抽屉/独立窗共用会话数据） -->
+        <section v-else-if="activeView === 'chat'" class="view view-chat" tabindex="-1" aria-label="AI 助手">
+          <ChatView
+            @open-model-settings="onOpenChatSettings"
+            @open-account-settings="onOpenAccountSettings"
+          />
         </section>
 
         <!-- 设置：独立视图 -->
@@ -1591,26 +1595,6 @@ html[data-theme='dark'][data-wallpaper-clear='1'] .ext-drawer {
 }
 .view-layout-editor {
   padding: 0 20px 20px 0;
-}
-.view-chat-hint {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  color: var(--text-3);
-  text-align: center;
-  padding: 0 var(--space-6);
-}
-.view-chat-hint svg {
-  color: var(--text-3);
-  opacity: 0.6;
-}
-.view-chat-hint p {
-  font-size: 0.8125rem;
-  line-height: 1.6;
-  max-width: 360px;
 }
 
 @media (max-width: 1100px) {

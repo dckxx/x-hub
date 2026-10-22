@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import {
+  Activity,
   AlarmClock,
   AlertTriangle,
+  ArrowDown,
   ArrowRight,
+  ArrowUp,
+  ArrowUpDown,
   Boxes,
   CalendarDays,
   Check,
@@ -83,9 +87,9 @@ const {
   weatherLabel,
   cityText,
   weatherSubText,
-  cpuPct,
-  memPct,
   memLabel,
+  sysmonMetrics,
+  sysmonDisplay,
   stickyText,
   notesCount,
   tagCount,
@@ -132,6 +136,14 @@ const weatherIconComp = computed(() => {
 // ---- 各卡的静态映射表（组件私有，无计算成本）----
 const MODE_ICON: Record<string, unknown> = { once: Timer, daily: AlarmClock, interval: Repeat }
 const MODE_LABEL: Record<string, string> = { once: '一次性', daily: '每天', interval: '间隔' }
+/** 系统资源指标图标：与真实卡片 SysMonitorCard 的 METRIC_ICONS 同一张表（网速 pair 行直接用 ArrowUp/Down） */
+const SM_ICONS: Record<string, unknown> = {
+  cpu: Cpu,
+  mem: MemoryStick,
+  net_total: Activity,
+  cpu_threads: Cpu,
+  traffic: ArrowUpDown,
+}
 const BADGE_ICON: Record<string, unknown> = {
   over: AlertTriangle,
   today: Sun,
@@ -286,25 +298,30 @@ const kind = computed(() => {
 
     <!-- ===== 系统资源 ===== -->
     <template v-else-if="kind === 'sysmon'">
-      <header class="hd" :class="{ 'hd-float': hideTitle }">
+      <header class="hd sm-hd" :class="{ 'hd-float': hideTitle }">
         <h3 v-if="!hideTitle" class="hd-title"><Cpu class="ic" /><span>{{ title ?? '系统资源' }}</span></h3>
         <span class="sm-live-dot"></span>
       </header>
       <div class="sm-body">
-        <div class="sm-item">
-          <div class="sm-item-top">
-            <span class="sm-item-name"><Cpu class="ic-sm" />CPU</span>
-            <span class="sm-item-value">{{ cpuPct }}<em>%</em></span>
+        <div v-for="m in sysmonMetrics" :key="m.id" class="sm-item">
+          <div class="sm-row">
+            <template v-if="m.kind === 'pair'">
+              <span class="sm-pair-item">
+                <ArrowUp class="ic-sm" />
+                <span class="sm-item-value sm-pair-value">{{ sysmonDisplay('net_upload').text }}<em>{{ sysmonDisplay('net_upload').unit }}</em></span>
+              </span>
+              <span class="sm-pair-item">
+                <ArrowDown class="ic-sm" />
+                <span class="sm-item-value sm-pair-value">{{ sysmonDisplay('net_download').text }}<em>{{ sysmonDisplay('net_download').unit }}</em></span>
+              </span>
+            </template>
+            <template v-else>
+              <span class="sm-item-name"><component :is="SM_ICONS[m.id] ?? Cpu" class="ic-sm" />{{ m.label }}</span>
+              <div v-if="m.kind === 'bar'" class="sm-bar"><i :style="{ transform: `scaleX(${(sysmonDisplay(m.id).pct ?? 0) / 100})` }"></i></div>
+              <span class="sm-item-value">{{ sysmonDisplay(m.id).text }}<em v-if="sysmonDisplay(m.id).unit">{{ sysmonDisplay(m.id).unit }}</em></span>
+            </template>
           </div>
-          <div class="sm-bar"><i :style="{ transform: `scaleX(${cpuPct / 100})` }"></i></div>
-        </div>
-        <div class="sm-item">
-          <div class="sm-item-top">
-            <span class="sm-item-name"><MemoryStick class="ic-sm" />内存</span>
-            <span class="sm-item-value">{{ memPct }}<em>%</em></span>
-          </div>
-          <div class="sm-bar"><i :style="{ transform: `scaleX(${memPct / 100})` }"></i></div>
-          <p class="sm-mem-label">{{ memLabel }}</p>
+          <p v-if="m.id === 'mem'" class="sm-mem-label">{{ memLabel }}</p>
         </div>
       </div>
     </template>
@@ -1067,6 +1084,10 @@ html[data-theme='dark'] .dpv {
 }
 
 /* ---- 系统资源 ---- */
+/* header 下边距与真卡 sm-header(6px) 对齐（.hd 的 8u 是多模块共享值，不动） */
+.sm-hd {
+  margin-bottom: calc(6 * var(--u));
+}
 .sm-live-dot {
   width: calc(6 * var(--u));
   height: calc(6 * var(--u));
@@ -1075,33 +1096,52 @@ html[data-theme='dark'] .dpv {
   flex-shrink: 0;
 }
 .sm-body {
-  display: flex;
-  flex-direction: column;
-  gap: calc(8 * var(--u));
+  /* 与真实卡片同口径的自适应网格：宽格一行 2~3 个指标，纵向均匀分布 */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(150 * var(--u)), 1fr));
+  gap: calc(8 * var(--u)) calc(12 * var(--u));
+  align-content: space-evenly;
+  overflow: hidden;
 }
 .sm-item {
   display: flex;
   flex-direction: column;
-  gap: calc(5 * var(--u));
+  gap: calc(2 * var(--u));
+  min-width: 0;
 }
-.sm-item-top {
+.sm-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: calc(6 * var(--u));
+  gap: calc(8 * var(--u));
+  min-width: 0;
+}
+/* 网速行：上行/下行一对（图标 + 数值），无名称文字 */
+.sm-pair-item {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4 * var(--u));
+  min-width: 0;
+  color: var(--text-3);
+}
+.sm-pair-value {
+  font-size: calc(14 * var(--u));
 }
 .sm-item-name {
   display: inline-flex;
   align-items: center;
   gap: calc(5 * var(--u));
+  flex: none;
   font-size: calc(12 * var(--u));
   font-weight: 600;
   color: var(--text-2);
+  white-space: nowrap;
 }
 .sm-item-name .ic-sm {
   color: var(--text-3);
 }
 .sm-item-value {
+  flex: none;
   font-size: calc(15 * var(--u));
   font-weight: 700;
   line-height: 1;
@@ -1116,7 +1156,9 @@ html[data-theme='dark'] .dpv {
   margin-left: calc(2 * var(--u));
 }
 .sm-bar {
-  height: calc(8 * var(--u));
+  flex: 1;
+  min-width: calc(28 * var(--u));
+  height: calc(6 * var(--u));
   border-radius: var(--radius-pill);
   background: var(--bg-card-soft);
   overflow: hidden;
@@ -1134,6 +1176,7 @@ html[data-theme='dark'] .dpv {
   font-size: calc(10 * var(--u));
   line-height: 1.2;
   color: var(--text-3);
+  text-align: right;
 }
 
 /* ---- 便签 ---- */

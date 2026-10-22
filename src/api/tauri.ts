@@ -354,6 +354,8 @@ export interface AppConfig {
   suda_web_open_mode: string
   /** 工作台「自定义速达」槽位内容配置（suda1..suda4） */
   suda_custom_modules: SudaCustomModuleConfig[]
+  /** 工作台「系统资源」卡片显示的指标 id 列表（顺序即展示顺序；空 = 未自定义回退默认） */
+  sys_monitor_metrics: string[]
   /** 速达内嵌面板是否显示工具栏（默认不显示，隐藏时整个面板区域只渲染网页） */
   suda_panel_toolbar: boolean
   /** 速达卡片/图标全局缩放档位（issue #37）：0.8 小 / 1.0 标准 / 1.2 大 / 1.4 特大；分区级可覆盖 */
@@ -1051,6 +1053,16 @@ export interface SystemInfo {
   memUsedMb: number
   memTotalMb: number
   memPercent: number
+  /** 上行速率（字节/秒） */
+  netUpload: number
+  /** 下行速率（字节/秒） */
+  netDownload: number
+  /** 上行 + 下行合计速率（字节/秒） */
+  netTotalSpeed: number
+  /** 总流量：应用开始监控以来收发累计（字节） */
+  netTotalTraffic: number
+  /** 逻辑 CPU 线程数 */
+  cpuThreads: number
 }
 
 export interface ChatSession {

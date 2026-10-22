@@ -207,6 +207,10 @@ pub struct AppConfig {
     /// 工作台「自定义速达」槽位内容配置（suda1..suda4，见 struct 注释）
     #[serde(default)]
     pub suda_custom_modules: Vec<SudaCustomModuleConfig>,
+    /// 工作台「系统资源」卡片显示的指标 id 列表（顺序即展示顺序；空 = 未自定义，
+    /// 前端回退内置默认。纯前端读写经 save_config 整体落盘，后端不解释字段含义）
+    #[serde(default)]
+    pub sys_monitor_metrics: Vec<String>,
     /// 速达内嵌面板是否显示工具栏（地址栏 + 前进/后退/刷新；默认不显示，
     /// 隐藏时整个面板区域只渲染网页，返回速达走左侧导航）
     #[serde(default)]
@@ -537,6 +541,7 @@ impl Default for AppConfig {
             clipboard_paste_method: "auto".to_string(),
             suda_web_open_mode: "panel".to_string(),
             suda_custom_modules: Vec::new(),
+            sys_monitor_metrics: Vec::new(),
             suda_panel_toolbar: false,
             suda_icon_scale: 1.0,
             clipboard_image_enabled: true,

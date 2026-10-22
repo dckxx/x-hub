@@ -106,7 +106,8 @@ export const DASH_MODULES: DashModuleDef[] = [
     id: 'sysmon',
     title: '系统资源',
     defaultVariant: 'monitor',
-    variants: [v('monitor', '监视器', 2, 1, 4, 3, 'CPU / 内存')],
+    // minH=2：默认 4 个指标一行一个时 1 行高必裁切；显示项在布局编辑器卡片钮排配置
+    variants: [v('monitor', '监视器', 2, 2, 4, 3, 'CPU / 内存 / 网速等指标')],
   },
   {
     id: 'sticky1',

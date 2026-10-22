@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { Check, ChevronDown, GripVertical, LayoutGrid, X } from 'lucide-vue-next'
+import { Check, ChevronDown, GripVertical, LayoutGrid, SlidersHorizontal, X } from 'lucide-vue-next'
 import {
   DASH_COLS,
   MIN_SIZE,
@@ -22,6 +22,7 @@ import {
 import { startPreviewTick, stopPreviewTick } from '../composables/useDashPreviewData'
 import ClockCard from './ClockCard.vue'
 import DashModulePreview from './DashModulePreview.vue'
+import SysMonitorSettingsDialog from './SysMonitorSettingsDialog.vue'
 import WeatherCard from './WeatherCard.vue'
 
 /**
@@ -399,6 +400,13 @@ function canTitle(id: string): boolean {
   return id !== 'clock' && id !== 'weather'
 }
 
+/** 「系统资源」卡支持在编辑器里配置显示哪些指标（入口按钮，见 .le-cell-ctrl） */
+function canMetrics(id: string): boolean {
+  return id === 'sysmon'
+}
+
+const sysmonSettingsVisible = ref(false)
+
 async function openTitlePop(p: DashPlacement, e: PointerEvent) {
   closeVariantPop()
   titlePop.value = p
@@ -648,6 +656,14 @@ function previewComponent(id: string) {
                 @pointerdown.stop="openTitlePop(p, $event)"
               >Aa</button>
               <button
+                v-if="canMetrics(p.id)"
+                type="button"
+                class="le-cell-btn"
+                title="设置系统资源卡显示的指标"
+                aria-label="设置系统资源卡显示的指标"
+                @pointerdown.stop="sysmonSettingsVisible = true"
+              ><SlidersHorizontal :size="13" :stroke-width="2" aria-hidden="true" /></button>
+              <button
                 type="button"
                 class="le-cell-btn le-cell-remove"
                 :title="`移除${dashModuleTitle(p.id)}`"
@@ -754,6 +770,12 @@ function previewComponent(id: string) {
         </div>
       </div>
     </Teleport>
+
+    <!-- 系统资源卡显示设置（指标勾选 + 排序，保存走 config 整体落盘） -->
+    <SysMonitorSettingsDialog
+      :visible="sysmonSettingsVisible"
+      @close="sysmonSettingsVisible = false"
+    />
   </div>
 </template>
 

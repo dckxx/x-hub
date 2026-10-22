@@ -14,6 +14,7 @@ import {
   type DueBadge,
 } from '../utils/todoSchedule'
 import { sudaCustomConfigured, sudaCustomItems } from '../utils/sudaCustom'
+import { resolveSysmonMetrics, sysmonMetricDisplay } from '../utils/sysmonMetrics'
 import type { Countdown, Note, Resource, SudaCustomModuleConfig, Todo } from '../api/tauri'
 
 /**
@@ -132,13 +133,14 @@ function fmtRemain(c: Countdown): string {
 
 // ---- 系统资源 ----
 const sys = computed(() => store.state.systemInfo)
-const cpuPct = computed(() => Math.round(sys.value?.cpuUsage ?? 0))
-const memPct = computed(() => Math.round(sys.value?.memPercent ?? 0))
 const memLabel = computed(() => {
   const s = sys.value
   if (!s) return '—'
   return `${(s.memUsedMb / 1024).toFixed(1)} / ${(s.memTotalMb / 1024).toFixed(1)} GB`
 })
+// 显示哪些指标 + 每项的展示值：与真实卡片共用同一套口径（utils/sysmonMetrics，空配置回退内置默认）
+const sysmonMetrics = computed(() => resolveSysmonMetrics(store.state.config.sys_monitor_metrics))
+const sysmonDisplay = (id: string) => sysmonMetricDisplay(id, sys.value)
 
 // ---- 便签（slot 1 / 2）----
 const stickyText = computed<Record<number, string>>(() => {
@@ -326,9 +328,9 @@ export const dashPreviewData = {
   weatherLabel,
   cityText,
   weatherSubText,
-  cpuPct,
-  memPct,
   memLabel,
+  sysmonMetrics,
+  sysmonDisplay,
   stickyText,
   notesCount,
   tagCount,

@@ -194,6 +194,7 @@ const state = reactive<StoreState>({
     clipboard_paste_method: 'auto',
     suda_web_open_mode: 'panel',
     suda_custom_modules: [],
+    sys_monitor_metrics: [],
     suda_panel_toolbar: false,
     suda_icon_scale: 1,
     clipboard_image_enabled: true,
@@ -1572,6 +1573,13 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 「系统资源」卡片显示的指标 id 列表（空 = 未自定义，卡片回退内置默认；入口在布局编辑器） */
+  async function setSysMonitorMetrics(value: string[]) {
+    state.config.sys_monitor_metrics = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   /** 倒计时到点提示音开关 */
   async function setCountdownSound(value: boolean) {
     state.config.countdown_sound = value
@@ -2142,6 +2150,7 @@ export function useStore() {
     setDashboardMidContent,
     setDashboardLayout,
     setDashboardDefaultLayout,
+    setSysMonitorMetrics,
     setCountdownSound,
     setNoticeDuration,
     setClockQuote,

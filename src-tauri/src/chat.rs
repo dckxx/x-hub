@@ -350,7 +350,11 @@ where
             reqwest::Client::builder()
         }
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(300))
+        // 不能设总超时：SSE 的整个生成期都算「读正文」，总帽会把超长回复中途掐死
+        // （0.9.2 反馈「AI 回复被截断」的客户端侧成因）。改为连接 15s + 单次读 120s
+        // 空闲超时——只要上游还在吐字就不限时，真卡死才报错
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .read_timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| format!("HTTP 客户端初始化失败: {}", e))?;
 
@@ -451,6 +455,10 @@ where
     let mut pending = String::new();
     let mut last_flush = std::time::Instant::now();
     let mut sent_any = false;
+    // 终止判定：[DONE] 或任一帧带 finish_reason 都算完整。都没有就 EOF = 上游中途断流
+    //（服务端超时/网关掐线），此时静默当成正常结束就是「回复被截断」的来源——
+    // 已有正文时补提示标记，一个字都没有时直接报错
+    let mut terminated = false;
     loop {
         let mut line = String::new();
         // 读取与中断旗标竞速：取消时立刻掐断（哪怕上游一个字都还没吐）
@@ -459,6 +467,15 @@ where
             _ = wait_cancelled(&cancel) => return Err("已中断".into()),
         };
         if n == 0 {
+            if !terminated {
+                if out.is_empty() && tool_acc.is_empty() {
+                    return Err("上游连接中断（未返回任何内容）".into());
+                }
+                if !out.is_empty() {
+                    log::warn!("SSE 上游未终止就断流（已收 {} 字符），标记回复可能不完整", out.chars().count());
+                    out.push_str("\n\n> ⚠️ 连接中断，这条回复可能不完整。");
+                }
+            }
             break;
         }
         let trimmed = line.trim();
@@ -468,12 +485,20 @@ where
         if let Some(data) = trimmed.strip_prefix("data:") {
             let data = data.trim();
             if data == "[DONE]" {
+                terminated = true;
                 break;
             }
             let parsed: Value = match serde_json::from_str(data) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
+            // 部分兼容网关不发 [DONE]，靠末帧 finish_reason 收尾——同样算完整
+            if parsed["choices"][0]
+                .get("finish_reason")
+                .is_some_and(|v| !v.is_null())
+            {
+                terminated = true;
+            }
             // usage 通常在最后一个 chunk（开启 include_usage 后），或每个 chunk 都可能带
             if let Some(u) = parsed.get("usage") {
                 usage = usage_from_json(u);

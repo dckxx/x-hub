@@ -2,6 +2,7 @@
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { marked, Renderer } from 'marked'
 import DOMPurify from 'dompurify'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { Check, ChevronDown, CircleOff, Copy, MessageSquare, PanelRightClose, Plus, Send, Settings2, Square, X, Zap } from 'lucide-vue-next'
 import { PLATFORM_ENTRY_NAME, isPlatformModel, isTauri, tauriApi, type AccountStatus, type AgentApprovalAsk, type ChatMessage, type ChatModelConfig, type ChatSession, type ChatStreamEvent } from '../api/tauri'
 import AppSelect from './AppSelect.vue'
@@ -40,6 +41,8 @@ const streamingContent = ref('')
 const streamHtml = ref('')
 const streamError = ref('')
 const models = ref<ChatModelConfig[]>([])
+// 平台模型清单后台对账（chat-models-changed）的监听注销句柄
+let unlistenModelsChanged: UnlistenFn | null = null
 const selectedModel = ref('')
 const bodyEl = ref<HTMLElement | null>(null)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
@@ -913,11 +916,17 @@ onMounted(async () => {
     emit('resized', w, h)
   }
   await Promise.all([loadSessions(), loadModels()])
+  // 平台模型清单后台对账（约定 33 自愈）后刷新：服务端加减模型时，已打开的
+  // 对话面板不必重开也能拿到新清单（loadModels 会顺带归一当前选中值）
+  unlistenModelsChanged = await listen('chat-models-changed', () => {
+    void loadModels()
+  })
   if (isWindow.value) focusInput()
 })
 
 onBeforeUnmount(() => {
   cancelStreamRender()
+  unlistenModelsChanged?.()
   window.removeEventListener('click', onWindowClick)
   window.removeEventListener('keydown', onWindowKeydown)
   window.removeEventListener('resize', onWindowResize)

@@ -63,7 +63,8 @@ fn migrate(conn: &Connection) -> Result<()> {
           title TEXT NOT NULL DEFAULT '',
           content TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
-          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+          sort_order INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS tags (
@@ -532,6 +533,13 @@ fn migrate(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    // 提醒通知方式（弹窗/声音组合；'' = 老数据按 popup 处理，历史行为零变化）
+    if !todo_cols.iter().any(|c| c == "remind_notify_mode") {
+        conn.execute(
+            "ALTER TABLE todos ADD COLUMN remind_notify_mode TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
     if !todo_cols.iter().any(|c| c == "parent_id") {
         conn.execute(
             "ALTER TABLE todos ADD COLUMN parent_id INTEGER REFERENCES todos(id) ON DELETE CASCADE",
@@ -678,6 +686,10 @@ fn migrate(conn: &Connection) -> Result<()> {
     // 笔记自定义树图标（emoji，用户在标题旁设置；NULL = 默认文件图标）
     if !note_cols.iter().any(|c| c == "icon") {
         conn.execute("ALTER TABLE notes ADD COLUMN icon TEXT", [])?;
+    }
+    // 笔记手动排序位（组内拖拽；NULL = 未手动排序，同 todos.sort_order 口径）
+    if !note_cols.iter().any(|c| c == "sort_order") {
+        conn.execute("ALTER TABLE notes ADD COLUMN sort_order INTEGER", [])?;
     }
     // 标签内置位（「剪藏」标签不可改删；老库无此列）
     let tag_cols: Vec<String> = conn

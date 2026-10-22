@@ -94,6 +94,9 @@ pub struct Note {
     /// 自定义树图标（emoji，用户设置；None = 默认文件图标）
     #[serde(default)]
     pub icon: Option<String>,
+    /// 组内手动排序位（拖拽排序；None = 未手动排序）
+    #[serde(default)]
+    pub sort_order: Option<i64>,
 }
 
 /// 笔记文件夹（单归属、可嵌套；builtin=1 的「剪藏」不可改名/删除，ADR 0015）
@@ -175,6 +178,10 @@ pub struct Todo {
     /// 提醒是否已触发（到点发过通知即置 1，防后台线程每秒重复提醒）
     #[serde(default)]
     pub remind_fired: bool,
+    /// 提醒通知方式：both=弹窗+声音 / popup=仅弹窗 / sound=仅声音 / none=静默。
+    /// ''（老数据默认）按 popup 处理 = 历史行为零变化；归一见 repo::todo::normalize_notify_mode
+    #[serde(default)]
+    pub remind_notify_mode: String,
     /// 父待办 id（子待办缩进挂在父条目下；顶级为 NULL）
     #[serde(default)]
     pub parent_id: Option<i64>,

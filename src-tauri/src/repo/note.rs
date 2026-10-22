@@ -3,12 +3,18 @@ use crate::repo::now;
 use rusqlite::{params, Connection, Result};
 
 /// 笔记数据访问（速记改造，docs/speednote-plan.md）：
-/// - 列表口径固定「创建时间正序」（Q13–Q18），deleted_at IS NULL 的才是活笔记；
+/// - 速记视图口径「手动排序位升序在前，未排序按创建时间正序垫后」（NULL = 未手动排序，
+///   新建/移入即垫在组末，与「创建正序」时代的观感一致）；deleted_at IS NULL 的才是活笔记；
 /// - delete 语义 = 软删（写 deleted_at 进回收站），硬删走 purge；
 /// - folder_id / source_url 一次建行（create_in），剪藏与「首行成标题」共用。
 
 const NOTE_COLS: &str =
-    "id, title, content, created_at, updated_at, folder_id, source_url, deleted_at, icon";
+    "id, title, content, created_at, updated_at, folder_id, source_url, deleted_at, icon, sort_order";
+
+/// 速记树展示口径（组内拖拽排序）：手动拖过的（sort_order 非空）按位升序在前，
+/// 未排序的按创建时间正序垫后——速记列表本就「旧的在上、新笔记追加底部」，
+/// NULL 垫底恰好让新建笔记落组末，零迁移即与历史顺序一致。
+const LIST_ORDER: &str = "sort_order IS NULL ASC, sort_order ASC, created_at ASC, id ASC";
 
 pub fn create(conn: &Connection, title: &str) -> Result<Note> {
     create_in(conn, title, "", None, "")
@@ -67,7 +73,7 @@ pub fn list(conn: &Connection) -> Result<Vec<Note>> {
 /// 笔记列表（仅元信息，不拉正文）：外部浮层保存速记后主窗刷新列表用。
 pub fn list_meta(conn: &Connection) -> Result<Vec<Note>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, '', created_at, updated_at, folder_id, source_url, deleted_at, icon
+        "SELECT id, title, '', created_at, updated_at, folder_id, source_url, deleted_at, icon, sort_order
          FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC, id DESC",
     )?;
     let rows = stmt.query_map([], row_to_note)?;
@@ -75,11 +81,10 @@ pub fn list_meta(conn: &Connection) -> Result<Vec<Note>> {
 }
 
 /// 全量笔记（含正文，trashed=true 时为回收站）：速记视图一次性拉全量、前端切文件夹/
-/// 搜索本地过滤（≤3000 条上限），回收站界面也吃这一份。列表口径：创建时间正序，
-/// 旧的在上（Q17 按文档既定正序实现）。
+/// 搜索本地过滤（≤3000 条上限），回收站界面也吃这一份。列表口径见 LIST_ORDER。
 pub fn list_full(conn: &Connection, trashed: bool) -> Result<Vec<Note>> {
     let sql = format!(
-        "SELECT {NOTE_COLS} FROM notes WHERE deleted_at {} ORDER BY created_at ASC, id ASC",
+        "SELECT {NOTE_COLS} FROM notes WHERE deleted_at {} ORDER BY {LIST_ORDER}",
         if trashed { "IS NOT NULL" } else { "IS NULL" }
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -175,7 +180,9 @@ pub fn update_with_link_fixup(
     get(conn, id)
 }
 
-/// 移动单条笔记到文件夹（None = 树根）
+/// 移动单条笔记到文件夹（None = 树根）。跨组移动同时清空手动排序位——
+/// 带着原组的位置值进新组会按数值插进新组中间（甚至组顶），落点不可预期；
+/// 清空即垫到新组末尾（「新来的排最后」），与待办换组清 sort_order 同一口径。
 pub fn set_folder(conn: &Connection, id: i64, folder_id: Option<i64>) -> Result<()> {
     if let Some(fid) = folder_id {
         let known: i64 = conn.query_row(
@@ -190,7 +197,7 @@ pub fn set_folder(conn: &Connection, id: i64, folder_id: Option<i64>) -> Result<
         }
     }
     let affected = conn.execute(
-        "UPDATE notes SET folder_id = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE notes SET folder_id = ?1, sort_order = NULL, updated_at = ?2 WHERE id = ?3",
         params![folder_id, now(), id],
     )?;
     if affected == 0 {
@@ -199,6 +206,19 @@ pub fn set_folder(conn: &Connection, id: i64, folder_id: Option<i64>) -> Result<
         )));
     }
     Ok(())
+}
+
+/// 组内拖拽排序：按传入顺序写手动排序位（ids[i] 的 sort_order = i+1）。
+/// 前端按分组（文件夹/树根）计算完整顺序，后端不做分组解释（同 todo::reorder 口径）。
+pub fn reorder(conn: &Connection, ids: &[i64]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for (i, id) in ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE notes SET sort_order = ?1 WHERE id = ?2",
+            params![(i + 1) as i64, id],
+        )?;
+    }
+    tx.commit()
 }
 
 /// 设置/清除笔记自定义树图标（emoji；None = 恢复默认文件图标）
@@ -300,6 +320,7 @@ pub fn row_to_note(row: &rusqlite::Row) -> Result<Note> {
         source_url: row.get(6)?,
         deleted_at: row.get(7)?,
         icon: row.get(8)?,
+        sort_order: row.get(9)?,
     })
 }
 
@@ -404,12 +425,50 @@ mod tests {
         // 全量（跨文件夹，前端过滤的数据源）
         let all = list_full(&conn, false).unwrap();
         assert_eq!(all.iter().map(|n| n.id).collect::<Vec<_>>(), vec![a.id, b.id, c.id]);
-        // 创建时间正序（旧的在上）
+        // 未手动排序 = 创建时间正序（旧的在上）
         assert_eq!(all[0].id, a.id);
         // 回收站的从活列表消失
         trash(&conn, a.id).unwrap();
         assert_eq!(list_full(&conn, false).unwrap().len(), 2);
         assert_eq!(list_full(&conn, true).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reorder_sets_manual_order_and_unsorted_appends_last() {
+        let conn = init_in_memory().unwrap();
+        let f = crate::repo::note_folder::create(&conn, "F", None).unwrap();
+        let a = create_in(&conn, "A", "", Some(f.id), "").unwrap();
+        let b = create_in(&conn, "B", "", Some(f.id), "").unwrap();
+        let c = create_in(&conn, "C", "", Some(f.id), "").unwrap();
+        // 拖成 C, A, B：手动位升序在前
+        reorder(&conn, &[c.id, a.id, b.id]).unwrap();
+        let ids = |list: Vec<Note>| list.iter().map(|n| n.id).collect::<Vec<_>>();
+        assert_eq!(ids(list_full(&conn, false).unwrap()), vec![c.id, a.id, b.id]);
+        // 新建笔记（sort_order NULL）垫到组末，不插进已排好的顺序中间
+        let d = create_in(&conn, "D", "", Some(f.id), "").unwrap();
+        assert_eq!(ids(list_full(&conn, false).unwrap()), vec![c.id, a.id, b.id, d.id]);
+        // 其它文件夹与树根不受影响（只更新传入条目）
+        let r = create_in(&conn, "根", "", None, "").unwrap();
+        assert_eq!(get(&conn, r.id).unwrap().sort_order, None);
+    }
+
+    #[test]
+    fn set_folder_clears_sort_order_and_lands_last() {
+        let conn = init_in_memory().unwrap();
+        let f = crate::repo::note_folder::create(&conn, "F", None).unwrap();
+        let root_old = create_in(&conn, "根旧", "", None, "").unwrap();
+        let n = create_in(&conn, "夹内", "", Some(f.id), "").unwrap();
+        reorder(&conn, &[n.id]).unwrap();
+        assert_eq!(get(&conn, n.id).unwrap().sort_order, Some(1));
+        // 跨组移动清空手动位：垫到目标组（树根）末尾
+        set_folder(&conn, n.id, None).unwrap();
+        let moved = get(&conn, n.id).unwrap();
+        assert_eq!(moved.sort_order, None);
+        assert_eq!(moved.folder_id, None);
+        let list = list_full(&conn, false).unwrap();
+        assert_eq!(list.last().unwrap().id, n.id);
+        assert_eq!(list[0].id, root_old.id);
+        assert!(set_folder(&conn, n.id, Some(999)).is_err());
     }
 
     #[test]

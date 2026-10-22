@@ -141,25 +141,148 @@ pub fn rebind_shortcut(app: &AppHandle, previous: &str, next: &str) -> Result<()
         return Err("快捷键冲突".into());
     }
     if let Err(e) = register_toggle_shortcut(app, next) {
-        let mapped = format_shortcut_error(&e);
-        if !mapped.eq(&e) {
-            let _ = register_toggle_shortcut(app, previous);
+        // 旧键已反注册，任何失败都必须把它装回去，否则用户改坏一个键会连带丢掉原来那个。
+        // （旧实现靠 `mapped != e` 判断「是否认得这个错误」，认不出时就漏了回滚）
+        if let Err(restore_err) = register_toggle_shortcut(app, previous) {
+            log::warn!("[快捷键] 回滚旧键 {previous} 失败: {restore_err}");
         }
-        return Err(mapped);
+        return Err(format_shortcut_error(&e));
     }
     Ok(())
 }
 
+/// 是否「主键解析失败」类错误。判定必须先于冲突判定：插件把解析错误也写成
+/// `Couldn't recognize "X" as a valid HotKey Code …`——含 "HotKey" 字样，
+/// 若先判冲突就会把「键名不认识」误报成「快捷键冲突」（实测踩过）。
+pub fn is_parse_error(err: &str) -> bool {
+    err.contains("Couldn't recognize")
+        || err.contains("valid HotKey Code")
+        || err.contains("Unexpected hotkey string format")
+        || err.contains("hotkey should have the modifiers first")
+        || err.contains("Unexpected empty token")
+        || err.contains("UnsupportedKey")
+        || err.contains("InvalidFormat")
+        || err.contains("EmptyToken")
+}
+
 pub fn format_shortcut_error(err: &str) -> String {
-    if err.contains("HotKey") || err.contains("already") || err.contains("occupied") {
+    if is_parse_error(err) {
+        "快捷键格式无法识别，请重新录入（修饰键在前、单个主键，如 Ctrl+Shift+K）".to_string()
+    } else if is_conflict_error(err) {
         "快捷键冲突".to_string()
-    } else if err.contains("UnsupportedKey") || err.contains("InvalidFormat") || err.contains("EmptyToken") {
-        "快捷键格式无效，请重新录入（修饰键在前、单个主键，如 Ctrl+Shift+K）".to_string()
     } else {
         err.to_string()
     }
 }
 
 pub fn is_conflict_error(err: &str) -> bool {
-    err.contains("HotKey") || err.contains("already") || err.contains("occupied")
+    if is_parse_error(err) {
+        return false;
+    }
+    err.contains("already registered") || err.contains("already") || err.contains("occupied")
+}
+
+/// 允许无修饰键单键作快捷键的键：只放行功能键。
+/// 空格/字母/数字单键一旦注册就全局劫持——空格最狠，全系统输入框都打不出空格，
+/// 用户连回设置里改回来都困难（实测确认），故在写盘/注册前就拦下。
+fn is_standalone_key_allowed(key: &str) -> bool {
+    let k = key.trim();
+    let f = |s: &str| {
+        s.strip_prefix('F')
+            .and_then(|n| n.parse::<u32>().ok())
+            .map(|n| (1..=24).contains(&n))
+            .unwrap_or(false)
+    };
+    f(k)
+}
+
+/// 校验一个自定义快捷键的键值是否可保存（与前端 utils/shortcutKeys.ts 同口径）。
+/// 手工输入、老配置回填、IPC 直接调用都经这里，不能只靠前端录制器拦。
+pub fn validate_custom_shortcut(value: &str) -> Result<(), String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("快捷键不能为空".into());
+    }
+    let parsed = Shortcut::from_str(value)
+        .map_err(|_| "快捷键格式无法识别，请重新录入（修饰键在前、单个主键，如 Ctrl+Shift+K）".to_string())?;
+    // mods 为空 = 无修饰键的单键快捷键
+    if parsed.mods.is_empty() && !is_standalone_key_allowed(&parsed.key.to_string()) {
+        let key = parsed.key.to_string();
+        if key == "Space" {
+            return Err(
+                "空格不能单独作快捷键（会让所有程序都打不出空格）；请加修饰键，如 Ctrl+Shift+Space"
+                    .into(),
+            );
+        }
+        return Err(format!(
+            "「{key}」不能单独作快捷键（会劫持所有程序的这个键）；请加修饰键，如 Ctrl+Shift+{key}"
+        ));
+    }
+    Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- 错误串判定：解析失败必须先于冲突判定 ----
+    // 插件把「键名不认识」也写成 `Couldn't recognize "X" as a valid HotKey Code …`，
+    // 含 "HotKey" 字样；旧实现先判冲突，于是 `Ctrl+Process` 这类坏值被误报成「快捷键冲突」。
+    const REAL_PARSE_ERR: &str = "Couldn't recognize \"Process\" as a valid key for hotkey, if you feel like it should be, please report this to https://github.com/tauri-apps/muda";
+
+    #[test]
+    fn parse_error_is_not_reported_as_conflict() {
+        assert!(is_parse_error(REAL_PARSE_ERR));
+        assert!(!is_conflict_error(REAL_PARSE_ERR));
+        let msg = format_shortcut_error(REAL_PARSE_ERR);
+        assert!(msg.contains("格式无法识别"), "实际: {msg}");
+        assert!(!msg.contains("冲突"), "解析失败不该说成冲突: {msg}");
+    }
+
+    #[test]
+    fn real_conflict_error_still_mapped_to_conflict() {
+        let err = "HotKey already registered: HotKey { mods: CONTROL, key: Space }";
+        assert!(is_conflict_error(err));
+        assert!(!is_parse_error(err));
+        assert_eq!(format_shortcut_error(err), "快捷键冲突");
+    }
+
+    // ---- 单键劫持校验：空格/字母不许单独作快捷键，功能键放行 ----
+    #[test]
+    fn bare_space_is_rejected_with_actionable_hint() {
+        let msg = validate_custom_shortcut("Space").unwrap_err();
+        assert!(msg.contains("空格"), "实际: {msg}");
+        assert!(msg.contains("Ctrl+Shift+Space"), "要给出可照抄的例子: {msg}");
+    }
+
+    #[test]
+    fn bare_letter_is_rejected() {
+        assert!(validate_custom_shortcut("K").is_err());
+        assert!(validate_custom_shortcut("1").is_err());
+    }
+
+    #[test]
+    fn function_keys_may_stand_alone() {
+        for k in ["F1", "F9", "F12", "F24"] {
+            assert!(validate_custom_shortcut(k).is_ok(), "{k} 应放行");
+        }
+        // F25 不在插件支持范围内
+        assert!(validate_custom_shortcut("F25").is_err());
+    }
+
+    #[test]
+    fn space_with_modifiers_is_accepted() {
+        for k in ["Ctrl+Space", "Ctrl+Shift+Space", "Alt+Space"] {
+            assert!(validate_custom_shortcut(k).is_ok(), "{k} 应放行");
+        }
+    }
+
+    #[test]
+    fn malformed_input_rejected() {
+        assert!(validate_custom_shortcut("").is_err());
+        assert!(validate_custom_shortcut("Ctrl+").is_err());
+        assert!(validate_custom_shortcut("Ctrl+K+Shift").is_err());
+        assert!(validate_custom_shortcut("Ctrl+Process").is_err());
+    }
 }

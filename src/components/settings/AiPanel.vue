@@ -7,7 +7,8 @@
 //
 // 从 SettingsView.vue 拆出（见该文件顶部说明）：设置页按大类按需加载，
 // 首次打开只需外壳 + 当前大类的代码，切大类时才加载对应面板。
-import { computed, inject, onMounted, ref } from 'vue';
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { isPlatformModel, isTauri, tauriApi, PLATFORM_ENTRY_NAME, type AccountStatus, type ChatModelConfig } from '../../api/tauri';
 import AppSelect from '../AppSelect.vue';
 import AiProviders from '../AiProviders.vue';
@@ -108,7 +109,9 @@ function platformModel(id: string, baseUrl: string): ChatModelConfig {
   }
 }
 
-/// 开启平台额度：拉平台当前可用模型并整体写入配置（平台加/减模型时重新开关一次即同步）
+/// 开启平台额度：拉平台当前可用模型并整体写入配置。
+/// 后续服务端加减模型无需重开开关：启动 8s 对账 + 发送撞 400 自愈
+/// （`commands::sync_platform_models`）会自动对齐本地快照并广播 chat-models-changed。
 async function enablePlatform() {
   if (!isTauri() || platformBusy.value) return
   platformBusy.value = true
@@ -197,6 +200,9 @@ async function saveAgentSettings(patch: Parameters<typeof store.setAgentSettings
 const account = ref<AccountStatus | null>(null)
 const accountFailed = ref(false)
 
+// 平台模型清单后台对账（chat-models-changed）的监听注销句柄
+let unlistenModelsChanged: UnlistenFn | null = null
+
 onMounted(async () => {
   if (!isTauri()) return
   // 权限与个性化：从持久化配置读初始值（#t47）
@@ -215,6 +221,19 @@ onMounted(async () => {
   } catch {
     accountFailed.value = true
   }
+  // 设置页开着时后台对账完成（启动 8s / 发送 400 自愈）：开关态跟随最新清单，
+  // 不然会出现「配置里平台条目已被换血、开关还显示旧的开启数」
+  unlistenModelsChanged = await listen('chat-models-changed', async () => {
+    try {
+      platformModels.value = (await tauriApi.getChatModels()).filter(isPlatformModel)
+    } catch {
+      // 静默：下一次挂载会重查
+    }
+  })
+})
+
+onBeforeUnmount(() => {
+  unlistenModelsChanged?.()
 })
 </script>
 

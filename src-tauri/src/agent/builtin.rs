@@ -262,7 +262,7 @@ fn cap_lines(mut lines: Vec<String>) -> String {
 struct ListTodos;
 impl AgentTool for ListTodos {
     fn name(&self) -> &'static str { "list_todos" }
-    fn description(&self) -> &'static str { "列出待办（按 置顶/逾期/今天/有日期/无日期 分组，与界面一致）。查「我有什么待办」时用；不返回已完成项。" }
+    fn description(&self) -> &'static str { "列出待办（按 置顶/逾期/今天/有日期/无日期 分组，与界面一致）。仅当用户问到自己的待办/任务/安排时调用；不返回已完成项。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{}}) }
     fn execute(&self, _args: &Value, ctx: ToolCtx) -> ToolOutcome {
@@ -298,7 +298,7 @@ impl AgentTool for ListTodos {
 struct SearchNotes;
 impl AgentTool for SearchNotes {
     fn name(&self) -> &'static str { "search_notes" }
-    fn description(&self) -> &'static str { "按关键词搜索笔记（标题+正文，不含回收站）。需要找某篇笔记但不知道 id 时用；读全文用 get_note。" }
+    fn description(&self) -> &'static str { "按关键词搜索笔记（标题+正文，不含回收站）。仅当用户提到某篇笔记/记录且不知道 id 时调用；用户没提到笔记的内容直接回答，不要拿来「先看一眼」。读全文用 get_note。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"keyword":{"type":"string","description":"搜索关键词"}},"required":["keyword"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
@@ -312,7 +312,7 @@ impl AgentTool for SearchNotes {
 struct GetNote;
 impl AgentTool for GetNote {
     fn name(&self) -> &'static str { "get_note" }
-    fn description(&self) -> &'static str { "读单篇笔记全文（含所在文件夹与标签）。id 来自 list_notes/search_notes/global_search。" }
+    fn description(&self) -> &'static str { "读单篇笔记全文（含所在文件夹与标签）。id 来自 list_notes/search_notes/global_search；必须已有具体笔记 id 才调用，不要为了找笔记而试探。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"note_id":{"type":"integer","description":"笔记 id"}},"required":["note_id"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
@@ -328,7 +328,7 @@ impl AgentTool for GetNote {
 struct ListNotes;
 impl AgentTool for ListNotes {
     fn name(&self) -> &'static str { "list_notes" }
-    fn description(&self) -> &'static str { "列出笔记清单与文件夹树（不含正文）。找笔记入口用；需要正文再 get_note。可选按文件夹名过滤。" }
+    fn description(&self) -> &'static str { "列出笔记清单与文件夹树（不含正文）。仅当用户要看笔记目录/清单或按文件夹浏览时调用；与本地数据无关的对话不要调用。可选按文件夹名过滤。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"folder":{"type":"string","description":"按文件夹名过滤（精确匹配）"}}}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
@@ -359,7 +359,7 @@ impl AgentTool for ListNotes {
 struct ListResources;
 impl AgentTool for ListResources {
     fn name(&self) -> &'static str { "list_resources" }
-    fn description(&self) -> &'static str { "列出速达资源（应用/网页/文件）。可按大类过滤；launch_resource 需要 id。" }
+    fn description(&self) -> &'static str { "列出速达资源（应用/网页/文件）。仅当用户要启动或查看自己的速达资源时调用；launch_resource 需要 id。可按大类过滤。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"kind":{"type":"string","enum":["app","web","file"],"description":"按大类过滤，缺省=全部"}}}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
@@ -375,7 +375,7 @@ impl AgentTool for ListResources {
 struct ListCountdowns;
 impl AgentTool for ListCountdowns {
     fn name(&self) -> &'static str { "list_countdowns" }
-    fn description(&self) -> &'static str { "列出倒计时（含剩余时间与暂停态）。" }
+    fn description(&self) -> &'static str { "列出倒计时（含剩余时间与暂停态）。仅当用户问到自己的倒计时时调用。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{}}) }
     fn execute(&self, _args: &Value, ctx: ToolCtx) -> ToolOutcome {
@@ -388,7 +388,7 @@ impl AgentTool for ListCountdowns {
 struct GetStickies;
 impl AgentTool for GetStickies {
     fn name(&self) -> &'static str { "get_stickies" }
-    fn description(&self) -> &'static str { "读工作台便签（slot 1/2）的内容。" }
+    fn description(&self) -> &'static str { "读工作台便签（slot 1/2）的内容。仅当用户提到便签或其中内容时调用。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{}}) }
     fn execute(&self, _args: &Value, ctx: ToolCtx) -> ToolOutcome {
@@ -407,7 +407,7 @@ impl AgentTool for GetStickies {
 struct ListSnippets;
 impl AgentTool for ListSnippets {
     fn name(&self) -> &'static str { "list_snippets" }
-    fn description(&self) -> &'static str { "列提示词百宝箱（返回置顶态与标题，不含正文——需要正文用 get_snippet，需要改动用 update_snippet）。" }
+    fn description(&self) -> &'static str { "列提示词百宝箱（返回置顶态与标题，不含正文——需要正文用 get_snippet，需要改动用 update_snippet）。仅当用户提到提示词或常用片段时调用。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{}}) }
     fn execute(&self, _args: &Value, ctx: ToolCtx) -> ToolOutcome {
@@ -420,7 +420,7 @@ impl AgentTool for ListSnippets {
 struct GetSnippet;
 impl AgentTool for GetSnippet {
     fn name(&self) -> &'static str { "get_snippet" }
-    fn description(&self) -> &'static str { "读单条提示词的完整正文。id 来自 list_snippets；配合用户要求把某条提示词套用到给定内容。" }
+    fn description(&self) -> &'static str { "读单条提示词的完整正文。id 来自 list_snippets；配合用户要求把某条提示词套用到给定内容。没有具体 id 时不要调用。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"snippet_id":{"type":"integer","description":"提示词 id"}},"required":["snippet_id"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
@@ -434,7 +434,7 @@ impl AgentTool for GetSnippet {
 struct ReadClipboard;
 impl AgentTool for ReadClipboard {
     fn name(&self) -> &'static str { "read_clipboard" }
-    fn description(&self) -> &'static str { "读最近的剪贴板历史（可带关键词过滤）。图片条目只回元信息不回图。" }
+    fn description(&self) -> &'static str { "读最近的剪贴板历史（可带关键词过滤）。仅当用户提到剪贴板或复制过的内容时调用；图片条目只回元信息不回图。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"keyword":{"type":"string","description":"按内容过滤"},"limit":{"type":"integer","description":"最多几条（默认 10）"}}}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
@@ -455,7 +455,7 @@ impl AgentTool for ReadClipboard {
 struct GlobalSearch;
 impl AgentTool for GlobalSearch {
     fn name(&self) -> &'static str { "global_search" }
-    fn description(&self) -> &'static str { "跨 速达资源/笔记/待办 统一搜索。不确定目标在哪个模块时用；已知模块时优先用各自的 search/list。" }
+    fn description(&self) -> &'static str { "跨 速达资源/笔记/待办 统一搜索。仅当用户要找的内容确定属于本机数据、但不确定在哪个模块时调用；已知模块时用各自的 search/list，与本地数据无关的对话不要调用。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"keyword":{"type":"string"}},"required":["keyword"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
@@ -478,7 +478,7 @@ impl AgentTool for GlobalSearch {
 struct GetWeather;
 impl AgentTool for GetWeather {
     fn name(&self) -> &'static str { "get_weather" }
-    fn description(&self) -> &'static str { "查当前天气（需要应用内已设置城市且联网开关开启）。用户问天气时用。" }
+    fn description(&self) -> &'static str { "查当前天气（需要应用内已设置城市且联网开关开启）。仅当用户问天气时调用。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{}}) }
     fn execute(&self, _args: &Value, _ctx: ToolCtx) -> ToolOutcome {
@@ -525,7 +525,7 @@ const READABLE_SETTING_KEYS: &[&str] = &[
 ];
 impl AgentTool for GetSetting {
     fn name(&self) -> &'static str { "get_setting" }
-    fn description(&self) -> &'static str { "只读查询应用设置项（白名单内的展示类设置，如 online_enabled、weather_city、theme_mode）。只读：AI 不能改设置。" }
+    fn description(&self) -> &'static str { "只读查询应用设置项（白名单内的展示类设置，如 online_enabled、weather_city、theme_mode）。仅当用户问应用自身的设置时调用；只读：AI 不能改设置。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"key":{"type":"string","description":"设置项名；缺省列出全部可用项"}}}) }
     fn execute(&self, args: &Value, _ctx: ToolCtx) -> ToolOutcome {
@@ -1112,7 +1112,7 @@ struct ExtensionToolList;
 impl AgentTool for ExtensionToolList {
     fn name(&self) -> &'static str { "extension_tool_list" }
     fn description(&self) -> &'static str {
-        "列出扩展声明给 AI 的工具（service 扩展在 manifest.agent.tools 里自描述：名称/用途/参数/返回/档位）。用户的任务可能落在某个扩展的数据或功能上时，先调本工具发现，再用 extension_tool_call 调用。"
+        "列出扩展声明给 AI 的工具（service 扩展在 manifest.agent.tools 里自描述：名称/用途/参数/返回/档位）。仅当用户的任务可能落在某个扩展的数据或功能上时先调本工具发现，再用 extension_tool_call 调用；与扩展无关的对话不要调用。"
     }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{}}) }
@@ -1155,7 +1155,7 @@ impl AgentTool for ExtensionToolList {
 struct ExtensionToolCall;
 impl AgentTool for ExtensionToolCall {
     fn name(&self) -> &'static str { "extension_tool_call" }
-    fn description(&self) -> &'static str { "调用扩展声明的 AI 工具。ext 与 tool 取自 extension_tool_list 的清单，args 按该工具声明的参数传。写/危险档的工具按权限档需要用户确认，被拒时不要重试。" }
+    fn description(&self) -> &'static str { "调用扩展声明的 AI 工具。ext 与 tool 取自 extension_tool_list 的清单，args 按该工具声明的参数传；没先调 extension_tool_list 拿到清单时不要调用。写/危险档的工具按权限档需要用户确认，被拒时不要重试。" }
     // 静态档 Read 仅供 ReadOnly 模式的可见性过滤；实际审批档在 approval_for 按目标声明取
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value {
@@ -1252,6 +1252,33 @@ mod tests {
         assert_eq!(r.len(), 34, "§5 全量 30 个 + 0.9.0 create_subcategory + get_snippet + 扩展桥 2 个");
         let read = r.available(crate::agent::approval::PermissionMode::ReadOnly).len();
         assert_eq!(read, 15, "读 15 个（含扩展桥 extension_tool_list/call，静态 Read）");
+    }
+
+    /// 「要不要查」的工具侧门控（2026-10-21 修「随便说什么都去翻笔记/待办」）。
+    ///
+    /// flash 级模型对**工具描述**的就近匹配很敏感，光改 system prompt 不够：每个读工具的
+    /// description 都必须带一句「什么时候不要调用」的否定式门控。这里逐条盯住，防止后续
+    /// 重构顺手把措辞改回只有正向说明（那种描述下模型会把它当成「随时可用的顺手工具」）。
+    #[test]
+    fn read_tools_descriptions_carry_negative_gate() {
+        let r = reg();
+        let reads = [
+            "list_todos", "search_notes", "get_note", "list_notes", "list_resources",
+            "list_countdowns", "get_stickies", "list_snippets", "get_snippet",
+            "read_clipboard", "global_search", "get_weather", "get_setting",
+            "extension_tool_list", "extension_tool_call",
+        ];
+        for name in reads {
+            let d = r.get(name).expect(name).description();
+            assert!(
+                d.contains("仅当") || d.contains("不要"),
+                "读工具 {name} 的描述缺少否定式门控：{d}"
+            );
+        }
+        // 通用型的两个读工具必须显式点名「与本地数据无关时不要调用」——
+        // 它们是最容易被拿来当兜底搜刮的（global_search 一次扫三个模块）
+        assert!(r.get("global_search").unwrap().description().contains("与本地数据无关的对话不要调用"));
+        assert!(r.get("extension_tool_call").unwrap().description().contains("没先调 extension_tool_list"));
     }
 
     /// 扩展桥的审批档位覆写：approval_for 按目标工具声明取档；宿主未就绪/目标不存在

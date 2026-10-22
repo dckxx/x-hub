@@ -1,11 +1,21 @@
 import { computed, nextTick, ref } from 'vue'
 import { isTauri } from '../api/tauri'
 import { reportClientError } from '../utils/error-report'
+import {
+  formatShortcutTokens,
+  modifierTokenFromEvent,
+  shortcutKeyFromEvent,
+  validateShortcutTokens,
+} from '../utils/shortcutKeys'
 
 /**
- * 快捷键录入（录制）共用逻辑：设置页的 4 个可自定义快捷键（主窗显隐 / 剪贴板 /
- * 全局搜索 / AI 对话）共用，避免四套几乎相同的状态/函数重复维护。
+ * 快捷键录入（录制）共用逻辑：设置页的 5 个可自定义快捷键（主窗显隐 / 剪贴板 /
+ * 全局搜索 / AI 对话 / 速记）共用，避免五套几乎相同的状态/函数重复维护。
  * 支持手动输入 + 按键录制，失焦/回车自动保存。
+ *
+ * 按键归一与合法性校验抽在 utils/shortcutKeys.ts（纯函数、带单测），这里只管状态机：
+ * 修饰键按下只累积显示，主键按下即定稿并保存；录到不合法组合时给出可读提示并还原，
+ * 绝不把坏值落盘（旧实现会把裸空格存成全局快捷键，见该文件的实测说明）。
  */
 
 const IS_MAC =
@@ -18,39 +28,6 @@ export function normalizeShortcutDisplay(s: string): string {
     .split('+')
     .map((p) => (p === 'CommandOrControl' ? 'Ctrl' : p))
     .join('+')
-}
-
-function normalizeShortcutKey(e: KeyboardEvent): string {
-  // 仅依据 e.key 判断修饰键，切勿使用 e.ctrlKey / e.metaKey 状态判断，
-  // 否则组合键中的普通键（如 Ctrl 下的 K）会被误判为修饰键导致主键丢失
-  switch (e.key) {
-    case 'Control':
-      return IS_MAC ? 'CommandOrControl' : 'Ctrl'
-    case 'Meta':
-      // macOS: Cmd；Windows: Win 键（插件在 Windows 上 Super 才映射 Win）
-      return IS_MAC ? 'CommandOrControl' : 'Super'
-    case 'Alt':
-      return 'Alt'
-    case 'Shift':
-      return 'Shift'
-    case ' ':
-      return 'Space' // 插件只认 "SPACE"，不认空格字符
-    default:
-      return e.key.length === 1 ? e.key.toUpperCase() : e.key
-  }
-}
-
-const MODIFIER_ORDER = ['CommandOrControl', 'Ctrl', 'Super', 'Alt', 'Shift']
-
-function formatShortcutDisplay(keys: Set<string>): string {
-  const parts: string[] = []
-  for (const mod of MODIFIER_ORDER) {
-    if (keys.has(mod)) parts.push(mod)
-  }
-  for (const key of keys) {
-    if (!MODIFIER_ORDER.includes(key)) parts.push(key)
-  }
-  return parts.join('+')
 }
 
 export interface ShortcutRecorderOptions {
@@ -82,6 +59,13 @@ export function useShortcutRecorder(options: ShortcutRecorderOptions) {
       error.value = ''
       return
     }
+    // 手工输入的旁路同样过一遍校验：单独一个空格/字母存进去就是全局劫持该按键
+    const invalid = validateShortcutTokens(v.split('+').map((p) => p.trim()).filter(Boolean))
+    if (invalid) {
+      error.value = invalid
+      value.value = saved.value
+      return
+    }
     saving.value = true
     error.value = ''
     try {
@@ -101,16 +85,21 @@ export function useShortcutRecorder(options: ShortcutRecorderOptions) {
     previous.value = value.value
     listening.value = true
     value.value = ''
+    error.value = ''
     pressedKeys.value = new Set()
     void nextTick(() => inputRef.value?.focus())
+  }
+
+  function cancelListening() {
+    listening.value = false
+    pressedKeys.value = new Set()
+    value.value = previous.value
   }
 
   function onBlur() {
     if (listening.value) {
       // 录制中焦点离开：取消录制并恢复原值
-      listening.value = false
-      pressedKeys.value = new Set()
-      value.value = previous.value
+      cancelListening()
       return
     }
     void commit()
@@ -121,20 +110,32 @@ export function useShortcutRecorder(options: ShortcutRecorderOptions) {
     e.preventDefault()
     e.stopPropagation()
     if (e.key === 'Escape') {
-      listening.value = false
-      pressedKeys.value = new Set()
-      value.value = previous.value
+      cancelListening()
       return
     }
-    if (['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) {
-      pressedKeys.value.add(normalizeShortcutKey(e))
-      value.value = formatShortcutDisplay(pressedKeys.value)
+    // 修饰键先判：它们不该走「物理键位 → 主键」那条归一，否则 Control/Shift 会被
+    // shortcutKeyFromEvent 当成无法识别的主键丢掉，Ctrl+空格 就退化成「裸空格」被拒
+    const modifier = modifierTokenFromEvent(e, IS_MAC)
+    if (modifier) {
+      pressedKeys.value.add(modifier)
+      value.value = formatShortcutTokens(pressedKeys.value)
       return
     }
-    // 主键按下即完成录制（一个快捷键只有一个主键），避免后续按键污染组合，随后自动保存
-    pressedKeys.value.add(normalizeShortcutKey(e))
-    const display = formatShortcutDisplay(pressedKeys.value)
-    if (!display) return
+    // 输入法组合态（中文选词中）的按键不是用户想录的快捷键，直接忽略：
+    // 硬录下来会得到 "Ctrl+Process"，后端解析必然失败
+    const token = shortcutKeyFromEvent(e)
+    if (!token) return
+    // 主键按下即完成录制（一个快捷键只有一个主键），避免后续按键污染组合
+    const keys = new Set(pressedKeys.value)
+    keys.add(token)
+    const display = formatShortcutTokens(keys)
+    const invalid = validateShortcutTokens(keys)
+    if (invalid) {
+      // 不保存、不留在录入态空等：还原成原值并说明原因（如「空格不能单独作快捷键」）
+      error.value = invalid
+      cancelListening()
+      return
+    }
     value.value = display
     listening.value = false
     pressedKeys.value = new Set()

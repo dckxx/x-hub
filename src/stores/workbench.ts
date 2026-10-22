@@ -38,7 +38,7 @@ import {
 const WRITE_CMD_DOMAIN: Record<string, string> = {
   // todos / todo-tags
   createTodo: 'todos', toggleTodo: 'todos', updateTodo: 'todos', deleteTodo: 'todos',
-  scheduleTodo: 'todos', reorderTodoOrders: 'todos', moveTodoChild: 'todos',
+  scheduleTodo: 'todos', setTodoNotifyMode: 'todos', reorderTodoOrders: 'todos', moveTodoChild: 'todos',
   setTodoDescription: 'todos', setTodoPinned: 'todos', setTodoRepeat: 'todos',
   completeTodoRecurring: 'todos', undoTodoRecurring: 'todos',
   createTodoTag: 'todoTags', updateTodoTag: 'todoTags', deleteTodoTag: 'todoTags', setTodoTags: 'todoTags',
@@ -204,6 +204,7 @@ const state = reactive<StoreState>({
     font_prompt: 1,
     font_todo: 1,
     note_editor_mode: 'wysiwyg',
+    note_ai_model: '',
     runtime_strategy: 'auto',
     service_auto_trust: false,
     sidebar_extensions: [],
@@ -672,6 +673,13 @@ export function useStore() {
     await tauriApi.setSudaWebOpenMode(mode)
   }
 
+  /** 速记 AI 深度整理模型（''=自动）：设置「功能 → 速记」配置；无专属命令，saveConfig 整体落盘 */
+  async function setNoteAiModel(v: string) {
+    state.config.note_ai_model = v
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   /** 显式以独立应用内浏览器窗口打开网页资源（右键菜单，绕过默认打开方式） */
   async function openResourceInWindow(id: number) {
     await tauriApi.sudaBrowserOpen(id)
@@ -720,7 +728,7 @@ export function useStore() {
   // ---- 笔记（速记改造：文件夹树 / 回收站 / 响应式标签映射） ----
   function localNote(id: number, title: string, content: string, folderId: number | null): Note {
     const now = new Date().toISOString()
-    return { id, title, content, folder_id: folderId, source_url: '', deleted_at: null, icon: null, created_at: now, updated_at: now }
+    return { id, title, content, folder_id: folderId, source_url: '', deleted_at: null, icon: null, sort_order: null, created_at: now, updated_at: now }
   }
 
   /** 新建笔记：folderId = 当前选中文件夹（null = 树根落根），初始正文同事务写入（修缺陷②） */
@@ -839,11 +847,26 @@ export function useStore() {
     }
   }
 
-  /** 移动单条笔记到文件夹（folderId = null 回树根） */
+  /** 移动单条笔记到文件夹（folderId = null 回树根）。跨组移动清空手动排序位（后端同口径），
+   *  带着原组位置值进新组会按数值插进新组中间，落点不可预期 */
   async function setNoteFolder(noteId: number, folderId: number | null) {
     if (isTauri()) await tauriApi.setNoteFolder(noteId, folderId)
     const n = state.notes.find((x) => x.id === noteId)
-    if (n) n.folder_id = folderId
+    if (n) {
+      n.folder_id = folderId
+      n.sort_order = null
+    }
+  }
+
+  /** 笔记组内拖拽排序：orderedIds 顺序即目标分组（文件夹/树根）的完整新顺序。
+   *  逐条回写 sort_order（树的组内排序是 computed，值更新即重排） */
+  async function reorderNotes(orderedIds: number[]) {
+    if (isTauri()) await tauriApi.reorderNoteOrders(orderedIds)
+    const order = new Map(orderedIds.map((id, i) => [id, i + 1]))
+    for (const n of state.notes) {
+      const v = order.get(n.id)
+      if (v != null) n.sort_order = v
+    }
   }
 
   /** 设置/清除笔记自定义树图标（emoji；icon = null 恢复默认） */
@@ -914,6 +937,7 @@ export function useStore() {
           repeat_count: null,
           repeat_done_count: 0,
           repeat_last_done_at: null,
+          remind_notify_mode: '',
         }
     state.todos.push(t)
     // 顶级待办落入「手动排序过」的分组时（组内已有 sort_order 非空条目），
@@ -1012,6 +1036,20 @@ export function useStore() {
     }
     // 截止日期决定分组归属，换组后原手动顺序失效，同步清空排序位
     const updated = { ...state.todos[i], due_at: dueAt, remind_at: remindAt, remind_fired: false, sort_order: null, updated_at: new Date().toISOString() }
+    state.todos[i] = updated
+    return updated
+  }
+
+  /** 设置提醒通知方式（both/popup/sound/none）：不动提醒时刻、不重新武装已触发的提醒 */
+  async function setTodoNotifyMode(id: number, mode: string) {
+    const i = state.todos.findIndex((t) => t.id === id)
+    if (i < 0) return null
+    if (isTauri()) {
+      const updated = await tauriApi.setTodoNotifyMode(id, mode)
+      state.todos[i] = updated
+      return updated
+    }
+    const updated = { ...state.todos[i], remind_notify_mode: mode, updated_at: new Date().toISOString() }
     state.todos[i] = updated
     return updated
   }
@@ -2021,6 +2059,7 @@ export function useStore() {
     setResourcesZone,
     reorderResourcesZoned,
     setSudaWebOpenMode,
+    setNoteAiModel,
     openResourceInWindow,
     openWebPanel,
     sudaCustomConfigOf,
@@ -2042,6 +2081,7 @@ export function useStore() {
     refreshNoteFolders,
     reorderNoteFolders,
     setNoteFolder,
+    reorderNotes,
     setNoteIcon,
     purgeAllTrashedNotes,
     renameTag,
@@ -2052,6 +2092,7 @@ export function useStore() {
     updateTodo,
     deleteTodo,
     scheduleTodo,
+    setTodoNotifyMode,
     reorderTodos,
     moveTodoChild,
     refreshTodos,

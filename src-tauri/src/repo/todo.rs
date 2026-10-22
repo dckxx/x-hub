@@ -4,7 +4,7 @@ use crate::todo_recurrence;
 use rusqlite::{params, Connection, Result};
 
 const COLS: &str =
-    "id, title, done, priority, created_at, updated_at, completed_at, due_at, remind_at, remind_fired, parent_id, sort_order, version, description, pinned, repeat_mode, repeat_every, repeat_unit, repeat_weekdays, repeat_month_day, repeat_month_nth, repeat_end_mode, repeat_end_at, repeat_count, repeat_done_count, repeat_last_done_at";
+    "id, title, done, priority, created_at, updated_at, completed_at, due_at, remind_at, remind_fired, parent_id, sort_order, version, description, pinned, repeat_mode, repeat_every, repeat_unit, repeat_weekdays, repeat_month_day, repeat_month_nth, repeat_end_mode, repeat_end_at, repeat_count, repeat_done_count, repeat_last_done_at, remind_notify_mode";
 
 pub fn list(conn: &Connection) -> Result<Vec<Todo>> {
     let mut stmt = conn.prepare(&format!(
@@ -602,7 +602,29 @@ pub fn row_to_todo(row: &rusqlite::Row) -> Result<Todo> {
         repeat_count: row.get(23)?,
         repeat_done_count: row.get(24)?,
         repeat_last_done_at: row.get(25)?,
+        remind_notify_mode: row.get(26)?,
     })
+}
+
+/// 提醒通知方式归一：合法值 both/popup/sound/none，其余（含空串 = 老数据）回落 popup。
+/// popup = 右下角通知卡 + 应用内 toast（历史行为）；sound = 前端 WebAudio 提示音（倒计时同款）。
+pub fn normalize_notify_mode(mode: &str) -> &'static str {
+    match mode {
+        "both" => "both",
+        "sound" => "sound",
+        "none" => "none",
+        _ => "popup",
+    }
+}
+
+/// 设置提醒通知方式。**不改提醒时刻、不重置 remind_fired**：对已触发过的历史提醒，
+/// 换个模式不该把它重新引爆（重新武装只发生在改提醒时刻的排期路径，见 schedule）。
+pub fn set_notify_mode(conn: &Connection, id: i64, mode: &str) -> Result<Todo> {
+    conn.execute(
+        "UPDATE todos SET remind_notify_mode = ?1, updated_at = ?2, version = version + 1 WHERE id = ?3",
+        params![normalize_notify_mode(mode), now(), id],
+    )?;
+    get(conn, id)
 }
 
 #[cfg(test)]
@@ -612,6 +634,23 @@ mod tests {
 
     fn setup() -> Connection {
         init_in_memory().unwrap()
+    }
+
+    #[test]
+    fn notify_mode_normalizes_and_set_preserves_fired() {
+        let conn = setup();
+        let t = create(&conn, "带提醒", None, None).unwrap();
+        schedule(&conn, t.id, Some(1), Some(1)).unwrap();
+        mark_remind_fired(&conn, t.id).unwrap();
+        // 非法值/空串（老数据）归一为 popup
+        assert_eq!(normalize_notify_mode(""), "popup");
+        assert_eq!(normalize_notify_mode("weird"), "popup");
+        assert_eq!(normalize_notify_mode("both"), "both");
+        // 换模式不动 remind_fired：已触发过的提醒不会被重新引爆
+        let t = set_notify_mode(&conn, t.id, "both").unwrap();
+        assert_eq!(t.remind_notify_mode, "both");
+        assert!(t.remind_fired);
+        assert!(list_due_reminders(&conn, 2).unwrap().is_empty());
     }
 
     #[test]

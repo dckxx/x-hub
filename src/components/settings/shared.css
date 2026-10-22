@@ -1003,4 +1003,19 @@
   line-height: 1.5;
 }
 
+/* 速记 · AI 深度整理模型：来源 + 模型两级下拉（行内右对齐竖排） */
+.settings-view .notes-ai-model{
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.settings-view .notes-ai-hint{
+  max-width: 240px;
+  text-align: right;
+  font-size: 0.6875rem;
+  color: var(--text-4);
+}
+
 /* 更改数据存储路径弹窗 */

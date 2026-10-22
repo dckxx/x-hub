@@ -67,6 +67,10 @@ use commands::DbState;
 use rusqlite::Connection;
 use tauri::{Listener, Manager};
 
+/// 全局 AppHandle：setup 时登记，供拿不到 handle 的上下文广播事件用
+/// （如 chat.rs 的平台 400 自愈路径触发 `chat-models-changed`）。
+pub static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
 /// 初始化数据库并返回连接
 fn init_database() -> Result<Connection, Box<dyn std::error::Error>> {
     let app_data_dir = crate::paths::data_root().to_path_buf();
@@ -617,6 +621,9 @@ pub fn run() {
         .setup(|app| {
             log::info!("========== x-hub 启动 ==========");
 
+            // 全局 handle 登记：无 handle 上下文（chat.rs 的 400 自愈等）广播事件用
+            let _ = crate::APP_HANDLE.set(app.handle().clone());
+
             // 资产协议作用域：**只**放行必要的子目录（图标 / 壁纸 / 剪贴板图片 / 扩展），
             // 绝不放行整个数据根，也绝不写回 tauri.conf 的 `$APPDATA/**`。
             //
@@ -687,6 +694,21 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 account::verify_session_on_startup(&account_handle).await;
             });
+
+            // 平台模型清单启动对账（约定 33 自愈）：客户端快照只在「打开平台额度开关」
+            // 那一刻拉过一次，服务端后台加减模型后不会自己更新。延后 8s 静默对账一次
+            // （避开启动期争抢），有变化由 sync_platform_models 落盘并广播
+            // chat-models-changed；失败只落日志，下次发送撞 400 的自愈路径还会再试。
+            {
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                    match crate::commands::sync_platform_models().await {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {}
+                        Err(e) => log::warn!("启动平台模型对账失败: {e}"),
+                    }
+                });
+            }
 
             // 启动扩展反向代理（/svc/<extId>/* → 127.0.0.1:<service 端口>，统一加 CORS 头）
             let proxy_port = tauri::async_runtime::block_on(proxy::start(app.handle().clone()))
@@ -935,6 +957,7 @@ pub fn run() {
             commands::delete_note_folder,
             commands::reorder_note_folders,
             commands::set_note_folder,
+            commands::reorder_note_orders,
             commands::set_note_icon,
             commands::purge_all_trashed_notes,
             commands::gc_orphan_note_images,
@@ -950,6 +973,7 @@ pub fn run() {
             commands::update_todo,
             commands::delete_todo,
             commands::schedule_todo,
+            commands::set_todo_notify_mode,
             commands::reorder_todo_orders,
             commands::move_todo_child,
             commands::set_todo_description,

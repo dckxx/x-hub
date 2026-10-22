@@ -486,10 +486,16 @@ onMounted(async () => {
     unlistenTodoTagsChanged = await on('todo-tags-changed', () => {
       void store.refreshTodoTags()
     })
-    // 待办提醒到点：toast 提示（系统通知由后端 todo_reminder 直接发）
+    // 待办提醒到点：按条目的提醒方式门控（右下角通知卡由后端按模式发；''=popup 历史行为）
+    // popup/both → toast；sound/both → WebAudio 提示音（倒计时同款，仅主窗播放避免多窗重音）
     unlistenTodoRemind = await on<Todo>('todo-remind', (e) => {
-      const title = e.payload?.title ?? ''
-      showToast(title ? `待办提醒：「${title}」` : '待办提醒时间到')
+      const t = e.payload
+      const mode = t?.remind_notify_mode === 'both' || t?.remind_notify_mode === 'sound' ? t.remind_notify_mode : 'popup'
+      if (mode !== 'popup') playChime()
+      if (mode !== 'sound') {
+        const title = t?.title ?? ''
+        showToast(title ? `待办提醒：「${title}」` : '待办提醒时间到')
+      }
     })
     // 桌面悬浮球动作（ADR 0004）：切视图 / 全局搜索 / 新建速记
     // （Rust trigger 已先显示主窗口；剪贴板 act:clipboard 在 Rust 直呼浮层，不经这里）

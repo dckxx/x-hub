@@ -27,6 +27,7 @@ import {
 } from '../utils/todoSchedule'
 import { useTodoSubDrag } from '../composables/useTodoSubDrag'
 import ConfirmDialog from './ConfirmDialog.vue'
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 
 /**
  * 待办行（TodoCard 的递归子组件）：父条目与子待办共用一套行渲染。
@@ -105,6 +106,40 @@ const tagChips = computed(() => {
   return store.state.todoTags.filter((t) => ids.includes(t.id))
 })
 const remindOn = computed(() => !props.todo.done && props.todo.remind_at != null)
+
+// ---- 提醒通知方式快捷切换（徽标点击弹菜单；编辑弹层里也能设，同一份 remind_notify_mode）----
+const NOTIFY_MODE_ITEMS: { value: string; label: string }[] = [
+  { value: 'both', label: '弹窗 + 声音' },
+  { value: 'popup', label: '仅弹窗（默认）' },
+  { value: 'sound', label: '仅声音' },
+  { value: 'none', label: '静默' },
+]
+const notifyMode = computed(() => {
+  const v = props.todo.remind_notify_mode
+  return v === 'both' || v === 'sound' || v === 'none' ? v : 'popup'
+})
+/** 徽标上的模式后缀：默认（popup）不显示，保持历史样式 */
+const notifyModeSuffix = computed(
+  () => ({ both: ' · 弹窗+声音', sound: ' · 仅声音', none: ' · 静默', popup: '' })[notifyMode.value],
+)
+const notifyMenu = ref<{ x: number; y: number } | null>(null)
+const notifyMenuItems = computed<ContextMenuItem[]>(() =>
+  NOTIFY_MODE_ITEMS.map((m) => ({
+    label: m.value === notifyMode.value ? `✓ ${m.label}` : m.label,
+    onClick: () => void pickNotifyMode(m.value),
+  })),
+)
+function openNotifyMenu(e: MouseEvent) {
+  notifyMenu.value = { x: e.clientX, y: e.clientY }
+}
+async function pickNotifyMode(mode: string) {
+  notifyMenu.value = null
+  try {
+    await store.setTodoNotifyMode(props.todo.id, mode)
+  } catch (e) {
+    showToast(`设置失败：${typeof e === 'string' ? e : String(e)}`)
+  }
+}
 const showProgress = computed(() => !props.isSub && !props.todo.done && kids.value.length > 0)
 
 function onBadgeClick(e: MouseEvent) {
@@ -607,10 +642,16 @@ function hideTip() {
             <CalendarDays v-else :size="10" :stroke-width="2" />
             {{ badge.text }}
           </button>
-          <span v-if="remindOn && todo.remind_at != null" class="todo-badge remind" title="到点弹提醒">
+          <button
+            v-if="remindOn && todo.remind_at != null"
+            class="todo-badge remind"
+            type="button"
+            title="点击切换提醒通知方式（弹窗/声音）"
+            @click.stop="openNotifyMenu"
+          >
             <Bell :size="10" :stroke-width="2" />
-            提醒 {{ fmtHM(todo.remind_at) }}
-          </span>
+            提醒 {{ fmtHM(todo.remind_at) }}{{ notifyModeSuffix }}
+          </button>
           <span v-if="repeatText" class="todo-badge repeat" :title="repeatTitle">
             <Repeat :size="10" :stroke-width="2" />
             {{ repeatText }}
@@ -769,6 +810,14 @@ function hideTip() {
     confirm-text="确认并勾选子项"
     @confirm="onKidsConfirm"
     @cancel="onKidsCancel"
+  />
+
+  <ContextMenu
+    :visible="notifyMenu != null"
+    :x="notifyMenu?.x ?? 0"
+    :y="notifyMenu?.y ?? 0"
+    :items="notifyMenuItems"
+    @close="notifyMenu = null"
   />
 </template>
 

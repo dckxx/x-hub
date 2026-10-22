@@ -206,6 +206,11 @@ function onMoveNote(noteId: number, folderId: number | null) {
   void store.setNoteFolder(noteId, folderId)
 }
 
+/** 笔记组内拖拽排序（文件夹/树根分组内）：ids 顺序即该组完整新顺序 */
+function onReorderNotes(ids: number[]) {
+  void store.reorderNotes(ids)
+}
+
 function onReorderFolders(moves: { id: number; parent_id: number | null; sort_order: number }[]) {
   void store.reorderNoteFolders(moves)
 }
@@ -268,6 +273,7 @@ defineExpose({ openNote, createNote })
       @purge-note="onPurgeNote"
       @purge-all="onPurgeAll"
       @move-note="onMoveNote"
+      @reorder-notes="onReorderNotes"
       @reorder-folders="onReorderFolders"
     />
 

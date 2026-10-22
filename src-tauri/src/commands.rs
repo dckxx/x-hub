@@ -797,6 +797,15 @@ pub fn set_note_folder(
     note::set_folder(&conn, note_id, folder_id).map_err(err_str)
 }
 
+/// 笔记组内拖拽排序：按传入顺序写手动排序位（前端按分组计算完整顺序）
+#[tauri::command]
+pub fn reorder_note_orders(state: State<'_, DbState>, ids: Vec<i64>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    note::reorder(&conn, &ids).map_err(err_str)?;
+    log::debug!("笔记排序更新: {} 条", ids.len());
+    Ok(())
+}
+
 // ---------- 笔记图片孤儿 GC（只手动触发；dry_run 先出报告，确认后才真删） ----------
 
 /// 收集 notes/images 下全部图片文件名，与「未永久删除笔记（含回收站）」正文里的
@@ -994,6 +1003,23 @@ pub fn delete_todo(app: tauri::AppHandle, state: State<'_, DbState>, id: i64) ->
         log::info!("删除待办: id={} (级联删除子待办 {} 条)", id, kids.len());
     }
     Ok(())
+}
+
+/// 设置待办提醒通知方式（both/popup/sound/none，非法值归一为 popup）。
+/// 不重置 remind_fired：改模式不是改排期，已触发过的提醒不该被重新引爆。
+#[tauri::command]
+pub fn set_todo_notify_mode(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    id: i64,
+    mode: String,
+) -> Result<Todo, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let todo = todo::set_notify_mode(&conn, id, &mode).map_err(err_str)?;
+    drop(conn);
+    let _ = app.emit("todos-changed", ());
+    log::info!("待办提醒方式: id={} mode={}", todo.id, todo.remind_notify_mode);
+    Ok(todo)
 }
 
 /// 设置待办截止/提醒时刻（毫秒时间戳，None 即清除）；同时重置提醒触发标记
@@ -2072,6 +2098,9 @@ fn set_configured_shortcut(
     if shortcut.is_empty() {
         return Err("快捷键不能为空".into());
     }
+    // 格式与「单键劫持」校验放在最前：裸空格/裸字母一旦注册就全局吞键，
+    // 用户连回设置里改回来都困难（实测：空格单键会让所有程序打不出空格）
+    crate::shortcut::validate_custom_shortcut(shortcut)?;
 
     let mut config = crate::config::load();
     let previous = config_field(&config, &which);
@@ -2154,6 +2183,8 @@ pub fn set_shortcut_enabled(
         if value.trim().is_empty() {
             return Err("尚未设置快捷键".into());
         }
+        // 存量坏值兜底：老版本可能已把裸空格/裸字母存进配置，启用时同样拦下
+        crate::shortcut::validate_custom_shortcut(&value)?;
         // 只在实际未注册时注册（已注册则幂等跳过，避免「已注册」冲突）
         if !crate::shortcut::is_shortcut_registered(&app, &value) {
             if let Err(e) = crate::shortcut::register_toggle_shortcut(&app, &value) {
@@ -4158,23 +4189,8 @@ pub fn save_chat_models(models: Vec<ChatModelConfig>) -> Result<Vec<ChatModelCon
         m.api_key.clear();
         next.push(m);
     }
-    // 默认模型归一：无默认则第一个为默认；多默认只保留第一个
-    let has_default = next.iter().any(|m| m.is_default);
-    if !has_default {
-        if let Some(first) = next.first_mut() {
-            first.is_default = true;
-        }
-    } else {
-        let mut seen = false;
-        for m in &mut next {
-            if m.is_default {
-                if seen {
-                    m.is_default = false;
-                }
-                seen = true;
-            }
-        }
-    }
+    // 默认模型归一：无默认则第一个为默认；多默认只保留第一个（与平台清单对账共用）
+    normalize_single_default(&mut next);
     // 供应商名称约束：不能为空。多账号可能共用同一 base_url，靠供应商名称区分，
     // 因此不按 base_url 分组/归一名称
     for m in &next {
@@ -4227,6 +4243,139 @@ fn propagate_provider_keys(models: &[ChatModelConfig]) {
             }
         }
     }
+}
+
+/// 默认模型归一（`save_chat_models` 与平台清单对账共用）：
+/// 无默认则第一个为默认；多默认只保留第一个
+fn normalize_single_default(models: &mut [ChatModelConfig]) {
+    let has_default = models.iter().any(|m| m.is_default);
+    if !has_default {
+        if let Some(first) = models.first_mut() {
+            first.is_default = true;
+        }
+    } else {
+        let mut seen = false;
+        for m in models.iter_mut() {
+            if m.is_default {
+                if seen {
+                    m.is_default = false;
+                }
+                seen = true;
+            }
+        }
+    }
+}
+
+/// 平台条目的统一构造（与设置页 `platformModel()` 逐字段一致）：
+/// `platform:` 前缀是后端识别平台模型的依据（`chat::is_platform_model`），Key 走
+/// 钥匙串占位符（对账时补写，见 `sync_platform_models`），base_url 由内置服务端地址现算。
+fn platform_model_entry(name: &str, base_url: &str) -> ChatModelConfig {
+    ChatModelConfig {
+        id: format!("platform:{name}"),
+        name: format!("{name}（平台额度）"),
+        base_url: base_url.to_string(),
+        model: name.to_string(),
+        api_key: String::new(),
+        is_default: false,
+        has_api_key: false,
+        provider_name: crate::chat::PLATFORM_ENTRY_NAME.to_string(),
+    }
+}
+
+/// 平台条目对账（纯函数）：自备供应商条目原样保留在前，平台条目按服务端清单顺序重列。
+/// 返回 (新列表, 新增模型名, 移除模型名)——增减清单同时供「清单没变就不落盘」判定。
+fn reconcile_platform_models(
+    existing: Vec<ChatModelConfig>,
+    names: &[String],
+    base_url: &str,
+) -> (Vec<ChatModelConfig>, Vec<String>, Vec<String>) {
+    let (mut next, old_platform): (Vec<_>, Vec<_>) = existing
+        .into_iter()
+        .partition(|m| !crate::chat::is_platform_model(m));
+    let old_names: Vec<String> = old_platform.iter().map(|m| m.model.clone()).collect();
+    next.extend(names.iter().map(|n| platform_model_entry(n, base_url)));
+    let added: Vec<String> = names.iter().filter(|n| !old_names.contains(n)).cloned().collect();
+    let removed: Vec<String> = old_names.iter().filter(|n| !names.contains(n)).cloned().collect();
+    (next, added, removed)
+}
+
+/// 平台模型清单对账结果（仅记录增减，供日志与 `chat-models-changed` 事件载荷）
+#[derive(Debug)]
+pub(crate) struct PlatformModelsSync {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+}
+
+/// 平台模型清单对账（约定 33 自愈）：平台条目只在「打开平台额度开关」那一刻拉
+/// `/api/v1/ai/models` 整体写入本地配置，服务端后台加减模型后这份快照不会自己更新，
+/// 对话仍带旧模型名就会撞 400 model_not_allowed。这里拉当前清单与本地快照多退少补
+/// （自备供应商条目不动），有变化才落盘并广播 `chat-models-changed` 让已打开的
+/// 对话面板/设置页刷新。触发点：启动 8s 对账（lib.rs）+ 发送撞 400 自愈（chat.rs）。
+///
+/// 返回 None = 无需变化：平台额度没开（配置里没有平台条目，绝不反向自动开启）、
+/// 拉到空清单（可能是服务端瞬时问题，绝不当成「全部下架」清空本地）、或清单没变。
+pub(crate) async fn sync_platform_models() -> Result<Option<PlatformModelsSync>, String> {
+    if !config::load().chat_models.iter().any(crate::chat::is_platform_model) {
+        return Ok(None);
+    }
+    let names = crate::chat::fetch_platform_model_names().await?;
+    if names.is_empty() {
+        log::warn!("平台模型清单为空，跳过同步（保留本地条目）");
+        return Ok(None);
+    }
+    let base_url = crate::chat::platform_base_url();
+    let _guard = crate::config::lock();
+    let mut cfg = config::load();
+    // 拉取期间用户可能刚把平台额度关掉：以磁盘现状为准，别把刚删的条目写回去
+    if !cfg.chat_models.iter().any(crate::chat::is_platform_model) {
+        return Ok(None);
+    }
+    let current: Vec<String> = cfg
+        .chat_models
+        .iter()
+        .filter(|m| crate::chat::is_platform_model(m))
+        .map(|m| m.model.clone())
+        .collect();
+    if current == names {
+        return Ok(None);
+    }
+    let (mut next, added, removed) = reconcile_platform_models(cfg.chat_models, &names, &base_url);
+    // 新平台条目补钥匙串占位 Key：`chat::resolve_api_key` 靠它认出「换账号 token」；
+    // 移除条目的占位残留无害（同名模型回归时直接复用），不做清理
+    for name in &added {
+        let id = format!("platform:{name}");
+        if crate::chat::get_api_key(&id).as_deref() != Some(crate::chat::PLATFORM_KEY_SENTINEL) {
+            crate::chat::save_api_key(&id, crate::chat::PLATFORM_KEY_SENTINEL)?;
+        }
+    }
+    normalize_single_default(&mut next);
+    cfg.chat_models = next;
+    config::save(&cfg)?;
+    log::info!("平台模型清单已同步: +{:?} -{:?}", added, removed);
+    // 已打开的对话面板/设置页就地刷新模型列表（主窗与独立对话窗各自监听）
+    if let Some(handle) = crate::APP_HANDLE.get() {
+        use tauri::Emitter;
+        let _ = handle.emit(
+            "chat-models-changed",
+            serde_json::json!({ "added": added, "removed": removed }),
+        );
+    }
+    Ok(Some(PlatformModelsSync { added, removed }))
+}
+
+/// 400 自愈重试用：RR 取下一个平台条目（`pick_chat_model` 的平台分支同款游标）。
+/// 平台额度没开 / 条目被对账清空时返回 None，调用方放弃重试原样报错。
+pub(crate) fn pick_fresh_platform_model() -> Option<ChatModelConfig> {
+    let models = config::load().chat_models;
+    let platform: Vec<&ChatModelConfig> = models
+        .iter()
+        .filter(|m| crate::chat::is_platform_model(m))
+        .collect();
+    if platform.is_empty() {
+        return None;
+    }
+    let i = PLATFORM_RR.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % platform.len();
+    Some(platform[i].clone())
 }
 
 /// 通用探测要用的 Key：前端传入值优先（尚未保存时），为空则用 key_id 从钥匙串读已保存的 Key。
@@ -4836,6 +4985,58 @@ pub async fn cancel_agent_turn(
 /// 图片语法 `![说明](地址)` 同样列入硬约束：模型曾把图片压成裸地址（URL 一字不差但图片不再显示，
 /// 因为 Crepe 只认 `![...](...)` 才渲染成图片），前端 `noteImageSyntax.ts` 另有按原稿的回收兜底——
 /// 两层是**互补**的：提示词管「尽量别写坏」，回收管「已经写坏了也救回来」，缺一个都会复发。
+/// 速记 AI 深度整理的模型解析（设置「功能 → 速记」的 `config.note_ai_model`）：
+///
+/// - `''`（自动）：平台条目在且已登录 → 平台负载切换；否则默认模型（历史行为）
+/// - 平台入口名（`x-hub 平台`）：平台负载切换。显式选择哪怕未登录也保持平台，
+///   由请求侧报错点名「需先登录」，而不是悄悄换模型
+/// - `platform:<模型名>`：指定平台模型；清单里已没有（下架/改名）→ 回落自动
+/// - 其余：按名字精确命中自备模型；不存在（被删）→ 回落自动
+///
+/// 回落而不是报错：设置里的失效值不该把整理功能卡死，与对话面板「历史会话存的
+/// 模型名已删除时回落默认」同语义。
+fn resolve_note_ai_model_inner(
+    models: &[ChatModelConfig],
+    preferred: &str,
+    logged_in: bool,
+) -> Result<ChatModelConfig, String> {
+    let preferred = preferred.trim();
+    if !preferred.is_empty() && preferred != crate::chat::PLATFORM_ENTRY_NAME {
+        if let Some(name) = preferred.strip_prefix("platform:") {
+            if let Some(m) = models
+                .iter()
+                .find(|m| crate::chat::is_platform_model(m) && (m.id == preferred || m.model == name))
+            {
+                return Ok(m.clone());
+            }
+        } else if let Some(m) = models
+            .iter()
+            .find(|m| !crate::chat::is_platform_model(m) && m.name == preferred)
+        {
+            return Ok(m.clone());
+        }
+        // 指定的模型已不存在：继续走下面的自动解析
+    }
+    // 自动档：平台额度可用 = 有平台条目且已登录（登录态就是平台请求的真实凭据，未登录时
+    // 平台必然报 401，此时静默回退默认模型而不是把功能卡死在「请先登录」上）
+    let session_name = if preferred == crate::chat::PLATFORM_ENTRY_NAME {
+        crate::chat::PLATFORM_ENTRY_NAME.to_string()
+    } else {
+        let prefer_platform = models.iter().any(crate::chat::is_platform_model) && logged_in;
+        if prefer_platform {
+            crate::chat::PLATFORM_ENTRY_NAME.to_string()
+        } else {
+            default_session_model_name(models)
+        }
+    };
+    pick_chat_model(models, &session_name)
+}
+
+/// `resolve_note_ai_model_inner` 的运行时入口：登录态现取（钥匙串会话 token）
+fn resolve_note_ai_model(models: &[ChatModelConfig], preferred: &str) -> Result<ChatModelConfig, String> {
+    resolve_note_ai_model_inner(models, preferred, crate::account::session_token().is_some())
+}
+
 #[tauri::command]
 pub async fn ai_transform_note(
     content: String,
@@ -4846,30 +5047,26 @@ pub async fn ai_transform_note(
         return Err("笔记内容为空".into());
     }
 
-    let models = config::load().chat_models;
-    // 平台额度可用 = 有平台条目且已登录（登录态就是平台请求的真实凭据，未登录时平台必然
-    // 报 401，此时静默回退默认模型而不是把功能卡死在「请先登录」上）
-    let prefer_platform = models.iter().any(|m| crate::chat::is_platform_model(m))
-        && crate::account::session_token().is_some();
-    let session_name = if prefer_platform {
-        crate::chat::PLATFORM_ENTRY_NAME.to_string()
-    } else {
-        default_session_model_name(&models)
-    };
-    let model = pick_chat_model(&models, &session_name)?;
-    if crate::chat::is_platform_model(&model) {
-        log::info!("笔记 AI 整理使用平台模型: {}", model.model);
-    }
+    let cfg = config::load();
+    let models = cfg.chat_models;
+    let model = resolve_note_ai_model(&models, &cfg.note_ai_model)?;
+    log::info!("笔记 AI 整理使用模型: {}", model.model);
 
     // 指令与正文合进一条 user 消息：stream_chat 的消息层只保证 user/assistant 两角色，
     // 不依赖各供应商对 system 消息的兼容度
     let instruction = "\
 你是笔记整理助手。把用户提供的笔记内容重组为清晰、结构化的 Markdown：\
 按主题分组，用标题与列表组织同一条目下的多项信息；\
-必须逐字保留所有 URL、密钥、账号、电话、邮箱、代码等技术信息，不得改写、省略、合并或翻译任何事实内容；\
+结构重组是你的职责：鼓励调整行文与语序、合并重复内容，\
+给「名称/值」这类信息补上冒号等分隔符（如 地址：https://example.com、端口：8080），\
+也可以用加粗、表格等排版形式把同类信息整理得更清楚；\
+但所有事实内容必须逐字保留：URL、密钥、账号、电话、邮箱、代码、数字等值本身一字不改，\
+不得改写、省略或翻译（在值的前后添加冒号、空格、换行、列表与表格标记等结构性符号不受此限）；\
 图片必须原样保留 Markdown 图片语法 ![说明](地址)，不得改写成链接、纯地址或直接省略，也不要改动其中的地址——\
 语法一改图片就不显示（笔记图片地址形如 http://xhub-note.localhost/xxx.png，把它写成裸地址同样是错的）；\
 说明文字没有就留空写成 ![](地址)；\
+普通文本里的 `_`、`~`、`*` 等字符必须按原样输出，不要添加反斜杠转义（\\_、\\~ 这类都是错的）；\
+空格按原样输出，禁止用 &#x20; 等 HTML 实体表示；\
 原文没有的信息不要编造。只输出整理后的 Markdown 正文，不要任何解释，也不要包代码围栏。";
     let message = crate::models::ChatMessage {
         id: 0,
@@ -5499,6 +5696,88 @@ mod tests {
             has_api_key: true,
             provider_name: crate::chat::PLATFORM_ENTRY_NAME.to_string(),
         }
+    }
+
+    // ---- 平台模型清单对账（约定 33 自愈）：多退少补，自备供应商条目不动 ----
+
+    #[test]
+    fn reconcile_platform_models_adds_removes_and_keeps_custom() {
+        let existing = vec![
+            chat_model("deepseek-1", "DeepSeek", true),
+            platform_chat_model("Old-A"),
+            platform_chat_model("B"),
+        ];
+        let names = vec!["B".to_string(), "New-C".to_string()];
+        let (next, added, removed) = reconcile_platform_models(existing, &names, "https://x/v1");
+        assert_eq!(added, vec!["New-C".to_string()]);
+        assert_eq!(removed, vec!["Old-A".to_string()]);
+        // 自备条目在前原样保留（默认标记不动），平台条目按服务端顺序重列
+        assert_eq!(next.len(), 3);
+        assert_eq!(next[0].name, "DeepSeek");
+        assert!(next[0].is_default);
+        assert_eq!(next[1].id, "platform:B");
+        assert_eq!(next[2].id, "platform:New-C");
+        assert_eq!(next[2].base_url, "https://x/v1");
+        assert!(!next[2].is_default);
+    }
+
+    #[test]
+    fn reconcile_platform_models_full_swap_and_no_op() {
+        // 平台条目整体换血：旧的全下、新的全上，自备条目不受影响
+        let existing = vec![platform_chat_model("Only-Old"), chat_model("kimi-1", "Kimi", false)];
+        let names = vec!["Only-New".to_string()];
+        let (next, added, removed) = reconcile_platform_models(existing, &names, "https://x/v1");
+        assert_eq!(added, vec!["Only-New".to_string()]);
+        assert_eq!(removed, vec!["Only-Old".to_string()]);
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[0].name, "Kimi");
+        assert_eq!(next[1].id, "platform:Only-New");
+        // 清单与本地完全一致：增减都为空（sync 据此跳过落盘）
+        let (next2, added2, removed2) = reconcile_platform_models(next, &names, "https://x/v1");
+        assert!(added2.is_empty() && removed2.is_empty());
+        assert_eq!(next2.len(), 2);
+    }
+
+    // ---- 速记 AI 整理的模型解析（设置「功能 → 速记」的 note_ai_model）----
+
+    #[test]
+    fn note_ai_model_auto_prefers_platform_only_when_logged_in() {
+        let models = vec![
+            chat_model("ds-1", "DeepSeek", true),
+            platform_chat_model("LongCat-2.0"),
+        ];
+        // 自动 + 已登录 → 平台条目（历史行为：平台额度可用就优先走平台）
+        let m = resolve_note_ai_model_inner(&models, "", true).unwrap();
+        assert!(crate::chat::is_platform_model(&m));
+        // 自动 + 未登录 → 默认模型（不把功能卡死在「请先登录」上）
+        let m = resolve_note_ai_model_inner(&models, "", false).unwrap();
+        assert_eq!(m.name, "DeepSeek");
+    }
+
+    #[test]
+    fn note_ai_model_explicit_choices_hit_and_fall_back() {
+        let models = vec![
+            chat_model("ds-1", "DeepSeek", true),
+            chat_model("kimi-1", "Kimi", false),
+            platform_chat_model("LongCat-2.0"),
+        ];
+        // 指定自备模型 → 精确命中（哪怕它不是默认）
+        let m = resolve_note_ai_model_inner(&models, "Kimi", false).unwrap();
+        assert_eq!(m.id, "kimi-1");
+        // 指定平台模型（platform:<名> 形态）→ 命中对应条目
+        let m = resolve_note_ai_model_inner(&models, "platform:LongCat-2.0", false).unwrap();
+        assert!(crate::chat::is_platform_model(&m));
+        assert_eq!(m.model, "LongCat-2.0");
+        // 平台入口名 → 负载切换（显式选择，未登录也保持平台，由请求侧报错点名）
+        let m = resolve_note_ai_model_inner(&models, crate::chat::PLATFORM_ENTRY_NAME, false).unwrap();
+        assert!(crate::chat::is_platform_model(&m));
+        // 指定名已不存在（被删 / 平台下架）→ 回落自动（未登录 → 默认模型）
+        let m = resolve_note_ai_model_inner(&models, "Gone", false).unwrap();
+        assert_eq!(m.name, "DeepSeek");
+        let m = resolve_note_ai_model_inner(&models, "platform:Gone", false).unwrap();
+        assert_eq!(m.name, "DeepSeek");
+        // 空配置 → 明确报错
+        assert!(resolve_note_ai_model_inner(&[], "", false).is_err());
     }
 
     /// 平台侧只有一个模型 → 永远用它；多个 → 在它们之间轮询（用户不再选具体模型）

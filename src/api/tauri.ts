@@ -98,6 +98,8 @@ export interface Note {
   deleted_at: string | null
   /** 自定义树图标（emoji，null = 默认文件图标） */
   icon: string | null
+  /** 组内手动排序位（拖拽排序；null = 未手动排序） */
+  sort_order: number | null
 }
 
 export interface Todo {
@@ -114,6 +116,8 @@ export interface Todo {
   remind_at: number | null
   /** 提醒是否已触发（后台到点发过通知即置真） */
   remind_fired: boolean
+  /** 提醒通知方式：both=弹窗+声音 / popup=仅弹窗 / sound=仅声音 / none=静默；''=老数据按 popup 处理 */
+  remind_notify_mode: string
   /** 父待办 id（子待办），顶级为 null */
   parent_id: number | null
   /** 手动拖拽排序位（分组内升序）；null = 未手动排序，按创建时间倒序 */
@@ -370,6 +374,8 @@ export interface AppConfig {
   font_todo: number
   /** 速记编辑器模式：wysiwyg（实时预览）/ split（分屏预览）/ source（源码） */
   note_editor_mode: string
+  /** 速记 AI 深度整理模型：''=自动 / 'x-hub 平台'=平台负载切换 / 'platform:<名>'=指定平台模型 / 其余=自备模型名 */
+  note_ai_model: string
   /** 速记回收站保留天数（0 = 永久保留，默认）。启动时与设置变更时按此清理 */
   note_trash_retention_days: number
   /** service 扩展运行时策略：auto / builtin / system */
@@ -1321,6 +1327,8 @@ export const tauriApi = {
     invoke<void>('reorder_note_folders', { moves }),
   setNoteFolder: (noteId: number, folderId: number | null) =>
     invoke<void>('set_note_folder', { noteId, folderId: folderId ?? null }),
+  /** 笔记组内拖拽排序：ids 顺序即目标分组（文件夹/树根）的完整新顺序 */
+  reorderNoteOrders: (ids: number[]) => invoke<void>('reorder_note_orders', { ids }),
   /** 设置/清除笔记自定义树图标（emoji；icon=null 恢复默认） */
   setNoteIcon: (id: number, icon: string | null) => invoke<void>('set_note_icon', { id, icon }),
   /** 一键清空回收站（不可恢复，调用方先确认），返回清除条数 */
@@ -1353,6 +1361,9 @@ export const tauriApi = {
   deleteTodo: (id: number) => invoke<void>('delete_todo', { id }),
   scheduleTodo: (id: number, dueAt: number | null, remindAt: number | null) =>
     invoke<Todo>('schedule_todo', { id, dueAt, remindAt }),
+  /** 设置提醒通知方式：不动提醒时刻、不重新武装已触发的提醒 */
+  setTodoNotifyMode: (id: number, mode: string) =>
+    invoke<Todo>('set_todo_notify_mode', { id, mode }),
   /** 待办拖拽排序：按传入顺序写入手动排序位（前端按分组计算完整顺序） */
   reorderTodoOrders: (ids: number[]) => invoke<void>('reorder_todo_orders', { ids }),
   /** 跨父拖拽：子待办改挂到另一个顶级父待办，并重写目标父下子项顺序 */

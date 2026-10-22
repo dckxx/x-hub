@@ -12,7 +12,8 @@ import { Fragment, Slice, type Node as ProseNode, type Schema } from '@milkdown/
 import type { EditorView } from '@milkdown/kit/prose/view'
 import { NodeSelection, TextSelection, type EditorState } from '@milkdown/kit/prose/state'
 import { Code2, Columns2, Copy, Eye, Link2, PencilLine, Plus, Smile, Sparkles, Tag as TagIcon, WandSparkles, Waypoints, X } from 'lucide-vue-next'
-import { isTauri, tauriApi, type Note, type NoteLinks, type Tag } from '../api/tauri'
+import { isPlatformModel, isTauri, tauriApi, PLATFORM_ENTRY_NAME, type Note, type NoteLinks, type Tag } from '../api/tauri'
+import { cleanModelMarkdownNoise } from '../utils/markdownLines'
 import { useStore } from '../stores/workbench'
 import { normalizeShortcutDisplay } from '../composables/useShortcutRecorder'
 import { attachBlockDrag } from '../utils/blockDrag'
@@ -1196,15 +1197,15 @@ const aiSource = ref('')
  *  置回 false 会让旧请求的增量与返回值串进新流（旧结果覆盖新结果） */
 let aiRequestSeq = 0
 
-/** 弹层展示与应用共用这一份口径：先剥模型自加的外层围栏，再按原稿回收被压扁的图片语法。
- *  少任何一步都会让「预览看着对、应用下去图片没了」或反之 */
-const aiMarkdown = computed(() =>
-  restoreNoteImageSyntax(aiSource.value, unwrapModelMarkdown(aiResult.value)),
-)
+/** 弹层展示与应用共用这一份口径：先剥模型自加的外层围栏，再回收模型添的转义噪声
+ *  （`\_`/`\~`/`&#x20;`，见 cleanModelMarkdownNoise），最后按原稿回收被压扁的图片语法。
+ *  少任何一步都会让「预览看着对、应用下去图片没了」或源码被转义垃圾污染 */
+const aiModelClean = computed(() => cleanModelMarkdownNoise(unwrapModelMarkdown(aiResult.value)))
+const aiMarkdown = computed(() => restoreNoteImageSyntax(aiSource.value, aiModelClean.value))
 /** 回收确实改动了模型输出 = 模型又写坏了图片语法（提示词没拦住），应用时给用户一句交代，
  *  而不是悄悄改掉他要应用的内容 */
 const aiImagesRestored = computed(
-  () => aiState.value === 'done' && aiMarkdown.value !== unwrapModelMarkdown(aiResult.value),
+  () => aiState.value === 'done' && aiMarkdown.value !== aiModelClean.value,
 )
 const aiPreviewHtml = computed(() => renderNoteMarkdown(aiMarkdown.value))
 
@@ -1224,6 +1225,50 @@ type AiScope = 'full' | 'selection'
 const aiScope = ref<AiScope>('full')
 const aiDocRange = ref<{ from: number; to: number; inline: boolean } | null>(null)
 const aiTextRange = ref<{ start: number; end: number } | null>(null)
+
+/** 整理实际将使用的模型（设置「功能 → 速记」的 note_ai_model 的展示镜像；''=自动档走通用文案）。
+ *  后端 ai_transform_note 自行按配置解析模型，这里只做同口径的展示，解析失败静默回落通用文案 */
+const aiModelLabel = ref('')
+async function resolveAiModelLabel() {
+  const v = store.state.config.note_ai_model ?? ''
+  try {
+    if (!v) {
+      aiModelLabel.value = ''
+    } else if (v === PLATFORM_ENTRY_NAME) {
+      aiModelLabel.value = 'x-hub 平台（自动负载切换）'
+    } else if (v.startsWith('platform:')) {
+      aiModelLabel.value = `${v.slice('platform:'.length)}（平台）`
+    } else {
+      const m = (await tauriApi.getChatModels()).find((x) => !isPlatformModel(x) && x.name === v)
+      aiModelLabel.value = m ? `${m.name}（${m.provider_name || '未命名供应商'}）` : ''
+    }
+  } catch {
+    aiModelLabel.value = ''
+  }
+}
+const aiPrivacyText = computed(() => {
+  const scope = aiScope.value === 'selection' ? '选中片段' : '笔记全文'
+  const target = aiModelLabel.value || '你配置的 AI 模型'
+  const tail =
+    aiScope.value === 'selection' ? '应用后只替换选中部分，可 Ctrl+Z 一步撤销' : '应用后可 Ctrl+Z 一步撤销'
+  return `${scope}将发送给 ${target} 做语义重排；应用前不会改动笔记，${tail}。`
+})
+
+/** 复制整理结果（不动笔记）：给「只想拿走结果、贴去别处」的用户；按钮短暂变「已复制」做反馈 */
+const aiCopied = ref(false)
+let aiCopiedTimer: ReturnType<typeof setTimeout> | null = null
+async function copyAiResult() {
+  const text = aiMarkdown.value
+  if (aiState.value !== 'done' || !text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    aiCopied.value = true
+    if (aiCopiedTimer) clearTimeout(aiCopiedTimer)
+    aiCopiedTimer = setTimeout(() => (aiCopied.value = false), 1500)
+  } catch (e) {
+    showToast?.(`复制失败：${typeof e === 'string' ? e : String(e)}`)
+  }
+}
 
 interface AiSelectionCapture {
   markdown: string
@@ -1288,7 +1333,9 @@ async function openAiTransform() {
   aiSource.value = current
   aiResult.value = ''
   aiError.value = ''
+  aiCopied.value = false
   aiState.value = 'streaming'
+  void resolveAiModelLabel()
   try {
     const full = await tauriApi.aiTransformNote(current, (e) => {
       if (e.type === 'chunk' && seq === aiRequestSeq) aiResult.value += e.content
@@ -2722,13 +2769,7 @@ function onEditorAreaMouseDown(e: MouseEvent) {
               <X :size="14" :stroke-width="2" />
             </button>
           </header>
-          <p class="ai-privacy">
-            {{
-              aiScope === 'selection'
-                ? '选中片段将发送给你配置的 AI 模型做语义重排；应用前不会改动笔记，应用后只替换选中部分，可 Ctrl+Z 一步撤销。'
-                : '笔记全文将发送给你配置的 AI 模型做语义重排；应用前不会改动笔记，应用后可 Ctrl+Z 一步撤销。'
-            }}
-          </p>
+          <p class="ai-privacy">{{ aiPrivacyText }}</p>
           <div class="ai-body" aria-live="polite">
             <p v-if="aiState === 'streaming' && !aiResult" class="ai-status">正在整理…</p>
             <div v-else class="ai-preview md-preview" v-html="aiPreviewHtml"></div>
@@ -2742,6 +2783,14 @@ function onEditorAreaMouseDown(e: MouseEvent) {
             <span v-else class="ai-streaming-hint"></span>
             <div class="ai-foot-actions">
               <button class="ai-btn" type="button" @click="closeAiDialog">取消</button>
+              <button
+                class="ai-btn"
+                type="button"
+                :disabled="aiState !== 'done' || !aiMarkdown"
+                @click="copyAiResult"
+              >
+                {{ aiCopied ? '已复制' : '复制' }}
+              </button>
               <button
                 class="ai-btn primary"
                 type="button"

@@ -39,10 +39,18 @@ fn tick_once(app: &AppHandle) -> Result<(), String> {
         }
 
         if !missed {
-            let _ = app.emit("todo-remind", &item);
-            // 自绘右下角通知窗（notify.rs），与倒计时提醒同一通道
-            crate::notify::show_notice(app, "todo", &format!("待办提醒 · {}", item.title), "提醒时间到");
-            log::info!("待办提醒: id={} title={}", item.id, item.title);
+            // 通知方式门控（repo::todo::normalize_notify_mode，''/非法值 = popup 历史行为）：
+            // popup/both → 右下角通知卡 + todo-remind 事件（前端 toast）；sound → 仅事件（前端提示音）；
+            // none → 静默。无论哪种都照常标记已触发。
+            let mode = crate::repo::todo::normalize_notify_mode(&item.remind_notify_mode);
+            if mode != "none" {
+                let _ = app.emit("todo-remind", &item);
+                if mode != "sound" {
+                    // 自绘右下角通知窗（notify.rs），与倒计时提醒同一通道
+                    crate::notify::show_notice(app, "todo", &format!("待办提醒 · {}", item.title), "提醒时间到");
+                }
+            }
+            log::info!("待办提醒: id={} title={} mode={}", item.id, item.title, mode);
         } else {
             log::info!("待办提醒错过(不补发): id={} title={}", item.id, item.title);
         }

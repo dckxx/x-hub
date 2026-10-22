@@ -32,6 +32,8 @@ import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
  * - 头部「新建目录」跟随选中文件夹（未选中 = 树根）；树空白处右键可新建笔记/目录。
  * - 回收站态带「一键清空」（SpeednoteView 层确认后执行，不可恢复）。
  * - 拖拽为**指针实现**（约定 14/38），渲染为扁平化可见行列表（无递归组件）。
+ *   笔记行上下边缘（25%）= 组内拖拽排序（reorder-notes，整组写 sort_order），
+ *   行中段/文件夹行 = 移入文件夹（move-note，跨组移动清排序位垫到组末）。
  */
 
 const props = defineProps<{
@@ -56,6 +58,7 @@ const emit = defineEmits<{
   (e: 'purge-note', id: number): void
   (e: 'purge-all'): void
   (e: 'move-note', noteId: number, folderId: number | null): void
+  (e: 'reorder-notes', ids: number[]): void
   (e: 'reorder-folders', moves: { id: number; parent_id: number | null; sort_order: number }[]): void
 }>()
 
@@ -240,6 +243,18 @@ function folderPathOf(n: Note): string {
 }
 
 // ---- 树构建 + 扁平化 ----
+/** 组内排序（手动拖拽排序，与后端 list_full 的 LIST_ORDER 同口径）：
+ *  手动拖过的（sort_order 非空）按位升序在前，未排序的按创建时间正序垫后——
+ *  速记列表本就「旧的在上、新笔记追加底部」，未排序垫底让新建笔记自然落组末；
+ *  与待办的 compareByOrder 方向刻意相反（那边新待办置顶、未排序浮顶） */
+function compareNotesByOrder(a: Note, b: Note): number {
+  const ao = a.sort_order
+  const bo = b.sort_order
+  if (ao != null && bo != null) return ao - bo
+  if (ao == null && bo == null) return a.created_at.localeCompare(b.created_at) || a.id - b.id
+  return ao == null ? 1 : -1
+}
+
 interface TreeNode {
   folder: NoteFolder
   children: TreeNode[]
@@ -268,16 +283,14 @@ const tree = computed<TreeNode[]>(() => {
       children: build(f.id),
       notes: props.notes
         .filter((n) => n.folder_id === f.id)
-        .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id),
+        .sort(compareNotesByOrder),
     }))
   }
   return build(null)
 })
 
 const rootNotes = computed(() =>
-  props.notes
-    .filter((n) => n.folder_id === null)
-    .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id),
+  props.notes.filter((n) => n.folder_id === null).sort(compareNotesByOrder),
 )
 
 type Row =
@@ -639,10 +652,16 @@ function onDragMove(e: PointerEvent) {
   dragTargetName.value = planTargetName(dragPlan)
 }
 
-/** ghost 浮签的落点名：into/before/after = 目标文件夹名，root = 根目录 */
+/** ghost 浮签的落点名：into = 目标文件夹名；before/after = 落点所在分组名（组内排序）；
+ *  root = 根目录 */
 function planTargetName(plan: DropPlan | null): string {
   if (!plan) return ''
   if (plan.kind === 'root') return '根目录'
+  if (plan.kind === 'before' || plan.kind === 'after') {
+    const gid = plan.targetFolderId
+    if (gid == null) return '根目录'
+    return props.folders.find((f) => f.id === gid)?.name ?? ''
+  }
   return props.folders.find((f) => f.id === plan.targetId)?.name ?? ''
 }
 
@@ -675,10 +694,36 @@ function hitTest(e: PointerEvent): DropPlan | null {
     if (dragItem?.kind === 'folder') {
       if (fid === dragItem.id) return null
       // 文件夹拖文件夹：整行默认「移入子目录」，贴近行上/下边缘（15%）才是同层排序
-      if (rel < 0.15) return { kind: 'before', targetFolderId: null, targetId: fid, hint: { rowKey: folderRowKey(fid), mode: 'before' } }
-      if (rel > 0.85) return { kind: 'after', targetFolderId: null, targetId: fid, hint: { rowKey: folderRowKey(fid), mode: 'after' } }
+      if (rel < 0.15) {
+        const pid = props.folders.find((f) => f.id === fid)?.parent_id ?? null
+        return { kind: 'before', targetFolderId: pid, targetId: fid, hint: { rowKey: folderRowKey(fid), mode: 'before' } }
+      }
+      if (rel > 0.85) {
+        const pid = props.folders.find((f) => f.id === fid)?.parent_id ?? null
+        return { kind: 'after', targetFolderId: pid, targetId: fid, hint: { rowKey: folderRowKey(fid), mode: 'after' } }
+      }
     }
     return { kind: 'into', targetFolderId: fid, targetId: fid, hint: { rowKey: folderRowKey(fid), mode: 'into' } }
+  }
+  // 笔记拖到笔记行：上下边缘（25%）= 组内排序 before/after，中段保持原语义
+  // （移入该笔记所在文件夹；根目录笔记行 = 树根落点）
+  if (dragItem?.kind === 'note') {
+    const nrow = el.closest<HTMLElement>('[data-note-id]')
+    if (nrow) {
+      const nid = Number(nrow.dataset.noteId)
+      if (nid === dragItem.id) return null
+      const raw = nrow.dataset.noteFolder
+      const gid = raw == null || raw === '' ? null : Number(raw)
+      const rect = nrow.getBoundingClientRect()
+      const rel = (e.clientY - rect.top) / rect.height
+      const rowKey = noteRowKey(nid)
+      if (rel < 0.25) return { kind: 'before', targetFolderId: gid, targetId: nid, hint: { rowKey, mode: 'before' } }
+      if (rel > 0.75) return { kind: 'after', targetFolderId: gid, targetId: nid, hint: { rowKey, mode: 'after' } }
+      if (gid == null || Number.isNaN(gid)) {
+        return { kind: 'root', targetFolderId: null, targetId: null, hint: { rowKey, mode: 'into' } }
+      }
+      return { kind: 'into', targetFolderId: gid, targetId: gid, hint: { rowKey, mode: 'into' } }
+    }
   }
   // 行外（行间隙/树体空白）：取「鼠标上方最近的行」判落点——
   //  - 文件夹行 = 移入该文件夹（「拖到目录下面就应该进目录」，用户口径，实测反馈）
@@ -730,6 +775,22 @@ function onDragUp() {
   if (!wasActive || !item || !plan) return
 
   if (item.kind === 'note') {
+    // 组内排序（笔记行上下边缘落点）：按目标组（文件夹/树根）的展示顺序剔除自己、
+    // 插到目标前/后，整组 id 顺序回写（后端逐条写 sort_order，同待办整组重写口径）
+    if ((plan.kind === 'before' || plan.kind === 'after') && plan.targetId != null) {
+      const target = props.notes.find((n) => n.id === plan.targetId)
+      const moving = props.notes.find((n) => n.id === item.id)
+      if (!target || !moving) return
+      const groupId = target.folder_id ?? null
+      const group = props.notes
+        .filter((n) => (n.folder_id ?? null) === groupId && n.id !== item.id)
+        .sort(compareNotesByOrder)
+      const idx = group.findIndex((n) => n.id === target.id)
+      if (idx < 0) return
+      group.splice(plan.kind === 'before' ? idx : idx + 1, 0, moving)
+      emit('reorder-notes', group.map((n) => n.id))
+      return
+    }
     if (plan.kind === 'into') {
       emit('move-note', item.id, plan.targetFolderId ?? null)
       // 目标目录多为收起态：不展开的话笔记落进去就「凭空消失」，观感即「没生效」

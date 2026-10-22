@@ -52,6 +52,17 @@ const endAtMs = ref<number | null>(null)
 const repeatCount = ref(1)
 const dueMs = ref<number | null>(null)
 const remindMs = ref<number | null>(null)
+/** 提醒通知方式（仅设了提醒时间时可选；''=老数据按 popup 处理） */
+const notifyMode = ref('popup')
+const NOTIFY_MODE_OPTIONS: AppSelectOption[] = [
+  { value: 'both', label: '弹窗 + 声音' },
+  { value: 'popup', label: '仅弹窗（默认）' },
+  { value: 'sound', label: '仅声音' },
+  { value: 'none', label: '静默' },
+]
+function normalizeNotifyMode(v: string | undefined): string {
+  return v === 'both' || v === 'popup' || v === 'sound' || v === 'none' ? v : 'popup'
+}
 const duePresets = ref<Array<{ label: string; ms: number }>>([])
 const newTagName = ref('')
 const busy = ref(false)
@@ -174,6 +185,7 @@ watch(
     repeatCount.value = t?.repeat_count ?? 1
     dueMs.value = t ? t.due_at : defaultDue()
     remindMs.value = t ? t.remind_at : null
+    notifyMode.value = normalizeNotifyMode(t?.remind_notify_mode)
     duePresets.value = buildDuePresets()
     newTagName.value = ''
   },
@@ -279,6 +291,7 @@ async function save() {
       count: endMode.value === 'count' ? repeatCount.value : null,
     })
     await store.scheduleTodo(id, due, remind)
+    if (remind != null) await store.setTodoNotifyMode(id, notifyMode.value)
     emit('saved')
     emit('close')
   } catch {
@@ -478,6 +491,15 @@ async function remove() {
           :presets="remindPresets"
           hint="不设提醒即不通知；到点后由后端弹系统通知。"
         />
+        <div v-if="remindMs != null" class="te-notify-row">
+          <span class="te-notify-label">提醒方式</span>
+          <AppSelect
+            v-model="notifyMode"
+            :options="NOTIFY_MODE_OPTIONS"
+            compact
+            aria-label="提醒通知方式"
+          />
+        </div>
 
         <div class="te-foot">
           <button v-if="props.todo" type="button" class="te-btn te-btn--danger" @click="remove">
@@ -534,6 +556,19 @@ async function remove() {
 .te-field {
   display: block;
   margin-bottom: 12px;
+}
+/* 提醒方式行：标签在左、下拉在右，与时刻字段的行距一致 */
+.te-notify-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -4px 0 12px;
+}
+.te-notify-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-3);
 }
 .te-lab {
   display: block;

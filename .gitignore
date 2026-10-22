@@ -36,6 +36,7 @@ components.d.ts
 .codegraph/
 .opencode/
 .opencode-sessions/
+.zcode/
 skills-lock.json
 screenshot-dashboard.png
 src-tauri/target/

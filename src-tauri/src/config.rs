@@ -243,6 +243,11 @@ pub struct AppConfig {
     /// 按用户记住，不按单篇笔记。非法值由前端读入时归一为 wysiwyg。
     #[serde(default = "default_note_editor_mode")]
     pub note_editor_mode: String,
+    /// 速记 AI 深度整理使用的模型（设置「功能 → 速记」）：''=自动（平台额度可用优先走平台，
+    /// 否则默认模型）；`x-hub 平台`=平台负载切换；`platform:<模型名>`=指定平台模型；
+    /// 其余=自备模型名。失效（被删/下架）由 commands::resolve_note_ai_model 回落自动。
+    #[serde(default)]
+    pub note_ai_model: String,
     /// service 扩展运行时策略：auto（自动检测，默认）/ builtin（始终内置）/ system（始终系统）
     #[serde(default = "default_runtime_strategy")]
     pub runtime_strategy: String,
@@ -543,6 +548,7 @@ impl Default for AppConfig {
             font_prompt: 1.0,
             font_todo: 1.0,
             note_editor_mode: default_note_editor_mode(),
+            note_ai_model: String::new(),
             runtime_strategy: "auto".to_string(),
             service_auto_trust: false,
             sidebar_extensions: Vec::new(),

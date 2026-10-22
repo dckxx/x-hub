@@ -163,9 +163,9 @@ fn key_file_path() -> std::path::PathBuf {
     config::config_dir().join("chat_keys.json")
 }
 
-/// 拉取平台可用模型（「使用平台免费额度」用；需登录账号）
-#[tauri::command]
-pub async fn platform_models() -> Result<Vec<String>, String> {
+/// 拉取平台当前可用模型名清单（`/api/v1/ai/models`，账号登录态鉴权）。
+/// `platform_models` 命令与清单对账同步（`commands::sync_platform_models`）共用。
+pub async fn fetch_platform_model_names() -> Result<Vec<String>, String> {
     let token = crate::account::session_token().ok_or("UNAUTHORIZED: 请先在「设置 → 账号」登录")?;
     let v = crate::account::get_json(crate::api_spec::platform_models_path(), &token).await?;
     Ok(v.get("models")
@@ -176,6 +176,12 @@ pub async fn platform_models() -> Result<Vec<String>, String> {
                 .collect()
         })
         .unwrap_or_default())
+}
+
+/// 拉取平台可用模型（「使用平台免费额度」用；需登录账号）
+#[tauri::command]
+pub async fn platform_models() -> Result<Vec<String>, String> {
+    fetch_platform_model_names().await
 }
 
 /// 供应商预设（「添加供应商」快速填充；后台可配，需登录账号）。
@@ -258,6 +264,16 @@ fn is_insufficient_credits(body: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 平台 400 响应体是否为「模型不可用」（`{"error":"model_not_allowed","model":"..."}`）：
+/// 请求带的模型名不在服务端当前可用清单（被下架/改名/未对用户开放）。
+/// 同为扁平 error 码精确匹配，理由同 `is_insufficient_credits`。
+fn is_model_not_allowed(body: &str) -> bool {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(|s| s == "model_not_allowed"))
+        .unwrap_or(false)
+}
+
 /// 发送一次 OpenAI 兼容流式对话请求，逐段回调 on_chunk，并把完整回复累积到 out
 ///
 /// - 协议：`POST {base_url}/chat/completions`，`stream: true`，SSE 逐行解析
@@ -313,78 +329,112 @@ pub async fn stream_chat_ex_with_cancel<F>(
 where
     F: FnMut(String) -> Result<(), String>,
 {
-    let (api_key, is_platform) = resolve_api_key(&model.id);
-    let api_key = api_key.ok_or_else(|| {
-        format!("模型「{}」未配置 API Key（平台模型需先登录账号）", model.name)
-    })?;
-
-    // 平台模型走内置服务端（国内）→ 强制直连；用户自配的第三方服务保持跟随系统代理（见 crate::net）
-    let client = if is_platform {
-        crate::net::direct()
-    } else {
-        reqwest::Client::builder()
-    }
-    .redirect(reqwest::redirect::Policy::none())
-    .timeout(std::time::Duration::from_secs(300))
-    .build()
-    .map_err(|e| format!("HTTP 客户端初始化失败: {}", e))?;
-
     // OpenAI 消息格式：tool 消息 / 带 tool_calls 的 assistant 按协议展开（见 payload_message）
     let payload_messages: Vec<Value> = messages.iter().map(payload_message).collect();
 
-    // 平台模型的地址一律指向内置服务端（理由见 platform_base_url 注释）
-    let base_url = if is_platform {
-        platform_base_url()
-    } else {
-        model.base_url.trim().to_string()
-    };
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    crate::credentials::validate_endpoint(&url)?;
-    let mut payload = serde_json::json!({
-        "model": model.model,
-        "messages": payload_messages,
-        "stream": true,
-        // 让 OpenAI 兼容后端在最后一个 chunk 返回 usage（输入/输出/缓存/推理 token）
-        "stream_options": { "include_usage": true },
-    });
-    // 工具清单：仅 agent 循环传（普通对话 / 笔记整理不带，省 token 也避免模型乱调）
-    if let Some(tools) = tools.filter(|t| !t.is_empty()) {
-        payload["tools"] = Value::Array(tools.to_vec());
-    }
-
-    let mut req = client
-        .post(&url)
-        .bearer_auth(api_key.trim())
-        .header("Content-Type", "application/json");
-    // turn 标识仅平台链路需要（服务端 usage_logs 对账用，§8）；BYOK 直连不发
-    if is_platform {
-        if let Some(t) = turn_id.map(str::trim).filter(|t| !t.is_empty()) {
-            req = req.header("X-XHub-Turn-Id", t);
-        }
-    }
-    let resp = req
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| {
-            // reqwest 的 Error 不含响应体，单独透出网络层错误
-            format!("请求失败: {}", e)
+    // 平台 400 自愈（约定 33）：服务端后台加减模型后，本地快照里的旧模型名会撞
+    // 400 model_not_allowed。此时同步一次平台清单并换用新条目重试（仅一次）——
+    // 服务端改名/换模型对用户无感，不必手动重开「平台额度」开关。
+    let mut model = model.clone();
+    let mut retried_platform_sync = false;
+    let resp = loop {
+        let (api_key, is_platform) = resolve_api_key(&model.id);
+        let api_key = api_key.ok_or_else(|| {
+            format!("模型「{}」未配置 API Key（平台模型需先登录账号）", model.name)
         })?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        // 平台积分不足（429 insufficient_credits，#t39）单独成句：文案可读 + 带稳定 token，
-        // 前端据此渲染「积分不足」分流卡片（去兑换 / 配置自备 Key），而不是裸报错
-        if is_platform && status == reqwest::StatusCode::TOO_MANY_REQUESTS && is_insufficient_credits(&body) {
-            return Err(
-                "积分余额不足（insufficient_credits）：可到「设置 → 账号」兑换积分，或在「设置 → AI 助手」配置自备 API Key"
-                    .into(),
-            );
+        // 平台模型走内置服务端（国内）→ 强制直连；用户自配的第三方服务保持跟随系统代理（见 crate::net）
+        let client = if is_platform {
+            crate::net::direct()
+        } else {
+            reqwest::Client::builder()
         }
-        // 常见错误提取：OpenAI 形状 error.message / 平台中转扁平 message / 原文截断
-        return Err(format!("模型接口返回 {}: {}", status, extract_error_detail(&body)));
-    }
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| format!("HTTP 客户端初始化失败: {}", e))?;
+
+        // 平台模型的地址一律指向内置服务端（理由见 platform_base_url 注释）
+        let base_url = if is_platform {
+            platform_base_url()
+        } else {
+            model.base_url.trim().to_string()
+        };
+        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+        crate::credentials::validate_endpoint(&url)?;
+        let mut payload = serde_json::json!({
+            "model": model.model,
+            "messages": &payload_messages,
+            "stream": true,
+            // 让 OpenAI 兼容后端在最后一个 chunk 返回 usage（输入/输出/缓存/推理 token）
+            "stream_options": { "include_usage": true },
+        });
+        // 工具清单：仅 agent 循环传（普通对话 / 笔记整理不带，省 token 也避免模型乱调）
+        if let Some(tools) = tools.filter(|t| !t.is_empty()) {
+            payload["tools"] = Value::Array(tools.to_vec());
+        }
+
+        let mut req = client
+            .post(&url)
+            .bearer_auth(api_key.trim())
+            .header("Content-Type", "application/json");
+        // turn 标识仅平台链路需要（服务端 usage_logs 对账用，§8）；BYOK 直连不发
+        if is_platform {
+            if let Some(t) = turn_id.map(str::trim).filter(|t| !t.is_empty()) {
+                req = req.header("X-XHub-Turn-Id", t);
+            }
+        }
+        let resp = req
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                // reqwest 的 Error 不含响应体，单独透出网络层错误
+                format!("请求失败: {}", e)
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            // 平台积分不足（429 insufficient_credits，#t39）单独成句：文案可读 + 带稳定 token，
+            // 前端据此渲染「积分不足」分流卡片（去兑换 / 配置自备 Key），而不是裸报错
+            if is_platform && status == reqwest::StatusCode::TOO_MANY_REQUESTS && is_insufficient_credits(&body) {
+                return Err(
+                    "积分余额不足（insufficient_credits）：可到「设置 → 账号」兑换积分，或在「设置 → AI 助手」配置自备 API Key"
+                        .into(),
+                );
+            }
+            if is_platform
+                && status == reqwest::StatusCode::BAD_REQUEST
+                && is_model_not_allowed(&body)
+                && !retried_platform_sync
+            {
+                retried_platform_sync = true;
+                match crate::commands::sync_platform_models().await {
+                    Ok(Some(diff)) => {
+                        log::info!("平台模型清单自愈同步: +{:?} -{:?}", diff.added, diff.removed);
+                    }
+                    Ok(None) => {}
+                    Err(e) => log::warn!("平台模型清单自愈同步失败: {e}"),
+                }
+                // 换到别的平台模型才值得重试：清单没变（还是同一个名字）就原样报错
+                if let Some(fresh) = crate::commands::pick_fresh_platform_model() {
+                    if fresh.model != model.model {
+                        log::info!(
+                            "平台模型 400 自愈: 「{}」→「{}」，换模型重试一次",
+                            model.model,
+                            fresh.model
+                        );
+                        model = fresh;
+                        continue;
+                    }
+                }
+            }
+            // 常见错误提取：OpenAI 形状 error.message / 平台中转扁平 message / 原文截断
+            return Err(format!("模型接口返回 {}: {}", status, extract_error_detail(&body)));
+        }
+        break resp;
+    };
 
     // 逐行解析 SSE：data: {json}，[DONE] 结束；delta.content 为文本增量，
     // delta.tool_calls 为工具调用分片（按 index 对位累积，见 accumulate_tool_call）
@@ -762,6 +812,16 @@ mod tests {
         assert!(!is_insufficient_credits(r#"{"error":"rate_limited"}"#));
         assert!(!is_insufficient_credits(r#"{"error":{"code":"insufficient_credits"}}"#));
         assert!(!is_insufficient_credits("plain text"));
+    }
+
+    #[test]
+    fn model_not_allowed_only_matches_the_flat_code() {
+        // 服务端对「清单外的模型名」的固定回包（400 自愈重试的触发条件）
+        assert!(is_model_not_allowed(r#"{"error":"model_not_allowed","model":"LongCat-2.0"}"#));
+        // 其它 400 / OpenAI 形状 / 非 JSON 一律不算（BYOK 的上游报错不走自愈）
+        assert!(!is_model_not_allowed(r#"{"error":"invalid_body"}"#));
+        assert!(!is_model_not_allowed(r#"{"error":{"message":"model not found"}}"#));
+        assert!(!is_model_not_allowed("plain text"));
     }
 
     #[test]

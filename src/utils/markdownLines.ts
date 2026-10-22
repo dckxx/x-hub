@@ -52,3 +52,29 @@ export function mapInlineProse(line: string, fn: (prose: string) => string): str
     })
     .join('')
 }
+
+/**
+ * 模型输出的转义噪声回收（速记 AI 深度整理）：模型常把普通文本里的 `_`、`~` 无差别转义
+ * （`A-_~!p` 变 `A-\_\~!p`），并用 HTML 实体保行尾空格（`&#x20;`）——渲染出来看着一样，
+ * 源码已被污染。这里把「显示效果与没写一样」的噪声收回来：
+ *
+ * - `\_`/`\~` 全量还原：词中 `_` 在 CommonMark 里本来就不构成强调、单个 `~` 不成删除线，
+ *   还原后与用户原文一致（成对才成的语法还原后也不会凭空配对，除非原文本来就配对）；
+ * - `*` 只回收独立边界上的（成对 `\*..\*` 还原会变斜体，与 save 路径 restoreCrepeMarkdown
+ *   的 `unescapeCrepeProse` 同口径，此处正则与它保持一致）；
+ * - `&#x20;` 还原为普通空格（模型保行尾空格的实体写法）。
+ *
+ * 围栏、`$$` 公式、行内代码原样跳过——共用本模块的行分类与行内掩码，禁止另写一套。
+ */
+export function cleanModelMarkdownNoise(text: string): string {
+  if (!text) return text
+  return mapMarkdownLines(text, (line, kind) => {
+    if (kind !== 'prose') return line
+    return mapInlineProse(line, (prose) =>
+      prose
+        .replace(/\\([_~])/g, '$1')
+        .replace(/&#x20;/gi, ' ')
+        .replace(/(^|\s)\\\*(?=\s|$)/g, '$1*'),
+    )
+  })
+}

@@ -46,6 +46,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   { section: 'suda', title: '网页默认打开方式' },
   { section: 'suda', title: '内嵌面板显示工具栏' },
   { section: 'suda', title: '小类管理' },
+  { section: 'notes', title: 'AI 深度整理模型' },
   { section: 'clipboard', title: '保留策略' },
   { section: 'clipboard', title: '保留条数上限' },
   { section: 'clipboard', title: '保留天数' },

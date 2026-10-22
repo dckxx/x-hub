@@ -4,9 +4,10 @@
 //
 // 从 SettingsView.vue 拆出（见该文件顶部说明）：设置页按大类按需加载，
 // 首次打开只需外壳 + 当前大类的代码，切大类时才加载对应面板。
-import { computed, inject, onMounted, ref } from 'vue';
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { LocateFixed, MapPin, Trash2 } from 'lucide-vue-next';
-import { isTauri, tauriApi } from '../../api/tauri';
+import { isPlatformModel, isTauri, tauriApi, PLATFORM_ENTRY_NAME, type ChatModelConfig } from '../../api/tauri';
 import AppSelect from '../AppSelect.vue';
 import SudaSubcategoryManager from './SudaSubcategoryManager.vue';
 import { useStore } from '../../stores/workbench';
@@ -51,6 +52,109 @@ async function onToggleWebviewMem() {
   await store.setWebviewMemLowOnHide(next)
   showToast(next ? '已开启：隐藏窗口时释放内存' : '已关闭：隐藏窗口保持全量内存')
 }
+
+// ---- 速记（AI 深度整理模型，约定 38）----
+// note_ai_model 取值：''=自动 / 平台入口名=负载切换 / 'platform:<名>'=指定平台模型 / 其余=自备模型名。
+// 来源与模型是两级 UI 筛选，落盘只存模型值一个字段；来源「自动」时模型下拉置灰。
+const noteModels = ref<ChatModelConfig[]>([])
+const platformModelNames = ref<string[]>([])
+const platformModelsFailed = ref(false)
+
+function providerLabel(m: ChatModelConfig): string {
+  return m.provider_name?.trim() || '未命名供应商'
+}
+
+const noteSourceOptions = computed(() => {
+  const providers: string[] = []
+  for (const m of noteModels.value) {
+    if (isPlatformModel(m)) continue
+    const p = providerLabel(m)
+    if (!providers.includes(p)) providers.push(p)
+  }
+  return [
+    { value: 'auto', label: '自动（推荐）' },
+    { value: 'platform', label: 'x-hub 平台（平台内置）' },
+    ...providers.map((p) => ({ value: p, label: p })),
+  ]
+})
+
+const noteModelSource = computed(() => {
+  const v = store.state.config.note_ai_model ?? ''
+  if (v === PLATFORM_ENTRY_NAME || v.startsWith('platform:')) return 'platform'
+  if (!v) return 'auto'
+  const m = noteModels.value.find((x) => !isPlatformModel(x) && x.name === v)
+  // 存的自备模型已被删除：按「自动」渲染（不悄悄改写配置，用户下次保存时自然覆盖）
+  return m ? providerLabel(m) : 'auto'
+})
+
+const noteModelOptions = computed(() => {
+  const src = noteModelSource.value
+  if (src === 'platform') {
+    const opts = [{ value: PLATFORM_ENTRY_NAME, label: '自动（负载切换）' }]
+    for (const n of platformModelNames.value) opts.push({ value: `platform:${n}`, label: n })
+    return opts
+  }
+  if (src === 'auto') return []
+  return noteModels.value
+    .filter((m) => !isPlatformModel(m) && providerLabel(m) === src)
+    .map((m) => ({ value: m.name, label: m.name }))
+})
+
+const noteModelValue = computed(() => {
+  const v = store.state.config.note_ai_model ?? ''
+  if (noteModelSource.value !== 'platform') {
+    return noteModelOptions.value.some((o) => o.value === v) ? v : ''
+  }
+  // 指定的平台模型已下架 → 显示「自动（负载切换）」
+  return noteModelOptions.value.some((o) => o.value === v) ? v : PLATFORM_ENTRY_NAME
+})
+
+function onNoteModelSourceChange(v: string | number) {
+  const src = String(v)
+  let next = ''
+  if (src === 'platform') {
+    next = PLATFORM_ENTRY_NAME
+  } else if (src !== 'auto') {
+    const first = noteModels.value.find((m) => !isPlatformModel(m) && providerLabel(m) === src)
+    if (!first) return
+    next = first.name
+  }
+  void store.setNoteAiModel(next)
+}
+
+function onNoteModelChange(v: string | number) {
+  void store.setNoteAiModel(String(v))
+}
+
+async function loadNoteAiModels() {
+  if (!isTauri()) return
+  try {
+    noteModels.value = await tauriApi.getChatModels()
+  } catch {
+    // 浏览器预览无后端
+  }
+  try {
+    platformModelNames.value = await tauriApi.platformModels()
+    platformModelsFailed.value = false
+  } catch {
+    // 未登录或网络失败：模型下拉只剩「自动（负载切换）」，desc 里给一句交代
+    platformModelNames.value = []
+    platformModelsFailed.value = true
+  }
+}
+
+let unlistenNoteModels: UnlistenFn | null = null
+onMounted(async () => {
+  void loadNoteAiModels()
+  if (!isTauri()) return
+  // 平台清单后台对账（chat-models-changed）后重拉：设置开着时下拉跟随最新清单
+  unlistenNoteModels = await listen('chat-models-changed', () => {
+    void loadNoteAiModels()
+  })
+})
+onBeforeUnmount(() => {
+  unlistenNoteModels?.()
+})
 
 async function applyWeatherCity() {
   const city = weatherCityInput.value.trim()
@@ -195,6 +299,35 @@ onMounted(() => {
             </div>
           </div>
           <SudaSubcategoryManager />
+        </section>
+
+        <section id="sv-sec-notes" class="sv-sec" aria-label="速记">
+          <h3 class="sv-sec-title">速记</h3>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">AI 深度整理模型</span>
+              <span class="setting-desc">编辑器「深度整理」按钮使用的模型。自动：平台额度可用时优先走平台（多个平台模型自动负载切换），否则用对话的默认模型；也可固定用平台某个模型或自备供应商的某个模型。所选模型被删除或下架时自动回到「自动」</span>
+            </div>
+            <div class="notes-ai-model">
+              <AppSelect
+                :model-value="noteModelSource"
+                :options="noteSourceOptions"
+                aria-label="整理模型来源"
+                @update:model-value="onNoteModelSourceChange"
+              />
+              <AppSelect
+                :model-value="noteModelValue"
+                :options="noteModelOptions"
+                :disabled="noteModelSource === 'auto'"
+                aria-label="AI 深度整理模型"
+                @update:model-value="onNoteModelChange"
+              />
+              <span v-if="noteModelSource === 'platform' && platformModelsFailed" class="notes-ai-hint">
+                平台模型列表获取失败（未登录或网络问题），仅可自动负载切换
+              </span>
+            </div>
+          </div>
         </section>
 
         <section id="sv-sec-clipboard" class="sv-sec" aria-label="剪贴板">

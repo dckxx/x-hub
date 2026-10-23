@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { Check, ChevronDown, GripVertical, LayoutGrid, SlidersHorizontal, X } from 'lucide-vue-next'
+import {
+  Check,
+  ChevronDown,
+  GripVertical,
+  LayoutGrid,
+  Save,
+  SlidersHorizontal,
+  X,
+} from 'lucide-vue-next'
 import {
   DASH_COLS,
   MIN_SIZE,
@@ -23,6 +31,7 @@ import { startPreviewTick, stopPreviewTick } from '../composables/useDashPreview
 import ClockCard from './ClockCard.vue'
 import DashModulePreview from './DashModulePreview.vue'
 import SysMonitorSettingsDialog from './SysMonitorSettingsDialog.vue'
+import DashboardLayoutPresetsDialog from './DashboardLayoutPresetsDialog.vue'
 import WeatherCard from './WeatherCard.vue'
 
 /**
@@ -40,6 +49,7 @@ const emit = defineEmits<{ (e: 'done'): void }>()
 
 const layout = useDashboardLayout()
 const showToast = inject<(msg: string) => void>('showToast', () => {})
+const presetsVisible = ref(false)
 
 /** 画布列间距与真实工作台 .dash-grid 取齐（16px），保证缩印比例一致 */
 const GAP = 16
@@ -528,6 +538,15 @@ function previewComponent(id: string) {
         <button
           class="ghost-btn"
           type="button"
+          title="保存或载入最多 3 个自定义布局方案"
+          @click="presetsVisible = true"
+        >
+          <Save :size="14" :stroke-width="2" aria-hidden="true" />
+          布局方案
+        </button>
+        <button
+          class="ghost-btn"
+          type="button"
           :disabled="!layout.hasSavedDefault.value"
           title="把画布恢复为保存的默认布局（需点「确认」生效）"
           @click="onRestoreDefault"
@@ -775,6 +794,10 @@ function previewComponent(id: string) {
     <SysMonitorSettingsDialog
       :visible="sysmonSettingsVisible"
       @close="sysmonSettingsVisible = false"
+    />
+    <DashboardLayoutPresetsDialog
+      :visible="presetsVisible"
+      @close="presetsVisible = false"
     />
   </div>
 </template>

@@ -55,6 +55,23 @@ pub struct SudaCustomModuleConfig {
     pub resource_ids: Vec<i64>,
 }
 
+/// 工作台自定义布局方案（最多保存 3 个；layout 为 placements JSON 数组字符串）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DashboardLayoutPreset {
+    pub name: String,
+    pub layout: String,
+}
+
+impl Default for DashboardLayoutPreset {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            layout: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -94,6 +111,9 @@ pub struct AppConfig {
     /// 独立于生效布局：编辑器里改布局不影响快照，恢复默认永远回到保存那一刻的样子
     #[serde(default)]
     pub dashboard_default_layout: String,
+    /// 用户保存的自定义布局方案（最多 3 个；不含当前生效布局）
+    #[serde(default)]
+    pub dashboard_layout_presets: Vec<DashboardLayoutPreset>,
     /// 倒计时到点提示音（默认关闭）
     pub countdown_sound: bool,
     /// 时钟卡片语录（工作台时间卡片下方显示的一句话，空串时回退默认）
@@ -501,6 +521,9 @@ pub fn default_floating_ball_buttons() -> Vec<String> {
     .collect()
 }
 
+/// 自定义布局方案的最大保存数量，前后端都按固定槽位口径限制。
+pub const MAX_DASHBOARD_LAYOUT_PRESETS: usize = 3;
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -518,6 +541,7 @@ impl Default for AppConfig {
             dashboard_mid_content: "countdown".to_string(),
             dashboard_layout: String::new(),
             dashboard_default_layout: String::new(),
+            dashboard_layout_presets: Vec::new(),
             countdown_sound: false,
             clock_quote: String::new(),
             notice_duration_ms: default_notice_duration_ms(),
@@ -671,6 +695,12 @@ fn normalize(config: &mut AppConfig) -> bool {
         config.clock_quote = String::new();
         changed = true;
     }
+    if config.dashboard_layout_presets.len() > MAX_DASHBOARD_LAYOUT_PRESETS {
+        config
+            .dashboard_layout_presets
+            .truncate(MAX_DASHBOARD_LAYOUT_PRESETS);
+        changed = true;
+    }
     if migrate_legacy_endpoints(config) {
         changed = true;
     }
@@ -817,6 +847,7 @@ mod tests {
         assert!(!c.window.always_on_top);
         assert_eq!(c.global_shortcut, crate::shortcut::DEFAULT_TOGGLE_SHORTCUT);
         assert_eq!(c.dashboard_mid_content, "countdown");
+        assert!(c.dashboard_layout_presets.is_empty());
         assert_eq!(c.note_editor_mode, "wysiwyg");
     }
 
@@ -1109,5 +1140,24 @@ mod tests {
         assert!(merged.sidebar_toggle);
         assert_eq!(merged.window.width, 1280.0);
         assert_eq!(merged.dashboard_layout, snapshot.dashboard_layout);
+    }
+
+    #[test]
+    fn normalize_truncates_dashboard_layout_presets() {
+        let mut config = AppConfig::default();
+        config.dashboard_layout_presets = (0..(MAX_DASHBOARD_LAYOUT_PRESETS + 2))
+            .map(|i| DashboardLayoutPreset {
+                name: format!("布局 {i}"),
+                layout: "[]".to_string(),
+            })
+            .collect();
+
+        normalize(&mut config);
+
+        assert_eq!(
+            config.dashboard_layout_presets.len(),
+            MAX_DASHBOARD_LAYOUT_PRESETS
+        );
+        assert_eq!(config.dashboard_layout_presets[0].name, "布局 0");
     }
 }

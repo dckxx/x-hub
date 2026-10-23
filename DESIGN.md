@@ -117,8 +117,8 @@ x-hub 是一个安静、可靠的本地桌面工作台：用户打开它是为�
 └──────────────────────────────────────────────────┘
 ```
 
-- 工作台为**自由网格布局**：部件目录在 `useDashboardLayout.ts`（clock / sticky1 / sticky2 / notes / todo_overview / resources / countdown / prompts / todo 共 9 种），每个部件可增删、拖拽、调宽高，坐标与尺寸持久化在配置 `dashboard_layout`（上图为其默认布局）。
-- 编辑入口为设置 →「布局编辑器」（独立视图 `DashboardLayoutEditor.vue`，完成后回工作台）。
+- 工作台为**自由网格布局**：部件目录在 `useDashboardLayout.ts`（clock / sticky1 / sticky2 / notes / todo_overview / resources / countdown / prompts / todo 共 9 种），每个部件可增删、拖拽、调宽高，坐标与尺寸持久化在配置 `dashboard_layout`（上图为其默认布局）；当前工作台空白处右键可打开布局菜单，最多可保存 3 个命名布局方案并直接恢复。
+- 编辑入口为设置 →「布局编辑器」或工作台右键菜单（独立视图 `DashboardLayoutEditor.vue`，完成后回工作台）；编辑器内可保存/载入/覆盖/删除布局方案。
 - 首页铺满视口无滚动，卡片内容区内滚动；960px 以下折两列，720px 以下单列堆叠。
 
 ### 独立视图

@@ -33,6 +33,12 @@ export interface SudaCustomModuleConfig {
   resource_ids: number[]
 }
 
+/** 工作台自定义布局方案（最多保存 3 个；layout 为 placements JSON 数组字符串） */
+export interface DashboardLayoutPreset {
+  name: string
+  layout: string
+}
+
 /** 本机已安装浏览器（list_installed_browsers，注册表 StartMenuInternet 枚举） */
 export interface InstalledBrowser {
   /** 显示名（如 Google Chrome / Microsoft Edge） */
@@ -289,6 +295,8 @@ export interface AppConfig {
   dashboard_layout: string
   /** 用户保存的默认布局快照（placements JSON 数组字符串；空串 = 未保存过，恢复默认不可用） */
   dashboard_default_layout: string
+  /** 用户保存的自定义布局方案（最多 3 个；不含当前生效布局） */
+  dashboard_layout_presets: DashboardLayoutPreset[]
   countdown_sound: boolean
   clock_quote: string // 时钟卡片语录（可配置，空串回退默认）
   notice_duration_ms: number // 右下角通知弹窗驻留时长（毫秒，1000–60000）

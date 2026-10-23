@@ -589,7 +589,66 @@ function dashCellStyle(p: DashPlacement) {
 }
 
 function openLayoutEditor() {
+  dashboardContextMenu.value.visible = false
   activeView.value = 'layout-editor'
+}
+
+// ---- 工作台右键菜单：空白处打开布局入口，卡片内的输入/按钮保留自身交互 ----
+const dashboardContextMenu = ref<{
+  visible: boolean
+  x: number
+  y: number
+  items: ContextMenuItem[]
+}>({
+  visible: false,
+  x: 0,
+  y: 0,
+  items: [],
+})
+
+function restoreDashboardPreset(index: number) {
+  const preset = layout.layoutPresets.value[index]
+  if (!preset) return
+  if (layout.restoreLayoutPreset(index)) {
+    showToast(`已恢复布局「${preset.name}」`)
+  } else {
+    showToast(`布局「${preset.name}」已失效，请重新保存`)
+  }
+}
+
+function openDashboardContextMenu(e: MouseEvent) {
+  const target = e.target as HTMLElement | null
+  // 右键工作台中的按钮、输入框或可编辑区域时，不抢宿主控件的上下文行为。
+  if (target?.closest('button, input, textarea, select, a, [contenteditable="true"]')) return
+  e.preventDefault()
+
+  const items: ContextMenuItem[] = [
+    { label: '自定义布局', onClick: openLayoutEditor },
+  ]
+  if (layout.layoutPresets.value.length > 0) {
+    items.push(
+      ...layout.layoutPresets.value.map((preset, index) => ({
+        label: `恢复「${preset.name}」`,
+        dividerBefore: index === 0,
+        onClick: () => restoreDashboardPreset(index),
+      })),
+    )
+  }
+  if (layout.hasSavedDefault.value) {
+    items.push({
+      label: '恢复默认布局',
+      dividerBefore: layout.layoutPresets.value.length === 0,
+      onClick: () => {
+        if (layout.restoreDefaultLayout()) showToast('已恢复默认布局')
+        else showToast('默认布局已失效，请重新保存')
+      },
+    })
+  }
+
+  // ContextMenu 在 window 上监听右键用于关闭旧菜单，延迟一拍可避免刚打开就被全局监听关掉。
+  setTimeout(() => {
+    dashboardContextMenu.value = { visible: true, x: e.clientX, y: e.clientY, items }
+  }, 0)
 }
 
 // ---- 启动加载：数据就绪后隐藏欢迎页（窗口已改为启动即显示） ----
@@ -1123,7 +1182,11 @@ provide('showToast', showToast)
       <div class="main-area">
         <main class="workspace" aria-label="主工作区">
         <!-- 工作台：可自定义布局（12 列单元格网格，模块库编辑器） -->
-        <div v-if="activeView === 'dashboard'" class="dash-wrap">
+        <div
+          v-if="activeView === 'dashboard'"
+          class="dash-wrap"
+          @contextmenu="openDashboardContextMenu"
+        >
           <div
             v-if="layout.placements.value.length"
             class="dash-grid"
@@ -1146,7 +1209,7 @@ provide('showToast', showToast)
             </div>
           </div>
           <div v-else class="dash-empty">
-            <p>工作台还没有模块，去设置里自定义布局吧</p>
+            <p>工作台还没有模块，右键空白处或去设置里自定义布局吧</p>
             <button class="pill-btn" type="button" @click="openLayoutEditor">自定义布局</button>
           </div>
         </div>
@@ -1319,6 +1382,13 @@ provide('showToast', showToast)
       :slot-id="sudaCustomEditId"
       :visible="!!sudaCustomEditId"
       @close="sudaCustomEditId = null"
+    />
+    <ContextMenu
+      :visible="dashboardContextMenu.visible"
+      :x="dashboardContextMenu.x"
+      :y="dashboardContextMenu.y"
+      :items="dashboardContextMenu.items"
+      @close="dashboardContextMenu.visible = false"
     />
 
     <Transition name="toast">

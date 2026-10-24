@@ -353,6 +353,10 @@ async function openSession(id: number) {
     tauriApi.listChatMessages(id),
     tauriApi.listChatSessions().then((l) => l.find((x) => x.id === id) ?? null),
   ])
+  // 过期响应守卫：连点两个会话时两次请求并发在途，后到的旧响应必须整单丢弃——
+  // 否则会渲染旧会话的消息、恢复错会话的审批卡，还会把旧会话的模型名写进当前
+  // 会话（commitSessionModel 按当前 activeSessionId 落库）
+  if (activeSessionId.value !== id) return
   messages.value = msgs
   // 新会话的时间线从库里重建（历史卡片 + 挂起审批），不带上一会话的实时状态。
   // activeTurnId 不清：切走的会话若回合仍在跑，回来后停止键要接得上

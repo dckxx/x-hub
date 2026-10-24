@@ -140,11 +140,22 @@ const activeView = ref<ViewId>('dashboard')
 // 「AI 助手」入口：切到完整视图并收起抽屉——主窗同一时刻只挂一个 ChatPanel 实例，
 // 双实例会对同一会话各挂一份流式/事件监听（约定 33）
 function onNavClick(id: ViewId) {
-  if (id === 'chat' && chatOpen.value) {
+  if (id === 'chat') {
+    enterChatView()
+    return
+  }
+  activeView.value = id
+}
+
+// 进入「AI 助手」视图的唯一入口：先收抽屉再切视图。侧栏点击、悬浮球 view:chat
+// 都必须走这里；绕开的话抽屉里的 ChatPanel 还挂着、视图又挂一份 = 同窗双实例，
+// 同一会话可被两份实例并发开回合（历史交叉落库、双倍模型消耗）
+function enterChatView() {
+  if (chatOpen.value) {
     chatOpen.value = false
     persistChatPanelSize()
   }
-  activeView.value = id
+  activeView.value = 'chat'
 }
 
 // ---- 扩展打开：扩展中心点开某个扩展 → 主区渲染扩展入口（view 形态） ----
@@ -508,8 +519,9 @@ onMounted(async () => {
         const v = id.slice(5)
         if (v === 'chat') {
           // 悬浮球「AI 对话」= 切到侧栏视图（纯切换，不再顺带开抽屉；
-          // 独立窗模式下 Rust 侧直接唤起小窗，根本不经这里）
-          activeView.value = 'chat'
+          // 独立窗模式下 Rust 侧直接唤起小窗，根本不经这里）。
+          // 走 enterChatView 收抽屉，防同窗双 ChatPanel
+          enterChatView()
         } else {
           activeView.value = v as ViewId
         }
@@ -670,6 +682,11 @@ function toggleChat() {
   if (isTauri() && store.state.config.chat_window_mode) {
     void tauriApi.chatWindowToggle().catch(() => {})
     return
+  }
+  // 抽屉打开方向若正处于「AI 助手」视图：先离开视图再开抽屉——视图里的 ChatPanel
+  // 还挂着时再挂抽屉那份就是同窗双实例（同会话可被并发开回合）。关闭方向不参与
+  if (!chatOpen.value && activeView.value === 'chat') {
+    activeView.value = 'dashboard'
   }
   chatOpen.value = !chatOpen.value
   // 窗口开关状态不持久化：重启后始终默认收起，仅保存尺寸

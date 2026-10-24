@@ -1059,7 +1059,7 @@ export interface SystemInfo {
   netDownload: number
   /** 上行 + 下行合计速率（字节/秒） */
   netTotalSpeed: number
-  /** 总流量：应用开始监控以来收发累计（字节） */
+  /** 总流量：应用启动以来收发累计（字节），重启归零、断网不回跳（后端按网卡基线折算） */
   netTotalTraffic: number
   /** 逻辑 CPU 线程数 */
   cpuThreads: number

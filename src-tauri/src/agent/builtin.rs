@@ -200,6 +200,74 @@ fn match_exact(candidates: &[(String, i64)], want: &str) -> Result<i64, Vec<Stri
     Err(candidates.iter().take(8).map(|(n, _)| n.clone()).collect())
 }
 
+/// 从参数取 id：返回 (参数原文, 解析后的数字)。原文保留原样——「007」这类前导零
+/// 标题按名称匹配时不能丢零，非数字原文（模型直接传了标题串）也照样能按名兜底
+fn arg_id(args: &Value, key: &str) -> (String, Option<i64>) {
+    match args.get(key) {
+        Some(Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                (i.to_string(), Some(i))
+            } else {
+                // 浮点形式的整数（偶发供应商把整数 id 序列化成 20261023.0）按整数值
+                // 解析——否则原文带着「.0」，id 与名称兜底双双对不上
+                match n.as_f64() {
+                    Some(f) if f.fract() == 0.0 && (i64::MIN as f64..=i64::MAX as f64).contains(&f) => {
+                        let i = f as i64;
+                        (i.to_string(), Some(i))
+                    }
+                    _ => (n.to_string(), None),
+                }
+            }
+        }
+        Some(Value::String(s)) => {
+            let t = s.trim();
+            (t.to_string(), t.parse::<i64>().ok())
+        }
+        _ => (String::new(), None),
+    }
+}
+
+/// 按 id 取对象，查不到时按名称精确匹配兜底（0.9.3 反馈：标题/名称本身是数字——
+/// 如笔记「20261023」——模型会把用户口中的数字直接当 id 传参，按 id 查不到就报
+/// 「不存在」）。兜底顺序：真实 id 永远优先；id 查不到才按名称精确匹配——唯一命中
+/// 用它，同名多篇报歧义（§5 不猜），彻底没有报不存在并提示先搜索。
+/// `what` 为对象中文名（报错文案用）；`name_candidates` 只在 id 落空时才执行。
+fn resolve_by_id<T>(
+    raw: &str,
+    id: Option<i64>,
+    what: &str,
+    get_by_id: impl Fn(i64) -> Result<T, rusqlite::Error>,
+    name_candidates: impl FnOnce() -> Result<Vec<(String, i64)>, rusqlite::Error>,
+) -> Result<T, ToolOutcome> {
+    let missing = || {
+        ToolOutcome::err(
+            format!("{what} {raw} 不存在"),
+            format!(
+                "没有 id 或名称为「{raw}」的{what}。如果用户说的是名称而不是 id，先用对应的搜索/列表工具找到条目开头的 [id]，再传该 id。"
+            ),
+        )
+    };
+    if let Some(id) = id {
+        if let Ok(t) = get_by_id(id) {
+            return Ok(t);
+        }
+    }
+    let candidates = name_candidates().map_err(db_err)?;
+    let hits: Vec<i64> = candidates.iter().filter(|(n, _)| n.as_str() == raw).map(|(_, i)| *i).collect();
+    match hits.as_slice() {
+        [only] => get_by_id(*only).map_err(|_| missing()),
+        [] => Err(missing()),
+        many => Err(ToolOutcome::err(
+            format!("有 {} 个名为「{raw}」的{what}", many.len()),
+            format!(
+                "存在 {} 个同名的{what}（id 分别为 {}），请向用户确认要操作哪一个，不要猜。",
+                many.len(),
+                many.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("、")
+            ),
+        )),
+    }
+}
+
 fn not_found_outcome(what: &str, want: &str, candidates: Vec<String>) -> ToolOutcome {
     ToolOutcome::err(
         format!("{what}「{want}」未找到"),
@@ -312,12 +380,17 @@ impl AgentTool for SearchNotes {
 struct GetNote;
 impl AgentTool for GetNote {
     fn name(&self) -> &'static str { "get_note" }
-    fn description(&self) -> &'static str { "读单篇笔记全文（含所在文件夹与标签）。id 来自 list_notes/search_notes/global_search；必须已有具体笔记 id 才调用，不要为了找笔记而试探。" }
+    fn description(&self) -> &'static str { "读单篇笔记全文（含所在文件夹与标签）。note_id 必须取自 list_notes/search_notes/global_search 返回的 [数字]；用户提到的数字也可能只是笔记标题而不是 id——先用 search_notes 搜该数字确认，不要直接当 id 试探（传错时工具会按标题兜底，同名多篇会要求确认）。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"note_id":{"type":"integer","description":"笔记 id"}},"required":["note_id"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
-        let Some(id) = arg_i64(args, "note_id") else { return ToolOutcome::err("缺少 note_id 参数", String::new()) };
-        let note = match repo::note::get(ctx.conn, id) { Ok(n) => n, Err(_) => return ToolOutcome::err(format!("笔记 {id} 不存在"), String::new()) };
+        let (raw, id) = arg_id(args, "note_id");
+        if raw.is_empty() { return ToolOutcome::err("缺少 note_id 参数", String::new()); }
+        let note = match resolve_by_id(&raw, id, "笔记",
+            |fid| repo::note::get(ctx.conn, fid),
+            || Ok(repo::note::search(ctx.conn, &raw)?.into_iter().map(|n| (n.title, n.id)).collect()),
+        ) { Ok(n) => n, Err(o) => return o };
+        let id = note.id;
         let tags = repo::tag::tags_of_note(ctx.conn, id).unwrap_or_default().into_iter().map(|t| t.name).collect::<Vec<_>>().join("、");
         let folder = note.folder_id.and_then(|fid| repo::note_folder::get(ctx.conn, fid).ok()).map(|f| f.name).unwrap_or_default();
         let meta = format!("《{}》{}{}", note.title, if folder.is_empty() { String::new() } else { format!(" 文件夹:{folder}") }, if tags.is_empty() { String::new() } else { format!(" 标签:{tags}") });
@@ -424,8 +497,12 @@ impl AgentTool for GetSnippet {
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"snippet_id":{"type":"integer","description":"提示词 id"}},"required":["snippet_id"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
-        let Some(id) = arg_i64(args, "snippet_id") else { return ToolOutcome::err("缺少 snippet_id 参数", String::new()) };
-        let s = match repo::snippet::get(ctx.conn, id) { Ok(s) => s, Err(_) => return ToolOutcome::err(format!("提示词 {id} 不存在"), String::new()) };
+        let (raw, id) = arg_id(args, "snippet_id");
+        if raw.is_empty() { return ToolOutcome::err("缺少 snippet_id 参数", String::new()) };
+        let s = match resolve_by_id(&raw, id, "提示词",
+            |fid| repo::snippet::get(ctx.conn, fid),
+            || Ok(repo::snippet::list(ctx.conn)?.into_iter().map(|s| (s.title, s.id)).collect()),
+        ) { Ok(s) => s, Err(o) => return o };
         let meta = format!("《{}》{} 使用 {} 次", s.title, if s.is_pinned { "置顶" } else { "" }, s.copy_count);
         ToolOutcome::ok(format!("已读取《{}》", s.title), format!("{meta}\n\n{}", cap_chars(&s.content, MAX_TEXT)))
     }
@@ -663,8 +740,14 @@ impl AgentTool for UpdateTodo {
         "done":{"type":"boolean"},"pinned":{"type":"boolean"}
     },"required":["todo_id"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
-        let Some(id) = arg_i64(args, "todo_id") else { return ToolOutcome::err("缺少 todo_id 参数", String::new()) };
-        let mut t = match repo::todo::get(ctx.conn, id) { Ok(t) => t, Err(_) => return ToolOutcome::err(format!("待办 {id} 不存在"), String::new()) };
+        let (raw, id) = arg_id(args, "todo_id");
+        if raw.is_empty() { return ToolOutcome::err("缺少 todo_id 参数", String::new()); }
+        let t0 = match resolve_by_id(&raw, id, "待办",
+            |fid| repo::todo::get(ctx.conn, fid),
+            || Ok(repo::todo::search(ctx.conn, &raw)?.into_iter().map(|t| (t.title, t.id)).collect()),
+        ) { Ok(t) => t, Err(o) => return o };
+        let id = t0.id;
+        let mut t = t0;
         let mut changes: Vec<&str> = Vec::new();
         if let Some(title) = arg_str(args, "title") {
             let p = arg_i64(args, "priority").unwrap_or(t.priority).clamp(0, 2);
@@ -757,8 +840,13 @@ impl AgentTool for UpdateNote {
         "folder":{"type":"string"}
     },"required":["note_id"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
-        let Some(id) = arg_i64(args, "note_id") else { return ToolOutcome::err("缺少 note_id 参数", String::new()) };
-        let note = match repo::note::get(ctx.conn, id) { Ok(n) => n, Err(_) => return ToolOutcome::err(format!("笔记 {id} 不存在"), String::new()) };
+        let (raw, id) = arg_id(args, "note_id");
+        if raw.is_empty() { return ToolOutcome::err("缺少 note_id 参数", String::new()); }
+        let note = match resolve_by_id(&raw, id, "笔记",
+            |fid| repo::note::get(ctx.conn, fid),
+            || Ok(repo::note::search(ctx.conn, &raw)?.into_iter().map(|n| (n.title, n.id)).collect()),
+        ) { Ok(n) => n, Err(o) => return o };
+        let id = note.id;
         let title = arg_str(args, "title").unwrap_or(&note.title);
         let content = arg_str(args, "content").unwrap_or(&note.content);
         // 先做全部校验再落库（与 create_note 同款）：folder 匹配失败时标题/正文
@@ -789,9 +877,14 @@ impl AgentTool for AppendToNote {
     fn level(&self) -> Level { Level::Write }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"note_id":{"type":"integer"},"content":{"type":"string"}},"required":["note_id","content"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
-        let Some(id) = arg_i64(args, "note_id") else { return ToolOutcome::err("缺少 note_id 参数", String::new()) };
+        let (raw, id) = arg_id(args, "note_id");
+        if raw.is_empty() { return ToolOutcome::err("缺少 note_id 参数", String::new()); }
+        let note = match resolve_by_id(&raw, id, "笔记",
+            |fid| repo::note::get(ctx.conn, fid),
+            || Ok(repo::note::search(ctx.conn, &raw)?.into_iter().map(|n| (n.title, n.id)).collect()),
+        ) { Ok(n) => n, Err(o) => return o };
+        let id = note.id;
         let Some(text) = arg_str(args, "content") else { return ToolOutcome::err("缺少 content 参数", String::new()) };
-        let note = match repo::note::get(ctx.conn, id) { Ok(n) => n, Err(_) => return ToolOutcome::err(format!("笔记 {id} 不存在"), String::new()) };
         let merged = if note.content.trim().is_empty() { text.to_string() } else { format!("{}\n{}", note.content, text) };
         match repo::note::update(ctx.conn, id, &note.title, &merged) { Ok(_) => (), Err(e) => return db_err(e) }
         ToolOutcome::ok(format!("已追加到《{}》", note.title), format!("已把 {} 字追加到笔记 [{}]《{}》尾部", text.chars().count(), id, note.title))
@@ -805,8 +898,13 @@ impl AgentTool for DeleteNote {
     fn level(&self) -> Level { Level::Write }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"note_id":{"type":"integer"}},"required":["note_id"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
-        let Some(id) = arg_i64(args, "note_id") else { return ToolOutcome::err("缺少 note_id 参数", String::new()) };
-        let note = match repo::note::get(ctx.conn, id) { Ok(n) => n, Err(_) => return ToolOutcome::err(format!("笔记 {id} 不存在"), String::new()) };
+        let (raw, id) = arg_id(args, "note_id");
+        if raw.is_empty() { return ToolOutcome::err("缺少 note_id 参数", String::new()); }
+        let note = match resolve_by_id(&raw, id, "笔记",
+            |fid| repo::note::get(ctx.conn, fid),
+            || Ok(repo::note::search(ctx.conn, &raw)?.into_iter().map(|n| (n.title, n.id)).collect()),
+        ) { Ok(n) => n, Err(o) => return o };
+        let id = note.id;
         if let Err(e) = repo::note::trash(ctx.conn, id) { return db_err(e); }
         ToolOutcome::ok(format!("《{}》已移入回收站", note.title), format!("笔记 [{}]《{}》已移入回收站（可在回收站还原）。", id, note.title))
     }
@@ -887,8 +985,13 @@ impl AgentTool for UpdateSnippet {
         "pinned":{"type":"boolean"}
     },"required":["snippet_id"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
-        let Some(id) = arg_i64(args, "snippet_id") else { return ToolOutcome::err("缺少 snippet_id 参数", String::new()) };
-        let s = match repo::snippet::get(ctx.conn, id) { Ok(s) => s, Err(_) => return ToolOutcome::err(format!("提示词 {id} 不存在"), String::new()) };
+        let (raw, id) = arg_id(args, "snippet_id");
+        if raw.is_empty() { return ToolOutcome::err("缺少 snippet_id 参数", String::new()) };
+        let s = match resolve_by_id(&raw, id, "提示词",
+            |fid| repo::snippet::get(ctx.conn, fid),
+            || Ok(repo::snippet::list(ctx.conn)?.into_iter().map(|s| (s.title, s.id)).collect()),
+        ) { Ok(s) => s, Err(o) => return o };
+        let id = s.id;
         let title = arg_str(args, "title").unwrap_or(&s.title);
         let content = arg_str(args, "content").unwrap_or(&s.content);
         if arg_str(args, "title").is_some() || arg_str(args, "content").is_some() {
@@ -979,9 +1082,14 @@ impl AgentTool for ToggleCountdown {
     fn level(&self) -> Level { Level::Write }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"countdown_id":{"type":"integer"},"action":{"type":"string","enum":["pause","resume"]}},"required":["countdown_id","action"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
-        let Some(id) = arg_i64(args, "countdown_id") else { return ToolOutcome::err("缺少 countdown_id 参数", String::new()) };
+        let (raw, id) = arg_id(args, "countdown_id");
+        if raw.is_empty() { return ToolOutcome::err("缺少 countdown_id 参数", String::new()) };
+        let c = match resolve_by_id(&raw, id, "倒计时",
+            |fid| repo::countdown::get(ctx.conn, fid),
+            || Ok(repo::countdown::list(ctx.conn)?.into_iter().map(|c| (c.name, c.id)).collect()),
+        ) { Ok(c) => c, Err(o) => return o };
+        let id = c.id;
         let action = arg_str(args, "action").unwrap_or("");
-        let c = match repo::countdown::get(ctx.conn, id) { Ok(c) => c, Err(_) => return ToolOutcome::err(format!("倒计时 {id} 不存在"), String::new()) };
         let r = match action {
             "pause" => if c.paused { Ok(c) } else { repo::countdown::pause(ctx.conn, id) },
             "resume" => if !c.paused { Ok(c) } else { repo::countdown::resume(ctx.conn, id) },
@@ -1017,8 +1125,14 @@ impl AgentTool for DeleteTodo {
     fn level(&self) -> Level { Level::Dangerous }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"todo_id":{"type":"integer"}},"required":["todo_id"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
-        let Some(id) = arg_i64(args, "todo_id") else { return ToolOutcome::err("缺少 todo_id 参数", String::new()) };
-        let title = repo::todo::get(ctx.conn, id).map(|t| t.title).unwrap_or_default();
+        let (raw, id) = arg_id(args, "todo_id");
+        if raw.is_empty() { return ToolOutcome::err("缺少 todo_id 参数", String::new()); }
+        let t = match resolve_by_id(&raw, id, "待办",
+            |fid| repo::todo::get(ctx.conn, fid),
+            || Ok(repo::todo::search(ctx.conn, &raw)?.into_iter().map(|t| (t.title, t.id)).collect()),
+        ) { Ok(t) => t, Err(o) => return o };
+        let id = t.id;
+        let title = t.title;
         let removed = match repo::todo::delete(ctx.conn, id) { Ok(r) => r, Err(e) => return db_err(e) };
         ToolOutcome::ok(format!("已删除「{title}」"), format!("待办 [{id}]「{title}」已硬删（连带删除 {} 条子待办）。", removed.len().saturating_sub(1)))
     }
@@ -1031,8 +1145,14 @@ impl AgentTool for DeleteResource {
     fn level(&self) -> Level { Level::Dangerous }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"resource_id":{"type":"integer"}},"required":["resource_id"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
-        let Some(id) = arg_i64(args, "resource_id") else { return ToolOutcome::err("缺少 resource_id 参数", String::new()) };
-        let name = repo::resource::get(ctx.conn, id).map(|r| r.name).unwrap_or_default();
+        let (raw, id) = arg_id(args, "resource_id");
+        if raw.is_empty() { return ToolOutcome::err("缺少 resource_id 参数", String::new()) };
+        let r0 = match resolve_by_id(&raw, id, "速达资源",
+            |fid| repo::resource::get(ctx.conn, fid),
+            || Ok(repo::resource::search(ctx.conn, &raw)?.into_iter().map(|r| (r.name, r.id)).collect()),
+        ) { Ok(r) => r, Err(o) => return o };
+        let id = r0.id;
+        let name = r0.name;
         if let Err(e) = repo::resource::delete(ctx.conn, id) { return db_err(e); }
         ToolOutcome::ok(format!("已删除「{name}」"), format!("速达资源 [{id}]「{name}」已硬删。"))
     }
@@ -1045,8 +1165,14 @@ impl AgentTool for DeleteSnippet {
     fn level(&self) -> Level { Level::Dangerous }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"snippet_id":{"type":"integer"}},"required":["snippet_id"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
-        let Some(id) = arg_i64(args, "snippet_id") else { return ToolOutcome::err("缺少 snippet_id 参数", String::new()) };
-        let title = repo::snippet::get(ctx.conn, id).map(|s| s.title).unwrap_or_default();
+        let (raw, id) = arg_id(args, "snippet_id");
+        if raw.is_empty() { return ToolOutcome::err("缺少 snippet_id 参数", String::new()) };
+        let s = match resolve_by_id(&raw, id, "提示词",
+            |fid| repo::snippet::get(ctx.conn, fid),
+            || Ok(repo::snippet::list(ctx.conn)?.into_iter().map(|s| (s.title, s.id)).collect()),
+        ) { Ok(s) => s, Err(o) => return o };
+        let id = s.id;
+        let title = s.title;
         if let Err(e) = repo::snippet::delete(ctx.conn, id) { return db_err(e); }
         ToolOutcome::ok(format!("已删除「{title}」"), format!("提示词 [{id}]「{title}」已硬删。"))
     }
@@ -1059,8 +1185,14 @@ impl AgentTool for DeleteCountdown {
     fn level(&self) -> Level { Level::Dangerous }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"countdown_id":{"type":"integer"}},"required":["countdown_id"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
-        let Some(id) = arg_i64(args, "countdown_id") else { return ToolOutcome::err("缺少 countdown_id 参数", String::new()) };
-        let name = repo::countdown::get(ctx.conn, id).map(|c| c.name).unwrap_or_default();
+        let (raw, id) = arg_id(args, "countdown_id");
+        if raw.is_empty() { return ToolOutcome::err("缺少 countdown_id 参数", String::new()) };
+        let c = match resolve_by_id(&raw, id, "倒计时",
+            |fid| repo::countdown::get(ctx.conn, fid),
+            || Ok(repo::countdown::list(ctx.conn)?.into_iter().map(|c| (c.name, c.id)).collect()),
+        ) { Ok(c) => c, Err(o) => return o };
+        let id = c.id;
+        let name = c.name;
         if let Err(e) = repo::countdown::delete(ctx.conn, id) { return db_err(e); }
         ToolOutcome::ok(format!("已删除「{name}」"), format!("倒计时 [{id}]「{name}」已硬删。"))
     }
@@ -1073,8 +1205,13 @@ impl AgentTool for LaunchResource {
     fn level(&self) -> Level { Level::Dangerous }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{"resource_id":{"type":"integer"}},"required":["resource_id"]}) }
     fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
-        let Some(id) = arg_i64(args, "resource_id") else { return ToolOutcome::err("缺少 resource_id 参数", String::new()) };
-        let res = match repo::resource::get(ctx.conn, id) { Ok(r) => r, Err(_) => return ToolOutcome::err(format!("资源 {id} 不存在"), String::new()) };
+        let (raw, id) = arg_id(args, "resource_id");
+        if raw.is_empty() { return ToolOutcome::err("缺少 resource_id 参数", String::new()) };
+        let res = match resolve_by_id(&raw, id, "速达资源",
+            |fid| repo::resource::get(ctx.conn, fid),
+            || Ok(repo::resource::search(ctx.conn, &raw)?.into_iter().map(|r| (r.name, r.id)).collect()),
+        ) { Ok(r) => r, Err(o) => return o };
+        let id = res.id;
         // 与 commands::launch_resource 同一套核心（进程已在运行且有可见窗口 → 调度前台）
         let r = match res.kind {
             ResourceKind::App => {
@@ -1628,5 +1765,90 @@ mod tests {
         let out = LaunchResource.execute(&json!({"resource_id":999}), ToolCtx { conn: &conn });
         assert!(!out.ok);
         assert!(out.summary.contains("不存在"));
+    }
+
+    /// 0.9.3 反馈回归：标题/名称本身是数字的条目（如笔记「20261023」）——模型会把
+    /// 用户口中的数字直接当 id 传给按 id 取对象的工具，此前按 id 查不到直接报
+    /// 「不存在」。现在 id 落空时按名称精确匹配兜底：笔记读/改/追加/删全链路。
+    #[test]
+    fn numeric_title_note_falls_back_to_name_match() {
+        let conn = crate::db::init_in_memory().unwrap();
+        let n = repo::note::create(&conn, "20261023").unwrap();
+        assert_ne!(n.id, 20261023, "前提：库里 id 查不到 20261023，走兜底");
+        let out = GetNote.execute(&json!({"note_id": 20261023}), ToolCtx { conn: &conn });
+        assert!(out.ok, "{}", out.summary);
+        assert!(out.detail.contains("20261023"));
+        // 浮点形式的整数 id（偶发供应商把整数序列化成 20261023.0）：按整数值解析，兜底照常命中
+        let out = GetNote.execute(&json!({"note_id": 20261023.0}), ToolCtx { conn: &conn });
+        assert!(out.ok, "{}", out.summary);
+        // 直接锁归一化本身：f64 形态整数解析出 i64，且原文不带「.0」（名称兜底键要干净）
+        let (raw, id) = arg_id(&json!({"x": 20261023.0}), "x");
+        assert_eq!((raw.as_str(), id), ("20261023", Some(20261023)));
+        // 追加/更新也按兜底命中，且改的是兜底解析出的真实 id
+        // （更新只换正文不改标题，保住「标题=20261023」这个删除兜底的前提）
+        let out = AppendToNote.execute(&json!({"note_id": 20261023, "content": "补充"}), ToolCtx { conn: &conn });
+        assert!(out.ok, "{}", out.summary);
+        let out = UpdateNote.execute(&json!({"note_id": 20261023, "content": "全新正文"}), ToolCtx { conn: &conn });
+        assert!(out.ok, "{}", out.summary);
+        let after = repo::note::get(&conn, n.id).unwrap();
+        assert_eq!(after.title, "20261023");
+        assert_eq!(after.content, "全新正文");
+        // 删除兜底
+        let out = DeleteNote.execute(&json!({"note_id": 20261023}), ToolCtx { conn: &conn });
+        assert!(out.ok, "{}", out.summary);
+        assert!(repo::note::get(&conn, n.id).unwrap().deleted_at.is_some());
+        // 真不存在的数字：仍明确报错，并提示先搜索
+        let miss = GetNote.execute(&json!({"note_id": 99999}), ToolCtx { conn: &conn });
+        assert!(!miss.ok);
+        assert!(miss.detail.contains("搜索"), "{}", miss.detail);
+    }
+
+    /// 0.9.3 反馈回归（其他模块）：待办、提示词、速达资源、倒计时同款兜底
+    #[test]
+    fn numeric_title_todo_snippet_resource_countdown_fallback() {
+        let conn = crate::db::init_in_memory().unwrap();
+        // 待办「2026」：更新/删除兜底
+        let t = repo::todo::create(&conn, "2026", None, None).unwrap();
+        let out = UpdateTodo.execute(&json!({"todo_id": 2026, "done": true}), ToolCtx { conn: &conn });
+        assert!(out.ok, "{}", out.summary);
+        assert!(repo::todo::get(&conn, t.id).unwrap().done);
+        let out = DeleteTodo.execute(&json!({"todo_id": 2026}), ToolCtx { conn: &conn });
+        assert!(out.ok, "{}", out.summary);
+        // 提示词「404」：读/改兜底
+        let s = repo::snippet::create(&conn, "404", "页面不存在").unwrap();
+        let out = GetSnippet.execute(&json!({"snippet_id": 404}), ToolCtx { conn: &conn });
+        assert!(out.ok, "{}", out.summary);
+        assert!(out.detail.contains("页面不存在"));
+        let out = UpdateSnippet.execute(&json!({"snippet_id": 404, "pinned": true}), ToolCtx { conn: &conn });
+        assert!(out.ok, "{}", out.summary);
+        assert!(repo::snippet::get(&conn, s.id).unwrap().is_pinned);
+        // 速达资源「8888」：删除兜底（launch 会真拉程序，不在此测）
+        let r = repo::resource::create(&conn, ResourceKind::Web, "8888", "https://example.com", None, None, None, None, None, None, None).unwrap();
+        let out = DeleteResource.execute(&json!({"resource_id": 8888}), ToolCtx { conn: &conn });
+        assert!(out.ok, "{}", out.summary);
+        assert!(repo::resource::get(&conn, r.id).is_err());
+        // 倒计时「60」：暂停兜底（end_at 取未来时刻，pause 语义才完整）
+        let end = repo::countdown::now_ms() + 60_000;
+        repo::countdown::create(&conn, "60", "once", end, 60_000, None).unwrap();
+        let out = ToggleCountdown.execute(&json!({"countdown_id": 60, "action": "pause"}), ToolCtx { conn: &conn });
+        assert!(out.ok, "{}", out.summary);
+        assert!(repo::countdown::get(&conn, 1).unwrap().paused);
+        // 前导零标题：字符串参数按原文匹配，不被 parse 丢零
+        let z = repo::note::create(&conn, "007").unwrap();
+        let out = GetNote.execute(&json!({"note_id": "007"}), ToolCtx { conn: &conn });
+        assert!(out.ok, "{}", out.summary);
+        assert!(out.detail.contains("007"));
+        assert_eq!(z.id, 1, "id=1 的笔记标题是 007，兜底命中的就是它");
+    }
+
+    /// 0.9.3 反馈回归：同名多篇（数字标题重复）时按 §5 不猜——报歧义请用户确认
+    #[test]
+    fn duplicate_numeric_titles_report_ambiguity() {
+        let conn = crate::db::init_in_memory().unwrap();
+        repo::note::create(&conn, "123").unwrap();
+        repo::note::create(&conn, "123").unwrap();
+        let out = GetNote.execute(&json!({"note_id": 123}), ToolCtx { conn: &conn });
+        assert!(!out.ok);
+        assert!(out.detail.contains("同名") && out.detail.contains("确认"), "{}", out.detail);
     }
 }

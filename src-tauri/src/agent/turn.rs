@@ -208,8 +208,34 @@ where
         buf.push_str(&output.content);
 
         if output.tool_calls.is_empty() {
-            log::info!("[agent:{turn_id}] 第 {round} 轮：模型未发起工具调用，直接给出回复");
             let content = buf.trim().to_string();
+            // 空回复不能当正常收尾：上游把错误塞进 SSE 错误帧、或网关偶发返回空正文时，
+            // 放行这里就会落一条 0 字符的 assistant 消息——界面是个没有文字的空气泡，
+            // 用户看到的就是「发消息它不回复」（0.9.2 反馈）。宁可报错让前端渲染错误气泡，
+            // 也不要把一次失败的调用伪装成成功的空回复。
+            if content.is_empty() {
+                // 本回合还没执行过任何工具：整轮啥也没发生，按真错误上报（前端渲染错误气泡），
+                // 不落库——落一条空的 assistant 只会污染历史。
+                if art.pending.is_empty() {
+                    return Err(super::EMPTY_REPLY_MESSAGE.into());
+                }
+                // 已经跑过工具轮：工具调用与结果必须成对落库（否则下次请求上游 400），
+                // 这里不能向上抛。合成一条收尾说明当最终回复，让用户知道工具做了什么、
+                // 但这次没能给出总结。
+                let text = super::EMPTY_REPLY_MESSAGE.to_string();
+                log::warn!("[agent:{turn_id}] 第 {round} 轮空回复，但本回合已有工具过程，合成收尾说明");
+                art.pending.push(PendingMessage {
+                    role: "assistant".into(),
+                    content: text.clone(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_status: None,
+                });
+                art.final_reply = Some(text);
+                return Ok(());
+            }
+            log::info!("[agent:{turn_id}] 第 {round} 轮：模型未发起工具调用，直接给出回复");
             art.pending.push(PendingMessage {
                 role: "assistant".into(),
                 content: content.clone(),
@@ -1097,6 +1123,52 @@ mod tests {
         assert!(art.final_reply.is_none());
     }
 
+
+    /// 0.9.2 回归：模型返回空正文（上游把错误塞进 SSE 错误帧时的表现）不能当正常收尾，
+    /// 否则会落一条 0 字符的 assistant 消息——界面是一个没文字也没报错的空气泡。
+    /// 整轮毫无产出时按真错误上报，让前端渲染错误气泡。
+    #[tokio::test]
+    async fn empty_reply_without_tools_is_an_error() {
+        let (mut inv, _) = Scripted::new(vec![reply("")]);
+        let (emit, _) = collector();
+        let mut grants = SessionGrants::default();
+        let res = run_agent_turn(
+            SID, TURN, PermissionMode::Ask, &mut grants, false, &ToolRegistry::empty(), "sys",
+            vec![], MAX_ROUNDS, &mut inv, &mut Nop, emit, || false, mem_conn,
+        )
+        .await;
+        let (e, art) = res.expect_err("空回复必须报错，不得当作成功");
+        assert!(e.contains("没有返回任何内容"), "错误文案要可读：{e}");
+        assert!(art.pending.is_empty(), "没产出就不得留下空 assistant 消息");
+    }
+
+    /// 空回复出现在**工具轮之后**时不能向上抛：assistant(tool_calls) 与 tool 结果
+    /// 必须成对落库（否则下次请求被上游 400）。此时合成收尾说明，保住已执行过程。
+    #[tokio::test]
+    async fn empty_reply_after_tools_keeps_process_and_explains() {
+        let execs = Arc::new(AtomicUsize::new(0));
+        let registry = reg_with(Level::Read, execs.clone());
+        let (mut inv, _) = Scripted::new(vec![
+            round_with("", vec![call("c1", "count_tool", "{}")]),
+            reply(""),
+        ]);
+        let (emit, _) = collector();
+        let mut grants = SessionGrants::default();
+        let art = run_agent_turn(
+            SID, TURN, PermissionMode::Ask, &mut grants, false, &registry, "sys", vec![],
+            MAX_ROUNDS, &mut inv, &mut Nop, emit, || false, mem_conn,
+        )
+        .await
+        .expect("工具轮之后的空回复不能走 Err，否则工具过程落不了库");
+        assert_eq!(execs.load(Ordering::SeqCst), 1);
+        // assistant(tool_calls) + tool + 合成的收尾 assistant
+        assert_eq!(art.pending.len(), 3);
+        assert_eq!(art.pending[1].role, "tool");
+        let last = art.pending.last().unwrap();
+        assert_eq!(last.role, "assistant");
+        assert!(last.content.contains("没有返回任何内容"), "收尾说明要交代原因：{}", last.content);
+        assert!(art.final_reply.is_some());
+    }
 
     #[tokio::test]
     async fn unknown_tool_and_bad_args_become_error_results() {

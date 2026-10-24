@@ -221,6 +221,11 @@ fn extract_error_detail(body: &str) -> String {
         Ok(v) => v,
         Err(_) => return truncate_body(body),
     };
+    extract_error_detail_from(&parsed)
+}
+
+/// 已解析版本：SSE 流内错误帧（已 parse 过）不必再解一次 JSON
+fn extract_error_detail_from(parsed: &Value) -> String {
     if let Some(s) = parsed["error"]["message"].as_str() {
         return s.to_string();
     }
@@ -230,7 +235,7 @@ fn extract_error_detail(body: &str) -> String {
     if let Some(s) = parsed.get("error").and_then(|e| e.as_str()) {
         return s.to_string();
     }
-    truncate_body(body)
+    truncate_body(&parsed.to_string())
 }
 
 fn truncate_body(body: &str) -> String {
@@ -252,6 +257,26 @@ async fn wait_cancelled(cancel: &Option<std::sync::Arc<std::sync::atomic::Atomic
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         },
         None => std::future::pending::<()>().await,
+    }
+}
+
+/// 判断一个已解析的 SSE 帧是不是**流内错误**，是则返回可展示的文案。
+///
+/// 这是 0.9.2「发消息不回复、只留一个空气泡」的根因所在：上游用 HTTP 200 开场，
+/// 错误写在 SSE 正文里（平台中转实测原样返回
+/// `data: {"error":{"message":"当前模型暂无可用供应方（协议 OPENAI）…","type":"api_error"}}`
+/// 紧跟 `data: [DONE]`）。旧解析只认 `choices[].delta.content`，错误帧被当成
+/// 「没有正文的普通帧」跳过，整轮于是以「正常结束 + 0 字符」收场。
+///
+/// `error` 为 null / 缺失都算正常帧——部分网关每帧都带 `"error": null`。
+fn sse_error_detail(parsed: &Value) -> Option<String> {
+    let err = parsed.get("error").filter(|e| !e.is_null())?;
+    // 形状与 HTTP 非 2xx 的错误体一致，复用同一提取器（对象取 message、扁平码取原文）
+    let detail = extract_error_detail_from(parsed);
+    if detail.trim().is_empty() {
+        Some(err.to_string())
+    } else {
+        Some(detail)
     }
 }
 
@@ -485,13 +510,28 @@ where
         if let Some(data) = trimmed.strip_prefix("data:") {
             let data = data.trim();
             if data == "[DONE]" {
-                terminated = true;
+                // 直接 break 即可：走到这里就已离开循环，不会再去判 EOF 断流
                 break;
             }
             let parsed: Value = match serde_json::from_str(data) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
+            // 流内错误帧（HTTP 本来 200，错误在 SSE 正文里）：平台中转发
+            // `{"error":{"message":"当前模型暂无可用供应方…","type":"api_error"}}` 后跟 [DONE]，
+            // 上游 OpenAI 兼容网关也可能发 `{"error":{...}}`。不识别的话这轮会以
+            // 「正常结束 + 0 字符」收场——界面上就是一个没有文字、没有报错的空气泡
+            // （0.9.2 反馈「发消息不回复」的成因）。已吐过正文时按断流处理，保留 partial。
+            if let Some(detail) = sse_error_detail(&parsed) {
+                // 没有可见正文就整轮作废：哪怕是「工具调用攒了一半才报错」也不能放行——
+                // 半截的 arguments 拿去执行等于拿残缺 JSON 动用户数据，宁可报错重试
+                if out.is_empty() {
+                    return Err(format!("模型接口返回错误：{}", detail));
+                }
+                log::warn!("SSE 中途报错（已收 {} 字符），保留部分回复", out.chars().count());
+                out.push_str(&format!("\n\n> ⚠️ 回复中断：{}", detail));
+                break;
+            }
             // 部分兼容网关不发 [DONE]，靠末帧 finish_reason 收尾——同样算完整
             if parsed["choices"][0]
                 .get("finish_reason")
@@ -847,6 +887,38 @@ mod tests {
         assert!(!is_model_not_allowed(r#"{"error":"invalid_body"}"#));
         assert!(!is_model_not_allowed(r#"{"error":{"message":"model not found"}}"#));
         assert!(!is_model_not_allowed("plain text"));
+    }
+
+    /// 0.9.2 回归：上游把错误写在 SSE 正文里（HTTP 200 + 错误帧 + [DONE]）时，
+    /// 客户端必须报错，不能以「正常结束 + 0 字符」收场——那正是「发消息不回复、
+    /// 只留一个没有文字也没有报错的空气泡」的成因。
+    #[test]
+    fn sse_error_frame_is_detected() {
+        // 平台中转的实测原样回包（本次故障的现场）
+        let v: Value = serde_json::from_str(
+            r#"{"error":{"message":"当前模型暂无可用供应方（协议 OPENAI），请稍后重试或联系管理员","type":"api_error"}}"#,
+        )
+        .unwrap();
+        let d = sse_error_detail(&v).expect("错误帧必须被识别");
+        assert!(d.contains("暂无可用供应方"), "错误文案要透传给用户：{d}");
+
+        // 扁平 code + 独立 message 形状
+        let v: Value =
+            serde_json::from_str(r#"{"error":"quota_exceeded","message":"AI 额度已用完"}"#).unwrap();
+        assert_eq!(sse_error_detail(&v).as_deref(), Some("AI 额度已用完"));
+
+        // 只有扁平 code 时直接把码报出来
+        let v: Value = serde_json::from_str(r#"{"error":"overloaded"}"#).unwrap();
+        assert_eq!(sse_error_detail(&v).as_deref(), Some("overloaded"));
+
+        // 正常帧：没有 error 字段，或显式 null（部分网关每帧都带）——都不能误判
+        let v: Value = serde_json::from_str(
+            r#"{"choices":[{"delta":{"content":"你好"},"finish_reason":null}]}"#,
+        )
+        .unwrap();
+        assert!(sse_error_detail(&v).is_none());
+        let v: Value = serde_json::from_str(r#"{"choices":[],"error":null}"#).unwrap();
+        assert!(sse_error_detail(&v).is_none(), "error:null 是正常帧，不得误报");
     }
 
     #[test]

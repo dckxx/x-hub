@@ -67,6 +67,10 @@ function onToggleSidebar() {
   void store.setSidebarToggle(!store.state.config.sidebar_toggle)
 }
 
+function onToggleTitlebarWidgetBorder() {
+  void store.setTitlebarWidgetBorder(!store.state.config.titlebar_widget_border)
+}
+
 // ---- 字体大小（全局 + 单模块） ----
 const FONT_MODULES = [
   { key: 'sticky', label: '便签', configKey: 'font_sticky' },
@@ -142,6 +146,24 @@ function onAccentInput(e: Event) {
               :aria-checked="store.state.config.sidebar_toggle"
               :class="{ on: store.state.config.sidebar_toggle }"
               @click="onToggleSidebar"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
+          <!-- 扩展推上标题栏正中的小部件（媒体控制/状态条）的外观：描边可选 -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">标题栏小部件边框</span>
+              <span class="setting-desc">扩展展示在标题栏正中的小部件（媒体控制/状态条）带玻璃底座与描边（默认开启）；关闭后去掉整个底座，内容直接浮在标题栏上</span>
+            </div>
+            <button
+              class="toggle"
+              role="switch"
+              type="button"
+              :aria-checked="store.state.config.titlebar_widget_border !== false"
+              :class="{ on: store.state.config.titlebar_widget_border !== false }"
+              @click="onToggleTitlebarWidgetBorder"
             >
               <span class="toggle-knob"></span>
             </button>

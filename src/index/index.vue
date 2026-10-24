@@ -18,8 +18,11 @@ import ClockCard from '../components/ClockCard.vue'
 import WeatherCard from '../components/WeatherCard.vue'
 import StickyCard from '../components/StickyCard.vue'
 import CountdownCard from '../components/CountdownCard.vue'
+import ContextMenu, { type ContextMenuItem } from '../components/ContextMenu.vue'
 import { useStore } from '../stores/workbench'
 import { isTauri, tauriApi } from '../api/tauri'
+import { effectiveKeepAliveIds } from '../utils/extensionKeepAlive'
+import { useTitlebarWidget } from '../composables/useTitlebarWidget'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import type { Countdown, ExtensionEntry, Note, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
@@ -229,6 +232,14 @@ function pruneStalePinnedExtensions() {
   if (stale.length > 0) {
     store.setSidebarExtensionBulk(pinned.filter((id) => validIds.has(id)))
   }
+  // 常驻/随应用启动同口径：卸载后清配置残留（实例销毁由 keepAliveIds 剪枝 watch 收尾）
+  const keepAlive = store.state.config.extension_keep_alive ?? []
+  const autostart = store.state.config.extension_autostart ?? []
+  const keepAliveValid = keepAlive.filter((id) => validIds.has(id))
+  const autostartValid = autostart.filter((id) => validIds.has(id))
+  if (keepAliveValid.length !== keepAlive.length || autostartValid.length !== autostart.length) {
+    store.setExtensionKeepAliveBulk(keepAliveValid, autostartValid)
+  }
 }
 
 function onExtensionsChanged() {
@@ -259,6 +270,146 @@ watch(activeView, (v) => {
   if (v === 'extensions') void refreshInstalledExtensions()
 })
 
+// ---- 扩展常驻（view 形态）----
+// 常驻实例的 iframe 永居「停车场」层（iframe 在 DOM 中挪窝必重载，不能搬进搬出），
+// 靠 v-show 切换显示：切走页面层隐藏、实例继续跑；只有关开关/卸载/禁用才销毁实例。
+// 在跑清单放 store（keepAliveRunning，仅运行期）：侧栏绿点与扩展中心「常驻」标签同读一份，
+// 反映实例真实在跑而非配置开关——「结束本次常驻」只销毁实例不动配置，绿点须随之熄灭
+const keepAliveMounted = computed(() => store.state.keepAliveRunning)
+const keepAliveReloadTicks = ref<Record<string, number>>({})
+// 标题栏小部件：挂载监听 + 实例销毁/剪枝/重载时撤下（占位权随常驻实例走，见组合式函数）
+const titlebar = useTitlebarWidget()
+// 「随应用启动」错峰：主窗就绪后延迟再挂，避免启动期并发加载扩展页面抢 CPU/网络
+const AUTOSTART_DELAY_MS = 8000
+const AUTOSTART_STAGGER_MS = 600
+
+// 生效常驻 = keep_alive ∪ autostart（「随应用启动」隐含常驻），且仍已安装、可用：
+// 卸载/禁用/清单失效即出局（实例由下方剪枝 watch 销毁）
+const keepAliveIds = computed(() => {
+  const installed = new Map(installedExtensions.value.map((e) => [e.id, e]))
+  return effectiveKeepAliveIds(store.state.config).filter((id) => {
+    const e = installed.get(id)
+    return !!e && !e.invalid && !e.disabled
+  })
+})
+
+function isExtKeepAlive(extId: string): boolean {
+  return keepAliveIds.value.includes(extId)
+}
+
+/** 把扩展挂进常驻停车场（幂等）：openExtensionSurface 分流与下方兜底 watch 共用 */
+function ensureKeepAliveMounted(extId: string) {
+  if (!store.state.keepAliveRunning.includes(extId)) {
+    store.setKeepAliveRunning([...store.state.keepAliveRunning, extId])
+  }
+}
+
+/** 结束本次常驻（临时语义）：销毁当前实例并回到扩展中心，配置不动——下次打开照旧常驻；
+ *  彻底关闭常驻请走扩展详情弹窗或设置 → 扩展。绿点随实例销毁熄灭 */
+function stopKeepAliveInstance(extId: string) {
+  store.setKeepAliveRunning(store.state.keepAliveRunning.filter((id) => id !== extId))
+  delete keepAliveReloadTicks.value[extId]
+  titlebar.clearOf(extId)
+  if (openedExtension.value?.id === extId) {
+    openedExtension.value = null
+    activeView.value = 'extensions'
+  }
+}
+
+// ---- 侧栏固定扩展的右键菜单：常驻实例的宿主操作入口（刷新页面 / 重启后端 / 结束本次常驻）。
+//      不放扩展视图右上角——那是扩展自己的按钮区，宿主按钮叠上去会误触 ----
+const sidebarExtMenu = ref<{ x: number; y: number; extId: string } | null>(null)
+
+const sidebarExtMenuItems = computed<ContextMenuItem[]>(() => {
+  const id = sidebarExtMenu.value?.extId
+  if (!id || !store.state.keepAliveRunning.includes(id)) return []
+  const ext = installedExtensions.value.find((e) => e.id === id)
+  const items: ContextMenuItem[] = [
+    {
+      // 「刷新页面」= 只重载扩展页面（iframe 重新导航），不动 Node 后端进程；
+      // 「重启后端」= 停掉 service 进程再起——改了后端代码用这个（刷新拿不到新逻辑）
+      label: '刷新页面',
+      onClick: () => {
+        // 旧页面即将销毁：先撤下它的小部件，扩展重新启动后自行再推（防死 iframe 僵尸占位）
+        titlebar.clearOf(id)
+        keepAliveReloadTicks.value[id] = (keepAliveReloadTicks.value[id] ?? 0) + 1
+      },
+    },
+  ]
+  if (ext?.runtime === 'service') {
+    items.push({
+      label: '重启后端',
+      onClick: async () => {
+        try {
+          await tauriApi.restartExtensionService(id)
+          showToast('后端已重启')
+        } catch (e) {
+          showToast(`重启后端失败：${String(e)}`)
+        }
+      },
+    })
+  }
+  items.push({
+    label: '关闭',
+    danger: true,
+    dividerBefore: true,
+    onClick: () => stopKeepAliveInstance(id),
+  })
+  return items
+})
+
+function onSidebarExtContextMenu(ext: ExtensionEntry, e: MouseEvent) {
+  // 实例没在跑时没有可操作项：不开菜单（左键打开、开关在详情弹窗）
+  if (!store.state.keepAliveRunning.includes(ext.id)) return
+  // ⚠️ 必须 stopPropagation：ContextMenu 的 globalClose 挂在 window 的 contextmenu 上，
+  // 冒泡过去会在微任务里把刚打开的菜单当场关掉（菜单闪现即消失，合成事件测不出）
+  e.stopPropagation()
+  e.preventDefault()
+  sidebarExtMenu.value = { x: e.clientX, y: e.clientY, extId: ext.id }
+}
+
+// 兜底：在详情弹窗里把「当前正开着」的扩展切成常驻时不经过 openExtensionSurface，
+// 这里补挂载（watch 默认 flush pre，先于渲染执行，避免「层已切换、实例还没挂」的空白帧）
+watch(() => [activeView.value, openedExtension.value?.id] as const, ([view, id]) => {
+  if (view === 'extension' && id && isExtKeepAlive(id)) ensureKeepAliveMounted(id)
+})
+
+// 剪枝：关开关/卸载/禁用/清单失效后销毁对应实例——扩展都没了 iframe 还在跑，
+// 既耗内存又违反「权限撤销后不得让隐藏 iframe 继续按旧 CSP 联网」的既定口径
+watch([keepAliveIds, installedExtensions], () => {
+  const valid = new Set(keepAliveIds.value)
+  const running = store.state.keepAliveRunning
+  const removed = running.filter((id) => !valid.has(id))
+  if (!removed.length) return
+  store.setKeepAliveRunning(running.filter((id) => valid.has(id)))
+  // 实例随之销毁：标题栏小部件一并撤下（不撤会留下死 iframe 的僵尸占位）
+  removed.forEach((id) => titlebar.clearOf(id))
+  // 被移除的实例若正开着：扩展已卸载/禁用/失效时主区退回扩展中心（没有可显示的东西了）；
+  // 只是关掉常驻开关的则什么都不做——isExtKeepAlive 已变 false，普通实例自然接管
+  const openId = openedExtension.value?.id
+  if (openId && removed.includes(openId)) {
+    const stillUsable = installedExtensions.value.some((e) => e.id === openId && !e.invalid && !e.disabled)
+    if (!stillUsable) {
+      openedExtension.value = null
+      activeView.value = 'extensions'
+    }
+  }
+})
+
+// 「随应用启动」：主窗就绪后错峰挂载。fire 时按当时配置现算——启动头几秒里改的配置也正确
+function scheduleKeepAliveAutostart() {
+  if (!isTauri()) return
+  window.setTimeout(() => {
+    effectiveKeepAliveIds({ extension_autostart: store.state.config.extension_autostart }).forEach(
+      (id, i) => {
+        window.setTimeout(() => {
+          if (isExtKeepAlive(id)) ensureKeepAliveMounted(id)
+        }, i * AUTOSTART_STAGGER_MS)
+      },
+    )
+  }, AUTOSTART_DELAY_MS)
+}
+
 // 扩展 module 内通过 runtime.open(surface) 请求打开自身某个形态（通用能力）
 const VALID_EXT_SURFACES = new Set(['view', 'window', 'drawer'])
 
@@ -274,6 +425,14 @@ function openExtensionSurface(extId: string, surface: string) {
   if (s === 'drawer') {
     extensionReloadTick.value++
     drawerExtension.value = { id: extId, surface: 'drawer', name: ext?.name ?? extId }
+    return
+  }
+  // 常驻扩展的 view 走停车场实例：不递增 extensionReloadTick（切回绝不自动重载，保状态），
+  // 本会话首次打开即挂载，之后切页不销毁
+  if (isExtKeepAlive(extId)) {
+    ensureKeepAliveMounted(extId)
+    openedExtension.value = { id: extId, surface: s, name: ext?.name ?? extId }
+    activeView.value = 'extension'
     return
   }
   extensionReloadTick.value++
@@ -454,6 +613,10 @@ onMounted(async () => {
     const wait = Math.max(0, BOOT_MIN_MS - (performance.now() - bootStartAt))
     setTimeout(hideBootSplash, wait)
   })
+  // 常驻扩展「随应用启动」：主窗就绪后错峰挂载（内部延迟触发，fire 时按当时配置现算）
+  scheduleKeepAliveAutostart()
+  // 标题栏小部件：开始监听 Rust 转发的 titlebar-widget-changed（常驻闸在读 keepAliveRunning）
+  titlebar.start()
   // 兜底：无论数据是否加载成功，最多 4s 后隐藏欢迎页，避免一直遮挡
   setTimeout(hideBootSplash, BOOT_MAX_MS)
   // 浮窗便签还原/删除后，主窗口实时同步便签与脱离状态
@@ -887,6 +1050,7 @@ provide('showToast', showToast)
             :data-tip="ext.name"
             type="button"
             @click="openSidebarExtension(ext)"
+            @contextmenu="onSidebarExtContextMenu(ext, $event)"
           >
             <span class="sidebar-nav-icon" :class="{ 'has-img': !!ext.icon }" aria-hidden="true">
               <img
@@ -899,6 +1063,11 @@ provide('showToast', showToast)
               <Puzzle v-else :size="15" :stroke-width="2" />
             </span>
             <span>{{ ext.name }}</span>
+            <!-- 常驻标识绿点：贴图标正下方（状态灯，读在跑实例而非配置——
+                 结束本次常驻后熄灭，下次打开再亮）。用 <i> 不用 <span>——收起态与窄屏的
+                 隐藏文字规则按 span 选择器收网，span 绿点会被一并隐藏；图标容器在收起态
+                 overflow:hidden 会裁掉出圆的下半截，所以挂在导航项上而非图标内 -->
+            <i v-if="keepAliveMounted.includes(ext.id)" class="sidebar-ext-ka-dot" title="常驻后台运行中" aria-hidden="true"></i>
           </button>
         </div>
 
@@ -1015,10 +1184,11 @@ provide('showToast', showToast)
         </section>
 
         <!-- 扩展运行视图：主区渲染扩展入口（iframe + window.xhub 桥 API）。
-             不带宿主工具栏：扩展名与「窗口/抽屉」多形态打开入口已由扩展中心承载 -->
+             不带宿主工具栏：扩展名与「窗口/抽屉」多形态打开入口已由扩展中心承载。
+             常驻扩展由下方停车场层显示（iframe 不能挪窝），这里只渲染非常驻实例 -->
         <section v-else-if="activeView === 'extension'" class="view view-extension" tabindex="-1" aria-label="扩展">
           <ExtensionView
-            v-if="openedExtension"
+            v-if="openedExtension && !isExtKeepAlive(openedExtension.id)"
             :ext-id="openedExtension.id"
             :surface="openedExtension.surface"
             :reload-key="extensionReloadTick"
@@ -1048,6 +1218,28 @@ provide('showToast', showToast)
           <DashboardLayoutEditor @done="activeView = 'dashboard'" />
         </section>
         </main>
+
+        <!-- 扩展常驻停车场：常驻扩展的 view 实例永居此层（iframe 挪窝必重载，不能搬进搬出），
+             v-show 切换显示——切走页面层隐藏、实例继续跑。z-index 低于聊天抽屉(40)/扩展抽屉(45)，
+             抽屉照常悬浮在常驻扩展之上 -->
+        <div
+          v-show="activeView === 'extension' && !!openedExtension && keepAliveMounted.includes(openedExtension.id)"
+          class="ext-keepalive-layer"
+        >
+          <div
+            v-for="id in keepAliveMounted"
+            :key="id"
+            v-show="openedExtension?.id === id"
+            class="ekal-item"
+          >
+            <ExtensionView
+              :ext-id="id"
+              surface="view"
+              :reload-key="keepAliveReloadTicks[id] ?? 0"
+              @close="closeExtension"
+            />
+          </div>
+        </div>
 
         <!-- AI 对话抽屉（覆盖式，悬浮在内容上方，可从上下左右滑入，尺寸可拖拽） -->
         <Transition :name="`chat-drawer-${chatSide}`">
@@ -1102,6 +1294,15 @@ provide('showToast', showToast)
       @open-resource="onOpenResource"
       @open-note="onOpenNote"
       @open-todo="onOpenTodo"
+    />
+    <!-- 侧栏固定扩展右键菜单：常驻实例的 重载 / 关闭（紧凑宽度，贴两字项内容） -->
+    <ContextMenu
+      :visible="sidebarExtMenu !== null"
+      :x="sidebarExtMenu?.x ?? 0"
+      :y="sidebarExtMenu?.y ?? 0"
+      :items="sidebarExtMenuItems"
+      compact
+      @close="sidebarExtMenu = null"
     />
     <PromptManageDialog
       :visible="promptManageVisible"
@@ -1298,6 +1499,24 @@ html[data-wallpaper='1'] .title-bar [data-tip]::after {
   height: 100%;
   object-fit: contain;
   padding: 4px;
+}
+/* 常驻扩展绿点：贴图标正下方作状态灯，与图标留 2px 间隙不黏连。
+   展开态导航项 36px 高、图标 24px 左起 8px 内边距（图标水平中心 x=20、下缘 y=30），
+   下移 2px 出项界（.sidebar-ext 纵向不裁切，仅整组边界才裁）；收起态导航项 40×40 圆、
+   图标居中（下缘 y=32），走下方覆盖规则 */
+.sidebar-ext-ka-dot {
+  position: absolute;
+  left: 20px;
+  bottom: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--c-green);
+}
+.sidebar.collapsed .sidebar-ext-ka-dot {
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 0;
 }
 .sidebar.collapsed .sidebar-ext {
   align-items: center;
@@ -1534,6 +1753,20 @@ html[data-wallpaper='1'] .title-bar [data-tip]::after {
   padding: 0;
 }
 
+/* 扩展常驻停车场：绝对定位盖住工作区（iframe 永居此层，v-show 切换显示）。
+   z-index 低于聊天抽屉(40)/扩展抽屉(45)，两个抽屉照常悬浮在常驻扩展之上 */
+.ext-keepalive-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+}
+.ekal-item {
+  position: absolute;
+  inset: 0;
+}
+/* 常驻实例的宿主快捷操作已移至侧栏固定扩展的右键菜单（视图右上角是扩展自己的
+   按钮区，宿主按钮叠上去会误触） */
+
 /* 扩展抽屉：absolute 悬浮于工作区之上，右侧滑入 */
 .ext-drawer {
   position: absolute;
@@ -1637,6 +1870,11 @@ html[data-theme='dark'][data-wallpaper-clear='1'] .ext-drawer {
   .sidebar.collapsed .sidebar-nav-item span,
   .sidebar.collapsed .sidebar-status span {
     display: initial;
+  }
+  /* 窄屏收起态：内边距回到 12px（图标水平中心 x=24），绿点跟图标而非整项居中 */
+  .sidebar.collapsed .sidebar-ext-ka-dot {
+    left: 24px;
+    transform: none;
   }
   .workspace { padding: 0 var(--space-2) var(--space-2) 0; overflow-y: auto; }
 }

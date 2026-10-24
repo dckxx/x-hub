@@ -416,6 +416,18 @@ pub(crate) static CAPABILITIES: &[Capability] = &[
         handler: CapabilityHandler::Sync(events_emit),
     },
     Capability {
+        namespace: "titlebar",
+        method: "set",
+        permission: Some("titlebar"),
+        handler: CapabilityHandler::Sync(titlebar_set),
+    },
+    Capability {
+        namespace: "titlebar",
+        method: "clear",
+        permission: Some("titlebar"),
+        handler: CapabilityHandler::Sync(titlebar_clear),
+    },
+    Capability {
         namespace: "sharedStorage",
         method: "get",
         permission: Some("shared-storage"),
@@ -2439,6 +2451,323 @@ fn events_emit(
     Ok(Value::Null)
 }
 
+// ---------- titlebar ----------
+
+/// 标题栏小部件文本字段的字符上限（chars 计数；超限**截断**而非报错——
+/// 展示字段宽松处理，与 ui.notify 的 title/body 同口径）
+const TB_MAX_TEXT: usize = 64;
+const TB_MAX_ICON: usize = 8;
+const TB_MAX_ACTIONS: usize = 3;
+const TB_MAX_ACTION_ID: usize = 24;
+const TB_MAX_ACTION_LABEL: usize = 8;
+/// bars 段的高度条上限（根数）：前端按 ~1px/根排布，再多就挤成实心块，
+/// 失去「细条」观感，超出直接截断
+const TB_MAX_WAVE: usize = 32;
+/// status 档段式排布上限：顶层段 ≤ 8、stack 嵌套 ≤ 2 层、每层子段 ≤ 4。
+/// 这是防止单条小部件塞进过多内容把标题栏撑爆——超量截断（展示类字段宽松口径）
+const TB_MAX_SEGMENTS: usize = 8;
+const TB_MAX_STACK_DEPTH: usize = 2;
+const TB_MAX_STACK_CHILDREN: usize = 4;
+/// 段固定宽度的合法区间（px）：太窄画不出进度条/竖条，太宽会挤掉文本
+const TB_SEG_MIN_WIDTH: f64 = 16.0;
+const TB_SEG_MAX_WIDTH: f64 = 240.0;
+/// cover 字节上限：dataURL 载荷走 Tauri 事件全量广播，64 KB 足够一张 64×64 封面，
+/// 超限直接报错（不静默丢弃——封面丢了渲染出来是个破洞，作者应当场知道）
+const TB_MAX_COVER_BYTES: usize = 64 * 1024;
+
+fn tb_truncate(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+/// 取可选 u64 字段：存在但不是非负整数 → INVALID_ARGUMENT（类型错误是作者代码 bug，要响）
+fn tb_opt_u64(obj: &Map<String, Value>, key: &str) -> Result<Option<u64>, String> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| format!("INVALID_ARGUMENT: {key} 必须是非负整数")),
+    }
+}
+
+/// actions 数组校验（顶层 `actions` 与 segments 里 `actions` 段共用一套口径）：
+/// 每项 `{id, label}`，id 非空 ≤24、label ≤8，最多 3 个
+fn tb_validate_actions(items: &[Value]) -> Result<Vec<Value>, String> {
+    let mut actions = Vec::new();
+    for item in items.iter().take(TB_MAX_ACTIONS) {
+        let a = item
+            .as_object()
+            .ok_or("INVALID_ARGUMENT: actions 元素必须是 {id, label} 对象")?;
+        let id = a
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if id.is_empty() {
+            return Err("INVALID_ARGUMENT: actions 元素缺少非空 id".into());
+        }
+        let label = a.get("label").and_then(Value::as_str).unwrap_or(id);
+        actions.push(json!({
+            "id": tb_truncate(id, TB_MAX_ACTION_ID),
+            "label": tb_truncate(label, TB_MAX_ACTION_LABEL),
+        }));
+    }
+    Ok(actions)
+}
+
+/// status 档单个内容段校验与归一化（`segments` 通用排布原语）。
+/// 段类型：`text`（文本）/ `icon`（字符图标）/ `progress`（进度线）/ `bars`（高度条组）/
+/// `actions`（按钮组）/ `stack`（纵向叠放容器，递归 children）。
+/// 公共布局字段：`width`（固定宽度 px，钳 16..=240）/ `grow`（true = 吃掉剩余宽度）。
+/// 宿主只认这些几何原语，不理解业务语义——这样任何扩展都能拼出自己需要的条，
+/// 不需要为「音乐」「下载」「监控」各加一批场景字段。
+fn tb_validate_segment(v: &Value, depth: usize) -> Result<Value, String> {
+    let o = v
+        .as_object()
+        .ok_or("INVALID_ARGUMENT: segments 元素必须是对象")?;
+    let ty = o
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or("INVALID_ARGUMENT: segments 元素缺少 type")?;
+    let mut out = Map::new();
+    out.insert("type".into(), json!(ty));
+    match ty {
+        "text" => {
+            let text = o.get("text").and_then(Value::as_str).unwrap_or("").trim();
+            if text.is_empty() {
+                return Err("INVALID_ARGUMENT: text 段缺少非空 text".into());
+            }
+            out.insert("text".into(), json!(tb_truncate(text, TB_MAX_TEXT)));
+            // tone：primary = 主文本（粗、亮）；muted = 次要文本（细、淡）
+            let tone = if o.get("tone").and_then(Value::as_str) == Some("muted") {
+                "muted"
+            } else {
+                "primary"
+            };
+            out.insert("tone".into(), json!(tone));
+        }
+        "icon" => {
+            let glyph = o.get("glyph").and_then(Value::as_str).unwrap_or("").trim();
+            if glyph.is_empty() {
+                return Err("INVALID_ARGUMENT: icon 段缺少非空 glyph".into());
+            }
+            out.insert("glyph".into(), json!(tb_truncate(glyph, TB_MAX_ICON)));
+        }
+        "progress" => {
+            let value = o
+                .get("value")
+                .and_then(Value::as_f64)
+                .ok_or("INVALID_ARGUMENT: progress 段需要数字 value")?;
+            out.insert("value".into(), json!(value.clamp(0.0, 1.0)));
+        }
+        "bars" => {
+            let arr = o
+                .get("values")
+                .and_then(Value::as_array)
+                .ok_or("INVALID_ARGUMENT: bars 段需要 values 数组")?;
+            let mut bars = Vec::new();
+            for x in arr.iter().take(TB_MAX_WAVE) {
+                let f = x
+                    .as_f64()
+                    .ok_or("INVALID_ARGUMENT: bars 段 values 元素必须是数字")?;
+                bars.push(json!(f.clamp(0.0, 1.0)));
+            }
+            if bars.is_empty() {
+                return Err("INVALID_ARGUMENT: bars 段 values 不能为空".into());
+            }
+            out.insert("values".into(), Value::Array(bars));
+        }
+        "actions" => {
+            let arr = o
+                .get("items")
+                .and_then(Value::as_array)
+                .ok_or("INVALID_ARGUMENT: actions 段需要 items 数组")?;
+            let actions = tb_validate_actions(arr)?;
+            if actions.is_empty() {
+                return Err("INVALID_ARGUMENT: actions 段 items 不能为空".into());
+            }
+            out.insert("items".into(), Value::Array(actions));
+        }
+        "stack" => {
+            if depth >= TB_MAX_STACK_DEPTH {
+                return Err(format!(
+                    "INVALID_ARGUMENT: stack 段最多嵌套 {TB_MAX_STACK_DEPTH} 层"
+                ));
+            }
+            let arr = o
+                .get("children")
+                .and_then(Value::as_array)
+                .ok_or("INVALID_ARGUMENT: stack 段需要 children 数组")?;
+            let mut children = Vec::new();
+            for c in arr.iter().take(TB_MAX_STACK_CHILDREN) {
+                children.push(tb_validate_segment(c, depth + 1)?);
+            }
+            if children.is_empty() {
+                return Err("INVALID_ARGUMENT: stack 段 children 不能为空".into());
+            }
+            out.insert("children".into(), Value::Array(children));
+        }
+        other => {
+            return Err(format!(
+                "INVALID_ARGUMENT: 不支持的段类型 {other}（text/icon/progress/bars/actions/stack）"
+            ))
+        }
+    }
+    if let Some(w) = o.get("width") {
+        let wf = w
+            .as_f64()
+            .ok_or("INVALID_ARGUMENT: 段 width 必须是数字（px）")?;
+        out.insert(
+            "width".into(),
+            json!(wf.clamp(TB_SEG_MIN_WIDTH, TB_SEG_MAX_WIDTH)),
+        );
+    }
+    if o.get("grow").and_then(Value::as_bool).unwrap_or(false) {
+        out.insert("grow".into(), json!(true));
+    }
+    Ok(Value::Object(out))
+}
+
+/// titlebar.set 载荷校验与归一化（纯函数，单测锁定口径）：
+/// - `kind` 必填：`media`（媒体控制档，固定 播放/暂停/上下曲 按钮与进度线）或
+///   `status`（通用信息档，emoji 图标 + 可选文字按钮 + 可选细进度）
+/// - status 档可选 `segments`：**通用段式排布**——扩展按数组顺序拼自己的条，
+///   宿主只认几何原语（text / icon / progress / bars / actions / stack + width / grow），
+///   不懂业务语义；不传则沿用 title/subtitle/icon/progress/actions 的扁平渲染
+/// - 文本字段超限截断；未知字段剥除——回传的就是前端渲染的最终形态
+/// - `cover` 只收 http(s) URL 或 ≤64 KB 的 dataURL；`progress` 钳到 0..=1；
+///   media 的 `positionMs` 超过 `durationMs` 时钳到 duration
+pub(crate) fn validate_titlebar_widget(args: &Value) -> Result<Value, String> {
+    let obj = args
+        .as_object()
+        .ok_or("INVALID_ARGUMENT: titlebar.set 需要 object 参数")?;
+    let kind = obj.get("kind").and_then(Value::as_str).unwrap_or("status");
+    if kind != "media" && kind != "status" {
+        return Err(format!(
+            "INVALID_ARGUMENT: kind 只支持 media/status，收到 {kind}"
+        ));
+    }
+    let title = obj
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if title.is_empty() {
+        return Err("INVALID_ARGUMENT: title 不能为空".into());
+    }
+    let mut out = Map::new();
+    out.insert("kind".into(), json!(kind));
+    out.insert("title".into(), json!(tb_truncate(title, TB_MAX_TEXT)));
+    if let Some(sub) = obj.get("subtitle").and_then(Value::as_str) {
+        let sub = sub.trim();
+        if !sub.is_empty() {
+            out.insert("subtitle".into(), json!(tb_truncate(sub, TB_MAX_TEXT)));
+        }
+    }
+    if let Some(icon) = obj.get("icon").and_then(Value::as_str) {
+        let icon = icon.trim();
+        if !icon.is_empty() {
+            out.insert("icon".into(), json!(tb_truncate(icon, TB_MAX_ICON)));
+        }
+    }
+    if kind == "media" {
+        if let Some(cover) = obj.get("cover").and_then(Value::as_str) {
+            let cover = cover.trim();
+            if !cover.is_empty() {
+                let ok = (cover.starts_with("http://") || cover.starts_with("https://"))
+                    && cover.len() <= 2048;
+                let ok = ok || (cover.starts_with("data:") && cover.len() <= TB_MAX_COVER_BYTES);
+                if !ok {
+                    return Err(
+                        "INVALID_ARGUMENT: cover 只支持 http(s) URL 或 ≤64KB 的 dataURL".into(),
+                    );
+                }
+                out.insert("cover".into(), json!(cover));
+            }
+        }
+        let playing = obj.get("playing").and_then(Value::as_bool).unwrap_or(false);
+        let position_ms = tb_opt_u64(obj, "positionMs")?.unwrap_or(0);
+        let duration_ms = tb_opt_u64(obj, "durationMs")?.unwrap_or(0);
+        let position_ms = if duration_ms > 0 && position_ms > duration_ms {
+            duration_ms
+        } else {
+            position_ms
+        };
+        out.insert("playing".into(), json!(playing));
+        out.insert("positionMs".into(), json!(position_ms));
+        out.insert("durationMs".into(), json!(duration_ms));
+    } else {
+        // status 档段式排布（2026-10-24，通用排布原语）：扩展按数组顺序拼自己的条，
+        // 宿主不理解业务语义——没有进度的扩展不传 progress 段即可，也不需要任何"场景专用"字段。
+        // 不传 segments 时沿用 title/subtitle/icon/progress/actions 的扁平渲染，老扩展不受影响。
+        match obj.get("segments") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(items)) => {
+                let mut segs = Vec::new();
+                for s in items.iter().take(TB_MAX_SEGMENTS) {
+                    segs.push(tb_validate_segment(s, 0)?);
+                }
+                if !segs.is_empty() {
+                    out.insert("segments".into(), Value::Array(segs));
+                }
+            }
+            Some(_) => return Err("INVALID_ARGUMENT: segments 必须是数组".into()),
+        }
+        match obj.get("progress") {
+            None | Some(Value::Null) => {}
+            Some(v) => {
+                let p = v
+                    .as_f64()
+                    .ok_or("INVALID_ARGUMENT: progress 必须是数字")?;
+                out.insert("progress".into(), json!(p.clamp(0.0, 1.0)));
+            }
+        }
+        match obj.get("actions") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(items)) => {
+                let actions = tb_validate_actions(items)?;
+                if !actions.is_empty() {
+                    out.insert("actions".into(), Value::Array(actions));
+                }
+            }
+            Some(_) => return Err("INVALID_ARGUMENT: actions 必须是数组".into()),
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+/// titlebar.set：推一条小部件上主窗标题栏正中（需 `titlebar` 权限）。
+/// 实际显示还有一道**常驻闸**：extId 必须在主窗前端的 keepAliveRunning 运行态清单里，
+/// 这层只有前端知道（「结束本次常驻」只销毁实例不动配置），校验落在前端接收处；
+/// Rust 侧只校验载荷形态并转发。按钮点击经前端定向事件 `titlebar.action` 回传给本扩展。
+fn titlebar_set(
+    app: &tauri::AppHandle,
+    _state: &DbState,
+    ext_id: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let widget = validate_titlebar_widget(&args)?;
+    let _ = app.emit(
+        "titlebar-widget-changed",
+        json!({ "extId": ext_id, "widget": widget }),
+    );
+    Ok(json!({ "ok": true }))
+}
+
+/// titlebar.clear：撤下本扩展的小部件（widget 为 Null；前端只清同 extId 的占位）。
+fn titlebar_clear(
+    app: &tauri::AppHandle,
+    _state: &DbState,
+    ext_id: &str,
+    _args: Value,
+) -> Result<Value, String> {
+    let _ = app.emit(
+        "titlebar-widget-changed",
+        json!({ "extId": ext_id, "widget": Value::Null }),
+    );
+    Ok(json!({ "ok": true }))
+}
+
 // ---------- service ----------
 
 /// service 扩展调用自身受托管后端（非流式代理转发，无需权限）。
@@ -2495,6 +2824,192 @@ fn service_request(app: tauri::AppHandle, ext_id: String, args: Value) -> BoxFut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn titlebar_widget_media_payload_normalizes() {
+        let w = validate_titlebar_widget(&json!({
+            "kind": "media",
+            "title": "歌曲名",
+            "subtitle": "歌手",
+            "cover": "data:image/png;base64,AAAA",
+            "playing": true,
+            "positionMs": 5000,
+            "durationMs": 200_000,
+            "unknownField": "剥掉"
+        }))
+        .unwrap();
+        assert_eq!(w["kind"], "media");
+        assert_eq!(w["playing"], true);
+        assert_eq!(w["positionMs"], 5000);
+        assert_eq!(w["durationMs"], 200_000);
+        assert!(w.get("unknownField").is_none());
+        assert!(w.get("progress").is_none());
+        assert!(w.get("actions").is_none());
+    }
+
+    #[test]
+    fn titlebar_widget_truncates_and_defaults() {
+        // 文本超限截断（chars 计数），position 超 duration 钳回，缺省字段补默认
+        let long = "啊".repeat(100);
+        let w = validate_titlebar_widget(&json!({
+            "kind": "media",
+            "title": long,
+            "positionMs": 999_999,
+            "durationMs": 60_000
+        }))
+        .unwrap();
+        assert_eq!(w["title"].as_str().unwrap().chars().count(), TB_MAX_TEXT);
+        assert_eq!(w["positionMs"], 60_000);
+        assert_eq!(w["playing"], false);
+        // kind 缺省 = status
+        let s = validate_titlebar_widget(&json!({ "title": "t" })).unwrap();
+        assert_eq!(s["kind"], "status");
+    }
+
+    #[test]
+    fn titlebar_widget_rejects_bad_payloads() {
+        assert!(validate_titlebar_widget(&json!({ "kind": "wild", "title": "t" })).is_err());
+        assert!(validate_titlebar_widget(&json!({ "kind": "media" })).is_err()); // 无 title
+        assert!(validate_titlebar_widget(&json!({ "title": " " })).is_err()); // 空白 title
+        assert!(validate_titlebar_widget(&json!({
+            "kind": "media", "title": "t", "cover": "file:///etc/passwd"
+        }))
+        .is_err());
+        let big = format!("data:image/png;base64,{}", "A".repeat(70 * 1024));
+        assert!(validate_titlebar_widget(&json!({
+            "kind": "media", "title": "t", "cover": big
+        }))
+        .is_err());
+        assert!(validate_titlebar_widget(&json!({
+            "kind": "media", "title": "t", "positionMs": "abc"
+        }))
+        .is_err());
+        assert!(validate_titlebar_widget(&json!({
+            "kind": "status", "title": "t", "actions": "x"
+        }))
+        .is_err());
+        assert!(validate_titlebar_widget(&json!({
+            "kind": "status", "title": "t", "actions": [{ "label": "无 id" }]
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn titlebar_widget_status_actions_clamped() {
+        // progress 钳到 0..=1；actions 超量截到 3，id/label 截断
+        let actions: Vec<_> = (0..6)
+            .map(|i| json!({ "id": format!("id{i}"), "label": "标".repeat(20) }))
+            .collect();
+        let w = validate_titlebar_widget(&json!({
+            "kind": "status", "title": "t", "progress": 1.7, "actions": actions
+        }))
+        .unwrap();
+        assert_eq!(w["progress"], 1.0);
+        let arr = w["actions"].as_array().unwrap();
+        assert_eq!(arr.len(), TB_MAX_ACTIONS);
+        assert_eq!(arr[0]["label"].as_str().unwrap().chars().count(), TB_MAX_ACTION_LABEL);
+        // 空数组/空 progress 不产生字段
+        let w2 = validate_titlebar_widget(&json!({
+            "kind": "status", "title": "t", "progress": null, "actions": []
+        }))
+        .unwrap();
+        assert!(w2.get("progress").is_none());
+        assert!(w2.get("actions").is_none());
+    }
+
+    #[test]
+    fn titlebar_widget_segments_normalize() {
+        // 段式排布：顺序、tone 缺省、width 钳制、grow、stack 递归
+        let w = validate_titlebar_widget(&json!({
+            "kind": "status",
+            "title": "歌名",
+            "segments": [
+                { "type": "text", "text": "歌名", "grow": true },
+                { "type": "text", "text": "歌手", "tone": "muted" },
+                { "type": "icon", "glyph": "♪" },
+                { "type": "stack", "width": 104, "children": [
+                    { "type": "bars", "values": [0.2, 0.9, 1.4] },
+                    { "type": "progress", "value": 0.42 }
+                ]},
+                { "type": "actions", "items": [{ "id": "next", "label": "⏭" }] }
+            ]
+        }))
+        .unwrap();
+        let segs = w["segments"].as_array().unwrap();
+        assert_eq!(segs.len(), 5);
+        assert_eq!(segs[0]["type"], "text");
+        assert_eq!(segs[0]["tone"], "primary"); // 缺省主文本
+        assert_eq!(segs[0]["grow"], true);
+        assert_eq!(segs[1]["tone"], "muted");
+        assert_eq!(segs[2]["glyph"], "♪");
+        let stack = &segs[3];
+        assert_eq!(stack["width"], 104.0);
+        let children = stack["children"].as_array().unwrap();
+        assert_eq!(children.len(), 2);
+        // bars 值钳到 0..=1
+        assert_eq!(children[0]["values"][2].as_f64().unwrap(), 1.0);
+        assert_eq!(children[1]["value"], 0.42);
+        assert_eq!(segs[4]["items"][0]["id"], "next");
+    }
+
+    #[test]
+    fn titlebar_widget_segments_limits_and_rejects() {
+        // 顶层超量截断到 8 段；bars 超量截到 32 根；width 超界钳制
+        let many: Vec<_> = (0..12).map(|i| json!({ "type": "text", "text": format!("t{i}") })).collect();
+        let w = validate_titlebar_widget(&json!({
+            "kind": "status", "title": "t", "segments": many
+        }))
+        .unwrap();
+        assert_eq!(w["segments"].as_array().unwrap().len(), TB_MAX_SEGMENTS);
+
+        let bars: Vec<_> = (0..64).map(|_| json!(0.5)).collect();
+        let b = validate_titlebar_widget(&json!({
+            "kind": "status", "title": "t",
+            "segments": [{ "type": "bars", "values": bars, "width": 9999 }]
+        }))
+        .unwrap();
+        assert_eq!(b["segments"][0]["values"].as_array().unwrap().len(), TB_MAX_WAVE);
+        assert_eq!(b["segments"][0]["width"].as_f64().unwrap(), TB_SEG_MAX_WIDTH);
+
+        // 未知段类型 / 缺字段 / 非法值一律报错（作者代码 bug 要响）
+        assert!(validate_titlebar_widget(&json!({
+            "kind": "status", "title": "t", "segments": [{ "type": "chart" }]
+        }))
+        .is_err());
+        assert!(validate_titlebar_widget(&json!({
+            "kind": "status", "title": "t", "segments": [{ "type": "text" }]
+        }))
+        .is_err());
+        assert!(validate_titlebar_widget(&json!({
+            "kind": "status", "title": "t", "segments": [{ "type": "progress" }]
+        }))
+        .is_err());
+        assert!(validate_titlebar_widget(&json!({
+            "kind": "status", "title": "t", "segments": "x"
+        }))
+        .is_err());
+        assert!(validate_titlebar_widget(&json!({
+            "kind": "status", "title": "t",
+            "segments": [{ "type": "stack", "children": [
+                { "type": "stack", "children": [{ "type": "stack", "children": [{ "type": "icon", "glyph": "x" }] }] }
+            ] }]
+        }))
+        .is_err()); // 嵌套超 2 层
+        // media 档不吃 segments（未知字段剥除口径不变）
+        let m = validate_titlebar_widget(&json!({
+            "kind": "media", "title": "t", "segments": [{ "type": "text", "text": "x" }]
+        }))
+        .unwrap();
+        assert!(m.get("segments").is_none());
+        // 不传 segments 时扁平字段照旧（老扩展兼容）
+        let legacy = validate_titlebar_widget(&json!({
+            "kind": "status", "title": "正在下载", "subtitle": "42%", "icon": "⬇️",
+            "progress": 0.42, "actions": [{ "id": "cancel", "label": "取消" }]
+        }))
+        .unwrap();
+        assert!(legacy.get("segments").is_none());
+        assert_eq!(legacy["progress"], 0.42);
+    }
 
     #[test]
     fn declares_checks_permission_presence() {

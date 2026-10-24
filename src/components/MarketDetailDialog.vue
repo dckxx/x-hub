@@ -101,6 +101,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   notify: '弹出通知',
   events: '与其它扩展互通消息',
   'shared-storage': '与其它扩展共享数据',
+  titlebar: '在应用标题栏展示小部件（仅常驻运行时生效）',
 }
 
 function permLabel(p: string): string {
@@ -498,8 +499,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .md-card {
-  width: min(520px, 92vw);
-  max-height: min(640px, 88vh);
+  width: min(640px, 92vw);
+  max-height: min(800px, 88vh);
   display: flex;
   flex-direction: column;
   overflow: hidden;

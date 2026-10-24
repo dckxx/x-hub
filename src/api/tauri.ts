@@ -390,6 +390,12 @@ export interface AppConfig {
   extension_open_modes: Record<string, string>
   /** 扩展「链接打开方式」映射：extId → inapp（应用内浏览器，默认）/ browser（系统浏览器） */
   extension_link_modes: Record<string, string>
+  /** 扩展常驻后台（extId 列表）：该扩展的 view 实例切页不销毁（本会话首次打开起常驻，重启后不自动恢复） */
+  extension_keep_alive: string[]
+  /** 扩展随应用启动（extId 列表）：常驻的加强项，应用启动后自动挂载常驻实例 */
+  extension_autostart: string[]
+  /** 标题栏小部件边框（默认开）：小部件带玻璃底座 + 描边；关掉后内容直接浮在标题栏上 */
+  titlebar_widget_border: boolean
   /** 扩展中心列表点击行为：detail（默认，点行看详情）/ open（点行直接打开） */
   extension_row_click: 'detail' | 'open'
   /** 开机自启动（登录 Windows 时自动驻留托盘） */
@@ -1526,6 +1532,8 @@ export const tauriApi = {
   minimizeWindow: () => invoke<void>('minimize_window'),
   toggleMaximize: () => invoke<void>('toggle_maximize'),
   hideToTray: () => invoke<void>('hide_to_tray'),
+  /** 重启 service 扩展的 Node 后端（「刷新」只重载 iframe，进程幂等复用不会重跑） */
+  restartExtensionService: (extId: string) => invoke<number>('restart_extension_service', { extId }),
   // ---- 桌面悬浮球（ADR 0004，窗口几何恒定 + 椭圆命中区域/吸附/位置记忆均在 Rust 侧） ----
   floatingBallGetState: () => invoke<FloatingBallState>('floating_ball_get_state'),
   floatingBallSaveSettings: (

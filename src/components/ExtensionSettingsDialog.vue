@@ -5,6 +5,7 @@ import { useFocusTrap } from '../composables/useFocusTrap'
 import { accentOf, iconSrc } from '../composables/useResourceIcon'
 import { tauriApi, type ExtensionEntry } from '../api/tauri'
 import { useStore } from '../stores/workbench'
+import { effectiveKeepAliveIds, EXT_KEEP_ALIVE_CAP, hasKeepAliveSlot } from '../utils/extensionKeepAlive'
 import ExtensionFeedbackDialog from './ExtensionFeedbackDialog.vue'
 
 const props = defineProps<{ extension: ExtensionEntry | null }>()
@@ -101,6 +102,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   notify: '发送系统通知',
   events: '广播扩展事件',
   'shared-storage': '读写跨扩展共享存储',
+  titlebar: '在应用标题栏展示小部件（仅常驻运行时生效）',
 }
 
 function permissionLabel(perm: string): string {
@@ -169,6 +171,45 @@ function setLinkMode(mode: (typeof LINK_MODES)[number]['value']) {
   store.setExtensionLinkMode(ext.value.id, mode)
   const label = LINK_MODES.find((m) => m.value === mode)?.label ?? mode
   showToast(`扩展内链接已改为用「${label}」打开`)
+}
+
+// ---- 常驻后台：view 实例切页不销毁（保状态/后台跑/免重载）；「随应用启动」是它的加强项 ----
+const keepAliveOn = computed(() =>
+  ext.value ? effectiveKeepAliveIds(store.state.config).includes(ext.value.id) : false,
+)
+const autostartOn = computed(() =>
+  ext.value ? (store.state.config.extension_autostart ?? []).includes(ext.value.id) : false,
+)
+
+function toggleKeepAlive() {
+  if (!ext.value) return
+  const next = !keepAliveOn.value
+  if (next && !hasKeepAliveSlot(store.state.config, ext.value.id)) {
+    showToast(`常驻上限 ${EXT_KEEP_ALIVE_CAP} 个，请先取消一个扩展的常驻`)
+    return
+  }
+  store.setExtensionKeepAlive(ext.value.id, next)
+  // 常驻关了，随应用启动必然一起关（它隐含常驻）
+  if (!next && autostartOn.value) store.setExtensionAutostart(ext.value.id, false)
+  showToast(next ? '已常驻：打开后切页不再停掉，切回秒开' : '已取消常驻')
+}
+
+function toggleAutostart() {
+  if (!ext.value) return
+  const next = !autostartOn.value
+  if (!next) {
+    store.setExtensionAutostart(ext.value.id, false)
+    showToast('已取消随应用启动（常驻保留）')
+    return
+  }
+  // 按钮在未开常驻时 disabled：能走到这里常驻必已开启，id 已在生效集合里——
+  // 上限检查排除自己（已常驻的扩展加「随启动」不新增名额，满员也不该误拒）
+  if (!hasKeepAliveSlot(store.state.config, ext.value.id)) {
+    showToast(`常驻上限 ${EXT_KEEP_ALIVE_CAP} 个，请先取消一个扩展的常驻`)
+    return
+  }
+  store.setExtensionAutostart(ext.value.id, true)
+  showToast('已随应用启动：打开 x-hub 后自动在后台运行本扩展')
 }
 
 /** 在系统文件管理器中打开扩展目录（开发调试用） */
@@ -374,6 +415,39 @@ async function confirmUninstall() {
               </div>
               <p class="es-empty es-openmode-hint">从扩展中心点开、或点击左栏固定菜单时，都按上方「打开方式」打开该扩展（默认软件内打开）；扩展内的外部链接按「链接打开方式」打开（默认软件内的应用内浏览器）。</p>
             </section>
+
+            <section v-if="!ext.invalid" class="es-block">
+              <h3 class="es-block-title">后台运行</h3>
+              <div class="es-perm-row">
+                <span class="es-setting-name">常驻后台</span>
+                <button
+                  class="toggle"
+                  role="switch"
+                  type="button"
+                  :aria-checked="keepAliveOn"
+                  :class="{ on: keepAliveOn }"
+                  @click="toggleKeepAlive"
+                >
+                  <span class="toggle-knob"></span>
+                </button>
+              </div>
+              <p class="es-empty es-openmode-hint">开启后，本扩展以「软件内」打开过一次就常驻：切换页面不再停掉，填了一半的内容与后台任务都保留、切回秒开。右侧栏固定项上右键可「重新加载扩展」（白屏/出错时用）或「结束本次常驻」（只临时停掉本次运行，本开关保持开启，下次打开自动恢复常驻）。每个常驻实例是独立渲染进程，约占几十 MB 内存，上限 {{ EXT_KEEP_ALIVE_CAP }} 个；应用重启后需再打开一次才恢复常驻，彻底不常驻请用本开关关闭。</p>
+              <div class="es-perm-row">
+                <span class="es-setting-name">随应用启动</span>
+                <button
+                  class="toggle"
+                  role="switch"
+                  type="button"
+                  :aria-checked="autostartOn"
+                  :class="{ on: autostartOn }"
+                  :disabled="!keepAliveOn"
+                  @click="toggleAutostart"
+                >
+                  <span class="toggle-knob"></span>
+                </button>
+              </div>
+              <p class="es-empty es-openmode-hint">{{ keepAliveOn ? '打开 x-hub 后自动在后台运行本扩展，无需先手动打开一次（应用重启后同样自动恢复）。' : '先开启「常驻后台」后可用。' }}</p>
+            </section>
           </div>
 
           <footer class="es-foot">
@@ -437,7 +511,8 @@ async function confirmUninstall() {
 
 <style scoped>
 .es-card {
-  width: 480px;
+  width: min(640px, 92vw);
+  max-height: min(800px, 88vh);
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -449,6 +524,7 @@ async function confirmUninstall() {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  flex-shrink: 0;
   /* 卡片 padding 清零后头/体/脚各自排 18px 内边距；这一条原先漏了，导致图标与关闭按钮
      贴死在卡片左上/右上角（体/脚都有 18px，表头没有） */
   padding: 18px 18px 0;
@@ -491,10 +567,11 @@ async function confirmUninstall() {
   text-overflow: ellipsis;
 }
 .es-body {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-height: 40vh;
   overflow-y: auto;
   /* 卡片 padding 清零后由头/体/脚各自排 18px 内边距，与市场详情、发布弹窗全一致 */
   padding: 0 18px;
@@ -755,6 +832,7 @@ async function confirmUninstall() {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex-shrink: 0;
   padding: 4px 18px 18px;
 }
 .es-foot-row {

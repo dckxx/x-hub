@@ -113,6 +113,9 @@ interface StoreState {
   resourceSubcategories: ResourceSubcategory[]
   /** 速达分区（「全部」tab 自定义成组陈列，跨大类；zone_id 为 null = 未分区） */
   zones: ResourceZone[]
+  /** 常驻扩展的「在跑实例」id 清单（仅运行期，不落盘）：侧栏绿点与扩展中心「常驻」标签
+   *  读它而非配置——「结束本次常驻」只销毁实例不动配置，绿点须随之熄灭 */
+  keepAliveRunning: string[]
   config: AppConfig
   systemInfo: SystemInfo | null
   online: boolean
@@ -136,6 +139,7 @@ const state = reactive<StoreState>({
   todoTagLinks: [],
   resourceSubcategories: [],
   zones: [],
+  keepAliveRunning: [],
   config: {
     theme_mode: 'light',
     theme_preset: 'indigo',
@@ -211,6 +215,9 @@ const state = reactive<StoreState>({
     sidebar_extensions: [],
     extension_open_modes: {},
     extension_link_modes: {},
+    extension_keep_alive: [],
+    extension_autostart: [],
+    titlebar_widget_border: true,
     extension_row_click: 'detail',
     run_at_startup: false,
     auto_update_enabled: true,
@@ -1488,6 +1495,13 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 标题栏小部件边框（扩展推上标题栏正中的小部件，默认带玻璃底座；关掉内容直接浮在标题栏上） */
+  async function setTitlebarWidgetBorder(value: boolean) {
+    state.config.titlebar_widget_border = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   async function setAlwaysOnTop(value: boolean) {
     state.config.window.always_on_top = value
     if (!isTauri()) return
@@ -1753,6 +1767,44 @@ export function useStore() {
     state.config.extension_link_modes = { ...modes, [id]: mode }
     if (!isTauri()) return
     void tauriApi.saveConfig(state.config)
+  }
+
+  /** 扩展常驻后台：开启后该扩展的 view 实例切页不销毁（本会话首次打开起常驻，重启后不自动恢复）。
+   *  上限校验在调用侧（需 toast 点名），store 只管改内存 + 落盘 */
+  function setExtensionKeepAlive(id: string, on: boolean) {
+    const cur = state.config.extension_keep_alive ?? []
+    state.config.extension_keep_alive = on
+      ? cur.includes(id)
+        ? cur
+        : [...cur, id]
+      : cur.filter((x) => x !== id)
+    if (!isTauri()) return
+    void tauriApi.saveConfig(state.config)
+  }
+
+  /** 扩展随应用启动：常驻的加强项（语义上隐含常驻），应用启动后自动挂载常驻实例 */
+  function setExtensionAutostart(id: string, on: boolean) {
+    const cur = state.config.extension_autostart ?? []
+    state.config.extension_autostart = on
+      ? cur.includes(id)
+        ? cur
+        : [...cur, id]
+      : cur.filter((x) => x !== id)
+    if (!isTauri()) return
+    void tauriApi.saveConfig(state.config)
+  }
+
+  /** 批量覆盖常驻/随启动列表（卸载后清理残留 id 用，与 setSidebarExtensionBulk 同口径） */
+  function setExtensionKeepAliveBulk(keepAlive: string[], autostart: string[]) {
+    state.config.extension_keep_alive = [...keepAlive]
+    state.config.extension_autostart = [...autostart]
+    if (isTauri()) void tauriApi.saveConfig(state.config)
+  }
+
+  /** 常驻扩展「在跑实例」清单（仅运行期，不落盘）：挂载/结束/剪枝时由主窗写，
+   *  侧栏绿点与扩展中心「常驻」标签读它（反映实例真实在跑，而非配置开关） */
+  function setKeepAliveRunning(ids: string[]) {
+    state.keepAliveRunning = [...ids]
   }
 
   /** 扩展 AI 工具授权：该扩展声明的 agent.tools 是否进入 AI 助手的聚合清单（缺省允许） */
@@ -2140,6 +2192,7 @@ export function useStore() {
     setWallpaperVeil,
     setWallpaperImmersive,
     setGlassOpacity,
+    setTitlebarWidgetBorder,
     setSidebarToggle,
     setAlwaysOnTop,
     setGlobalShortcut,
@@ -2170,6 +2223,10 @@ export function useStore() {
     setSidebarExtensionBulk,
     setExtensionOpenMode,
     setExtensionLinkMode,
+    setExtensionKeepAlive,
+    setExtensionAutostart,
+    setExtensionKeepAliveBulk,
+    setKeepAliveRunning,
     setExtensionAgentGrant,
     setExtensionRowClick,
     setRunAtStartup,

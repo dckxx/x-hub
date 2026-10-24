@@ -1151,6 +1151,7 @@ pub fn run() {
             commands::set_clipboard_retention,
             sysmon::get_system_info,
             extension::list_extensions,
+            extension::restart_extension_service,
             extension::extensions_stamp,
             extension::read_extension_entry,
             extension::open_extension_window,

@@ -14,6 +14,8 @@ const props = defineProps<{
   x: number
   y: number
   items: ContextMenuItem[]
+  /** 紧凑模式：不设 168px 最小宽度，按最宽项贴内容（项都很短的菜单用，如侧栏扩展右键） */
+  compact?: boolean
 }>()
 
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -80,6 +82,9 @@ onMounted(() => {
   window.addEventListener('click', globalClose)
   window.addEventListener('contextmenu', globalClose)
   window.addEventListener('resize', globalClose)
+  // 点外关闭兜底：点击 iframe / 子 webview / 其它窗口时 click 不冒泡到宿主 window（跨文档），
+  // 上面的 click 监听收不到——焦点移进任何独立文档都会触发 window blur，一律视为点在菜单外
+  window.addEventListener('blur', globalClose)
   window.addEventListener('keydown', onKeydown)
 })
 
@@ -87,6 +92,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('click', globalClose)
   window.removeEventListener('contextmenu', globalClose)
   window.removeEventListener('resize', globalClose)
+  window.removeEventListener('blur', globalClose)
   window.removeEventListener('keydown', onKeydown)
 })
 </script>
@@ -98,7 +104,7 @@ onBeforeUnmount(() => {
         v-if="visible"
         ref="menuRef"
         class="ctx-menu"
-        :style="{ left: pos.x + 'px', top: pos.y + 'px' }"
+        :style="{ left: pos.x + 'px', top: pos.y + 'px', minWidth: props.compact ? 'fit-content' : undefined }"
         role="menu"
         @click.stop
         @contextmenu.stop

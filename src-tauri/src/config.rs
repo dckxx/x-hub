@@ -270,6 +270,19 @@ pub struct AppConfig {
     /// 门控 runtime.openExternal：扩展页里的外链按此分流
     #[serde(default)]
     pub extension_link_modes: std::collections::HashMap<String, String>,
+    /// 扩展常驻后台（extId 列表）：开启后该扩展的 view 实例切页不销毁（本会话首次打开起
+    /// 常驻，应用重启后不自动恢复）。纯前端读写经 save_config 落盘，上限由前端把关。
+    #[serde(default)]
+    pub extension_keep_alive: Vec<String>,
+    /// 扩展随应用启动（extId 列表）：常驻的加强项——应用启动后自动挂载常驻实例，无需先
+    /// 打开一次。UI 上是「常驻后台」的子选项（语义上隐含常驻）
+    #[serde(default)]
+    pub extension_autostart: Vec<String>,
+    /// 标题栏小部件边框（默认开）：扩展推上标题栏正中的小部件是否带底座
+    /// （玻璃底 + 描边整块），关掉后内容直接浮在标题栏上。纯前端读写经
+    /// save_config 落盘（设置 → 外观）
+    #[serde(default = "default_true")]
+    pub titlebar_widget_border: bool,
     /// 扩展中心「已安装 / 我的扩展」列表的点击行为（两种用户习惯，做成可配）：
     /// `detail`（默认）= 点行打开详情、右侧 ▶ 按钮打开扩展；`open` = 点行直接打开、右侧改 ⋯ 按钮看详情
     #[serde(default = "default_extension_row_click")]
@@ -559,6 +572,9 @@ impl Default for AppConfig {
             sidebar_extensions: Vec::new(),
             extension_open_modes: std::collections::HashMap::new(),
             extension_link_modes: std::collections::HashMap::new(),
+            extension_keep_alive: Vec::new(),
+            extension_autostart: Vec::new(),
+            titlebar_widget_border: true,
             extension_row_click: default_extension_row_click(),
             // 废弃字段（不再被读取）：市场清单地址真相源是 config::market_registry_url()
             market_endpoint: String::new(),

@@ -110,6 +110,20 @@ export function broadcastExtensionEvent(fromExtId: string, event: string, payloa
   }
 }
 
+/**
+ * 把一条宿主事件定向投递给某扩展的全部 iframe（view/module 等多形态并存时都收到）。
+ * 典型用途：标题栏小部件按钮点击 → `titlebar.action` 回传给占用它的扩展。
+ * 与广播 broadcastExtensionEvent 的区别：只发给目标扩展、跳过白名单校验——
+ * 调用侧（宿主 UI）自己把关。
+ */
+export function sendEventToExtension(extId: string, event: string, payload: unknown) {
+  for (const [frame, meta] of activeFrames) {
+    if (meta.extId === extId && meta.origin) {
+      frame.contentWindow?.postMessage({ __xhub: true, type: 'event', event, payload }, meta.origin)
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 跨扩展调用 RPC：调用方 iframe → 主窗口 → 目标 iframe → 主窗口 → 调用方
 // ---------------------------------------------------------------------------

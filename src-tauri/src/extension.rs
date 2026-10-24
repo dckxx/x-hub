@@ -571,6 +571,19 @@ pub fn list_extensions(app: tauri::AppHandle) -> Result<Vec<ExtensionEntry>, Str
     Ok(entries)
 }
 
+/// 重启 service 扩展的 Node 后端（Tauri 命令）：先停后起，端口会重新分配。
+///
+/// 为什么需要单独一条：「刷新」只重载 iframe，而 `start_service` 是幂等的
+/// （进程在 map 里就直接复用），所以改后端代码后光刷新永远拿不到新逻辑。
+/// 重启后扩展端不必刷新页面——`service.request` 每次按 extId 现查端口映射。
+#[tauri::command]
+pub fn restart_extension_service(app: tauri::AppHandle, ext_id: String) -> Result<u16, String> {
+    crate::service::stop_service(&app, &ext_id);
+    let port = crate::service::start_service(&app, &ext_id)?;
+    log::info!("service 扩展后端已重启: {ext_id} port={port}");
+    Ok(port)
+}
+
 // ---------------- 「我的扩展」：本机源码目录直挂（docs/adr/0005） ----------------
 
 /// 单个开发扩展目录的解析结果（扩展中心「我的扩展」展示用）
@@ -1088,6 +1101,15 @@ pub(crate) const XHUB_BRIDGE_SCRIPT: &str = r#"
     ui:{
       notify:function(title,body){return call('ui','notify',{title:String(title||''),body:String(body||'')});}
     },
+    // 标题栏小部件（需 manifest 声明 `titlebar` 权限，且**仅常驻运行时生效**——宿主侧
+    // 以常驻实例在跑为准，非常驻调用会被静默忽略）。set 推一条 media（媒体控制档）/
+    // status（通用信息档）小部件上主窗标题栏正中，后推者顶掉前者；clear 撤下自己的。
+    // 用户点小部件按钮时宿主发 `titlebar.action` 事件（payload {id}），用 events.on 接；
+    // media 档固定三键的约定 id：previous / play|pause / next
+    titlebar:{
+      set:function(w){return call('titlebar','set',w||{});},
+      clear:function(){return call('titlebar','clear',{});}
+    },
     // 剪贴板读写（需 manifest 声明 `clipboard` 权限）。readText 在剪贴板为图片/文件等
     // 非文本内容时返回空串；writeText 写入后进宿主剪贴板历史，超 10MB 拒绝。
     clipboard:{
@@ -1543,6 +1565,22 @@ mod tests {
             assert!(
                 XHUB_BRIDGE_SCRIPT.contains(&needle),
                 "桥脚本缺少 sharedStorage 能力封装: {}",
+                cap.method
+            );
+        }
+    }
+
+    #[test]
+    fn bridge_script_covers_titlebar_capabilities() {
+        // 标题栏小部件同上：能力表与桥封装必须同步，扩展才有 window.xhub.titlebar.* 可用
+        for cap in crate::xhub_api::CAPABILITIES.iter() {
+            if cap.namespace != "titlebar" {
+                continue;
+            }
+            let needle = format!("'{}','{}'", cap.namespace, cap.method);
+            assert!(
+                XHUB_BRIDGE_SCRIPT.contains(&needle),
+                "桥脚本缺少 titlebar 能力封装: {}",
                 cap.method
             );
         }

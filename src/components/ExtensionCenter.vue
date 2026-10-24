@@ -69,6 +69,10 @@ const store = useStore()
 /** 列表点击行为（设置 → 扩展）：true = 点行直接打开（右侧改 ⋯ 看详情），false = 点行看详情（默认） */
 const rowClickOpens = computed(() => (store.state.config.extension_row_click ?? 'detail') === 'open')
 
+/** 常驻后台「在跑实例」的扩展 id 集合（store 运行期状态，非配置）：已安装卡片上给绿点
+ *  标识——结束本次常驻后标签随之消失，口径同侧栏绿点 */
+const keepAliveSet = computed(() => new Set(store.state.keepAliveRunning))
+
 // 外部请求打开某扩展的设置/授权弹窗（扩展页 xhub.openPermissions「去授权」跳转）。
 // 本组件可能尚未挂载或列表未加载完：按 nonce 去重，列表就绪前留待 watch(extensions) 补开
 const props = defineProps<{
@@ -1090,6 +1094,13 @@ function onMore(e: ExtensionEntry) {
               <span v-if="e.disabled" class="ec-tag ec-tag-disabled">已禁用</span>
               <span v-if="e.missing_capabilities.length" class="ec-tag ec-tag-warn">缺能力</span>
               <span v-if="e.missing_dependencies.length" class="ec-tag ec-tag-warn">缺依赖</span>
+              <span
+                v-if="keepAliveSet.has(e.id)"
+                class="ec-tag ec-tag-keepalive"
+                title="常驻后台运行中：切页不停、状态保留；临时结束请在侧栏固定项上右键「结束本次常驻」，彻底关闭在扩展详情或设置 → 扩展中"
+              >
+                <span class="ec-ka-dot" aria-hidden="true"></span>常驻
+              </span>
               <span v-if="e.runtime === 'service'" class="ec-tag ec-tag-service">service</span>
               <span class="ec-tag ec-tag-kind">{{ kindLabel(e.kind) }}</span>
               <span v-if="catOfEntry(e)" class="ec-tag ec-tag-cat">{{ catOfEntry(e) }}</span>
@@ -1757,6 +1768,20 @@ function onMore(e: ExtensionEntry) {
 .ec-tag-service {
   background: var(--c-orange-soft);
   color: var(--c-orange-ink);
+}
+/* 常驻后台标识：绿点 + 「常驻」字样（与侧栏固定项的绿点同一语义） */
+.ec-tag-keepalive {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--c-green-soft);
+  color: var(--c-green-ink);
+}
+.ec-ka-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--c-green);
 }
 .ec-tag-kind {
   background: var(--brand-50);

@@ -8,13 +8,14 @@
 //
 // 从 SettingsView.vue 拆出（见该文件顶部说明）：设置页按大类按需加载，
 // 首次打开只需外壳 + 当前大类的代码，切大类时才加载对应面板。
-import { inject, onMounted, ref } from 'vue';
+import { computed, inject, onMounted, ref } from 'vue';
 import { Puzzle } from 'lucide-vue-next';
 import { isTauri, tauriApi } from '../../api/tauri';
-import type { DevModeStatus } from '../../api/tauri';
+import type { DevModeStatus, ExtensionEntry } from '../../api/tauri';
 import AppSelect from '../AppSelect.vue';
 import SkillsSection from './SkillsSection.vue';
 import { useStore } from '../../stores/workbench';
+import { effectiveKeepAliveIds, EXT_KEEP_ALIVE_CAP, hasKeepAliveSlot } from '../../utils/extensionKeepAlive';
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
@@ -70,8 +71,64 @@ async function loadDevMode() {
   }
 }
 
+// ---- 常驻扩展：列出已开启「常驻 / 随应用启动」的扩展，就地开关（实例的挂载/销毁
+//      由主窗 index.vue 的停车场统一管，这里只改配置——剪枝 watch 会跟着销毁实例） ----
+const installedList = ref<ExtensionEntry[]>([])
+
+async function loadInstalled() {
+  if (!isTauri()) return
+  try {
+    installedList.value = await tauriApi.listExtensions()
+  } catch {
+    // 列表加载失败时行名回退显示扩展 id，不阻塞本页
+  }
+}
+
+function nameOf(id: string): string {
+  return installedList.value.find((e) => e.id === id)?.name ?? id
+}
+
+const keepAliveRows = computed(() =>
+  effectiveKeepAliveIds(store.state.config).map((id) => ({
+    id,
+    name: nameOf(id),
+    keepAlive: (store.state.config.extension_keep_alive ?? []).includes(id),
+    autostart: (store.state.config.extension_autostart ?? []).includes(id),
+  })),
+)
+
+function onToggleKeepAlive(id: string) {
+  const on = !(store.state.config.extension_keep_alive ?? []).includes(id)
+  if (on && !hasKeepAliveSlot(store.state.config, id)) {
+    showToast(`常驻上限 ${EXT_KEEP_ALIVE_CAP} 个，请先取消一个扩展的常驻`)
+    return
+  }
+  store.setExtensionKeepAlive(id, on)
+  // 常驻关了，随应用启动必然一起关（它隐含常驻）
+  if (!on && (store.state.config.extension_autostart ?? []).includes(id)) {
+    store.setExtensionAutostart(id, false)
+  }
+}
+
+function onToggleAutostart(id: string) {
+  const row = keepAliveRows.value.find((r) => r.id === id)
+  if (row?.autostart) {
+    store.setExtensionAutostart(id, false)
+    return
+  }
+  // 随应用启动隐含常驻：没开常驻时一并打开（与扩展详情弹窗同一语义）。
+  // 已常驻的扩展加「随启动」不新增名额，上限检查排除自己，满员不误拒
+  if (!hasKeepAliveSlot(store.state.config, row?.keepAlive ? id : undefined)) {
+    showToast(`常驻上限 ${EXT_KEEP_ALIVE_CAP} 个，请先取消一个扩展的常驻`)
+    return
+  }
+  if (!row?.keepAlive) store.setExtensionKeepAlive(id, true)
+  store.setExtensionAutostart(id, true)
+}
+
 onMounted(() => {
   void loadDevMode()
+  void loadInstalled()
 })
 </script>
 
@@ -130,6 +187,49 @@ onMounted(() => {
             </button>
           </div>
 
+          <!-- 常驻扩展：在跑的实例就地开关（开启入口在扩展详情弹窗「后台运行」） -->
+          <h4 class="sv-subtitle">常驻扩展</h4>
+          <template v-if="keepAliveRows.length">
+            <div v-for="row in keepAliveRows" :key="row.id" class="setting-row">
+              <div class="setting-info">
+                <span class="setting-name">{{ row.name }}</span>
+                <span class="setting-desc">切页不停、状态保留、切回秒开；「随应用启动」= 打开 x-hub 即在后台运行，无需先打开一次</span>
+              </div>
+              <div class="ka-controls">
+                <span class="ka-ctl-label">常驻</span>
+                <button
+                  class="toggle"
+                  role="switch"
+                  type="button"
+                  :aria-checked="row.keepAlive"
+                  :class="{ on: row.keepAlive }"
+                  :aria-label="`${row.name} 常驻后台`"
+                  @click="onToggleKeepAlive(row.id)"
+                >
+                  <span class="toggle-knob"></span>
+                </button>
+                <span class="ka-ctl-label">随应用启动</span>
+                <button
+                  class="toggle"
+                  role="switch"
+                  type="button"
+                  :aria-checked="row.autostart"
+                  :class="{ on: row.autostart }"
+                  :aria-label="`${row.name} 随应用启动`"
+                  @click="onToggleAutostart(row.id)"
+                >
+                  <span class="toggle-knob"></span>
+                </button>
+              </div>
+            </div>
+          </template>
+          <div v-else class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">暂无常驻扩展</span>
+              <span class="setting-desc">在扩展中心打开某扩展的详情，用「后台运行 → 常驻后台」开启：它的页面切走后不再停掉（上限 {{ EXT_KEEP_ALIVE_CAP }} 个，每个实例约占几十 MB 内存）</span>
+            </div>
+          </div>
+
           <!-- 我的扩展的入口指路：目录增删都在扩展中心，这里只留一句话 + 一键跳过去 -->
           <div class="setting-row">
             <div class="setting-info">
@@ -165,6 +265,19 @@ onMounted(() => {
 .ext-entry-btn {
   flex-shrink: 0;
   flex-wrap: nowrap;
+  white-space: nowrap;
+}
+/* 常驻扩展行：右侧两组开关（常驻 / 随应用启动）不收缩不换行 */
+.ka-controls {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+.ka-ctl-label {
+  font-size: 0.75rem;
+  color: var(--text-3);
   white-space: nowrap;
 }
 </style>

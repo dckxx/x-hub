@@ -170,6 +170,7 @@ fn permission_for(ns: &str, method: &str) -> Option<&'static str> {
         "system" => Some("system"),
         "clipboard" => Some("clipboard"),
         "fs" => Some("fs"),
+        "titlebar" => Some("titlebar"),
         "sharedStorage" => Some("shared-storage"),
         "events" => {
             if method == "emit" {

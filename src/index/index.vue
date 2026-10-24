@@ -240,6 +240,12 @@ function pruneStalePinnedExtensions() {
   if (keepAliveValid.length !== keepAlive.length || autostartValid.length !== autostart.length) {
     store.setExtensionKeepAliveBulk(keepAliveValid, autostartValid)
   }
+  // 标题栏小部件位置映射同口径清理（残留键无害但会随卸载累积）
+  const posMap = store.state.config.titlebar_widget_positions ?? {}
+  const posEntries = Object.entries(posMap).filter(([id]) => validIds.has(id))
+  if (posEntries.length !== Object.keys(posMap).length) {
+    store.setTitlebarWidgetSlotsBulk(Object.fromEntries(posEntries))
+  }
 }
 
 function onExtensionsChanged() {

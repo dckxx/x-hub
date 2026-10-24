@@ -278,11 +278,16 @@ pub struct AppConfig {
     /// 打开一次。UI 上是「常驻后台」的子选项（语义上隐含常驻）
     #[serde(default)]
     pub extension_autostart: Vec<String>,
-    /// 标题栏小部件边框（默认开）：扩展推上标题栏正中的小部件是否带底座
+    /// 标题栏小部件边框（默认开）：扩展推上标题栏的小部件是否带底座
     /// （玻璃底 + 描边整块），关掉后内容直接浮在标题栏上。纯前端读写经
     /// save_config 落盘（设置 → 外观）
     #[serde(default = "default_true")]
     pub titlebar_widget_border: bool,
+    /// 标题栏小部件位置映射（extId → left/center/right）：三个显示位最多同显 3 个
+    /// （左/中/右各一），缺省居中；同位后到者胜。纯前端读写经 save_config 落盘
+    /// （设置 → 外观「标题栏小部件」）
+    #[serde(default)]
+    pub titlebar_widget_positions: std::collections::HashMap<String, String>,
     /// 扩展中心「已安装 / 我的扩展」列表的点击行为（两种用户习惯，做成可配）：
     /// `detail`（默认）= 点行打开详情、右侧 ▶ 按钮打开扩展；`open` = 点行直接打开、右侧改 ⋯ 按钮看详情
     #[serde(default = "default_extension_row_click")]
@@ -575,6 +580,7 @@ impl Default for AppConfig {
             extension_keep_alive: Vec::new(),
             extension_autostart: Vec::new(),
             titlebar_widget_border: true,
+            titlebar_widget_positions: std::collections::HashMap::new(),
             extension_row_click: default_extension_row_click(),
             // 废弃字段（不再被读取）：市场清单地址真相源是 config::market_registry_url()
             market_endpoint: String::new(),

@@ -3,12 +3,14 @@
 //
 // 从 SettingsView.vue 拆出（见该文件顶部说明）：设置页按大类按需加载，
 // 首次打开只需外壳 + 当前大类的代码，切大类时才加载对应面板。
-import { computed, inject, ref } from 'vue';
+import { computed, inject, onMounted, ref } from 'vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { ChevronDown } from 'lucide-vue-next';
-import { isTauri, tauriApi } from '../../api/tauri';
+import { isTauri, tauriApi, type ExtensionEntry } from '../../api/tauri';
 import { useStore } from '../../stores/workbench';
+import AppSelect from '../AppSelect.vue';
+import { useTitlebarWidget } from '../../composables/useTitlebarWidget';
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
@@ -69,6 +71,39 @@ function onToggleSidebar() {
 
 function onToggleTitlebarWidgetBorder() {
   void store.setTitlebarWidgetBorder(!store.state.config.titlebar_widget_border)
+}
+
+// ---- 标题栏小部件位置：三个显示位（左/中/右）最多同显 3 个，缺省居中。
+//      行来自当前在显示的小部件（useTitlebarWidget 模块级状态与标题栏共享同一份）；
+//      扩展名单独拉一次用于行名展示，拿不到就显示扩展 id ----
+const { widgets: titlebarWidgets } = useTitlebarWidget()
+const extNames = ref<Record<string, string>>({})
+const WIDGET_POS_OPTIONS = [
+  { value: 'left', label: '左侧' },
+  { value: 'center', label: '居中' },
+  { value: 'right', label: '右侧' },
+] as const
+
+const widgetRows = computed(() =>
+  titlebarWidgets.value.map((w) => ({
+    extId: w.extId,
+    name: extNames.value[w.extId] ?? w.extId,
+    pos: store.state.config.titlebar_widget_positions?.[w.extId] ?? 'center',
+  })),
+)
+
+onMounted(async () => {
+  if (!isTauri()) return
+  try {
+    const list: ExtensionEntry[] = await tauriApi.listExtensions()
+    extNames.value = Object.fromEntries(list.map((e) => [e.id, e.name]))
+  } catch {
+    /* 名字拿不到时行名回退显示扩展 id */
+  }
+})
+
+function onWidgetPos(extId: string, pos: string) {
+  void store.setTitlebarWidgetSlot(extId, pos)
 }
 
 // ---- 字体大小（全局 + 单模块） ----
@@ -151,11 +186,11 @@ function onAccentInput(e: Event) {
             </button>
           </div>
 
-          <!-- 扩展推上标题栏正中的小部件（媒体控制/状态条）的外观：描边可选 -->
+          <!-- 扩展推上标题栏的小部件（媒体控制/状态条）的外观：描边可选 -->
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">标题栏小部件边框</span>
-              <span class="setting-desc">扩展展示在标题栏正中的小部件（媒体控制/状态条）带玻璃底座与描边（默认开启）；关闭后去掉整个底座，内容直接浮在标题栏上</span>
+              <span class="setting-desc">扩展展示在标题栏上的小部件（媒体控制/状态条）带玻璃底座与描边（默认开启）；关闭后去掉整个底座，内容直接浮在标题栏上</span>
             </div>
             <button
               class="toggle"
@@ -167,6 +202,22 @@ function onAccentInput(e: Event) {
             >
               <span class="toggle-knob"></span>
             </button>
+          </div>
+
+          <!-- 小部件位置：有扩展正在显示小部件时出现。左/中/右各显一个，缺省居中 -->
+          <div v-for="row in widgetRows" :key="row.extId" class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">{{ row.name }}</span>
+              <span class="setting-desc">这个小部件在标题栏上的显示位置（左 / 中 / 右各显示一个；同一位置被后推的小部件占用时会暂时让位，挪开即恢复）</span>
+            </div>
+            <AppSelect
+              style="width: 108px"
+              :model-value="row.pos"
+              :options="WIDGET_POS_OPTIONS"
+              :aria-label="`调整 ${row.name} 小部件的显示位置`"
+              compact
+              @update:model-value="onWidgetPos(row.extId, $event)"
+            />
           </div>
 
           <!-- 主题设置：标签 + 控件布局 -->

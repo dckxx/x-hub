@@ -396,6 +396,8 @@ export interface AppConfig {
   extension_autostart: string[]
   /** 标题栏小部件边框（默认开）：小部件带玻璃底座 + 描边；关掉后内容直接浮在标题栏上 */
   titlebar_widget_border: boolean
+  /** 标题栏小部件位置映射（extId → left/center/right）：左/中/右各显一个，缺省居中 */
+  titlebar_widget_positions: Record<string, string>
   /** 扩展中心列表点击行为：detail（默认，点行看详情）/ open（点行直接打开） */
   extension_row_click: 'detail' | 'open'
   /** 开机自启动（登录 Windows 时自动驻留托盘） */

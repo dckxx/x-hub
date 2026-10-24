@@ -5,7 +5,7 @@
 // 于是先出现一段空白再显示内容。现在外壳 + 当前大类按需加载，切大类才取对应面板。
 // 样式统一在 ./settings/shared.css（规则带 .settings-view 前缀，避免外移后污染其它视图）。
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
-import { Bot, ChevronRight, Database, LayoutGrid, Palette, Puzzle, Search, Settings, Sparkles, User, X } from 'lucide-vue-next';
+import { Bot, ChevronRight, CircleHelp, Database, LayoutGrid, Palette, Puzzle, Search, Settings, Sparkles, User, X } from 'lucide-vue-next';
 import { SETTINGS_INDEX } from './settingsIndex.generated';
 import PanelLoading from './settings/PanelLoading.vue';
 
@@ -41,6 +41,8 @@ const SECTIONS = [
   { id: 'skills', label: 'Skills' },
   { id: 'data', label: '数据' },
   { id: 'about', label: '关于' },
+  // 使用说明（2026-10-24）：正文是仓库 docs/user-guide.md，面板内联渲染（见 GuidePanel.vue）
+  { id: 'guide', label: '使用说明' },
 ] as const
 
 type SectionId = (typeof SECTIONS)[number]['id']
@@ -55,6 +57,8 @@ const GROUPS = [
   { id: 'extensions', label: '扩展', icon: Puzzle },
   { id: 'account', label: '账号', icon: User },
   { id: 'data', label: '数据与关于', icon: Database },
+  // 使用说明独立成大类（2026-10-24）：面板内联 docs/user-guide.md，解决「功能多、路径难记」
+  { id: 'guide', label: '使用说明', icon: CircleHelp },
 ] as const
 
 type GroupId = (typeof GROUPS)[number]['id']
@@ -80,6 +84,7 @@ const SECTION_GROUP: Record<SectionId, GroupId> = {
   account: 'account',
   data: 'data',
   about: 'data',
+  guide: 'guide',
 }
 
 const SECTION_LABEL: Record<string, string> = Object.fromEntries(SECTIONS.map((s) => [s.id, s.label]))
@@ -131,17 +136,34 @@ function jumpToSetting(section: SectionId, title: string, attempt = 0) {
     const container = contentRef.value
     if (!container) return
     const hit = Array.from(
-      container.querySelectorAll<HTMLElement>('.setting-name, .theme-label, .sv-subtitle')
+      container.querySelectorAll<HTMLElement>('.setting-name, .theme-label, .sv-subtitle, .guide-h2, .guide-h3')
     ).find((el) => el.textContent?.trim() === title)
     // 面板可能还在加载：这一轮找不到就等下一轮（保留搜索词，用户能看到进度）
     if (!hit && attempt < 20) {
       window.setTimeout(() => jumpToSetting(section, title, attempt + 1), 50)
       return
     }
-    // 命中设置项 → 高亮它所在那一行；命中小组标题（sv-subtitle）→ 就用标题本身
+    // 命中设置项 → 高亮它所在那一行；命中小组标题（sv-subtitle）/使用说明正文标题（guide-h2/h3）
+    // → 就用标题本身（它们没有「行」可高亮，闪一下标题即可）
     const row = hit?.closest<HTMLElement>('.setting-row, .theme-row') ?? hit
     const target = row ?? container.querySelector<HTMLElement>(`#sv-sec-${section}`)
-    if (target) container.scrollTo({ top: Math.max(0, target.offsetTop - 12), behavior: 'smooth' })
+    if (target) {
+      // 用矩形差而不是 offsetTop：使用说明的标题在 .guide-body（position: relative）里，
+      // offsetTop 相对的是那个内层容器，按它滚动会落到分区顶部附近而不是目标章节
+      const scrollToTarget = () => {
+        const delta = target.getBoundingClientRect().top - container.getBoundingClientRect().top
+        container.scrollTo({ top: Math.max(0, container.scrollTop + delta - 12), behavior: 'smooth' })
+      }
+      scrollToTarget()
+      // 使用说明面板的正文是异步渲染的：跳转那一刻高度还没撑开，落点会算小（停在中途/顶部）。
+      // 渲染完成后再校一次，只在目标确实跑偏时才补滚，避免把用户的正常阅读位置抖一下
+      if (section === 'guide') {
+        window.setTimeout(() => {
+          const delta = target.getBoundingClientRect().top - container.getBoundingClientRect().top
+          if (Math.abs(delta - 12) > 40) scrollToTarget()
+        }, 400)
+      }
+    }
     if (row) {
       row.classList.add('setting-flash')
       window.setTimeout(() => row.classList.remove('setting-flash'), 1600)
@@ -208,6 +230,7 @@ const PANEL_LOADERS = {
   extensions: () => import('./settings/ExtensionsPanel.vue'),
   account: () => import('./settings/AccountPanel.vue'),
   data: () => import('./settings/DataPanel.vue'),
+  guide: () => import('./settings/GuidePanel.vue'),
 } as const
 
 /** 面板加载占位：delay 0 —— 宁可闪一下占位，也不要出现空白（见 index.vue 的同类说明） */
@@ -227,6 +250,7 @@ const PANELS: Record<GroupId, ReturnType<typeof defineAsyncComponent>> = {
   extensions: withPanelPlaceholder(PANEL_LOADERS.extensions),
   account: withPanelPlaceholder(PANEL_LOADERS.account),
   data: withPanelPlaceholder(PANEL_LOADERS.data),
+  guide: withPanelPlaceholder(PANEL_LOADERS.guide),
 }
 
 /** 鼠标移到大类就先把它那份代码取下来：点下去时通常已在内存里，切大类不再等 */

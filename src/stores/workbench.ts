@@ -218,6 +218,7 @@ const state = reactive<StoreState>({
     extension_keep_alive: [],
     extension_autostart: [],
     titlebar_widget_border: true,
+    titlebar_widget_positions: {},
     extension_row_click: 'detail',
     run_at_startup: false,
     auto_update_enabled: true,
@@ -1495,11 +1496,24 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
-  /** 标题栏小部件边框（扩展推上标题栏正中的小部件，默认带玻璃底座；关掉内容直接浮在标题栏上） */
+  /** 标题栏小部件边框（扩展推上标题栏的小部件，默认带玻璃底座；关掉内容直接浮在标题栏上） */
   async function setTitlebarWidgetBorder(value: boolean) {
     state.config.titlebar_widget_border = value
     if (!isTauri()) return
     await tauriApi.saveConfig(state.config)
+  }
+
+  /** 标题栏小部件显示位（left/center/right，缺省居中）：设置 → 外观「标题栏小部件」调整 */
+  function setTitlebarWidgetSlot(id: string, pos: string) {
+    state.config.titlebar_widget_positions = { ...state.config.titlebar_widget_positions, [id]: pos }
+    if (!isTauri()) return
+    void tauriApi.saveConfig(state.config)
+  }
+
+  /** 批量覆盖位置映射（卸载后清理残留 id 用，与 setExtensionKeepAliveBulk 同口径） */
+  function setTitlebarWidgetSlotsBulk(map: Record<string, string>) {
+    state.config.titlebar_widget_positions = { ...map }
+    if (isTauri()) void tauriApi.saveConfig(state.config)
   }
 
   async function setAlwaysOnTop(value: boolean) {
@@ -2193,6 +2207,8 @@ export function useStore() {
     setWallpaperImmersive,
     setGlassOpacity,
     setTitlebarWidgetBorder,
+    setTitlebarWidgetSlot,
+    setTitlebarWidgetSlotsBulk,
     setSidebarToggle,
     setAlwaysOnTop,
     setGlobalShortcut,

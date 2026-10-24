@@ -15,6 +15,7 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { splitGuideDocument } from "../src/utils/guideToc.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(root, "src/components/settingsIndex.generated.ts");
@@ -87,6 +88,26 @@ for (const file of FILES) {
 }
 if (sectionCount === 0) {
   console.error("[settings-index] 没找到任何 sv-sec-* 分区：外壳与 settings/*.vue 结构都变了吗？");
+  process.exit(1);
+}
+
+// 「使用说明」大类的条目不在 Vue 模板里，而在 docs/user-guide.md：面板内联渲染同一份文件，
+// 所以这里也按同一份分章口径（src/utils/guideToc.ts）把章 / 节标题收进索引 ——
+// 手写一份标题列表必然会随文档漂移。点击后的定位靠 SettingsView 的 jumpToSetting
+// （它识别 .guide-h2/.guide-h3，直接滚到正文里的那一节）。
+const GUIDE_DOC = join(root, "docs/user-guide.md");
+try {
+  const guide = splitGuideDocument(readFileSync(GUIDE_DOC, "utf8"));
+  for (const c of guide.chapters) {
+    for (const title of [c.title, ...c.sections.map((s) => s.title)]) {
+      const key = `guide:${title}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({ section: "guide", title });
+    }
+  }
+} catch (err) {
+  console.error(`[settings-index] 读取使用说明失败（${GUIDE_DOC}）：${err.message}`);
   process.exit(1);
 }
 

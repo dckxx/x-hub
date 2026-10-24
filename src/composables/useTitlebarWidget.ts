@@ -7,7 +7,8 @@
  * 维护小部件的形态：普通实例切页即销毁，放行只会留下再也无人更新的死部件。
  * 「结束本次常驻」只销毁实例不动配置，所以闸必须读运行态而非配置。
  *
- * 单占位：标题栏正中只有一条位，后 set 者顶掉前者；clear 只清自己的占位。
+ * 三个显示位（左 / 中 / 右，最多同显 3 个）：每个扩展一条独立状态、按到达顺序保存，
+ * 同一位置后到者胜（设置 → 外观「标题栏小部件」可调整每个的位置，缺省居中）。
  * 按钮点击经定向事件 `titlebar.action`（payload `{ id }`）回传给占用扩展，
  * 扩展用 `xhub.events.on('titlebar.action', fn)` 接。media 档固定三键的
  * 约定 id：`previous` / `play`|`pause`（按当前 playing 态二选一）/ `next`。
@@ -106,8 +107,15 @@ interface TitlebarEventPayload {
   widget: TitlebarWidget | null
 }
 
-/** 主窗单占位状态（模块级：index.vue 监听/清理与 TitleBar.vue 渲染共享同一份） */
-const current = ref<{ extId: string; widget: TitlebarWidget } | null>(null)
+/** 一条在显示的小部件（按扩展一条；位置由配置映射，缺省居中） */
+export interface TitlebarWidgetEntry {
+  extId: string
+  widget: TitlebarWidget
+}
+
+/** 主窗小部件状态（模块级：index.vue 监听/清理、TitleBar.vue 渲染、设置页调位置共享同一份）。
+ *  按到达顺序保存，同 extId 就地更新（保持首轮到达序）——同位竞争时后到者胜 */
+const entries = ref<TitlebarWidgetEntry[]>([])
 
 let started = false
 let listenInFlight = false
@@ -120,20 +128,22 @@ export function useTitlebarWidget() {
     if (widget) {
       // 常驻闸：不在跑的实例连占位资格都没有（载荷合法性 Rust 已验）
       if (!store.state.keepAliveRunning.includes(extId)) return
-      current.value = { extId, widget }
-    } else if (current.value?.extId === extId) {
-      current.value = null
+      const i = entries.value.findIndex((e) => e.extId === extId)
+      if (i >= 0) entries.value[i] = { extId, widget }
+      else entries.value.push({ extId, widget })
+    } else {
+      entries.value = entries.value.filter((e) => e.extId !== extId)
     }
   }
 
   /** 实例销毁（结束本次常驻/剪枝/重载）时撤下小部件，防死 iframe 的僵尸占位 */
   function clearOf(extId: string) {
-    if (current.value?.extId === extId) current.value = null
+    entries.value = entries.value.filter((e) => e.extId !== extId)
   }
 
-  function sendAction(actionId: string) {
-    const cur = current.value
-    if (cur) sendEventToExtension(cur.extId, 'titlebar.action', { id: actionId })
+  /** 按钮点击回传给占用扩展（定向事件，多小部件时各自回各自的） */
+  function sendAction(extId: string, actionId: string) {
+    sendEventToExtension(extId, 'titlebar.action', { id: actionId })
   }
 
   /** 主窗挂载后调用一次：开始监听 Rust 转发的小部件事件（仅主窗渲染小部件）。
@@ -154,5 +164,5 @@ export function useTitlebarWidget() {
       })
   }
 
-  return { widget: readonly(current), start, clearOf, sendAction }
+  return { widgets: readonly(entries), start, clearOf, sendAction }
 }

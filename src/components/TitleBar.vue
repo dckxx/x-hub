@@ -1,48 +1,61 @@
 <script setup lang="ts">
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Copy, MessageSquare, Minus, Music2, Pause, Pin, PinOff, Play, Search, SkipBack, SkipForward, Square, X } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useTitlebarWidget } from '../composables/useTitlebarWidget'
-import type { TitlebarSegment } from '../composables/useTitlebarWidget'
+import type { TitlebarSegment, TitlebarWidget } from '../composables/useTitlebarWidget'
 import TitlebarSegments from './TitlebarSegments.vue'
 
 const store = useStore()
-const { widget: extWidget, sendAction } = useTitlebarWidget()
+const { widgets: extWidgets, sendAction } = useTitlebarWidget()
 
-/** 封面加载失败（URL 失效/断网/CSP 拦截 http://）回退图标占位；换封面 URL 时重置重试 */
-const coverFailed = ref(false)
-watch(() => extWidget.value?.widget.cover, () => {
-  coverFailed.value = false
+/** 封面加载失败的 URL 集合（失效/断网/CSP 拦截 http://）：按 URL 记，换封面自然重试 */
+const coverFailedUrls = ref(new Set<string>())
+
+type WidgetPos = 'left' | 'center' | 'right'
+
+/** 该扩展的小部件显示位（设置 → 外观「标题栏小部件」调整；缺省居中） */
+function slotOf(extId: string): WidgetPos {
+  const v = store.state.config.titlebar_widget_positions?.[extId]
+  return v === 'left' || v === 'right' ? v : 'center'
+}
+
+/** 三个位（左/中/右）各显示一个：按到达顺序、同一位置后到者胜——
+ *  同位竞争者不渲染（不叠加），在设置里挪开位置即恢复显示 */
+const placedWidgets = computed(() => {
+  const byPos = new Map<WidgetPos, { extId: string; widget: TitlebarWidget }>()
+  // readonly(ref) 的 DeepReadonly 与段判别联合类型在数组层不兼容；渲染层只读不写，断言一次即可
+  for (const e of extWidgets.value) byPos.set(slotOf(e.extId), e as unknown as { extId: string; widget: TitlebarWidget })
+  return (['left', 'center', 'right'] as const).flatMap((pos) => {
+    const e = byPos.get(pos)
+    return e ? [{ pos, extId: e.extId, widget: e.widget }] : []
+  })
 })
 
 /** media 档进度 0..=1（无时长 = 直播流，隐藏进度线） */
-const mediaProgress = computed(() => {
-  const w = extWidget.value?.widget
-  if (!w || w.kind !== 'media' || !w.durationMs) return 0
+function mediaProgress(w: TitlebarWidget): number {
+  if (w.kind !== 'media' || !w.durationMs) return 0
   return Math.min(1, (w.positionMs ?? 0) / w.durationMs)
-})
+}
 
 /** status 档进度 0..=1（缺省 null = 不画进度；扁平模式贴底那条用） */
-const statusProgress = computed<number | null>(() => {
-  const w = extWidget.value?.widget
-  if (!w || w.kind !== 'status' || typeof w.progress !== 'number') return null
+function statusProgress(w: TitlebarWidget): number | null {
+  if (w.kind !== 'status' || typeof w.progress !== 'number') return null
   return Math.min(1, Math.max(0, w.progress))
-})
+}
+
 /** status 档是否走段式排布（segments 存在且有内容时，完全代替扁平字段渲染） */
-const statusSegments = computed(() => {
-  const w = extWidget.value?.widget
-  if (!w || w.kind !== 'status' || !w.segments?.length) return null
+function statusSegments(w: TitlebarWidget): TitlebarSegment[] | null {
+  if (w.kind !== 'status' || !w.segments?.length) return null
   // readonly(ref) 的 DeepReadonly 与段判别联合类型在数组层不兼容；
   // 渲染层只读不写，这里断言一次即可（运行时不产生拷贝）
   return w.segments as unknown as TitlebarSegment[]
-})
+}
 
-function onMediaToggle() {
-  const w = extWidget.value?.widget
-  if (!w) return
-  sendAction(w.playing ? 'pause' : 'play')
+function onMediaToggle(e: { extId: string; widget: TitlebarWidget }) {
+  sendAction(e.extId, e.widget.playing ? 'pause' : 'play')
 }
 const showToast = inject<(msg: string, action?: { label: string; onClick: () => void }) => void>(
   'showToast',
@@ -139,77 +152,80 @@ function close() {
       <span class="title-text">X-Hub</span>
     </div>
     <!-- 扩展标题栏小部件：media（媒体控制档）/ status（通用信息档），由常驻扩展经
-         titlebar.set 推上正中。按钮点击经 titlebar.action 定向事件回传给占用扩展
-         （media 固定三键约定 id：previous / play|pause / next）。挂载与常驻闸见 useTitlebarWidget -->
+         titlebar.set 推上标题栏。三个显示位（左/中/右）最多同显 3 个，位置由用户在
+         设置 → 外观调整（缺省居中），同位后到者胜。按钮点击经 titlebar.action 定向
+         事件回传给占用扩展（media 固定三键约定 id：previous / play|pause / next）。
+         挂载与常驻闸见 useTitlebarWidget -->
     <div
-      v-if="extWidget"
+      v-for="w in placedWidgets"
+      :key="w.extId"
       class="tb-widget"
-      :class="[`tb-${extWidget.widget.kind}`, { 'tb-bordered': store.state.config.titlebar_widget_border !== false }]"
+      :class="[`tb-${w.widget.kind}`, `tb-pos-${w.pos}`, { 'tb-bordered': store.state.config.titlebar_widget_border !== false, 'tb-solo': placedWidgets.length === 1 }]"
     >
-      <template v-if="extWidget.widget.kind === 'media'">
+      <template v-if="w.widget.kind === 'media'">
         <img
-          v-if="extWidget.widget.cover && !coverFailed"
+          v-if="w.widget.cover && !coverFailedUrls.has(w.widget.cover)"
           class="tb-cover"
-          :src="extWidget.widget.cover"
+          :src="w.widget.cover"
           referrerpolicy="no-referrer"
           alt=""
-          @error="coverFailed = true"
+          @error="coverFailedUrls.add(w.widget.cover)"
         />
         <span v-else class="tb-cover tb-cover-fallback" aria-hidden="true">
           <Music2 :size="13" :stroke-width="1.8" />
         </span>
         <span class="tb-text">
-          <span class="tb-title">{{ extWidget.widget.title }}</span>
-          <span v-if="extWidget.widget.subtitle" class="tb-subtitle">{{ extWidget.widget.subtitle }}</span>
+          <span class="tb-title">{{ w.widget.title }}</span>
+          <span v-if="w.widget.subtitle" class="tb-subtitle">{{ w.widget.subtitle }}</span>
         </span>
         <span class="tb-btns">
-          <button class="tb-btn" title="上一曲" @click="sendAction('previous')">
+          <button class="tb-btn" title="上一曲" @click="sendAction(w.extId, 'previous')">
             <SkipBack :size="13" :stroke-width="2" />
           </button>
           <button
             class="tb-btn tb-btn-primary"
-            :title="extWidget.widget.playing ? '暂停' : '播放'"
-            @click="onMediaToggle"
+            :title="w.widget.playing ? '暂停' : '播放'"
+            @click="onMediaToggle(w)"
           >
-            <Pause v-if="extWidget.widget.playing" :size="13" :stroke-width="2" />
+            <Pause v-if="w.widget.playing" :size="13" :stroke-width="2" />
             <Play v-else :size="13" :stroke-width="2" />
           </button>
-          <button class="tb-btn" title="下一曲" @click="sendAction('next')">
+          <button class="tb-btn" title="下一曲" @click="sendAction(w.extId, 'next')">
             <SkipForward :size="13" :stroke-width="2" />
           </button>
         </span>
         <span
-          v-if="mediaProgress > 0"
+          v-if="mediaProgress(w.widget) > 0"
           class="tb-progress"
-          :style="{ transform: `scaleX(${mediaProgress})` }"
+          :style="{ transform: `scaleX(${mediaProgress(w.widget)})` }"
         ></span>
       </template>
       <template v-else>
         <!-- 段式排布：扩展按 segments 顺序拼条，宿主只认几何原语 -->
         <TitlebarSegments
-          v-if="statusSegments"
-          :segments="statusSegments"
-          @action="sendAction"
+          v-if="statusSegments(w.widget)"
+          :segments="statusSegments(w.widget)!"
+          @action="(id: string) => sendAction(w.extId, id)"
         />
         <!-- 扁平排布（未传 segments 的老扩展）：图标 + 两行文本 + 按钮 + 贴底进度 -->
         <template v-else>
-          <span v-if="extWidget.widget.icon" class="tb-icon" aria-hidden="true">{{ extWidget.widget.icon }}</span>
+          <span v-if="w.widget.icon" class="tb-icon" aria-hidden="true">{{ w.widget.icon }}</span>
           <span class="tb-text">
-            <span class="tb-title">{{ extWidget.widget.title }}</span>
-            <span v-if="extWidget.widget.subtitle" class="tb-subtitle">{{ extWidget.widget.subtitle }}</span>
+            <span class="tb-title">{{ w.widget.title }}</span>
+            <span v-if="w.widget.subtitle" class="tb-subtitle">{{ w.widget.subtitle }}</span>
           </span>
-          <span v-if="extWidget.widget.actions?.length" class="tb-btns">
+          <span v-if="w.widget.actions?.length" class="tb-btns">
             <button
-              v-for="a in extWidget.widget.actions"
+              v-for="a in w.widget.actions"
               :key="a.id"
               class="tb-act"
-              @click="sendAction(a.id)"
+              @click="sendAction(w.extId, a.id)"
             >{{ a.label }}</button>
           </span>
           <span
-            v-if="statusProgress !== null"
+            v-if="statusProgress(w.widget) !== null"
             class="tb-progress"
-            :style="{ transform: `scaleX(${statusProgress})` }"
+            :style="{ transform: `scaleX(${statusProgress(w.widget)})` }"
           ></span>
         </template>
       </template>
@@ -272,23 +288,42 @@ function close() {
   color: var(--text-1);
   letter-spacing: -0.2px;
 }
-/* ---- 扩展标题栏小部件：正中悬浮（不挤占两侧布局）。
-     上限宽度随窗口收窄，文字两端省略；720px 以下直接让位（太窄放不下）。
+/* ---- 扩展标题栏小部件：三个显示位（左/中/右）最多同显 3 个，位置由设置调整（缺省居中）。
+     文字两端省略；720px 以下直接让位（太窄放不下）。
      边框可选（设置 → 外观，titlebar_widget_border，默认开）：tb-bordered 才垫
      玻璃底 + 描边（整块底座），关掉后内容直接浮在标题栏上（可读性由铬件文字光晕兜底） ---- */
 .tb-widget {
   position: absolute;
-  left: 50%;
   top: 50%;
-  transform: translate(-50%, -50%);
   display: flex;
   align-items: center;
   gap: 8px;
   height: 34px;
-  max-width: clamp(120px, calc(100vw - 560px), 520px);
   padding: 0 6px 0 5px;
   border-radius: 8px;
   overflow: hidden;
+}
+.tb-pos-center {
+  left: 50%;
+  transform: translate(-50%, -50%);
+  max-width: clamp(120px, calc(100vw - 560px), 520px);
+}
+/* 左位：紧挨 X-Hub 标题（18px 内边距 + ~48px 文字）右侧；
+   右位：窗口按钮区（38×2 + 分隔线 9 + 46×4 = 269px）左侧，各留 8px 间隙。
+   多部件同显时侧位收窄给中间让空间（媒体内容约 330px 起，塞不下由文字段省略号兜底） */
+.tb-pos-left {
+  left: 82px;
+  transform: translateY(-50%);
+  max-width: clamp(120px, 24vw, 340px);
+}
+.tb-pos-right {
+  right: 277px;
+  transform: translateY(-50%);
+  max-width: clamp(96px, 14vw, 200px);
+}
+/* 只有一个小部件时给全额宽度预算（与居中位同款）：单部件放左/右位也要显示得全 */
+.tb-widget.tb-solo {
+  max-width: clamp(120px, calc(100vw - 560px), 520px);
 }
 .tb-widget.tb-bordered {
   background: var(--bg-card-soft);

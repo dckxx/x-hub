@@ -78,6 +78,8 @@ function onToggleTitlebarWidgetBorder() {
 //      扩展名单独拉一次用于行名展示，拿不到就显示扩展 id ----
 const { widgets: titlebarWidgets } = useTitlebarWidget()
 const extNames = ref<Record<string, string>>({})
+/** 作者在 manifest 声明的默认显示位（titlebarOptions.position）：用户没显式调过时行上就显示它 */
+const extDefaults = ref<Record<string, string>>({})
 const WIDGET_POS_OPTIONS = [
   { value: 'left', label: '左侧' },
   { value: 'center', label: '居中' },
@@ -88,7 +90,7 @@ const widgetRows = computed(() =>
   titlebarWidgets.value.map((w) => ({
     extId: w.extId,
     name: extNames.value[w.extId] ?? w.extId,
-    pos: store.state.config.titlebar_widget_positions?.[w.extId] ?? 'center',
+    pos: store.state.config.titlebar_widget_positions?.[w.extId] ?? extDefaults.value[w.extId] ?? 'center',
   })),
 )
 
@@ -97,6 +99,11 @@ onMounted(async () => {
   try {
     const list: ExtensionEntry[] = await tauriApi.listExtensions()
     extNames.value = Object.fromEntries(list.map((e) => [e.id, e.name]))
+    const defaults: Record<string, string> = {}
+    for (const e of list) {
+      if (e.titlebar_position) defaults[e.id] = e.titlebar_position
+    }
+    extDefaults.value = defaults
   } catch {
     /* 名字拿不到时行名回退显示扩展 id */
   }

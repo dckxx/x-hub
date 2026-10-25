@@ -25,6 +25,8 @@
 
 > **service 扩展的后端没起来时**：先看 `<数据根>\logs\service\<扩展 id>.log`（宿主落盘的后端 stdout/stderr，含退出码与报错原文），再看 `logs\x-hub.log` 里的 `service 后端未就绪: … exit=…`。`serviceReady=false` 不等于「在下载 Node」，别猜——详见 `service.md` 的「排错」与「数据与日志写在哪」两节。
 
+**改 service 后端代码后必须重启后端进程**：约 1.5 秒的自动重载只覆盖页面（iframe 重新导航），Node 后端进程不会跟着换（宿主按扩展 id 复用在跑的进程），光刷新页面永远拿不到新逻辑。入口：常驻运行的实例上**右键侧栏固定区的扩展图标 →「重启后端」**（停掉 Node 进程再起，端口会重新分配，扩展页面不必刷新）；没开常驻时重启一次 x-hub，全部后端随之重拉。前端 HTML/JS 改动照旧走自动重载，不用管。
+
 ## 提交前自检清单
 
 - [ ] `manifest.json` 是合法 JSON、必填字段齐全、`entry` 指向的 HTML 文件都存在；
@@ -56,7 +58,7 @@
 **最后一条最容易中招**：预检会**静态扫描**扩展目录里的 `.html/.js/.mjs/.cjs`（跳过 `.` 开头的文件和 `node_modules`），把出现的每一处 `xhub.…` 调用链拿出来，反推它需要什么权限，再和 `manifest.permissions` 对账。规则是：
 
 - `data.*` 中方法名以 `create/update/delete/set/toggle/reorder/import/schedule` 开头 → `data:write`，其余 → `data:read`
-- `ui.*` → `notify`｜`net.*` → `network`｜`system.*` → `system`｜`clipboard.*` → `clipboard`｜`fs.*` → `fs`｜`sharedStorage.*` → `shared-storage`｜`events.emit` → `events`
+- `ui.*` → `notify`｜`net.*` → `network`｜`system.*` → `system`｜`clipboard.*` → `clipboard`｜`fs.*` → `fs`｜`sharedStorage.*` → `shared-storage`｜`titlebar.*` → `titlebar`｜`events.emit` → `events`
 - **`xhub.openExternal(...)`（顶层方法）→ `open-url`**；其余 `runtime.*` 无需权限
 - `runtime.*`（`openExternal` 除外）/ `storage.*` / `config.*` / `theme.*` / `service.*` / `expose` → 无需权限
 
@@ -77,6 +79,7 @@
 - **版本号不用手改 manifest**：发布弹窗的「发布版本」默认预填「当前补丁号 +1」，点发布时客户端会先把该版本写回扩展的 `manifest.json` 再打包（必须大于当前版本；留空则按 manifest 当前版本发布，适合关卡挂了重提同一版）。改完代码 → 点发布 → 直接发布，全程不必去扩展目录手改文件。
 - 发布时可**上传截图**（最多 5 张、单张 ≤2MB，PNG/JPG/WebP），会展示在扩展详情页——建议传 1~3 张（主界面 + 典型用法）。
 - 发布需要**发布者身份**：设置 →「账号」登录 → 兑换邀请码 → 申请成为开发者 → 审核通过后，「开发中」的扩展才会出现「发布」按钮。
+- **用户反馈走宿主反馈板**：上架后，用户可在市场详情 / 扩展设置弹窗 / 扩展出错态提交反馈（bug / idea / question，可附联系方式与诊断信息）；开发者在扩展中心进「**反馈收件箱**」按扩展查看未读、行内回复、标记已解决。发布不是终点，记得回头看，别让用户反馈石沉大海。
 
 ## 可选：脚手架仓库（仅内部开发环境有）
 

@@ -144,6 +144,24 @@ pub struct ModuleOptions {
     pub default_hide_title: Option<bool>,
 }
 
+/// 标题栏小部件选项（manifest.titlebarOptions，可选；推标题栏小部件的扩展用）。
+///
+/// `position` = 作者声明的小部件**默认显示位**（`left` / `center` / `right`，缺省居中）。
+/// 只影响「用户没调过」时的落位：解析链为 用户显式设置（`titlebar_widget_positions`）
+/// > manifest 默认 > 居中；非法取值按未声明处理。运行期 `titlebar.set` 不携带位置。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TitlebarOptions {
+    #[serde(default, rename = "position")]
+    pub position: Option<String>,
+}
+
+/// 归一 manifest.titlebarOptions.position：只认 left/center/right，其余（含缺省）回 None = 按居中
+fn titlebar_position_of(opts: Option<&TitlebarOptions>) -> Option<String> {
+    opts.and_then(|o| o.position.as_deref())
+        .filter(|p| matches!(*p, "left" | "center" | "right"))
+        .map(str::to_string)
+}
+
 /// 扩展声明给 AI 助手的工具（manifest.agent.tools[]，可选）。
 /// 这是「宿主不知道扩展里有什么数据」的解法：扩展**自描述**——声明工具名、用途、
 /// 参数 JSON Schema 与返回值形状，宿主聚合后经 extension_tool_list/call 两个
@@ -267,6 +285,9 @@ pub struct ExtensionManifest {
     /// 工作台模块选项（manifest 字段为 moduleOptions；module 形态可选）
     #[serde(default, rename = "moduleOptions")]
     pub module_options: ModuleOptions,
+    /// 标题栏小部件选项（manifest 字段为 titlebarOptions；推小部件的扩展可选声明默认显示位）
+    #[serde(default, rename = "titlebarOptions")]
+    pub titlebar_options: Option<TitlebarOptions>,
     /// 声明给 AI 助手的工具（manifest.agent.tools；经校验后的合格子集，见 AgentToolDecl）
     #[serde(default)]
     pub agent: Option<AgentSpec>,
@@ -325,6 +346,9 @@ pub struct ExtensionEntry {
     pub module_variants: Vec<ModuleVariant>,
     /// 工作台模块选项（manifest.moduleOptions 原样透传；module 卡片表头默认显隐用）
     pub module_options: ModuleOptions,
+    /// 标题栏小部件默认显示位（manifest.titlebarOptions.position 归一后的 left/center/right；
+    /// None = 未声明或取值非法，按居中。用户在设置 → 外观 的显式选择优先）
+    pub titlebar_position: Option<String>,
     /// 安装时间（目录创建时间，RFC3339；前端「已安装」列表按此排序，最后安装的在最下面）。
     /// 取文件系统元数据，对本客户端装之前就存在的扩展同样有效；取不到时为 None
     pub installed_at: Option<String>,
@@ -476,6 +500,7 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
         actions: Vec::new(),
         module_variants: Vec::new(),
         module_options: ModuleOptions::default(),
+        titlebar_position: None,
         installed_at: installed_at.clone(),
         agent_tools: Vec::new(),
     };
@@ -535,6 +560,7 @@ fn load_extension(dir: &Path, source: &str) -> ExtensionEntry {
         actions: manifest.actions,
         module_variants: manifest.module_variants,
         module_options: manifest.module_options,
+        titlebar_position: titlebar_position_of(manifest.titlebar_options.as_ref()),
         installed_at,
         agent_tools,
     }
@@ -1783,6 +1809,48 @@ mod tests {
         assert!(!entry.invalid);
         // 写了 false = 作者要宿主默认显示表头
         assert_eq!(entry.module_options.default_hide_title, Some(false));
+    }
+
+    #[test]
+    fn parses_titlebar_options_position() {
+        // 合法取值归一进 Entry；非法取值与未声明一样回 None（前端按居中兜底，用户显式设置优先）
+        let dir = tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            "com.x-hub.player",
+            serde_json::json!({
+                "id": "com.x-hub.player",
+                "name": "播放器",
+                "version": "0.1.0",
+                "titlebarOptions": { "position": "left" }
+            }),
+        );
+        let entry = load_extension(&dir.path().join("com.x-hub.player"), SOURCE_INSTALLED);
+        assert!(!entry.invalid);
+        assert_eq!(entry.titlebar_position.as_deref(), Some("left"));
+
+        write_manifest(
+            dir.path(),
+            "com.x-hub.player",
+            serde_json::json!({
+                "id": "com.x-hub.player",
+                "name": "播放器",
+                "version": "0.1.0",
+                "titlebarOptions": { "position": "top" }
+            }),
+        );
+        let entry = load_extension(&dir.path().join("com.x-hub.player"), SOURCE_INSTALLED);
+        assert_eq!(entry.titlebar_position, None);
+
+        // 纯函数边界：缺省 / 空 / 非法都回 None
+        assert_eq!(titlebar_position_of(None), None);
+        assert_eq!(titlebar_position_of(Some(&TitlebarOptions::default())), None);
+        assert_eq!(
+            titlebar_position_of(Some(&TitlebarOptions {
+                position: Some("right".into())
+            })),
+            Some("right".to_string())
+        );
     }
 
     #[test]

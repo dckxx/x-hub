@@ -516,6 +516,8 @@ export interface ExtensionEntry {
   module_variants: ExtensionModuleVariant[]
   /** 工作台模块选项（manifest.moduleOptions；module 卡片表头默认显隐） */
   module_options: ExtensionModuleOptions
+  /** 标题栏小部件默认显示位（manifest.titlebarOptions.position；null = 未声明/取值非法，按居中，用户显式设置优先） */
+  titlebar_position: string | null
   /** 安装时间（目录创建时间，RFC3339；「已安装」列表按此排序，最后安装的在最下面） */
   installed_at: string | null
   /** 声明给 AI 助手的工具（manifest.agent.tools 校验后的合格子集，空 = 未声明） */

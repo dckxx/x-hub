@@ -18,6 +18,7 @@
 | `fs.saveText` / `saveFile` / `saveAs` | `fs` |
 | `events.emit` | `events` |
 | `ui.notify`（推送右下角通知） | `notify` |
+| `titlebar.set` / `titlebar.clear`（主窗标题栏小部件） | `titlebar` |
 | `clipboard.readText` / `clipboard.writeText`（系统剪贴板） | `clipboard` |
 | `events.on`、`xhub.expose` | 无需权限 |
 | `net.fetch`（**@planned 未实现**） | `network` |
@@ -68,6 +69,7 @@ await window.xhub.config.remove(key)      // 删用户覆盖，回退默认
 await window.xhub.theme.get()             // { mode, preset, accent, wallpaper, tokens }
 window.xhub.events.on('theme-changed', fn)  // 返回取消订阅函数
 window.xhub.events.on('xhub:variant-changed', fn)  // module 形态切换
+window.xhub.events.on('titlebar.action', fn)  // 标题栏小部件按钮点击（宿主定向回传，见 titlebar.* 节）
 window.xhub.events.on('my-event', fn)       // 订阅其它扩展广播的自定义事件
 window.xhub.events.emit('my-event', data)   // 广播给其它扩展（需 permissions: ["events"]）
 window.xhub.expose('getData', fn)           // 暴露方法给其它扩展（配合 manifest.expose）
@@ -82,6 +84,10 @@ await window.xhub.ui.notify('同步完成', '已更新 12 条记录')
 // 扩展应在界面文案里同样说明用途，不要静默轮询剪贴板。
 await window.xhub.clipboard.writeText('要复制的内容')
 const text = await window.xhub.clipboard.readText()
+
+// 标题栏小部件（需 permissions: ["titlebar"]；**仅常驻运行时展示**，详见下节）
+await window.xhub.titlebar.set({ kind: 'status', title: '同步中', progress: 0.6 })
+window.xhub.titlebar.clear()
 
 await window.xhub.service.request('/api/x', { method, headers, body })  // 仅 service 扩展
 // → XHubHttpResult { status, headers, text(), json() }
@@ -111,7 +117,52 @@ await window.xhub.fs.saveAs({ name, base64 })      // 弹系统「保存到…�
 - **老宿主没有 `getFrom`**：调用前特性探测 `typeof window.xhub.sharedStorage.getFrom === 'function'`；不可用时降级为不共享，或改走 `runtime.callExtension`。
 - 有 `shared-storage` 权限的扩展**仍然可以读取任意命名空间**（`getFrom` 不额外加权限）——它是显式共享通道，不是 ACL；不要在里面放不该被别的扩展看到的数据。
 
+### 标题栏小部件 `titlebar.*`（v0.9.4+，需 `titlebar` 权限 + 常驻）
+
+把一条小部件推上**主窗标题栏**：`media`（媒体控制档：封面/标题/进度 + 上一曲·播放暂停·下一曲三键）或 `status`（通用信息档：文本/图标/进度/按钮自由拼装）。
+
+- **仅常驻运行时展示**：宿主以「常驻实例在跑」为准（view 扩展被用户开了「常驻后台」或「随应用启动」，见 `surfaces.md`）。普通实例切页即销毁、没法持续更新小部件，所以**非常驻实例的调用不报错但被静默忽略**——设计上就应在常驻实例里推。
+- **每个扩展一条**：再次 `set` 就是更新自己的那条，`clear()` 撤下自己的。宿主最多同显 3 条（左/中/右各一），**同一位置后推者顶掉先推者**。落位 = 用户显式设置（设置 → 外观「标题栏小部件」）> manifest 声明的作者默认（`"titlebarOptions": { "position": "left" | "center" | "right" }`，见 manifest.md）> 居中。
+- **按钮点击回传**：宿主发**定向事件** `titlebar.action`（payload `{ id }`，只发给占用扩展、不是广播），用 `xhub.events.on('titlebar.action', fn)` 接。media 档固定三键的约定 id：`previous` / `play`|`pause`（按当前 playing 态二选一）/ `next`。
+
+```js
+// media 档（音乐播放器）：
+await window.xhub.titlebar.set({
+  kind: 'media',
+  title: '歌名',             // 必填非空，截 64 字符
+  subtitle: '歌手',          // 可选，截 64
+  icon: '🎵',                // 可选字符图标（emoji/字形），截 8 字符
+  cover: 'https://…/a.jpg',  // 可选封面：http(s) URL（≤2048 字符）或 ≤64KB 的 dataURL
+  playing: true,
+  positionMs: 61000,         // 播放进度毫秒；超过 durationMs 会被钳到 durationMs
+  durationMs: 240000,
+})
+// 按钮点击：events.on('titlebar.action', ({ id }) => { /* previous / play|pause / next */ })
+
+// status 档·段式排布（推荐）：按数组顺序拼条，宿主不理解业务语义——
+// 没有进度的扩展不传 progress 段即可，也没有任何「场景专用」字段
+await window.xhub.titlebar.set({
+  kind: 'status',            // 缺省即 'status'
+  title: '下载任务',
+  segments: [
+    { type: 'text', text: '↓ 2.4 MB/s' },       // tone: 'primary'（默认，粗亮）| 'muted'（细淡）
+    { type: 'progress', value: 0.42 },          // 进度线 0..=1
+    { type: 'bars', values: [0.2, 0.8, 0.5] },  // 高度条组，每根 0..=1，最多 32 根
+    { type: 'icon', glyph: '⬇' },               // 字符图标，截 8 字符
+    { type: 'actions', items: [{ id: 'open', label: '打开' }] },  // ≤3 个；点击经 titlebar.action 回传 id
+    // { type: 'stack', children: [/* 段 */] },  // 嵌套容器：children ≤4、最多嵌 2 层
+    // 每段都可带 width（px，钳 16..=240）或 grow: true（吃掉剩余宽度，一行通常只给一个段）
+  ],
+})
+
+// status 档·扁平兼容写法：不传 segments 时按 title/subtitle/icon/progress/actions 渲染（老写法仍可用）
+await window.xhub.titlebar.set({ title: '同步中', progress: 0.6, actions: [{ id: 'pause', label: '暂停' }] })
+```
+
+上限速记：文本 64 字 / 图标字形 8 字 / `segments` ≤8 / 按钮组 ≤3（`id` 截 24 字、`label` 截 8 字、缺 label 用 id）/ `cover` ≤64KB（dataURL）。结构错误（未知段类型、空必填字段、非数组）报 `INVALID_ARGUMENT`；纯超长的文本类字段自动截断不报错。
+
 ### 宿主数据 `data.*`（读写两套都已实装）
+
 
 ```js
 // 笔记

@@ -30,12 +30,13 @@
 | `minSize` | `{ w, h }` | window / drawer 建议尺寸 |
 | `description` | string | 一句话描述 |
 | `author` | string | 作者署名。市场卡片与详情页会展示它；没填会显示占位符「—」。发布弹窗里也能补填（会写回 manifest.json），但推荐生成时就填好 |
+| `category` | string | 可选，市场分类。固定七类：`AI` / `实用工具` / `开发工具` / `多媒体` / `休闲游戏` / `学习天地` / `其他`（其它自定义取值会原样展示、在分类筛选里追加在七类之后）；发布弹窗里也能补选（会写回 manifest.json）；不填按「其他」归类 |
 
 **每个声明的 entry 都必须有真实文件**，否则扩展打不开。
 
 ## 权限 `permissions`
 
-可选值：`data:read`、`data:write`、`fs`、`clipboard`（读写系统剪贴板文本）、`network`、`open-url`（用默认浏览器打开外链）、`system`（保留，宿主暂无对应能力）、`notify`（推送右下角通知）、`events`（广播自定义事件）、`shared-storage`（扩展共享存储：`get/set/remove` 由宿主自动放进 `ext:<扩展 id>:` 命名空间，跨扩展读取用 `getFrom(ownerId, key)`，见 bridge-api.md）。
+可选值：`data:read`、`data:write`、`fs`、`clipboard`（读写系统剪贴板文本）、`network`、`open-url`（用默认浏览器打开外链）、`system`（保留，宿主暂无对应能力）、`notify`（推送右下角通知）、`events`（广播自定义事件）、`shared-storage`（扩展共享存储：`get/set/remove` 由宿主自动放进 `ext:<扩展 id>:` 命名空间，跨扩展读取用 `getFrom(ownerId, key)`，见 bridge-api.md）、`titlebar`（在主窗标题栏推 media/status 小部件，**仅常驻运行时展示**，见 bridge-api.md 的 `titlebar.*` 节）。
 
 没声明就调用会被拒（`PERMISSION_DENIED`）。各权限与桥 API 的对应关系见 `bridge-api.md`。
 
@@ -136,6 +137,21 @@
 
 - 绝大多数摘要卡**什么都不用写**（默认无表头）。只有想让宿主帮你画标题栏时才写 `"moduleOptions": { "defaultHideTitle": false }`，此时卡名 = `manifest.name`，卡面自己别再画一遍标题。
 - 表头本身占一行高度（约 30px），声明与否会改变入口 iframe 的可用高度——入口一律按 `height: 100%` 自适应，别按像素估算。
+
+## 标题栏小部件选项 `titlebarOptions`
+
+可选；对声明了 `titlebar` 权限、会推标题栏小部件（`xhub.titlebar.set`，见 bridge-api.md）的扩展有意义。
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `position` | `"left"` \| `"center"` \| `"right"` | `center` | 小部件的**默认显示位**（作者默认）：左 / 中 / 右。用户在 设置 → 外观「标题栏小部件」里的显式选择优先于它；非法取值按未声明处理（居中） |
+
+- 宿主标题栏最多同显 3 条（三个位各一条），**同一位置后推的扩展顶掉先推的**——多个扩展都用缺省居中会互相顶掉。按扩展性质声明默认位可减少同位竞争：媒体控制类建议 `left`，状态/信息类建议 `right`。
+- 运行期 `xhub.titlebar.set` **不携带位置**——落位只由「用户显式设置 > manifest 默认 > 居中」决定。
+
+```jsonc
+{ "titlebarOptions": { "position": "left" } }
+```
 
 ## 示例
 

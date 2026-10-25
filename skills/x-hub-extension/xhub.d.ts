@@ -574,12 +574,121 @@ interface XHubSystem {
   openApp(path: string, args?: string): Promise<void>
 }
 
-/** 订阅宿主事件（已实现 `theme-changed` + `xhub:variant-changed` + 扩展间事件总线 emit，其余 @planned） */
+// ---------------------------------------------------------------------------
+// 标题栏小部件（v0.9.4+）
+// ---------------------------------------------------------------------------
+
+/** 段式排布的公共布局字段 */
+interface XHubTitlebarSegmentBase {
+  /** 固定宽度（px，钳 16..=240）；与 grow 二选一，缺省按段类型取默认宽度 */
+  width?: number
+  /** true = 吃掉剩余宽度（弹性段）；同一行通常只给一个段 */
+  grow?: boolean
+}
+
+/** 文本段：`primary` 主文本（粗、亮）/ `muted` 次要文本（细、淡） */
+interface XHubTitlebarTextSegment extends XHubTitlebarSegmentBase {
+  type: 'text'
+  /** 非空，截 64 字符 */
+  text: string
+  tone?: 'primary' | 'muted'
+}
+
+/** 字符图标段（emoji / 字形，截 8 字符） */
+interface XHubTitlebarIconSegment extends XHubTitlebarSegmentBase {
+  type: 'icon'
+  glyph: string
+}
+
+/** 进度线段：value 0..=1 */
+interface XHubTitlebarProgressSegment extends XHubTitlebarSegmentBase {
+  type: 'progress'
+  value: number
+}
+
+/** 高度条组段：values 每个元素是一根竖条的高度（0..=1，最多 32 根） */
+interface XHubTitlebarBarsSegment extends XHubTitlebarSegmentBase {
+  type: 'bars'
+  values: number[]
+}
+
+/** 按钮组段：点击经 `titlebar.action` 事件回传 id（≤3 个，label 截 8 字符） */
+interface XHubTitlebarActionsSegment extends XHubTitlebarSegmentBase {
+  type: 'actions'
+  items: { id: string; label?: string }[]
+}
+
+/** 堆叠段：children ≤4 个段，最多嵌套 2 层 */
+interface XHubTitlebarStackSegment extends XHubTitlebarSegmentBase {
+  type: 'stack'
+  children: XHubTitlebarSegment[]
+}
+
+type XHubTitlebarSegment =
+  | XHubTitlebarTextSegment
+  | XHubTitlebarIconSegment
+  | XHubTitlebarProgressSegment
+  | XHubTitlebarBarsSegment
+  | XHubTitlebarActionsSegment
+  | XHubTitlebarStackSegment
+
+/** status 档顶层按钮（与 actions 段同构） */
+interface XHubTitlebarAction {
+  /** 非空，截 24 字符 */
+  id: string
+  /** 缺省用 id，截 8 字符 */
+  label?: string
+}
+
+/**
+ * 标题栏小部件（**需 manifest 声明 `titlebar` 权限**）。
+ *
+ * ⚠️ **仅常驻运行时展示**：宿主以「常驻实例在跑」为准（view 扩展被用户开了
+ * 「常驻后台」/「随应用启动」）；普通实例切页即销毁，非常驻实例的调用
+ * **不报错但被静默忽略**。每个扩展一条，再次 set 即更新自己的那条，
+ * clear() 撤下。宿主最多同显 3 条（左/中/右）；同一位置后推者顶掉先推者。
+ * 落位 = 用户显式设置（设置 → 外观）> manifest `titlebarOptions.position`
+ * （作者默认，left/center/right）> 居中。按钮点击经定向事件 `titlebar.action`
+ * （payload `{ id }`，只发给占用扩展）回传，用 `xhub.events.on` 接。
+ */
+interface XHubTitlebar {
+  /** @done 推送/更新本扩展的标题栏小部件。结构错误报 INVALID_ARGUMENT，超长文本自动截断 */
+  set(widget: {
+    /** 缺省 'status' */
+    kind?: 'media' | 'status'
+    /** 必填非空，截 64 字符 */
+    title: string
+    subtitle?: string
+    /** 字符图标（emoji/字形），截 8 字符 */
+    icon?: string
+    /** —— 以下仅 media 档 —— */
+    /** http(s) URL（≤2048 字符）或 ≤64KB 的 dataURL */
+    cover?: string
+    /** 缺省 false；中键 id 随之在 play/pause 间切换 */
+    playing?: boolean
+    positionMs?: number
+    durationMs?: number
+    /** —— 以下仅 status 档 —— */
+    /** 段式排布（推荐）；传了它就别再用扁平的 progress/actions */
+    segments?: XHubTitlebarSegment[]
+    /** 扁平兼容：进度线 0..=1（不传 segments 时生效） */
+    progress?: number
+    /** 扁平兼容：按钮组 ≤3（不传 segments 时生效） */
+    actions?: XHubTitlebarAction[]
+  }): Promise<{ ok: boolean }>
+  /** @done 撤下本扩展的小部件 */
+  clear(): Promise<{ ok: boolean }>
+}
+
+/** 订阅宿主事件（已实现 `theme-changed` + `xhub:variant-changed` + `titlebar.action` + 扩展间事件总线 emit，其余 @planned） */
 interface XHubEvents {
   /**
    * 订阅事件，返回取消订阅函数。
    * - `theme-changed`：payload 为 XHubTheme
    * - `xhub:variant-changed`：payload 为 string（工作台模块形态 id，声明 moduleVariants 时由宿主广播）
+   * - `titlebar.action`：payload 为 `{ id }`（本扩展标题栏小部件上的按钮被点击；
+   *   宿主**定向**发给占用扩展、不是广播。media 档固定三键 id：
+   *   `previous` / `play`|`pause`（按当前 playing 态二选一）/ `next`）
    */
   on(event: string, handler: (payload: unknown) => void): () => void
   off(event: string, handler: (payload: unknown) => void): void
@@ -606,6 +715,7 @@ interface XHub {
   service: XHubService
   theme: XHubThemeApi
   ui: XHubUi
+  titlebar: XHubTitlebar
   system: XHubSystem
   events: XHubEvents
   /**

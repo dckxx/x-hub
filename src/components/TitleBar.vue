@@ -11,14 +11,19 @@ import TitlebarSegments from './TitlebarSegments.vue'
 const store = useStore()
 const { widgets: extWidgets, sendAction } = useTitlebarWidget()
 
+const props = defineProps<{
+  /** 各扩展在 manifest 声明的小部件默认显示位（extId → left/center/right）；用户显式设置优先于它 */
+  titlebarDefaults?: Record<string, string>
+}>()
+
 /** 封面加载失败的 URL 集合（失效/断网/CSP 拦截 http://）：按 URL 记，换封面自然重试 */
 const coverFailedUrls = ref(new Set<string>())
 
 type WidgetPos = 'left' | 'center' | 'right'
 
-/** 该扩展的小部件显示位（设置 → 外观「标题栏小部件」调整；缺省居中） */
+/** 该扩展的小部件显示位：用户显式设置（设置 → 外观）> manifest 声明的作者默认（titlebarOptions.position）> 居中 */
 function slotOf(extId: string): WidgetPos {
-  const v = store.state.config.titlebar_widget_positions?.[extId]
+  const v = store.state.config.titlebar_widget_positions?.[extId] ?? props.titlebarDefaults?.[extId]
   return v === 'left' || v === 'right' ? v : 'center'
 }
 

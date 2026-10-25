@@ -169,6 +169,14 @@ const drawerExtension = ref<{ id: string; surface: string | null; name: string }
 // 表现为点了没反应——每次打开都递增，强制 iframe 重新导航
 const extensionReloadTick = ref(0)
 const installedExtensions = ref<ExtensionEntry[]>([])
+/** 标题栏小部件默认显示位（manifest.titlebarOptions.position）：传给 TitleBar 作用户显式设置之前的回退 */
+const titlebarDefaults = computed(() => {
+  const map: Record<string, string> = {}
+  for (const e of installedExtensions.value) {
+    if (e.titlebar_position) map[e.id] = e.titlebar_position
+  }
+  return map
+})
 
 function onOpenExtension(ext: ExtensionEntry) {
   // 扩展中心点开扩展 = 按该扩展的「打开方式」打开（设置弹窗里配置，默认 view=软件内）。
@@ -1016,6 +1024,7 @@ provide('showToast', showToast)
       <div class="wallpaper-glow"></div>
     </div>
     <TitleBar
+      :titlebar-defaults="titlebarDefaults"
       @search="searchVisible = true"
       @chat="toggleChat"
     />

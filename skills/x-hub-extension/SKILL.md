@@ -152,6 +152,7 @@ skill 的使用者手里通常只有**装好的 x-hub 应用** + 这个 skill �
 | 广播事件给其它扩展 | `events` |
 | 打开外链（`xhub.openExternal`，默认应用内浏览器） | `open-url` |
 | 推送右下角通知（`xhub.ui.notify`） | `notify` |
+| 主窗标题栏推小部件（`xhub.titlebar.*`，媒体控制 / 状态条） | `titlebar`（**仅常驻运行时展示**——引导用户开「常驻后台」，见 `surfaces.md`） |
 | service 后端（后端自己发请求、前端走 `service.request`） | **无需权限** |
 | service 后端未授权时给「去授权」入口（`xhub.openPermissions`） | **无需权限** |
 | 后端要**对外**监听（局域网 / `0.0.0.0`） | `network` |
@@ -163,6 +164,13 @@ skill 的使用者手里通常只有**装好的 x-hub 应用** + 这个 skill �
 > 这个扩展会声明 `data:read` + `data:write`——读你的待办列表、并把打卡结果写回待办。不需要网络和文件权限。
 
 **只声明真正用到的**。声明了不用是安全负担，用了没声明会直接 reject `PERMISSION_DENIED`。
+
+**用户要标题栏小部件时**（上表 `titlebar` 行），同一轮顺带问一句**默认显示位**：
+
+> 小部件默认放标题栏哪一侧？**A. 左侧**（音乐/媒体控制常用）　**B. 居中（默认）**　**C. 右侧**（状态/信息常用）
+
+- 选了非居中就写进 manifest：`"titlebarOptions": { "position": "left" }`——这是**作者默认**，每个装了扩展的用户仍可在 设置 → 外观「标题栏小部件」自行改，交付时要说明这一点。
+- 顺带告知**同位顶替**规则：标题栏三个位各最多一条小部件，同一位置后推的扩展顶掉先推的——多个常驻扩展都挤缺省居中会互相顶掉，默认位按扩展性质分散开更稳（见 `manifest.md` 的 `titlebarOptions` 节）。
 
 若用到不确定的 API，先读 `bridge-api.md` 的「未实现（planned）」清单——`net.*` / `system.*` / `ui.toast` / `fs.readText` 那一套目前**都不可用**，遇到就改设计，别写进去等运行时炸。剪贴板 `clipboard.readText/writeText` 已可用（需 `clipboard` 权限）。
 

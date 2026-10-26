@@ -9,6 +9,7 @@ import NoteFolderTree from './NoteFolderTree.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import ExportNoteDialog from './ExportNoteDialog.vue'
 import { notesOfSubtree, sanitizeExportFilename, type ExportFormat } from '../utils/noteExport'
+import { isSheetNote } from '../utils/noteSheetRef'
 
 /**
  * 速记视图（docs/speednote-plan.md §5.1；2026-10-04 用户反馈改为**两栏**）：
@@ -19,6 +20,8 @@ import { notesOfSubtree, sanitizeExportFilename, type ExportFormat } from '../ut
  * - 删除一律软删（回收站），永久删除需确认。
  */
 const NoteEditor = defineAsyncComponent(() => import('./NoteEditor.vue'))
+/** 表格笔记编辑器（kind='sheet' 时与 NoteEditor 同位分流；Univer 内部动态加载） */
+const SheetEditor = defineAsyncComponent(() => import('./SheetEditor.vue'))
 
 const store = useStore()
 
@@ -91,6 +94,69 @@ async function createNoteIn(folderId: number) {
   activeNoteId.value = n.id
   selectedFolderId.value = null
   pendingEmptyNoteId = n.id
+}
+
+// ---- 表格笔记（速记「表格」形态，#t70）：新建空白 / 导入 xlsx·csv → kind='sheet' 落库 ----
+const sheetBusy = ref(false)
+const sheetFileInput = ref<HTMLInputElement | null>(null)
+
+/** 新建落点与文本笔记一致：选中文件夹 > 打开中笔记所在文件夹 > 树根 */
+function sheetTargetFolder(): number | null {
+  return selectedFolderId.value ?? activeNote.value?.folder_id ?? null
+}
+
+function enterNote(n: Note) {
+  activeNoteId.value = n.id
+  selectedFolderId.value = null
+}
+
+/** 新建空白表格：exceljs 现拼单 sheet 工作簿落盘 → 建表格笔记 → 打开编辑 */
+async function createSheet(folderId: number | null = sheetTargetFolder()) {
+  if (trashMode.value) trashMode.value = false
+  query.value = ''
+  if (pendingEmptyNoteId != null) schedulePristineCleanup()
+  if (sheetBusy.value) return
+  sheetBusy.value = true
+  try {
+    const { blankSheetBytes, saveNoteSheetFile } = await import('../utils/noteSheet')
+    const bytes = await blankSheetBytes()
+    const { url } = await saveNoteSheetFile(bytes, '未命名表格.xlsx')
+    enterNote(await store.addSheetNote('未命名表格', url, folderId))
+  } catch (e) {
+    showToast?.(`新建表格失败：${typeof e === 'string' ? e : String(e)}`)
+  } finally {
+    sheetBusy.value = false
+  }
+}
+
+/** 导入 xlsx/csv 为表格笔记：文件本体 import_note_sheet 落盘（内容哈希命名），标题取文件名 */
+async function importSheet(file: File) {
+  if (trashMode.value) trashMode.value = false
+  query.value = ''
+  if (sheetBusy.value) return
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+  if (ext !== 'xlsx' && ext !== 'csv') {
+    showToast?.('仅支持 xlsx / csv（.xls 请先用 Excel 另存为 xlsx）')
+    return
+  }
+  sheetBusy.value = true
+  try {
+    const { saveNoteSheetFile } = await import('../utils/noteSheet')
+    const { url } = await saveNoteSheetFile(file, file.name)
+    const title = file.name.replace(/\.[^.]+$/, '').trim() || '未命名表格'
+    enterNote(await store.addSheetNote(title, url, sheetTargetFolder()))
+  } catch (e) {
+    showToast?.(`导入表格失败：${typeof e === 'string' ? e : String(e)}`)
+  } finally {
+    sheetBusy.value = false
+  }
+}
+
+function onImportSheetChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 允许连续导入同名文件
+  if (file) void importSheet(file)
 }
 
 // ---- 空笔记自清理：新建后没有任何输入就切走时直接删除 ----
@@ -360,6 +426,9 @@ defineExpose({ openNote, createNote })
       @select-note="onSelectNote"
       @create-note="createNote"
       @create-note-in="createNoteIn"
+      @create-sheet="() => createSheet()"
+      @create-sheet-in="(fid: number) => createSheet(fid)"
+      @import-sheet="sheetFileInput?.click()"
       @create-folder="onCreateFolder"
       @rename-folder="onRenameFolder"
       @delete-folder="onDeleteFolder"
@@ -374,13 +443,32 @@ defineExpose({ openNote, createNote })
       @export-folder="onExportFolder"
     />
 
+    <SheetEditor
+      v-if="activeNote && isSheetNote(activeNote)"
+      :key="activeNote.id"
+      :note="activeNote"
+      @save="onSaveNote"
+      @delete="onTrashNote"
+    />
     <NoteEditor
+      v-else
       :note="activeNote"
       :new-note-hint="newNoteHint"
       @save="onSaveNote"
       @delete="onTrashNote"
       @open-note="onOpenNoteFromEditor"
       @create-note="createNote"
+    />
+
+    <!-- 导入表格的文件选择器（隐藏触发；一次一张） -->
+    <input
+      ref="sheetFileInput"
+      style="display: none"
+      type="file"
+      accept=".xlsx,.csv"
+      aria-hidden="true"
+      tabindex="-1"
+      @change="onImportSheetChange"
     />
 
     <!-- 确认弹窗：宿主层单实例（文件夹删除 / 永久删除共用） -->

@@ -16,6 +16,7 @@ import {
   Pencil,
   Plus,
   Search,
+  Sheet,
   Trash2,
   Undo2,
   X,
@@ -50,6 +51,9 @@ const emit = defineEmits<{
   (e: 'select-note', id: number): void
   (e: 'create-note'): void
   (e: 'create-note-in', folderId: number): void
+  (e: 'create-sheet'): void
+  (e: 'create-sheet-in', folderId: number): void
+  (e: 'import-sheet'): void
   (e: 'create-folder', parentId: number | null, name: string): void
   (e: 'rename-folder', id: number, name: string): void
   (e: 'delete-folder', id: number): void
@@ -448,12 +452,26 @@ const ctx = ref<{ visible: boolean; x: number; y: number; items: ContextMenuItem
   items: [],
 })
 
+// ---- 树头「表格」按钮下拉：新建空白 / 导入（创建逻辑在 SpeednoteView，这里只分发事件） ----
+const sheetMenu = ref<{ x: number; y: number } | null>(null)
+
+function openSheetMenu(e: MouseEvent) {
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  sheetMenu.value = { x: rect.left, y: rect.bottom + 4 }
+}
+
+const sheetMenuItems = computed<ContextMenuItem[]>(() => [
+  { label: '新建空白表格', onClick: () => emit('create-sheet') },
+  { label: '导入 xlsx / csv…', onClick: () => emit('import-sheet') },
+])
+
 function openFolderMenu(f: NoteFolder, e: MouseEvent) {
   e.preventDefault()
   e.stopPropagation() // 不冒泡到树体的空白菜单，避免覆盖
   emit('select-folder', f.id)
   const items: ContextMenuItem[] = [
     { label: '新建笔记', onClick: () => emit('create-note-in', f.id) },
+    { label: '新建表格', onClick: () => emit('create-sheet-in', f.id) },
     { label: '新建子文件夹', onClick: () => startCreate(f.id) },
     // 整夹导出紧随常用操作；内置「剪藏」夹同样可导（只受 !builtin 约束的是改名/删除）
     { label: '导出…', dividerBefore: true, onClick: () => emit('export-folder', f.id) },
@@ -506,11 +524,13 @@ function openBodyMenu(e: MouseEvent) {  e.preventDefault()
     const name = folderName(targetFolder)
     items.push(
       { label: `新建笔记（在「${name}」）`, onClick: () => emit('create-note-in', targetFolder) },
+      { label: `新建表格（在「${name}」）`, onClick: () => emit('create-sheet-in', targetFolder) },
       { label: `新建子文件夹（在「${name}」）`, onClick: () => startCreate(targetFolder) },
     )
   } else {
     items.push(
       { label: '新建笔记', onClick: () => emit('create-note') },
+      { label: '新建表格', onClick: () => emit('create-sheet') },
       { label: '新建目录', onClick: () => startCreate(null) },
     )
   }
@@ -946,6 +966,14 @@ export default { name: 'NoteFolderTree' }
           </button>
           <button
             class="icon-btn nft-add"
+            title="表格：新建空白或导入 xlsx / csv"
+            aria-label="表格：新建空白或导入 xlsx / csv"
+            @click.stop="openSheetMenu($event)"
+          >
+            <Sheet :size="15" :stroke-width="2" />
+          </button>
+          <button
+            class="icon-btn nft-add"
             title="新建笔记"
             aria-label="新建笔记"
             @click.stop="emit('create-note')"
@@ -1051,7 +1079,9 @@ export default { name: 'NoteFolderTree' }
           tabindex="0"
           @click="emit('select-note', n.id)"
         >
-          <FileText :size="13" :stroke-width="1.8" class="nft-note-icon" />
+          <span v-if="n.icon" class="nft-note-emoji">{{ n.icon }}</span>
+          <Sheet v-else-if="n.kind === 'sheet'" :size="13" :stroke-width="1.8" class="nft-note-icon is-sheet" />
+          <FileText v-else :size="13" :stroke-width="1.8" class="nft-note-icon" />
           <span class="nft-row-name" :class="{ 'is-untitled': n.title === '无标题笔记' }" :title="n.title">
             {{ n.title }}
           </span>
@@ -1086,6 +1116,7 @@ export default { name: 'NoteFolderTree' }
           @keydown.enter.prevent="emit('select-note', n.id)"
         >
           <span v-if="n.icon" class="nft-note-emoji">{{ n.icon }}</span>
+          <Sheet v-else-if="n.kind === 'sheet'" :size="13" :stroke-width="1.8" class="nft-note-icon is-sheet" />
           <FileText v-else :size="13" :stroke-width="1.8" class="nft-note-icon" />
           <span class="nft-result-main">
             <span class="nft-row-name" :class="{ 'is-untitled': n.title === '无标题笔记' }" :title="n.title">
@@ -1203,6 +1234,7 @@ export default { name: 'NoteFolderTree' }
             @contextmenu="openNoteMenu(row.note, $event)"
           >
             <span v-if="row.note.icon" class="nft-note-emoji">{{ row.note.icon }}</span>
+            <Sheet v-else-if="row.note.kind === 'sheet'" :size="13" :stroke-width="1.8" class="nft-note-icon is-sheet" />
             <FileText v-else :size="13" :stroke-width="1.8" class="nft-note-icon" />
             <span class="nft-row-name" :class="{ 'is-untitled': row.note.title === '无标题笔记' }" :title="row.note.title">
               {{ row.note.title }}
@@ -1230,6 +1262,13 @@ export default { name: 'NoteFolderTree' }
     </Teleport>
 
     <ContextMenu :visible="ctx.visible" :x="ctx.x" :y="ctx.y" :items="ctx.items" @close="ctx.visible = false" />
+    <ContextMenu
+      :visible="!!sheetMenu"
+      :x="sheetMenu?.x ?? 0"
+      :y="sheetMenu?.y ?? 0"
+      :items="sheetMenuItems"
+      @close="sheetMenu = null"
+    />
   </section>
 </template>
 
@@ -1463,6 +1502,10 @@ button.nft-sp-act:hover {
 .nft-note-icon {
   flex-shrink: 0;
   color: var(--text-4);
+}
+/* 表格笔记行图标：绿色区分于文本笔记 */
+.nft-note-icon.is-sheet {
+  color: var(--c-green-ink, var(--c-green));
 }
 .nft-note-emoji {
   flex-shrink: 0;

@@ -691,6 +691,14 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !note_cols.iter().any(|c| c == "sort_order") {
         conn.execute("ALTER TABLE notes ADD COLUMN sort_order INTEGER", [])?;
     }
+    // 笔记形态（'text' 文本笔记 / 'sheet' 表格笔记）：表格笔记的 content 存
+    // xhub-sheet 协议 URL，文件本体在 notes/files/（见 commands::import_note_sheet）
+    if !note_cols.iter().any(|c| c == "kind") {
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'",
+            [],
+        )?;
+    }
     // 标签内置位（「剪藏」标签不可改删；老库无此列）
     let tag_cols: Vec<String> = conn
         .prepare("PRAGMA table_info(tags)")?

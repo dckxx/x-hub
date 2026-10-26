@@ -100,6 +100,8 @@ export interface Note {
   icon: string | null
   /** 组内手动排序位（拖拽排序；null = 未手动排序） */
   sort_order: number | null
+  /** 笔记形态：text = 文本笔记；sheet = 表格笔记（content 存 xhub-sheet 协议 URL） */
+  kind: string
 }
 
 export interface Todo {
@@ -1328,6 +1330,9 @@ export const tauriApi = {
       folderId: folderId ?? null,
       sourceUrl,
     }),
+  /** 新建表格笔记（速记「表格」形态）：url 为 importNoteSheet 返回的 xhub-sheet 协议 URL */
+  createSheetNote: (title: string, url: string, folderId: number | null) =>
+    invoke<Note>('create_sheet_note', { title, url, folderId: folderId ?? null }),
   updateNote: (id: number, title: string, content: string) =>
     invoke<Note>('update_note', { id, title, content }),
   deleteNote: (id: number) => invoke<void>('delete_note', { id }),
@@ -1491,6 +1496,12 @@ export const tauriApi = {
   /** 保存笔记图片（base64，不含 data: 前缀）：落盘 notes/images，返回 xhub-note 协议 URL */
   importNoteImage: (dataB64: string, ext: string) =>
     invoke<string>('import_note_image', { dataB64, ext }),
+  /** 保存笔记表格文档（速记内嵌 Excel）：落盘 notes/files，返回展示名 + xhub-sheet 协议 URL */
+  importNoteSheet: (dataB64: string, name: string) =>
+    invoke<{ name: string; url: string }>('import_note_sheet', { dataB64, name }),
+  /** 表格文档编辑结果写回（协议 URL 末段文件名，就地覆盖） */
+  saveNoteSheet: (name: string, dataB64: string) =>
+    invoke<void>('save_note_sheet', { name, dataB64 }),
   /** 复制笔记内嵌图片到系统剪贴板（xhub-note URL，后端按协议同款口径校验文件名） */
   copyNoteImage: (url: string) => invoke<void>('copy_note_image', { url }),
   inspectPath: (path: string) =>

@@ -34,7 +34,7 @@
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' asset: http://*.localhost xhub-note: xhub-ext: data: blob: https:",
         "font-src": "'self' data:",
-        "connect-src": "ipc: http://ipc.localhost",
+        "connect-src": "ipc: http://ipc.localhost http://xhub-sheet.localhost",
         "frame-src": "http://*.localhost xhub-ext:",
         "media-src": "'self' asset: http://asset.localhost blob:",
         "object-src": "'none'",

@@ -97,6 +97,14 @@ pub struct Note {
     /// 组内手动排序位（拖拽排序；None = 未手动排序）
     #[serde(default)]
     pub sort_order: Option<i64>,
+    /// 笔记形态：text = 文本笔记（Markdown 正文）；sheet = 表格笔记（content 存 xhub-sheet
+    /// 协议 URL，文件本体在数据根 notes/files/，由表格编辑器读写）
+    #[serde(default = "default_note_kind")]
+    pub kind: String,
+}
+
+fn default_note_kind() -> String {
+    "text".to_string()
 }
 
 /// 笔记文件夹（单归属、可嵌套；builtin=1 的「剪藏」不可改名/删除，ADR 0015）
@@ -137,20 +145,29 @@ pub struct NoteLinks {
     pub incoming: Vec<NoteLinkIn>,
 }
 
-/// 孤儿图片清理报告（先 dry_run 出报告，用户确认后再真删）
+/// 孤儿文件清理报告（先 dry_run 出报告，用户确认后再真删；覆盖 notes/images + notes/files）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NoteImageGcReport {
     pub dry_run: bool,
-    /// notes/images 下图片总数
+    /// 笔记附件文件总数（图片 + 表格文档）
     pub total_files: usize,
-    /// 被活笔记（含回收站）引用的图片数
+    /// 被活笔记（含回收站）引用的附件数
     pub referenced: usize,
-    /// 孤儿图片文件名列表（hash.ext）
+    /// 孤儿文件名列表（hash.ext）
     pub orphan_files: Vec<String>,
     /// 真删模式下的实际删除数（dry_run = 0）
     pub removed: usize,
     /// 删除失败的文件数（被占用等）
     pub failed: usize,
+}
+
+/// 导入笔记表格文档的结果（速记内嵌 Excel 卡片用）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedNoteSheet {
+    /// 展示名（用户导入时的文件名，仅用于卡片文案）
+    pub name: String,
+    /// 可内嵌 Markdown 的 xhub-sheet 协议 URL
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -200,15 +200,18 @@ fn write_note_markdown(
         None => ctx.root.to_path_buf(),
     };
     let images_root = crate::paths::data_root().join("notes").join("images");
+    let sheets_root = crate::paths::data_root().join("notes").join("files");
     let mut body = rewrite_image_urls_to_relative(&n.content);
     // 收集引用的图片并复制（同内容哈希名跨笔记共享，覆盖无害）
     for name in extract_asset_names(&body) {
         if ctx.copied_images.insert(name.clone()) {
-            let src = images_root.join(&name);
+            // 按扩展名归位来源：表格白名单扩展在 notes/files，其余在 notes/images
+            let src_dir = if is_sheet_asset_name(&name) { &sheets_root } else { &images_root };
+            let src = src_dir.join(&name);
             if src.is_file() {
                 std::fs::create_dir_all(&ctx.assets_dir).ok();
                 if let Err(e) = std::fs::copy(&src, ctx.assets_dir.join(&name)) {
-                    report.failed.push(format!("{} 图片 {name}: {e}", n.title));
+                    report.failed.push(format!("{} 附件 {name}: {e}", n.title));
                 } else {
                     report.images += 1;
                 }
@@ -224,6 +227,10 @@ fn write_note_markdown(
         md.push_str(&format!("folder: {}\n", folder_rel_path(ctx.folders, n.folder_id)));
         if let Some(icon) = n.icon.as_deref().filter(|s| !s.is_empty()) {
             md.push_str(&format!("icon: {}\n", icon));
+        }
+        // 表格笔记标记（text 缺省不写，保持老产物 front-matter 形态不变）
+        if n.kind == "sheet" {
+            md.push_str("kind: sheet\n");
         }
         md.push_str(&format!(
             "tags: {}\n",
@@ -722,13 +729,23 @@ fn unique_filename_ext(
     }
 }
 
-/// 正文里的 xhub-note 图片 URL 改相对路径 assets/<name>（导出：只动 xhub-note URL，无误伤）
+/// 正文里的 xhub-note 图片 / xhub-sheet 表格 URL 改相对路径 assets/<name>
+/// （导出：只动这两种自有协议 URL，无误伤）
 fn rewrite_image_urls_to_relative(content: &str) -> String {
-    content.replace(NOTE_URL_PREFIX, "assets/")
+    content
+        .replace(NOTE_URL_PREFIX, "assets/")
+        .replace(SHEET_URL_PREFIX, "assets/")
 }
 
-/// 导入侧的反向改写：只认 `assets/<16位哈希>.<ext>` 形态（导出产物的图片约定），
-/// 用户正文里自写的 assets/ 链接（非哈希名）不会被误改
+/// 表格附件名（导出 assets 里的 16 位哈希 + 表格白名单扩展）
+fn is_sheet_asset_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.ends_with(".xlsx") || lower.ends_with(".csv")
+}
+
+/// 导入侧的反向改写：只认 `assets/<16位哈希>.<ext>` 形态（导出产物的附件约定），
+/// 用户正文里自写的 assets/ 链接（非哈希名）不会被误改。
+/// 表格白名单扩展还原为 xhub-sheet URL，其余还原为 xhub-note 图片 URL。
 fn rewrite_asset_urls(content: &str) -> String {
     let mut out = String::with_capacity(content.len());
     let mut rest = content;
@@ -740,10 +757,14 @@ fn rewrite_asset_urls(content: &str) -> String {
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
             .collect();
         let stem = name.split('.').next().unwrap_or("");
-        let is_image =
+        let is_asset =
             stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_hexdigit()) && name.contains('.');
-        if is_image {
-            out.push_str(NOTE_URL_PREFIX);
+        if is_asset {
+            if is_sheet_asset_name(&name) {
+                out.push_str(SHEET_URL_PREFIX);
+            } else {
+                out.push_str(NOTE_URL_PREFIX);
+            }
             out.push_str(&name);
             rest = tail;
         } else {
@@ -756,6 +777,13 @@ fn rewrite_asset_urls(content: &str) -> String {
 }
 
 const NOTE_URL_PREFIX: &str = "http://xhub-note.localhost/";
+const SHEET_URL_PREFIX: &str = "http://xhub-sheet.localhost/";
+
+/// 正文是否为表格笔记形态：trim 后恰为一个 xhub-sheet 协议 URL
+/// （文件名口径由 note_sheet_stored_name 从严校验）
+fn is_sheet_body(body: &str) -> bool {
+    crate::commands::note_sheet_stored_name(body.trim()).is_some()
+}
 
 /// 从改写后的正文里抽 assets/<name> 引用名
 fn extract_asset_names(body: &str) -> Vec<String> {
@@ -837,6 +865,7 @@ fn import_notes_sync(
         return Err("所选目录下没有 .md 文件".into());
     }
     let images_root = crate::paths::data_root().join("notes").join("images");
+    let sheets_root = crate::paths::data_root().join("notes").join("files");
     std::fs::create_dir_all(&images_root).map_err(|e| e.to_string())?;
     // 文件夹路径 → id 缓存（"" = 树根）
     let mut folder_cache: HashMap<String, Option<i64>> = HashMap::new();
@@ -870,7 +899,8 @@ fn import_notes_sync(
                     .unwrap_or("无标题笔记")
                     .to_string()
             });
-        // 正文图片：assets/<name> 复制进 notes/images（沿用内容哈希名）；xhub-note URL 保持
+        // 正文附件：assets/<name> 复制进 notes/images 或 notes/files（沿用内容哈希名）；
+        // xhub-note / xhub-sheet URL 保持
         let asset_names = extract_asset_names(&body);
         let mut body_final = body;
         for name in &asset_names {
@@ -883,10 +913,12 @@ fn import_notes_sync(
             };
             for c in candidates {
                 if c.is_file() {
-                    let dst = images_root.join(&name);
+                    let dst_dir = if is_sheet_asset_name(name) { &sheets_root } else { &images_root };
+                    let dst = dst_dir.join(&name);
                     if !dst.exists() {
+                        std::fs::create_dir_all(dst_dir).ok();
                         if let Err(e) = std::fs::copy(&c, &dst) {
-                            report.failed.push(format!("{rel} 图片 {name}: {e}"));
+                            report.failed.push(format!("{rel} 附件 {name}: {e}"));
                         }
                     }
                     break;
@@ -942,6 +974,12 @@ fn import_one(
     overwrite: bool,
     folder_cache: &mut HashMap<String, Option<i64>>,
 ) -> Result<ImportOne, String> {
+    // 形态还原：front-matter kind 字段优先，正文恰为 xhub-sheet URL 兜底（老产物没有 kind 字段）
+    let is_sheet = meta.get("kind").map(|k| k == "sheet").unwrap_or(false)
+        || is_sheet_body(body_final);
+    let kind = if is_sheet { "sheet" } else { "text" };
+    // 表格笔记正文归一为裸 URL（导出时加的行尾换行剥掉）
+    let body_final = if is_sheet { body_final.trim() } else { body_final };
     let source_url = meta.get("source_url").cloned().unwrap_or_default();
     // source_url 去重（方案 §8.2）：默认跳过；overwrite = 就地覆盖原笔记
     let mut overwrite_id: Option<i64> = None;
@@ -969,8 +1007,8 @@ fn import_one(
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         let id = if let Some(oid) = overwrite_id {
             tx.execute(
-                "UPDATE notes SET title = ?1, content = ?2, folder_id = ?3, icon = ?4 WHERE id = ?5",
-                rusqlite::params![title, body_final, folder_id, meta.get("icon"), oid],
+                "UPDATE notes SET title = ?1, content = ?2, folder_id = ?3, icon = ?4, kind = ?5 WHERE id = ?6",
+                rusqlite::params![title, body_final, folder_id, meta.get("icon"), kind, oid],
             )
             .map_err(|e| e.to_string())?;
             tx.execute(
@@ -982,9 +1020,9 @@ fn import_one(
         } else {
             let ts = crate::repo::now();
             tx.execute(
-                "INSERT INTO notes (title, content, folder_id, source_url, icon, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-                rusqlite::params![title, body_final, folder_id, source_url, meta.get("icon"), ts],
+                "INSERT INTO notes (title, content, folder_id, source_url, icon, kind, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                rusqlite::params![title, body_final, folder_id, source_url, meta.get("icon"), kind, ts],
             )
             .map_err(|e| e.to_string())?;
             tx.last_insert_rowid()
@@ -1204,6 +1242,7 @@ mod tests {
             deleted_at: None,
             icon: None,
             sort_order: None,
+            kind: "text".into(),
         };
         let mut ctx = MdWriteCtx {
             folders: &[],

@@ -155,8 +155,8 @@ async function cleanOrphanImages() {
     gcReport.value = r
     showToast(
       r.failed > 0
-        ? `已删除 ${r.removed} 张孤儿图片，${r.failed} 张删除失败（可能被占用）`
-        : `已删除 ${r.removed} 张孤儿图片`,
+        ? `已删除 ${r.removed} 个孤儿附件，${r.failed} 个删除失败（可能被占用）`
+        : `已删除 ${r.removed} 个孤儿附件`,
     )
   } catch (e) {
     showToast(`清理失败：${String(e)}`)
@@ -289,13 +289,13 @@ onMounted(() => {
 
           <div class="setting-row">
             <div class="setting-info">
-              <span class="setting-name">孤儿图片清理</span>
+              <span class="setting-name">孤儿附件清理</span>
               <span class="setting-desc">
                 <template v-if="gcReport">
-                  共 {{ gcReport.total_files }} 张图片，{{ gcReport.referenced }} 张被笔记引用
-                  <template v-if="gcReport.orphan_files.length">，{{ gcReport.orphan_files.length }} 张孤儿</template>
+                  共 {{ gcReport.total_files }} 个附件（图片 + 表格文档），{{ gcReport.referenced }} 个被笔记引用
+                  <template v-if="gcReport.orphan_files.length">，{{ gcReport.orphan_files.length }} 个孤儿</template>
                 </template>
-                <template v-else>扫描未被任何笔记引用的图片（含回收站笔记的引用），先扫描后清理</template>
+                <template v-else>扫描未被任何笔记引用的图片与表格文档（含回收站笔记的引用），先扫描后清理</template>
               </span>
             </div>
             <button class="ghost-btn data-btn" :disabled="gcBusy" @click="scanOrphanImages">
@@ -308,7 +308,7 @@ onMounted(() => {
               :disabled="gcBusy"
               @click="cleanOrphanImages"
             >
-              清理 {{ gcReport.orphan_files.length }} 张
+              清理 {{ gcReport.orphan_files.length }} 个
             </button>
           </div>
 

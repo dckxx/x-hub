@@ -27,6 +27,7 @@ import { deriveNoteTitle } from '../utils/markdown'
 import { NOTE_EDITOR_MODES, normalizeNoteEditorMode, type NoteEditorMode } from '../utils/noteEditorMode'
 import { getQuickEmojis } from '../utils/emoji'
 import { saveNoteImageFile } from '../utils/noteImage'
+import { SHEET_URL_PREFIX } from '../utils/noteSheetRef'
 import { parseTimestamp } from '../utils/time'
 import EmojiPicker from './EmojiPicker.vue'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
@@ -1703,6 +1704,11 @@ function onEditorClick(e: MouseEvent) {
     e.preventDefault()
     e.stopPropagation()
     const href = anchor.getAttribute('href') ?? ''
+    // 表格文档协议链接（导入产物等场景）：表格是独立笔记形态，不跳外链
+    if (href.startsWith(SHEET_URL_PREFIX)) {
+      showToast?.('表格文档请在速记列表中打开')
+      return
+    }
     const noteId = noteIdFromHref(href)
     // 笔记引用链接 note/<id>：打开对应笔记（双链跳转）
     if (noteId != null) emit('open-note', noteId)

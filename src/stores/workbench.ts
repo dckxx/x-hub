@@ -735,9 +735,9 @@ export function useStore() {
   }
 
   // ---- 笔记（速记改造：文件夹树 / 回收站 / 响应式标签映射） ----
-  function localNote(id: number, title: string, content: string, folderId: number | null): Note {
+  function localNote(id: number, title: string, content: string, folderId: number | null, kind = 'text'): Note {
     const now = new Date().toISOString()
-    return { id, title, content, folder_id: folderId, source_url: '', deleted_at: null, icon: null, sort_order: null, created_at: now, updated_at: now }
+    return { id, title, content, folder_id: folderId, source_url: '', deleted_at: null, icon: null, sort_order: null, kind, created_at: now, updated_at: now }
   }
 
   /** 新建笔记：folderId = 当前选中文件夹（null = 树根落根），初始正文同事务写入（修缺陷②） */
@@ -745,6 +745,16 @@ export function useStore() {
     const n = isTauri()
       ? await tauriApi.createNoteIn(title, content, folderId, '')
       : localNote(Date.now(), title, content, folderId)
+    state.notes.unshift(n)
+    return n
+  }
+
+  /** 新建表格笔记（速记「表格」形态）：url 为 importNoteSheet 返回的 xhub-sheet 协议 URL，
+   *  文件本体已落 notes/files/，这里只建笔记行 */
+  async function addSheetNote(title: string, url: string, folderId: number | null = null) {
+    const n = isTauri()
+      ? await tauriApi.createSheetNote(title, url, folderId)
+      : localNote(Date.now(), title, url, folderId, 'sheet')
     state.notes.unshift(n)
     return n
   }
@@ -2141,6 +2151,7 @@ export function useStore() {
     setSudaPanelToolbar,
     setSudaIconScale,
     addNote,
+    addSheetNote,
     saveNote,
     removeNote,
     trashNote,

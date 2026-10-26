@@ -2,10 +2,10 @@ use crate::browsers::{self, InstalledBrowser};
 use crate::config;
 use crate::config::AppConfig;
 use crate::models::{
-    ChatMessage, ChatModelConfig, ChatSession, ClipboardItem, Countdown, DetachedSticky, Note,
-    NoteFolder, NoteImageGcReport, NoteLinks, PurgeReport, RepeatRule, Resource, ResourceKind,
-    ResourceSubcategory, ResourceZone, SearchResult, Snippet, Sticky, Tag, Todo, TodoOccurrence,
-    TodoTag, TodoTagLink,
+    ChatMessage, ChatModelConfig, ChatSession, ClipboardItem, Countdown, DetachedSticky,
+    ImportedNoteSheet, Note, NoteFolder, NoteImageGcReport, NoteLinks, PurgeReport, RepeatRule,
+    Resource, ResourceKind, ResourceSubcategory, ResourceZone, SearchResult, Snippet, Sticky, Tag,
+    Todo, TodoOccurrence, TodoTag, TodoTagLink,
 };
 use crate::process;
 use crate::repo::{
@@ -592,6 +592,24 @@ pub fn create_note_in(
     Ok(note)
 }
 
+/// 新建表格笔记（速记「表格」形态，#t70）：url 必须是 import_note_sheet 返回的
+/// xhub-sheet 协议 URL（文件本体已在 notes/files/），kind='sheet' 落库。
+#[tauri::command]
+pub fn create_sheet_note(
+    state: State<'_, DbState>,
+    title: String,
+    url: String,
+    folder_id: Option<i64>,
+) -> Result<Note, String> {
+    if crate::commands::note_sheet_stored_name(&url).is_none() {
+        return Err("不是有效的表格文档地址".into());
+    }
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let note = note::create_sheet_in(&conn, &title, &url, folder_id).map_err(err_str)?;
+    log::info!("新建表格笔记: id={} folder={:?}", note.id, note.folder_id);
+    Ok(note)
+}
+
 #[tauri::command]
 pub fn update_note(
     state: State<'_, DbState>,
@@ -806,21 +824,27 @@ pub fn reorder_note_orders(state: State<'_, DbState>, ids: Vec<i64>) -> Result<(
     Ok(())
 }
 
-// ---------- 笔记图片孤儿 GC（只手动触发；dry_run 先出报告，确认后才真删） ----------
+// ---------- 笔记附件孤儿 GC（只手动触发；dry_run 先出报告，确认后才真删） ----------
 
-/// 收集 notes/images 下全部图片文件名，与「未永久删除笔记（含回收站）」正文里的
-/// xhub-note 引用做差集——差集即孤儿。回收站内笔记的引用必须算活引用（方案 §10 风险 4）。
+/// 收集 notes/images + notes/files 下全部附件文件名，与「未永久删除笔记（含回收站）」正文里的
+/// xhub-note / xhub-sheet 引用做差集——差集即孤儿。回收站内笔记的引用必须算活引用（方案 §10 风险 4）。
 pub fn scan_orphan_note_images(conn: &Connection) -> Result<NoteImageGcReport, String> {
     use std::collections::HashSet;
 
-    let dir = crate::paths::data_root().join("notes").join("images");
+    let roots: [(std::path::PathBuf, fn(&str) -> bool); 2] = [
+        (crate::paths::data_root().join("notes").join("images"), is_note_image_name),
+        (crate::paths::data_root().join("notes").join("files"), is_note_sheet_name),
+    ];
     let mut files: Vec<String> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                // 文件名严格为 16 位哈希 + 扩展（与 import_note_image 的落盘口径一致）
-                if is_note_image_name(name) {
-                    files.push(name.to_string());
+    for (dir, valid) in roots.iter() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    // 文件名严格为 16 位哈希 + 扩展（与 import_note_image / import_note_sheet
+                    // 的落盘口径一致）
+                    if valid(name) {
+                        files.push(name.to_string());
+                    }
                 }
             }
         }
@@ -828,6 +852,9 @@ pub fn scan_orphan_note_images(conn: &Connection) -> Result<NoteImageGcReport, S
     let mut referenced: HashSet<String> = HashSet::new();
     for content in note::all_contents_including_trashed(conn).map_err(err_str)? {
         for hash in extract_note_image_hashes(&content) {
+            referenced.insert(hash);
+        }
+        for hash in extract_note_sheet_hashes(&content) {
             referenced.insert(hash);
         }
     }
@@ -849,7 +876,7 @@ pub fn scan_orphan_note_images(conn: &Connection) -> Result<NoteImageGcReport, S
     })
 }
 
-/// 孤儿图片扫描（dry_run=true 恒定：本命令只报告，真删走 gc_orphan_note_images_commit）
+/// 孤儿附件扫描（dry_run=true 恒定：本命令只报告，真删走 gc_orphan_note_images_commit）
 #[tauri::command]
 pub fn gc_orphan_note_images(state: State<'_, DbState>, dry_run: bool) -> Result<NoteImageGcReport, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -858,10 +885,13 @@ pub fn gc_orphan_note_images(state: State<'_, DbState>, dry_run: bool) -> Result
     if dry_run {
         return Ok(report);
     }
-    let dir = crate::paths::data_root().join("notes").join("images");
+    let images_dir = crate::paths::data_root().join("notes").join("images");
+    let files_dir = crate::paths::data_root().join("notes").join("files");
     let mut removed = 0usize;
     let mut failed = 0usize;
     for name in &report.orphan_files {
+        // 按扩展名归位：图片白名单扩展在 images 目录，表格白名单扩展在 files 目录
+        let dir = if is_note_image_name(name) { &images_dir } else { &files_dir };
         if std::fs::remove_file(dir.join(name)).is_ok() {
             removed += 1;
         } else {
@@ -889,9 +919,58 @@ fn is_note_image_name(name: &str) -> bool {
     stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_hexdigit()) && EXTS.contains(&ext.as_str())
 }
 
+/// 笔记表格文档（速记内嵌 Excel）文件名口径：16 位十六进制哈希 + 白名单扩展。
+/// 口径与图片完全一致，只是目录（notes/files）与协议（xhub-sheet）不同。
+fn is_note_sheet_name(name: &str) -> bool {
+    const EXTS: [&str; 2] = ["xlsx", "csv"];
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) => (s, e.to_lowercase()),
+        None => return false,
+    };
+    stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_hexdigit()) && EXTS.contains(&ext.as_str())
+}
+
+/// xhub-sheet 协议 URL → 落盘文件名（16 位十六进制哈希 + xlsx/csv 扩展）。
+/// 非本协议 / 多段路径 / 带 query 一律 None——这是借 URL 定位数据根文件的入口，
+/// 从严口径与图片的 note_image_name_from_url 一致（落盘名恒小写，这里也只收小写）。
+pub fn note_sheet_stored_name(url: &str) -> Option<String> {
+    const PREFIX: &str = "http://xhub-sheet.localhost/";
+    let tail = url.strip_prefix(PREFIX)?;
+    let (stem, ext) = tail.split_once('.')?;
+    let lowercase_hex = stem.len() == 16
+        && stem
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
+    if lowercase_hex && matches!(ext, "xlsx" | "csv") {
+        Some(tail.to_string())
+    } else {
+        None
+    }
+}
+
 /// 从笔记正文里抽取引用的图片哈希（xhub-note.localhost/<hash>.<ext> 两种 host 形态都认）
 fn extract_note_image_hashes(content: &str) -> Vec<String> {
     const NEEDLE: &str = "xhub-note.localhost/";
+    let mut hashes = Vec::new();
+    let mut rest = content;
+    while let Some(pos) = rest.find(NEEDLE) {
+        let tail = &rest[pos + NEEDLE.len()..];
+        let name: String = tail
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
+            .collect();
+        let stem = name.split('.').next().unwrap_or("");
+        if stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_hexdigit()) {
+            hashes.push(stem.to_string());
+        }
+        rest = tail;
+    }
+    hashes
+}
+
+/// 从笔记正文里抽取引用的表格文档哈希（xhub-sheet.localhost/<hash>.<ext>）
+fn extract_note_sheet_hashes(content: &str) -> Vec<String> {
+    const NEEDLE: &str = "xhub-sheet.localhost/";
     let mut hashes = Vec::new();
     let mut rest = content;
     while let Some(pos) = rest.find(NEEDLE) {
@@ -3257,6 +3336,106 @@ pub fn copy_note_image(url: String) -> Result<(), String> {
         .join(&name);
     crate::clipboard::set_clipboard_image(&path.to_string_lossy())?;
     crate::clipboard::clear_self_set_fingerprint();
+    Ok(())
+}
+
+// ---------- 笔记表格文档（速记内嵌 Excel：Univer 编辑，exceljs 前端互转） ----------
+
+/// 笔记表格文档支持的格式：xlsx 为主；csv 作为轻量入口（导入后转成 Univer，保存仍写回 csv）。
+/// 老的 .xls（BIFF 二进制）exceljs 不支持，前端引导「用 Excel 另存为 xlsx 再导入」。
+const NOTE_SHEET_EXTENSIONS: &[&str] = &["xlsx", "csv"];
+/// 单个表格文档大小上限（xlsx 本质是 zip，20MB 已覆盖绝大多数个人表格场景）
+const NOTE_SHEET_MAX_BYTES: usize = 20 * 1024 * 1024;
+
+/// 展示名净化：去控制字符与首尾空白，限长 120。展示名只用于卡片文案与另存名，
+/// 不参与落盘路径（落盘一律内容哈希命名），因此不需要文件名白名单那么严。
+fn sanitize_sheet_display_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if cleaned.chars().count() > 120 {
+        cleaned.chars().take(120).collect()
+    } else {
+        cleaned
+    }
+}
+
+/// 保存速记编辑器导入/新建的表格文档：base64 解码后按内容哈希命名落盘到
+/// 数据根 notes/files/，返回展示名 + xhub-sheet 协议 URL（内嵌 Markdown 卡片用）。
+/// 同内容同扩展天然去重；孤儿文件随既有笔记附件 GC 一起清理。
+#[tauri::command]
+pub fn import_note_sheet(data_b64: String, name: String) -> Result<ImportedNoteSheet, String> {
+    use base64::Engine as _;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let display = sanitize_sheet_display_name(&name);
+    let ext = display
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    if !NOTE_SHEET_EXTENSIONS.contains(&ext.as_str()) {
+        return Err("仅支持 xlsx / csv 表格文档（.xls 请先用 Excel 另存为 xlsx）".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data_b64)
+        .map_err(|e| format!("表格数据解码失败: {}", e))?;
+    if bytes.is_empty() {
+        return Err("表格数据为空".into());
+    }
+    if bytes.len() > NOTE_SHEET_MAX_BYTES {
+        return Err("表格文件超过 20MB，请精简后再试".into());
+    }
+
+    let dir = crate::paths::data_root().join("notes").join("files");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    let stored = format!("{:016x}.{}", hasher.finish(), ext);
+    // 已存在即同内容（哈希碰撞概率忽略），跳过重写
+    if !dir.join(&stored).exists() {
+        std::fs::write(dir.join(&stored), &bytes)
+            .map_err(|e| format!("保存表格文档失败: {}", e))?;
+    }
+
+    log::debug!("笔记表格文档已保存: {}", stored);
+    Ok(ImportedNoteSheet {
+        name: display,
+        url: format!("http://xhub-sheet.localhost/{}", stored),
+    })
+}
+
+/// 保存编辑结果写回表格文档：文件名按协议同款口径校验（16 位哈希 + 白名单扩展），
+/// 就地覆盖。文件名是导入时的内容哈希，编辑后内容不再与哈希对应——这是约定而非缺陷：
+/// 卡片 URL 稳定，笔记正文里的引用永不失效；同内容重复导入才可能命中去重。
+#[tauri::command]
+pub fn save_note_sheet(name: String, data_b64: String) -> Result<(), String> {
+    use base64::Engine as _;
+
+    let lower = name.to_lowercase();
+    if !is_note_sheet_name(&lower) {
+        return Err("不是有效的笔记表格文档".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data_b64)
+        .map_err(|e| format!("表格数据解码失败: {}", e))?;
+    if bytes.is_empty() {
+        return Err("表格数据为空".into());
+    }
+    if bytes.len() > NOTE_SHEET_MAX_BYTES {
+        return Err("表格文件超过 20MB，请精简后再试".into());
+    }
+    let path = crate::paths::data_root().join("notes").join("files").join(&lower);
+    if !path.exists() {
+        return Err("表格文档不存在或已被清理".into());
+    }
+    std::fs::write(&path, &bytes).map_err(|e| format!("保存表格文档失败: {}", e))?;
+    log::debug!("笔记表格文档已写回: {}", lower);
     Ok(())
 }
 

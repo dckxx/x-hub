@@ -18,7 +18,7 @@ x-hub/
 │   ├── api/tauri.ts            # 所有 Tauri invoke 调用封装（281 个命令）+ 模型/配置类型
 │   ├── stores/workbench.ts     # 响应式状态管理（reactive + readonly，无 Pinia；工作台/便签/待办/倒计时/提示词/AI 对话/扩展/更新）
 │   ├── composables/            # useResourceIcon（资源图标）/ useFocusTrap（焦点陷阱）/ useTheme + themeTokens（三轴主题，后者广播给扩展 iframe）/ useDashboardLayout（工作台网格布局 + 形态注册表）/ useDashPreviewData（布局编辑器预览的共享派生数据，口径逐张照抄真卡）/ useExtensionFrame（扩展 webview 桥接）/ useShortcutRecorder（快捷键录制）/ useSudaDrag + useSudaZoneDrag（速达卡片排序/分区跨区拖拽，指针实现）
-│   ├── utils/                  # categories（文件分类）/ time / web / error-report / feedback（反馈展示口径：类型/状态/相对时间/错误文案）/ feedbackDiagnostics（反馈诊断信息拼装）/ chime（提示音）/ weather（Open-Meteo 天气码映射）/ quotes（本地名言兜底语料）/ todoParse（序号列表拆多条待办）/ lunar（农历转换）/ sudaCustom（工作台自定义速达槽位的内容口径，真卡与编辑器缩印共用）
+│   ├── utils/                  # categories（文件分类）/ time / web / error-report / feedback（反馈展示口径：类型/状态/相对时间/错误文案）/ feedbackDiagnostics（反馈诊断信息拼装）/ chime（提示音）/ weather（Open-Meteo 天气码映射）/ quotes（本地名言兜底语料）/ todoParse（序号列表拆多条待办）/ lunar（农历转换）/ sudaCustom（工作台自定义速达槽位的内容口径，真卡与编辑器缩印共用）/ noteSheetRef（表格笔记引用层：xhub-sheet URL 口径 + CSV 解析，纯函数零依赖、单测锁口径）/ noteSheet（表格笔记重依赖层：exceljs ↔ Univer IWorkbookData 互转，动态 import）
 │   └── components/
 │       ├── TitleBar.vue        # 透明自制标题栏（startDragging 拖动 + 窗口控制 + AI 对话/搜索入口）
 │       ├── ClockCard.vue       # 时钟卡片（三形态：大时钟 HH:mm 日期天气语录 / 今日阴阳历 农历+干支生肖 / 极简时间；cq 响应式 + preview 模式）
@@ -50,9 +50,10 @@ x-hub/
 │       ├── SudaCustomCard.vue  # 工作台「自定义速达」卡片（suda1..4 槽位：可点击启动网格 + 右上角配置入口）
 │       ├── SudaCustomEditDialog.vue # 自定义速达内容配置弹窗（手动挑选/大类/小类，存 AppConfig.suda_custom_modules）
 │       ├── AppSelect.vue       # 通用下拉选择器（无头封装，样式自绘）
-│       ├── SpeednoteView.vue  # 速记两栏视图容器（NoteFolderTree 树 + NoteEditor；选中/搜索/标签/回收站状态在此，暴露 openNote/createNote 给热键与全局搜索跳转）
-│       ├── NoteFolderTree.vue # 速记文件夹树（**唯一导航面**：树根即未归类、无虚拟节点；新建/重命名/删除/指针拖拽移动·嵌套·排序，笔记行上下边缘 25% = 组内拖拽排序；树头承载 新建笔记/新建文件夹/回收站切换，搜索与标签筛选为跨全文件夹的平铺结果态；内置「剪藏」保护）
+│       ├── SpeednoteView.vue  # 速记两栏视图容器（NoteFolderTree 树 + NoteEditor/SheetEditor 按 kind 分流；选中/搜索/标签/回收站状态在此，暴露 openNote/createNote 给热键与全局搜索跳转）
+│       ├── NoteFolderTree.vue # 速记文件夹树（**唯一导航面**：树根即未归类、无虚拟节点；新建/重命名/删除/指针拖拽移动·嵌套·排序，笔记行上下边缘 25% = 组内拖拽排序；树头承载 新建笔记/新建表格/新建文件夹/回收站切换，搜索与标签筛选为跨全文件夹的平铺结果态；内置「剪藏」保护）
 │       ├── NoteEditor.vue      # 笔记编辑器（Milkdown Crepe 所见即所得 + 图片粘贴/拖拽/点击上传落盘 + 标签行 + 来源链接 + [[双链补全/跳转 + 头部图标切换的编辑模式（实时预览/分屏/源码/仅预览四态，存 note_editor_mode）+ 右侧全高双链面板 + 600ms 防抖自动保存，异步分包）
+│       ├── SheetEditor.vue     # 表格笔记编辑器（kind='sheet' 时与 NoteEditor 同位分流；Univer 承载，打开 = fetch xhub-sheet 字节 → exceljs 转 IWorkbookData，保存 = 快照 → exceljs 生成 xlsx/csv → save_note_sheet 就地写回；1.2s 防抖自动保存 + 切换/卸载先取同步快照再异步写盘；重依赖全部动态 import，异步分包）
 │       ├── GlobalSearch.vue    # Ctrl+K 全局搜索弹窗（资源/笔记/待办 + 300ms 防抖）
 │       ├── ChatPanel.vue       # AI 对话面板（OpenAI 兼容 SSE 流式 + 多会话 + 四方位停靠/拖拽调尺寸 + Markdown 渲染；mode="window" 供独立窗复用）
 │       ├── ChatWindow.vue      # AI 对话独立窗口（chat label 专属渲染：无边框 + 自制标题栏 拖动/置顶/关闭=隐藏，内嵌 ChatPanel mode="window"）
@@ -129,6 +130,7 @@ x-hub/
 │   ├── self-hosted-distribution.md           # 分发端点迁移方案（腾讯云 COS 替代 R2，脚本/CI 已切换；Nginx 备选）
 │   ├── file-search-plan.md                   # 本地文件搜索方案（已定稿待实现）
 │   ├── agent-foundation-plan.md              # Agent 底座实施方案（已实施 0.9.0，实施记录见其 §13；选型决策见 adr/0006）
+│   ├── agent-folder-access-plan.md           # AI 助手文件夹访问方案（速达授权：面板勾选速达文件夹→AI 读/写，一期只读二期写；已定稿待实现）
 │   └── adr/                    # 架构决策记录（0001 首次使用引导：待实施 / 0006 Agent 底座选型：已实施 0.9.0 / 0016 平台额度积分制：已实施）
 ├── DESIGN.md                   # 当前设计系统（唯一实现基线，与 style.css 对齐；§8 为 Reka UI 组件规范）
 ├── PRODUCT.md                  # 产品定义（用户/目标/品牌个性/设计原则/无障碍基线）
@@ -172,7 +174,7 @@ x-hub/
 | `resources` | 速达资源（app/web/file，category=所属大类的小类名（NULL=未归类）/zone_id=所属分区（NULL=未分区，见约定 56）/icon/args/sort_order/last_launched_at；description=用途说明，remark=备注（DPAPI 密文落盘见 `secret.rs`，扩展桥剥离），remark_label=备注自定义标签） |
 | `resource_subcategories` | 速达小类（ADR 0012：kind/name/sort_order/is_default，UNIQUE(kind,name) 各大类一套；文件大类 7 内置值经建表种子并入） |
 | `resource_zones` | 速达分区（「全部」tab 自定义成组陈列，name UNIQUE/sort_order/cols·rows 框尺寸（卡片格数，默认 3×2、下限语义），跨大类；成员经 resources.zone_id 关联） |
-| `notes` | 速记笔记（title/content/folder_id=所在文件夹（NULL=树根）/source_url=剪藏来源兼去重键/deleted_at=回收站标记（NULL=正常）/sort_order=组内手动排序位（NULL=未手动排序）） |
+| `notes` | 速记笔记（title/content/folder_id=所在文件夹（NULL=树根）/source_url=剪藏来源兼去重键/deleted_at=回收站标记（NULL=正常）/sort_order=组内手动排序位（NULL=未手动排序）/kind=笔记形态（'text' 文本 / 'sheet' 表格，sheet 的 content 存 xhub-sheet 协议 URL）） |
 | `note_folders` | 速记文件夹树（ADR 0015：单归属、可嵌套不限深度、删文件夹成员上移一级；builtin=1 的「剪藏」不可改删） |
 | `note_links` | 双链索引（轻量版：from_note_id/to_title/to_note_id，引用键=标题不落块 id；派生数据随保存重建） |
 | `tags` / `note_tags` | 笔记标签（多对多；tags.builtin=1 的「剪藏」不可改删） |
@@ -288,6 +290,8 @@ x-hub/
 
 76. **扩展系统「开发者可见」变更必须同步 skill 文档（2026-10-25，修「skill 永远停在 0.9.1」）：** 设置 → 扩展 → Skills 一键装到本机 AI 助手的技能包，内容随客户端二进制内置（`skills/x-hub-extension/` 经 `build.rs` 烘焙，单一真相源），「已安装 / 可更新」按**内容哈希**判定（`skills.rs::target_status` 比对目标目录 `.xhub-skill.json` 标记里的哈希），与客户端版本号无关——skill 内容不变，装过的目录就永远显示「已安装 v旧版」且不出现更新按钮，用户端 AI 助手也就照旧规范生成扩展。v0.9.1→v0.9.4 期间扩展系统加了 常驻后台 / 标题栏小部件桥 API / service 重启 / 反馈板 / manifest category，skill 一字未动（约定 74 尾部「skill 文档已同改」是误记，实际未落盘），2026-10-25 已全部补齐。**铁律：凡扩展开发者可见的变更，当次提交同步 `skills/x-hub-extension/`，对照关系**：桥 API 新增/变更 → `references/bridge-api.md`（权限速查表 + 「已实现」代码清单 + 专属小节，事件类还要进 `xhub.d.ts` 的 XHubEvents 注释）+ `xhub.d.ts`（类型声明与权限注释）；manifest 新字段/新权限 → `references/manifest.md` + `debug-deploy.md`「平台关卡」的静态扫描权限映射行；调试 / 发布 / 反馈流程变化 → `references/debug-deploy.md`；形态与运行行为（生命周期、常驻、宿主事件）→ `references/surfaces.md`；新的「用户要 X → 声明 Y」组合 → `SKILL.md` Step 4 权限反推表。**验收动作：动过扩展系统的轮次，发布前跑 `git log v上一版..HEAD -- skills/`，输出为空即漏同步**。skill 内容一改哈希即变，随下个版本发布，已安装用户端才会出现「可更新」并拿到新规范。
 
+77. **速记「表格笔记」（2026-10-26，#t70）：表格是速记的一种笔记形态，不是嵌进正文里的卡片。** `notes` 表 `kind` 列（`'text'` 文本 / `'sheet'` 表格，db.rs 幂等补列默认 `'text'`）；表格笔记的 `content` = 裸 xhub-sheet 协议 URL，文件本体在数据根 `notes/files/<内容哈希>.<ext>`（`import_note_sheet` 落盘，xlsx/csv 白名单、20MB 上限、同内容去重），展示名就是笔记标题（改名只动 title，文件名永不失效）。**分流与创建**：SpeednoteView 按 `isSheetNote`（kind + `sheetStoredNameFromContent` 双重判定，`utils/noteSheetRef.ts` 纯函数层）把右栏分流给 `SheetEditor.vue`（Univer）或 `NoteEditor.vue`（Crepe）；新建/导入入口在 NoteFolderTree 树头表格按钮下拉（新建空白 / 导入 xlsx·csv）与文件夹右键「新建表格」，创建链 = `saveNoteSheetFile`（落盘）→ `create_sheet_note` 命令（建行，URL 从严校验）。**编辑与保存**：SheetEditor 打开 = fetch xhub-sheet 字节 → exceljs 解析 → Univer `createWorkbook`（`utils/noteSheet.ts` 互转层：值/公式/样式/合并/冻结/行高列宽/sheet 状态；官方 xlsx 导入导出是 Pro 付费插件，自建互转是既定决策），保存 = 快照 → exceljs 生成 → `save_note_sheet` 就地写回**同名文件**；1.2s 防抖自动保存 + 切换/卸载时**先同步取 `fwb.save()` 快照再销毁实例**（快照是纯数据，异步写盘不依赖实例存活）；`Ctrl+S` 立即保存。**三条坑**：① **`tauri.conf.json` 的 `connect-src` 必须含 `http://xhub-sheet.localhost`**——图片走 `<img>` 吃 `img-src` 的 `http://*.localhost`，表格编辑器是 `fetch()` 吃 `connect-src`，漏了就是「表格文档读取失败」且重试无效（首轮实现踩过）；② xhub-sheet 协议响应**必须 `Cache-Control: no-store`**（保存写回同名文件，immutable 缓存会读到旧内容，与图片的 immutable 相反）；③ 表格笔记正文若被写坏（非合法 URL）编辑器会报错占位，不会静默吞——文件名口径集中在 `noteSheetRef.ts`/`commands::note_sheet_stored_name` 两处（前后端各一，tests/noteSheetRef.test.mjs 锁口径）。**导出/导入**（note_io.rs）与图片同一套 assets 通道：导出 `xhub-sheet` URL → `assets/<hash>.<ext>` 并把文件从 notes/files 复制进 assets、front-matter 写 `kind: sheet`（text 缺省不写，保持老产物形态）；导入按扩展名（xlsx/csv）反向分流复制目标目录、还原 URL 前缀与 kind（front-matter 字段优先、正文恰为 sheet URL 兜底）。**孤儿 GC**（`scan_orphan_note_images`）已扩为图片 + 表格双目录扫描（按扩展名归位删除目录），DataPanel 文案为「孤儿附件清理」；删除表格笔记→永久删除后文件成孤儿，随 GC 回收。**版本取舍**：第一 pass 不保留图表/图片/透视表/条件格式/数据验证（exceljs 不支持读这些，打开会丢，需保留原件），csv 导入后保存仍写回 csv（exceljs csv 通道）。
+
 ## 命令速查
 
 ```bash
@@ -336,6 +340,7 @@ npm run tauri:test    # Rust 单元测试（Windows 必须走此包装脚本，�
 
 - 已决策未实施：**首次使用引导**（快速设置弹窗 + 帮助视图；决策见 `docs/adr/0001-first-run-onboarding.md`，术语预登记于 `CONTEXT.md`「引导」节，实施前代码中无 OnboardingDialog/HelpView/onboarding_done）
 - 方案已定稿未实施：**本地文件搜索**（索引工作区模型，见 `docs/file-search-plan.md`）
+- 方案已定稿未实施：**AI 助手文件夹访问**（速达授权模型：AI 面板勾选速达里的文件夹资源 → 该会话 AI 可读取其中内容，一期只读 list_dir/read_file/search_dir、二期写操作走 Dangerous 审批；前端只传资源 id、后端反查 + canonicalize 前缀校验，见 `docs/agent-folder-access-plan.md`）
 - ~~方案已定稿未实施：**Agent 底座**~~（**已实施**，0.9.0：`src-tauri/src/agent/` 上线——mod/tools/builtin/approval/turn/context/prompt/state 七件套 + 34 个内置工具 + 权限三档（readonly/ask/full，会话级授权）+ turn 循环；选型决策见 `docs/adr/0006-agent-runtime-selection.md`，实施蓝图见 `docs/agent-foundation-plan.md`）
 - 已实施（0.9.x）：**扩展向 AI 助手暴露工具**（manifest 自描述，对齐 MCP tools/list + tools/call）——service 扩展在 manifest 声明 `agent.tools[]`（name/description/level/parameters JSON Schema/returns），`agent/ext_tools.rs` 聚合已启用且未被用户关闭的声明，`extension_tool_list` / `extension_tool_call` 两个内置工具消费；转发约定：宿主 POST 后端 `/xhub/agent-tool`（body `{"tool","args"}`，2xx 响应体即结果，上限 256KB，后端没在跑会自动拉起）；审批档位按声明 `level` 动态取（`AgentTool::approval_for` 覆写，会话授权键带 ext/tool 细粒度）；开关 = 设置 → AI 助手总开关 + 扩展设置弹窗「AI 助手」区块每扩展开关（`agent_ext_tools_enabled` / `agent_ext_tool_grants`，缺省允许）；**AI 工具授权 ≠ 扩展 manifest 权限，两套体系不可混用**；扩展开发侧规范见 `skills/x-hub-extension/references/manifest.md`「AI 助手工具」与 `service.md`「AI 工具端点」
 - 可探索方向：拖拽排序动效打磨、键盘导航、前端单元测试、打包发布全流程验证（tauri:build）

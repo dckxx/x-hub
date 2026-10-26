@@ -613,6 +613,43 @@ pub fn run() {
                     .unwrap(),
             }
         })
+        // 笔记表格文档协议：速记内嵌 Excel 卡片引用 http://xhub-sheet.localhost/<hash>.<ext>，
+        // 按「数据根/notes/files/<文件名>」读取（URL 不含数据根绝对路径，迁数据目录后仍有效）。
+        // 文件名严格校验为 16 位十六进制哈希 + 白名单扩展（xlsx/csv），杜绝路径穿越；
+        // 与图片不同这里**禁缓存**（no-store）：保存写回同名文件，内容会变，immutable 缓存会读到旧版本。
+        .register_uri_scheme_protocol("xhub-sheet", |_ctx, request| {
+            let name = request.uri().path().trim_start_matches('/');
+            let valid = {
+                let mut parts = name.split('.');
+                match (parts.next(), parts.next(), parts.next()) {
+                    (Some(hash), Some(ext), None) => {
+                        hash.len() == 16
+                            && hash.chars().all(|c| c.is_ascii_hexdigit())
+                            && matches!(ext.to_lowercase().as_str(), "xlsx" | "csv")
+                    }
+                    _ => false,
+                }
+            };
+            if !valid {
+                return tauri::http::Response::builder()
+                    .status(400)
+                    .body(Vec::new())
+                    .unwrap();
+            }
+            match std::fs::read(crate::paths::data_root().join("notes").join("files").join(name))
+            {
+                Ok(bytes) => tauri::http::Response::builder()
+                    .header("Content-Type", "application/octet-stream")
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Cache-Control", "no-store")
+                    .body(bytes)
+                    .unwrap(),
+                Err(_) => tauri::http::Response::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap(),
+            }
+        })
         // 扩展内容协议：扩展入口与其相对资源的唯一来源。
         // origin = `xhub-ext.localhost`，与承载用户数据的 `asset.localhost` 跨源，
         // 扩展因此无法直接读取数据根下的数据库 / 配置（见 docs/adr/0008）
@@ -1051,6 +1088,9 @@ pub fn run() {
             commands::cleanup_wallpapers,
             commands::import_note_image,
             commands::copy_note_image,
+            commands::import_note_sheet,
+            commands::save_note_sheet,
+            commands::create_sheet_note,
             commands::inspect_path,
             commands::scan_installed_apps,
             commands::scan_desktop,

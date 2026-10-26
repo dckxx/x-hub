@@ -9,7 +9,7 @@ use rusqlite::{params, Connection, Result};
 /// - folder_id / source_url 一次建行（create_in），剪藏与「首行成标题」共用。
 
 const NOTE_COLS: &str =
-    "id, title, content, created_at, updated_at, folder_id, source_url, deleted_at, icon, sort_order";
+    "id, title, content, created_at, updated_at, folder_id, source_url, deleted_at, icon, sort_order, kind";
 
 /// 速记树展示口径（组内拖拽排序）：手动拖过的（sort_order 非空）按位升序在前，
 /// 未排序的按创建时间正序垫后——速记列表本就「旧的在上、新笔记追加底部」，
@@ -29,6 +29,38 @@ pub fn create_in(
     folder_id: Option<i64>,
     source_url: &str,
 ) -> Result<Note> {
+    ensure_folder_exists(conn, folder_id)?;
+    let ts = now();
+    conn.execute(
+        "INSERT INTO notes (title, content, folder_id, source_url, kind, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 'text', ?5, ?5)",
+        params![title, content, folder_id, source_url, ts],
+    )?;
+    let id = conn.last_insert_rowid();
+    crate::repo::note_link::reindex(conn, id, content)?;
+    get(conn, id)
+}
+
+/// 表格笔记建行（kind='sheet'，content = xhub-sheet 协议 URL）：新建空白表格与
+/// 导入 xlsx/csv 共用。文件本体已由 import_note_sheet 落盘 notes/files/，这里只建行。
+pub fn create_sheet_in(
+    conn: &Connection,
+    title: &str,
+    url: &str,
+    folder_id: Option<i64>,
+) -> Result<Note> {
+    ensure_folder_exists(conn, folder_id)?;
+    let ts = now();
+    conn.execute(
+        "INSERT INTO notes (title, content, folder_id, source_url, kind, created_at, updated_at)
+         VALUES (?1, ?2, ?3, '', 'sheet', ?4, ?4)",
+        params![title, url, folder_id, ts],
+    )?;
+    get(conn, conn.last_insert_rowid())
+}
+
+/// create_in / create_sheet_in 共用的文件夹存在性校验
+fn ensure_folder_exists(conn: &Connection, folder_id: Option<i64>) -> Result<()> {
     if let Some(fid) = folder_id {
         let known: i64 = conn.query_row(
             "SELECT COUNT(*) FROM note_folders WHERE id = ?1",
@@ -41,15 +73,7 @@ pub fn create_in(
             )));
         }
     }
-    let ts = now();
-    conn.execute(
-        "INSERT INTO notes (title, content, folder_id, source_url, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-        params![title, content, folder_id, source_url, ts],
-    )?;
-    let id = conn.last_insert_rowid();
-    crate::repo::note_link::reindex(conn, id, content)?;
-    get(conn, id)
+    Ok(())
 }
 
 pub fn get(conn: &Connection, id: i64) -> Result<Note> {
@@ -73,7 +97,7 @@ pub fn list(conn: &Connection) -> Result<Vec<Note>> {
 /// 笔记列表（仅元信息，不拉正文）：外部浮层保存速记后主窗刷新列表用。
 pub fn list_meta(conn: &Connection) -> Result<Vec<Note>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, '', created_at, updated_at, folder_id, source_url, deleted_at, icon, sort_order
+        "SELECT id, title, '', created_at, updated_at, folder_id, source_url, deleted_at, icon, sort_order, kind
          FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC, id DESC",
     )?;
     let rows = stmt.query_map([], row_to_note)?;
@@ -321,6 +345,7 @@ pub fn row_to_note(row: &rusqlite::Row) -> Result<Note> {
         deleted_at: row.get(7)?,
         icon: row.get(8)?,
         sort_order: row.get(9)?,
+        kind: row.get(10)?,
     })
 }
 

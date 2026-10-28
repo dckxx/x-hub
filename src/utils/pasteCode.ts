@@ -13,6 +13,19 @@ export interface FencedCode {
 }
 
 /**
+ * 剪贴板纯文本统一换行口径：CRLF / 孤立 CR → LF。
+ *
+ * ⚠️ 进入代码块的文本必须先过这里：ProseMirror 文本节点原样保留 `\r`，而 Crepe 代码块的
+ * CodeMirror 节点视图建文档（EditorState.create）与收 change 时都会把 `\r` 丢掉——两边
+ * 永久不一致会让节点视图在每次 PM 更新时都判定「内容变了」整段回写 + scrollIntoView，
+ * 表现为「粘贴成码后每次编辑光标跳回第一行、编辑删除错位」（forwardUpdate 按 CM 坐标
+ * 写含 `\r` 的 PM 文本也必然错位，实测 CM 对 change 插入的 `\r` 同样剥离，无法靠回写自愈）。
+ */
+export function normalizeClipboardText(raw: string): string {
+  return raw.replace(/\r\n?/g, '\n')
+}
+
+/**
  * 整段文本恰为一个 ```/~~~ 围栏块时解出语言与内容；夹在散文里的围栏不认
  * （返回 null 走默认管线，避免误吞围栏外的文字）。
  */

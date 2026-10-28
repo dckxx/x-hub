@@ -5,6 +5,8 @@ import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
 import { editorViewCtx, parserCtx, serializerCtx } from '@milkdown/kit/core'
 import type { Ctx } from '@milkdown/kit/ctx'
+import { LanguageDescription, type LanguageSupport } from '@codemirror/language'
+import { languages as cmLanguages } from '@codemirror/language-data'
 import { imageBlockSchema } from '@milkdown/kit/component/image-block'
 import { codeBlockSchema } from '@milkdown/kit/preset/commonmark'
 import { createTable } from '@milkdown/kit/preset/gfm'
@@ -17,7 +19,7 @@ import { cleanModelMarkdownNoise } from '../utils/markdownLines'
 import { useStore } from '../stores/workbench'
 import { normalizeShortcutDisplay } from '../composables/useShortcutRecorder'
 import { attachBlockDrag } from '../utils/blockDrag'
-import { guessCodeLanguage, looksLikeCode, unwrapFencedCode } from '../utils/pasteCode'
+import { guessCodeLanguage, looksLikeCode, normalizeClipboardText, unwrapFencedCode } from '../utils/pasteCode'
 import { beautifyNoteMarkdown } from '../utils/markdownBeautify'
 import { copyPlainText } from '../utils/clipboardPlainText'
 import { restoreNoteImageSyntax } from '../utils/noteImageSyntax'
@@ -110,6 +112,23 @@ let detachImageListeners: () => void = () => {}
 let detachWikiListeners: () => void = () => {}
 /** 粘贴自动成码监听解绑函数（attachCodePasteListener 内赋值）：同上必须先于 immediate watch 声明 */
 let detachPasteListener: () => void = () => {}
+
+/**
+ * 代码块语言选择器候选表：Crepe 默认给 @codemirror/language-data 全量 143 项，但那里面
+ * 没有「纯文本」——CodeMirror 的模型里纯文本是「无语言」空态，上游表刻意不收。
+ * 补一个 Text 条目：load 返回空数组（真值）→ compartment reconfigure 空扩展列表 = 无高亮，
+ * 按钮显示与空语言一致；副作用是语言名会原样写进 Markdown 围栏（```Text），重开回读无高亮。
+ * ⚠️ Crepe 用 lodash defaultsDeep 合并 featureConfigs，对数组按下标合并——必须传全量再追加，
+ * 只传自己的条目会把默认表头部顶掉。
+ */
+const CODEMIRROR_LANGUAGES: LanguageDescription[] = [
+  ...cmLanguages,
+  LanguageDescription.of({
+    name: 'Text',
+    alias: ['text', 'txt', 'plain', 'plaintext', '纯文本'],
+    load: async () => [] as unknown as LanguageSupport,
+  }),
+]
 const wikiSuggest = ref<WikiSuggest | null>(null)
 /** [[ 补全浮层的 <ul>（Teleport 到 body）；键盘上下键时用它把选中项滚进可视区 */
 const wikiListEl = ref<HTMLUListElement | null>(null)
@@ -261,6 +280,11 @@ function buildCrepe(root: HTMLElement, content: string): Crepe {
           linkLabel: '链接',
           latexLabel: '公式',
         },
+        [Crepe.Feature.CodeMirror]: {
+          languages: CODEMIRROR_LANGUAGES,
+          searchPlaceholder: '搜索语言',
+          noResultText: '没有匹配的语言',
+        },
       },
   })
 }
@@ -345,7 +369,11 @@ function insertPastedCodeBlock(view: EditorView, code: string, language: string)
   const schema = view.state.schema
   const codeBlockType = schema.nodes.code_block
   if (!codeBlockType) return
-  const node = codeBlockType.create({ language }, code ? schema.text(code) : undefined)
+  // 换行归一为 \n（口径见 normalizeClipboardText）：PM 文本节点保留 \r 而代码块的 CM
+  // 节点视图会把 \r 丢掉，两边不一致 = 每次编辑光标跳回第一行。这里再兜一道，
+  // 保护将来任何绕过 onPaste 的调用方
+  const text = normalizeClipboardText(code)
+  const node = codeBlockType.create({ language }, text ? schema.text(text) : undefined)
   let tr = view.state.tr.replaceSelectionWith(node)
   const $from = tr.selection.$from
   if ($from.nodeBefore?.type === codeBlockType) {
@@ -366,7 +394,9 @@ function attachCodePasteListener(root: HTMLElement, view: EditorView): () => voi
     if (target instanceof Element && target.closest('input, textarea')) return
     // 已在代码块内：按默认纯文本插入（粘进代码块就该是裸文本）
     if (view.state.selection.$from.parent.type.spec.code) return
-    const text = cd.getData('text/plain')
+    // 换行先归一（normalizeClipboardText）：Windows 剪贴板普遍 CRLF，PM 保留 \r 而
+    // 代码块的 CM 节点视图丢 \r，含 \r 成块必然触发「每次编辑光标跳回第一行」
+    const text = normalizeClipboardText(cd.getData('text/plain'))
     if (!text) return
     const fenced = unwrapFencedCode(text)
     if (!fenced && !looksLikeCode(text)) return
@@ -1463,7 +1493,8 @@ function onTitleInput() {
 // Crepe 的 onImageLoad 会把图片高度锁定为像素（style.height），宽度 auto——窗口放大后
 // 高度不变、宽度随之不变，表现为「图片不跟随窗口变宽」。这里在 CSS 层解锁高度
 // （height: auto !important），让宽度成为唯一尺寸维度，并按 ProseMirror attrs 的 ratio
-// 恢复用户调整过的尺寸：ratio=1（默认）→ 响应式 min(自然宽, 100%)；ratio<1 → 百分比定宽。
+// 恢复用户调整过的尺寸：ratio=1（默认）→ 响应式 min(自然宽, 100%)；ratio<1 → 百分比定宽
+// （百分比与拖拽 ratio 同以块**父容器内容宽**为基准，见 onEditorPointerDown）。
 // ratio 沿用 Crepe 的序列化通道（markdown 图片 alt，如 ![0.75](url)），跨会话持久化。
 
 const IMAGE_BLOCK_HANDLE_PX = 26 // 右下角把手命中区边长（与 CSS 视觉一致）
@@ -1612,7 +1643,10 @@ interface ResizeCtx {
   img: HTMLImageElement
   startX: number
   startW: number
+  /** ratio 分母 = 块父容器内容宽（与 applyImageWidth 的百分比基准同源） */
   base: number
+  /** 是否真的拖动过：只点把手不拖不动文档（否则小图会被换算成 <1 的固定定宽） */
+  moved: boolean
 }
 let resizeCtx: ResizeCtx | null = null
 
@@ -1633,12 +1667,20 @@ function onEditorPointerDown(e: PointerEvent) {
   // 阻断 PM 的 mousedown 兼容链（取消 pointerdown 即抑制后续 mouse 事件），避免拖拽时选中节点
   e.preventDefault()
   e.stopPropagation()
-  const block = img.closest('.milkdown-image-block')
   const startW = img.getBoundingClientRect().width
-  const base = block
-    ? Math.min(img.naturalWidth, block.getBoundingClientRect().width) || startW
-    : startW
-  resizeCtx = { img, startX: e.clientX, startW, base }
+  // ratio 的分母必须与 applyImageWidth 的百分比解析基准同源（块的父容器内容盒宽）。
+  // 旧口径 min(自然宽, 当时块宽) 对「自然宽小于栏宽的图」必然偏小：200px 小图拖到
+  // 100px → ratio 0.5 → 落盘后按栏宽的 50% 渲染回 350px，表现为「缩小松手自动放大」；
+  // ratio<1 的图二次拖拽同病——当时块宽 = ratio×栏宽，每拖一次分母缩一次。分母取
+  // 父容器内容宽后，松手渲染宽 = ratio×栏宽 = 拖拽时的所见宽度，所见即所得
+  const parent = img.closest<HTMLElement>('.milkdown-image-block')?.parentElement
+  let base = startW
+  if (parent) {
+    const cs = getComputedStyle(parent)
+    const contentW = parent.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
+    if (contentW > 0) base = contentW
+  }
+  resizeCtx = { img, startX: e.clientX, startW, base, moved: false }
   window.addEventListener('pointermove', onResizeMove)
   window.addEventListener('pointerup', onResizeUp)
 }
@@ -1651,9 +1693,15 @@ function onResizeMove(e: PointerEvent) {
     return
   }
   e.preventDefault()
-  const w = Math.max(60, resizeCtx.startW + (e.clientX - resizeCtx.startX))
-  // 拖动直接作用在容器宽度上（px 定宽；上限由容器 max-width 兜底），
-  // 缩窄后 inline-block 让出右侧空间，可与其他缩窄图并排
+  resizeCtx.moved = true
+  // 拖动直接作用在容器宽度上（px 定宽），上限钳在 min(栏宽, 自然宽)：超过栏宽横向溢出，
+  // 小图超过自然宽是放大插值（发糊）且松手无处落 ratio；缩窄后 inline-block 让出右侧
+  // 空间，可与其他缩窄图并排
+  const w = Math.min(
+    resizeCtx.base,
+    resizeCtx.img.naturalWidth,
+    Math.max(60, resizeCtx.startW + (e.clientX - resizeCtx.startX)),
+  )
   const block = resizeCtx.img.closest<HTMLElement>('.milkdown-image-block')
   if (block) {
     block.style.display = 'inline-block'
@@ -1670,6 +1718,7 @@ function onResizeUp() {
   const ctx = resizeCtx
   resizeCtx = null
   if (!ctx || !crepe) return
+  if (!ctx.moved) return
   const finalW = ctx.img.getBoundingClientRect().width
   if (!ctx.base || !finalW) return
   let ratio = finalW / ctx.base
@@ -3027,15 +3076,26 @@ function onEditorAreaMouseDown(e: MouseEvent) {
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  /* 栏宽必须恒定：滚动条出现/消失（真实内容增减，或隐藏浮层的幽灵高度）会让内容栏
+     宽度 ±10px，百分比定宽的图片（ratio<1，见宽度把手）跟着忽大忽小——实测反馈
+     「在图片下方打字，上面的图片放大一点」。stable 常驻保留滚动条槽位，栏宽与
+     滚动条状态解耦（2026-10-28） */
+  scrollbar-gutter: stable;
 }
 
 /* 斜杠菜单隐藏态用 visibility 隐藏而非 display:none：Crepe 定位用的 floating-ui
    flip() 在菜单 display:none 时量到 0 高度 → 判定“放得下”而从不翻转，编辑框贴近
-   窗口底部时菜单就贴着下方被截断。保持元素可测量，flip 才能在下方不足时翻到光标上方。 */
+   窗口底部时菜单就贴着下方被截断。保持元素可测量，flip 才能在下方不足时翻到光标上方。
+   ⚠️ 但隐藏菜单仍参与布局（全部菜单组渲染时实测高 481px），绝对定位锚在正文末尾，
+   会把 .milkdown 的 scrollHeight 顶过一屏 → 幽灵竖滚动条 → 栏宽 ±10px，百分比定宽
+   图片跟着缩放（2026-10-28 修「图片下方打字上面的图片放大」：打字使菜单隐藏态收短、
+   滚动条消失、栏宽回弹）。隐藏态钉出滚动区外——!important 压过 floating-ui 写入的
+   内联 top；getBoundingClientRect 高度不变，flip 测高不受影响。 */
 .crepe-root :deep(.milkdown-slash-menu[data-show='false']) {
   display: block;
   visibility: hidden;
   pointer-events: none;
+  top: -9999px !important;
 }
 
 /* 正文链接（含 [[ 引用插入的笔记链接 note/<id>）统一走品牌色 + 下划线 + 手型光标 */

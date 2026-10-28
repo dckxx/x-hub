@@ -233,7 +233,12 @@ fn content_csp(app: &tauri::AppHandle, id: &str) -> String {
 
 fn build_content_csp(network: bool, proxy: &str) -> String {
     let remote = if network { " https: wss:" } else { "" };
-    format!("default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:{remote}; font-src 'self' data:; connect-src 'self'{proxy}{remote}; media-src 'self' blob:{remote}; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; worker-src 'self' blob:")
+    // connect-src 必须带 blob:：页面把内存数据（File/ArrayBuffer）转成 blob URL 再 fetch 是
+    // three.js 系 loader（3D/音频解析扩展）的标准喂法，fetch(blob:) 的 URL scheme 不匹配
+    // 'self'，缺了必报 TypeError: Failed to fetch；blob 只在页面内存里，无网络出向流量。
+    // 远程源 https:/wss: 仍仅随 network 权限放开；script-src 永远不含远程源（CDN 注入
+    // 解码库一律拒绝，扩展要离线解析请走本地 service 后端）。
+    format!("default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:{remote}; font-src 'self' data:; connect-src 'self' blob:{proxy}{remote}; media-src 'self' blob:{remote}; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; worker-src 'self' blob:")
 }
 
 /// 段是否危险：`..` 逃逸 / 反斜杠 / 冒号（Windows 盘符与 NTFS 数据流）/ NUL / 控制字符
@@ -667,6 +672,16 @@ mod tests {
         assert!(blocked.contains("frame-src 'none'"));
         assert!(blocked.contains("form-action 'none'"));
         assert!(super::build_content_csp(true, "").contains("https: wss:"));
+    }
+
+    #[test]
+    fn security_connect_src_allows_blob_urls() {
+        // fetch(blob:) 是 three.js 系扩展（3D 查看器等）加载内存模型的唯一通道，
+        // connect-src 缺 blob: 会拦成 TypeError: Failed to fetch——与 network 权限无关
+        let csp = super::build_content_csp(false, "");
+        let connect = csp.split("; ").find(|d| d.starts_with("connect-src ")).unwrap();
+        assert!(connect.contains(" 'self' blob:"), "{connect}");
+        assert!(!connect.contains("https:"), "{connect}");
     }
     use super::*;
 

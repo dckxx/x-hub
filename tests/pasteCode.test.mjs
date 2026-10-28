@@ -1,6 +1,30 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { looksLikeCode, guessCodeLanguage, unwrapFencedCode } from '../src/utils/pasteCode.ts'
+import { looksLikeCode, guessCodeLanguage, normalizeClipboardText, unwrapFencedCode } from '../src/utils/pasteCode.ts'
+
+// ---- normalizeClipboardText：CRLF/孤立 CR → LF（成码文本换行口径）----
+// PM 文本节点保留 \r，Crepe 代码块的 CM 节点视图建文档/收 change 都丢 \r——含 \r 成块
+// 会让节点视图每次 PM 更新都整段回写 + scrollIntoView（表现为每次编辑光标跳回第一行）。
+
+test('normalizeClipboardText 把 CRLF/孤立 CR 归一为 LF，LF 原样', () => {
+  assert.equal(normalizeClipboardText('a\r\nb'), 'a\nb')
+  assert.equal(normalizeClipboardText('a\rb'), 'a\nb')
+  assert.equal(normalizeClipboardText('a\r\nb\rc\n\rd'), 'a\nb\nc\n\nd')
+  assert.equal(normalizeClipboardText('a\nb'), 'a\nb')
+  assert.equal(normalizeClipboardText('const a = 1;'), 'const a = 1;')
+  assert.equal(normalizeClipboardText(''), '')
+  // 幂等：归一过的文本再走一遍不变
+  assert.equal(normalizeClipboardText(normalizeClipboardText('x\r\ny')), 'x\ny')
+})
+
+test('unwrapFencedCode / looksLikeCode 对 CRLF 剪贴板输入判定与 LF 一致', () => {
+  assert.deepEqual(unwrapFencedCode('```js\r\nconst a = 1\r\nconst b = 2\r\n```'), {
+    code: 'const a = 1\nconst b = 2',
+    language: 'js',
+  })
+  assert.equal(looksLikeCode('function add(a, b) {\r\n  const sum = a + b;\r\n  return sum;\r\n}'), true)
+  assert.equal(guessCodeLanguage('const a = 1;\r\nconsole.log(a);'), 'javascript')
+})
 
 // ---- unwrapFencedCode：整段即围栏才解，夹散文不认 ----
 

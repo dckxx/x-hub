@@ -148,7 +148,7 @@ export const DASH_MODULES: DashModuleDef[] = [
   },
   {
     // 自定义速达 1..4：固定槽位（同便签 1/2 池子模式），内容各自配置
-    // （手动挑选 / 整个大类 / 指定小类，存 AppConfig.suda_custom_modules，见 utils/sudaCustom.ts）
+    // （手动挑选 / 整个大类 / 指定小类 / 指定分区，存 AppConfig.suda_custom_modules，见 utils/sudaCustom.ts）
     id: 'suda1',
     title: '自定义速达 1',
     defaultVariant: 'grid',

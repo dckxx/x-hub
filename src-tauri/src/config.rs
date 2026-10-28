@@ -44,12 +44,15 @@ pub struct SudaCustomModuleConfig {
     /// 槽位 id：suda1 / suda2 / suda3 / suda4
     #[serde(default)]
     pub id: String,
-    /// 内容来源：pinned(手动挑选,顺序=resource_ids) / app / web / file(整个大类) / subcategory(指定小类)
+    /// 内容来源：pinned(手动挑选,顺序=resource_ids) / app / web / file(整个大类) / subcategory(指定小类) / zone(指定分区)
     #[serde(default)]
     pub source: String,
     /// source = subcategory 时的小类名（resources.category 口径）
     #[serde(default)]
     pub subcategory: String,
+    /// source = zone 时的分区 id（resources.zone_id 口径；null = 未指定，成员增删实时过滤、自动跟随）
+    #[serde(default)]
+    pub zone_id: Option<i64>,
     /// source = pinned 时的资源 id 序（勾选顺序即展示顺序；已删除的资源自动跳过）
     #[serde(default)]
     pub resource_ids: Vec<i64>,

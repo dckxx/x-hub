@@ -1,5 +1,6 @@
 import type { Resource, SudaCustomModuleConfig } from '../api/tauri'
-import { categoryMatchesPath } from './subcategoryTree'
+// .ts 扩展名是给 tests/sudaCustom.test.mjs 的 node:test 直接加载用的（Node ESM 不解析省略扩展名）
+import { categoryMatchesPath } from './subcategoryTree.ts'
 
 /**
  * 工作台「自定义速达」槽位（suda1..suda4）的共享口径。
@@ -23,13 +24,17 @@ export const SUDA_CUSTOM_SOURCE_OPTIONS = [
   { value: 'web', label: '网页' },
   { value: 'file', label: '文件' },
   { value: 'subcategory', label: '小类' },
+  { value: 'zone', label: '分区' },
 ] as const
 
 /** 槽位内容的过滤/排序：
  * - pinned = resource_ids 顺序（勾选顺序即展示顺序；已删除的资源自动跳过）
  * - app / web / file = 整个大类，store 顺序（与速达页「应用/网页/文件」筛选同口径）
  * - subcategory = 小类路径命中配置值或为其子孙级（与速达页小类筛选同口径——选中目录
- *   展示其下全部资源；带「/」层级的小类见 utils/subcategoryTree.ts；未配置 = 空列表） */
+ *   展示其下全部资源；带「/」层级的小类见 utils/subcategoryTree.ts；未配置 = 空列表）
+ * - zone = 分区成员（resources.zone_id 命中配置值，store 顺序——区内序沿用全局
+ *   sort_order，与速达页「全部」分区陈列同口径；分区里新增/拖入资源实时跟随；
+ *   未指定分区 = 空列表） */
 export function sudaCustomItems(
   cfg: SudaCustomModuleConfig | undefined,
   resources: readonly Resource[],
@@ -50,6 +55,10 @@ export function sudaCustomItems(
       return cfg.subcategory
         ? resources.filter((r) => categoryMatchesPath(r.category, cfg.subcategory!))
         : []
+    case 'zone':
+      return cfg.zone_id != null
+        ? resources.filter((r) => r.zone_id === cfg.zone_id)
+        : []
     default:
       return []
   }
@@ -63,6 +72,8 @@ export function sudaCustomConfigured(cfg: SudaCustomModuleConfig | undefined): b
       return cfg.resource_ids.length > 0
     case 'subcategory':
       return !!cfg.subcategory
+    case 'zone':
+      return cfg.zone_id != null
     case 'app':
     case 'web':
     case 'file':

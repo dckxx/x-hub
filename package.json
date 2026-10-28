@@ -1,11 +1,11 @@
 {
   "name": "x-hub",
   "private": true,
-  "version": "0.9.4",
+  "version": "0.9.5",
   "type": "module",
   "scripts": {
     "test:security": "node --test tests/security.test.mjs",
-    "test:utils": "node --test tests/noteImageSyntax.test.mjs tests/markdownBeautify.test.mjs tests/todoBadge.test.mjs tests/clipboardPlainText.test.mjs tests/extensionMeta.test.mjs tests/quotaCountdown.test.mjs tests/pasteCode.test.mjs tests/modelMarkdownNoise.test.mjs tests/shortcutKeys.test.mjs tests/noteExport.test.mjs tests/sysmonMetrics.test.mjs tests/extensionKeepAlive.test.mjs tests/guideToc.test.mjs tests/noteSheetRef.test.mjs",
+    "test:utils": "node --test tests/noteImageSyntax.test.mjs tests/markdownBeautify.test.mjs tests/todoBadge.test.mjs tests/clipboardPlainText.test.mjs tests/extensionMeta.test.mjs tests/quotaCountdown.test.mjs tests/pasteCode.test.mjs tests/modelMarkdownNoise.test.mjs tests/shortcutKeys.test.mjs tests/noteExport.test.mjs tests/sysmonMetrics.test.mjs tests/extensionKeepAlive.test.mjs tests/guideToc.test.mjs tests/noteSheetRef.test.mjs tests/sudaCustom.test.mjs",
     "dev": "vite",
     "prebuild": "node scripts/gen-settings-index.mjs && node scripts/check-settings-css.mjs",
     "check:settings-css": "node scripts/check-settings-css.mjs",
@@ -18,6 +18,8 @@
     "tauri:test": "pwsh -NoProfile -File scripts/cargo-test.ps1"
   },
   "dependencies": {
+    "@codemirror/language": "^6.11.0",
+    "@codemirror/language-data": "^6.5.2",
     "@internationalized/date": "^3.12.3",
     "@milkdown/crepe": "^7.22.1",
     "@milkdown/kit": "^7.22.1",

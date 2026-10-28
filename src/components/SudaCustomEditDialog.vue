@@ -9,7 +9,8 @@ import type { SudaCustomModuleConfig } from '../api/tauri'
 
 /**
  * 工作台「自定义速达」槽位内容配置弹窗（suda1..suda4 各一张卡片，右上角设置钮唤起）：
- * 选内容来源——手动挑选（勾选即入列、顺序即展示顺序）/ 整个大类（应用/网页/文件）/ 指定小类。
+ * 选内容来源——手动挑选（勾选即入列、顺序即展示顺序）/ 整个大类（应用/网页/文件）/
+ * 指定小类 / 指定分区（成员增删自动跟随）。
  * 保存走 store.saveSudaCustomModule（config 整体落盘）；关闭不保存。
  */
 const props = defineProps<{
@@ -36,6 +37,7 @@ const slotTitle = computed(() => {
 // ---- 草稿态：打开时从现有配置快照（immediate：弹窗挂载时可能已是打开态，约定 58） ----
 const source = ref<SudaCustomModuleConfig['source']>('pinned')
 const subcategory = ref('')
+const zoneId = ref<number | null>(null)
 const selectedIds = ref<number[]>([])
 const search = ref('')
 
@@ -46,6 +48,7 @@ watch(
     const cfg = store.sudaCustomConfigOf(props.slotId)
     source.value = cfg?.source ?? 'pinned'
     subcategory.value = cfg?.subcategory ?? ''
+    zoneId.value = cfg?.zone_id ?? null
     selectedIds.value = [...(cfg?.resource_ids ?? [])]
     search.value = ''
   },
@@ -87,12 +90,18 @@ function pickSub(name: string) {
   subcategory.value = subcategory.value === name ? '' : name
 }
 
+// ---- 分区单选：速达「全部」tab 的分区（store 序）；再点一次取消选择 ----
+function pickZone(id: number) {
+  zoneId.value = zoneId.value === id ? null : id
+}
+
 function save() {
   store
     .saveSudaCustomModule({
       id: props.slotId,
       source: source.value,
       subcategory: source.value === 'subcategory' ? subcategory.value : '',
+      zone_id: source.value === 'zone' ? zoneId.value : null,
       resource_ids: source.value === 'pinned' ? [...selectedIds.value] : [],
     })
     .then(() => {
@@ -197,6 +206,29 @@ function save() {
             </div>
           </div>
           <p class="sc-hint">展示所属小类为所选值的全部资源（与速达页小类筛选同口径）</p>
+        </template>
+
+        <!-- 分区 -->
+        <template v-else-if="source === 'zone'">
+          <div class="sc-sub-list">
+            <div class="sc-sub-group">
+              <span class="sc-sub-group-label">速达分区</span>
+              <div class="sc-sub-opts">
+                <button
+                  v-for="z in store.state.zones"
+                  :key="z.id"
+                  class="sc-src-pill sm"
+                  :class="{ active: zoneId === z.id }"
+                  type="button"
+                  @click="pickZone(z.id)"
+                >
+                  {{ z.name }}
+                </button>
+                <span v-if="store.state.zones.length === 0" class="sc-sub-none">还没有分区，先在速达「全部」页新建</span>
+              </div>
+            </div>
+          </div>
+          <p class="sc-hint">展示该分区内的全部资源（顺序与速达页一致）；往分区新增或拖入资源，卡片自动跟随</p>
         </template>
 
         <div class="sc-footer">

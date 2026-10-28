@@ -122,8 +122,8 @@ function commitRename() {
   flex-direction: column;
   gap: 10px;
   min-height: 0;
-  /* 顶部不留 padding：新建会话按钮顶边与右侧会话面板顶边对齐 */
-  padding: 0 10px 12px;
+  /* 左/顶贴边（与速记等视图同口径），仅留右侧 10px 隔开面板、底部 12px */
+  padding: 0 10px 12px 0;
 }
 .cv-new {
   flex: none;

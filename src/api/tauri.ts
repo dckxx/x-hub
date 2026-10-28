@@ -25,10 +25,12 @@ export interface Resource {
 /** 工作台「自定义速达」槽位内容配置（槽位 id 固定 suda1..suda4，同便签 1/2 池子模式） */
 export interface SudaCustomModuleConfig {
   id: string
-  /** 内容来源：pinned(手动挑选,顺序=resource_ids) / app / web / file(整个大类) / subcategory(指定小类) */
-  source: 'pinned' | 'app' | 'web' | 'file' | 'subcategory'
+  /** 内容来源：pinned(手动挑选,顺序=resource_ids) / app / web / file(整个大类) / subcategory(指定小类) / zone(指定分区) */
+  source: 'pinned' | 'app' | 'web' | 'file' | 'subcategory' | 'zone'
   /** source = subcategory 时的小类名（resources.category 口径） */
   subcategory: string
+  /** source = zone 时的分区 id（resources.zone_id 口径；null = 未指定；成员增删实时过滤、自动跟随） */
+  zone_id: number | null
   /** source = pinned 时的资源 id 序（勾选顺序即展示顺序；已删除的资源自动跳过） */
   resource_ids: number[]
 }

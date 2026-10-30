@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
-import { Check, ChevronLeft, ChevronRight, ListTodo, Plus, X } from 'lucide-vue-next'
+import { Check, CheckCheck, ChevronLeft, ChevronRight, ListTodo, Plus, X } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Todo, TodoOccurrence, TodoTag } from '../api/tauri'
 import { useTodoDrag } from '../composables/useTodoDrag'
@@ -451,6 +451,59 @@ function confirmRemoveTag() {
   if (tag) void removeTag(tag.id)
 }
 
+// ---- 一键完成逾期：未完成且截止日已过的顶级待办，逐条走行勾选的同一套语义 ----
+// 口径与列表「逾期」分组一致（dueBadge kind='over'，按天判定：截止日早于今天才算逾期）
+const overdueTodos = computed(() =>
+  topTodos.value.filter((t) => !t.done && dueBadge(t, today.value)?.kind === 'over'),
+)
+
+const overdueConfirm = ref(false)
+let completingOverdue = false
+
+/** 确认弹窗文案：「周期滚到下一轮」「子待办一并完成」只在真的会发生时说 */
+const overdueConfirmMessage = computed(() => {
+  const list = overdueTodos.value
+  const parts = [`共 ${list.length} 条逾期待办将标记为完成`]
+  if (list.some((t) => t.repeat_mode !== 'once')) parts.push('周期待办会滚到下一轮')
+  if (list.some((t) => kidsOf.value.get(t.id)?.some((k) => !k.done))) parts.push('其下未完成的子待办一并完成')
+  return `${parts.join('，')}。`
+})
+
+function askCompleteOverdue() {
+  if (overdueTodos.value.length) overdueConfirm.value = true
+}
+
+async function completeOverdue() {
+  overdueConfirm.value = false
+  if (completingOverdue) return
+  const list = overdueTodos.value
+  if (!list.length) return
+  completingOverdue = true
+  let ok = 0
+  try {
+    // 与 TodoRow 行勾选同一套语义：周期 = completeTodoRecurring 滚到下一轮；
+    // 普通 = toggleTodo 置完成 + 未完成子待办跟随。单条失败不中断整批
+    for (const t of list) {
+      try {
+        if (t.repeat_mode !== 'once') {
+          await store.completeTodoRecurring(t.id)
+        } else {
+          await store.toggleTodo(t.id)
+          for (const k of kidsOf.value.get(t.id) ?? []) {
+            if (!k.done) await store.toggleTodo(k.id)
+          }
+        }
+        ok++
+      } catch {
+        // 继续处理下一条，结尾统一汇报成功数
+      }
+    }
+  } finally {
+    completingOverdue = false
+  }
+  showToast(ok === list.length ? `已处理 ${ok} 条逾期待办` : `已处理 ${ok}/${list.length} 条，其余没能完成，请重试`)
+}
+
 /** 日历格子里日期徽标的逾期判定（行内的徽标由 TodoRow 自己算） */
 function badgeOf(t: Todo) {
   return t.done ? null : dueBadge(t, today.value)
@@ -545,6 +598,16 @@ function onVirtualDown(e: PointerEvent) {
             <h2>待办</h2>
           </div>
           <span class="tv-spacer"></span>
+          <button
+            type="button"
+            class="tv-ghost tv-overdue"
+            :disabled="!overdueTodos.length"
+            title="把所有已过截止的未完成待办标记为完成"
+            @click="askCompleteOverdue"
+          >
+            <CheckCheck :size="13" :stroke-width="2" />一键完成逾期
+            <span v-if="overdueTodos.length" class="cnt">{{ overdueTodos.length }}</span>
+          </button>
           <button type="button" class="tv-primary" @click="openNew()">
             <Plus :size="14" :stroke-width="2.2" />新建待办
           </button>
@@ -825,6 +888,16 @@ function onVirtualDown(e: PointerEvent) {
       @confirm="confirmRemoveTag"
       @cancel="removingTag = null"
     />
+
+    <!-- 一键完成逾期：批量改状态先确认，改完后「逾期」分组随 store 更新自动消退 -->
+    <ConfirmDialog
+      :visible="overdueConfirm"
+      title="一键完成逾期待办"
+      :message="overdueConfirmMessage"
+      confirm-text="全部完成"
+      @confirm="completeOverdue"
+      @cancel="overdueConfirm = false"
+    />
   </section>
 </template>
 
@@ -990,6 +1063,20 @@ function onVirtualDown(e: PointerEvent) {
 .tv-ghost.on {
   color: var(--text-1);
   border-color: var(--border-strong);
+}
+/* 一键完成逾期：图标 + 文案 + 计数同行；无逾期时置灰不可点 */
+.tv-overdue {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.tv-overdue .cnt {
+  font-weight: 400;
+  opacity: 0.62;
+}
+.tv-overdue:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .tv-body {
   flex: 1;

@@ -1377,16 +1377,21 @@ export const tauriApi = {
       format,
       bodyHtml: bodyHtml ?? null,
     }),
-  /** 整夹导出：落 <dir>/<文件夹名>/，每条一个文件；批量 PDF 逐条 emit note-export-progress */
+  /**
+   * 整夹导出：merged=false 落 <dir>/<文件夹名>/，每条一个文件（dir 为所选目录）；
+   * merged=true（弹窗勾「合并为一个文件」）时 dir 为目标**文件**路径，子树笔记合并写进同一文件。
+   * 批量 PDF 逐条 emit note-export-progress（合并 PDF 整篇一次渲染，无逐条进度）。
+   */
   exportNotesOfFolder: (
     folderId: number,
     dir: string,
     format: 'markdown' | 'html' | 'pdf',
     bodies: { id: number; html: string }[],
+    merged: boolean,
   ) =>
     invoke<{ exported: number; images: number; failed: string[]; dir: string; cancelled: boolean }>(
       'export_notes_of_folder',
-      { folderId, dir, format, bodies },
+      { folderId, dir, format, bodies, merged },
     ),
   /** 取消正在进行的整夹导出（幂等） */
   exportNotesCancel: () => invoke<void>('export_notes_cancel'),

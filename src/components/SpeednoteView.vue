@@ -292,7 +292,7 @@ function onConfirmDialogConfirm() {
   void c?.onConfirm()
 }
 
-// ---- 随手导出（树右键：单条笔记 / 整夹；格式 Markdown/HTML/PDF，2026-10-22 #t69） ----
+// ---- 随手导出（树右键：单条笔记 / 整夹；格式 Markdown/HTML/PDF；整夹可勾「合并为一个文件」，2026-10-22 #t69） ----
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const exportTarget = ref<{ kind: 'note' | 'folder'; id: number; title: string } | null>(null)
 const exporting = ref(false)
@@ -316,7 +316,7 @@ async function renderNoteBody(content: string): Promise<string> {
   return renderNoteMarkdown(content)
 }
 
-async function onExportConfirm(format: ExportFormat) {
+async function onExportConfirm(format: ExportFormat, merged: boolean) {
   const t = exportTarget.value
   if (!t || exporting.value || !isTauri()) return
   try {
@@ -337,8 +337,22 @@ async function onExportConfirm(format: ExportFormat) {
       if (r.failed.length > 0) showToast(`导出失败：${r.failed[0]}`)
       else showToast(`已导出 → ${r.dir}`)
     } else {
-      const dir = await open({ multiple: false, directory: true, title: '选择导出目录' })
-      if (typeof dir !== 'string' || !dir) return
+      // 整夹：默认选目录，落 <目录>/<文件夹名>/ 每条一文件；勾「合并」则另存为单个文件
+      const ext = format === 'markdown' ? 'md' : format
+      let dest: string
+      if (merged) {
+        const path = await save({
+          title: '合并导出为单个文件',
+          defaultPath: sanitizeExportFilename(t.title, ext),
+          filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
+        })
+        if (typeof path !== 'string' || !path) return
+        dest = path
+      } else {
+        const dir = await open({ multiple: false, directory: true, title: '选择导出目录' })
+        if (typeof dir !== 'string' || !dir) return
+        dest = dir
+      }
       exporting.value = true
       exportProgress.value = { done: 0, total: 0 }
       let bodies: { id: number; html: string }[] = []
@@ -350,7 +364,7 @@ async function onExportConfirm(format: ExportFormat) {
         }
         exportProgress.value = { done: 0, total: list.length }
       }
-      const r = await tauriApi.exportNotesOfFolder(t.id, dir, format, bodies)
+      const r = await tauriApi.exportNotesOfFolder(t.id, dest, format, bodies, merged)
       const failNote = r.failed.length > 0 ? `，${r.failed.length} 条失败` : ''
       const cancelNote = r.cancelled ? '（已取消）' : ''
       showToast(`导出完成：成功 ${r.exported} 条${failNote}${cancelNote} → ${r.dir}`)
@@ -490,7 +504,7 @@ defineExpose({ openNote, createNote })
       :title="exportTarget?.title ?? ''"
       :busy="exporting"
       :progress="exportProgress"
-      @confirm="(f) => onExportConfirm(f)"
+      @confirm="(f, m) => onExportConfirm(f, m)"
       @cancel="exportTarget = null"
       @cancel-export="onExportCancelExport"
     />

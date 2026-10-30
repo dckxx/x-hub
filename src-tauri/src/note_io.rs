@@ -22,6 +22,8 @@ use tauri::{Emitter, State};
 ///   HTML 自包含单文件（CSS 内联 + 图片 base64）；PDF（export_render 静默矢量导出）。
 /// - 整夹（文件夹右键）：落点 <所选目录>/<文件夹名>/，**每条一个文件**（三种格式同结构）；
 ///   Markdown 带 front-matter（与全库导出同格式，可再导回）；HTML/PDF 纯内容。
+///   弹窗勾「合并为一个文件」则整棵子树写进单个文件（md 每条一节无 front-matter、
+///   html/pdf 拼同一文档一次渲染，见 export_subtree_merged）。
 /// - HTML 的 md→html 渲染在**前端**做（marked+DOMPurify 已有，Rust 侧零渲染依赖），
 ///   命令收 `bodies`（id → 渲染好的正文 HTML）；图片转 base64 在 Rust 侧统一处理。
 /// - 批量导出可取消（EXPORT_CANCELLED），PDF 逐条 emit `note-export-progress`。
@@ -199,25 +201,8 @@ fn write_note_markdown(
         },
         None => ctx.root.to_path_buf(),
     };
-    let images_root = crate::paths::data_root().join("notes").join("images");
-    let sheets_root = crate::paths::data_root().join("notes").join("files");
     let mut body = rewrite_image_urls_to_relative(&n.content);
-    // 收集引用的图片并复制（同内容哈希名跨笔记共享，覆盖无害）
-    for name in extract_asset_names(&body) {
-        if ctx.copied_images.insert(name.clone()) {
-            // 按扩展名归位来源：表格白名单扩展在 notes/files，其余在 notes/images
-            let src_dir = if is_sheet_asset_name(&name) { &sheets_root } else { &images_root };
-            let src = src_dir.join(&name);
-            if src.is_file() {
-                std::fs::create_dir_all(&ctx.assets_dir).ok();
-                if let Err(e) = std::fs::copy(&src, ctx.assets_dir.join(&name)) {
-                    report.failed.push(format!("{} 附件 {name}: {e}", n.title));
-                } else {
-                    report.images += 1;
-                }
-            }
-        }
-    }
+    copy_note_assets(&body, &n.title, ctx, report);
     let mut md = String::new();
     if with_front_matter {
         md.push_str("---\n");
@@ -255,6 +240,28 @@ fn write_note_markdown(
         return;
     }
     report.exported += 1;
+}
+
+/// 复制改写后正文引用的附件到 assets/（同内容哈希名跨笔记共享，覆盖无害）。
+/// 失败记入 report 不中断整体；全库/整夹/单条/合并导出共用一套口径。
+fn copy_note_assets(body: &str, note_title: &str, ctx: &mut MdWriteCtx, report: &mut ExportReport) {
+    let images_root = crate::paths::data_root().join("notes").join("images");
+    let sheets_root = crate::paths::data_root().join("notes").join("files");
+    for name in extract_asset_names(body) {
+        if ctx.copied_images.insert(name.clone()) {
+            // 按扩展名归位来源：表格白名单扩展在 notes/files，其余在 notes/images
+            let src_dir = if is_sheet_asset_name(&name) { &sheets_root } else { &images_root };
+            let src = src_dir.join(&name);
+            if src.is_file() {
+                std::fs::create_dir_all(&ctx.assets_dir).ok();
+                if let Err(e) = std::fs::copy(&src, ctx.assets_dir.join(&name)) {
+                    report.failed.push(format!("{note_title} 附件 {name}: {e}"));
+                } else {
+                    report.images += 1;
+                }
+            }
+        }
+    }
 }
 
 /// 文件夹 id 的子树（含自身）；parent 链成环时靠 visited 去重，深度超限剪枝
@@ -366,9 +373,11 @@ pub struct NoteExportBody {
     pub html: String,
 }
 
-/// 整夹导出（文件夹右键）：落点 `<dir>/<文件夹名>/`，每条笔记一个文件（三种格式同结构）。
+/// 整夹导出（文件夹右键）：默认落点 `<dir>/<文件夹名>/`，每条笔记一个文件（三种格式同结构）。
 /// markdown 带 front-matter（与全库导出同格式，可回导）；html/pdf 纯内容单文件。
-/// 批量可取消，PDF 逐条 emit `note-export-progress`。
+/// `merged = true`（弹窗勾「合并为一个文件」）时 `dir` 是目标**文件**路径，子树笔记全部
+/// 写进同一个文件（见 export_subtree_merged）。批量可取消，PDF 逐条 emit `note-export-progress`
+/// （合并 PDF 为整篇一次渲染，无逐条进度）。
 #[tauri::command]
 pub async fn export_notes_of_folder(
     app: tauri::AppHandle,
@@ -377,8 +386,10 @@ pub async fn export_notes_of_folder(
     dir: String,
     format: String,
     bodies: Vec<NoteExportBody>,
+    merged: Option<bool>,
 ) -> Result<ExportReport, String> {
     EXPORT_CANCELLED.store(false, Ordering::SeqCst);
+    let merged = merged.unwrap_or(false);
     let snapshot = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         read_export_snapshot(&conn)?
@@ -392,21 +403,36 @@ pub async fn export_notes_of_folder(
         .map(|f| sanitize_filename(&f.name))
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "导出笔记".to_string());
-    let root = PathBuf::from(&dir).join(fname);
-    let total = in_subtree.len();
     let mut report = ExportReport {
         exported: 0,
         images: 0,
         failed: Vec::new(),
-        dir: root.display().to_string(),
+        dir: if merged {
+            PathBuf::from(&dir).display().to_string()
+        } else {
+            PathBuf::from(&dir).join(&fname).display().to_string()
+        },
         cancelled: false,
     };
+    let total = in_subtree.len();
     if total == 0 {
         return Ok(report);
     }
     let tags_of = build_tags_of(&tags, &note_tags);
     let body_map: HashMap<i64, String> = bodies.into_iter().map(|b| (b.id, b.html)).collect();
     tokio::task::block_in_place(|| -> Result<(), String> {
+        if merged {
+            return export_subtree_merged(
+                Some(&app),
+                &in_subtree,
+                &body_map,
+                &fname,
+                Path::new(&dir),
+                &format,
+                &mut report,
+            );
+        }
+        let root = PathBuf::from(&dir).join(&fname);
         std::fs::create_dir_all(&root).map_err(|e| format!("创建导出目录失败: {e}"))?;
         match format.as_str() {
             "markdown" => {
@@ -476,6 +502,101 @@ pub async fn export_notes_of_folder(
         Ok(())
     })?;
     Ok(report)
+}
+
+/// 整夹**合并**导出（弹窗勾「合并为一个文件」）：子树笔记按展示顺序全部写进同一个文件。
+/// - markdown：每条一节（`# 标题` + 正文），节间 `---` 分隔；不带 front-matter（合并文档
+///   不参与回导）；图片复制到文件旁 `assets/` 并改相对路径；逐节检查取消，取消则不落任何文件。
+/// - html/pdf：每条 `<h1>标题</h1>` + 渲染正文拼进同一文档（`<hr>` 分节、图片 base64 内嵌），
+///   PDF 整篇一次渲染（`app` 仅 PDF 需要，测试传 None 走不到该分支）。
+/// `exported` 口径为写入文件的**笔记条数**（弹窗 toast 读作「成功 N 条」）。
+fn export_subtree_merged(
+    app: Option<&tauri::AppHandle>,
+    notes: &[Note],
+    body_map: &HashMap<i64, String>,
+    doc_title: &str,
+    target: &Path,
+    format: &str,
+    report: &mut ExportReport,
+) -> Result<(), String> {
+    let ext = match format {
+        "markdown" => "md",
+        "html" => "html",
+        "pdf" => "pdf",
+        other => return Err(format!("不支持的导出格式: {other}")),
+    };
+    let target = ensure_ext(target.to_path_buf(), ext);
+    let parent = target
+        .parent()
+        .map(|p| p.to_path_buf())
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from("."));
+    report.dir = target.display().to_string();
+    std::fs::create_dir_all(&parent).map_err(|e| format!("创建导出目录失败: {e}"))?;
+    match format {
+        "markdown" => {
+            let tags_of = HashMap::new();
+            let mut ctx = MdWriteCtx {
+                folders: &[],
+                tags_of: &tags_of,
+                dir_cache: HashMap::new(),
+                used_files: HashSet::new(),
+                copied_images: HashSet::new(),
+                assets_dir: parent.join("assets"),
+                root: &parent,
+            };
+            let mut sections: Vec<String> = Vec::new();
+            for n in notes {
+                if EXPORT_CANCELLED.load(Ordering::SeqCst) {
+                    report.cancelled = true;
+                    break;
+                }
+                let mut body = rewrite_image_urls_to_relative(&n.content);
+                copy_note_assets(&body, &n.title, &mut ctx, report);
+                let title = merged_note_title(n);
+                sections.push(format!("# {title}\n\n{}", body.trim()));
+            }
+            if report.cancelled {
+                return Ok(());
+            }
+            std::fs::write(&target, format!("{}\n", sections.join("\n\n---\n\n")))
+                .map_err(|e| format!("写入失败: {e}"))?;
+            report.exported = sections.len();
+        }
+        "html" | "pdf" => {
+            let mut doc_body = String::new();
+            for n in notes {
+                let Some(body) = body_map.get(&n.id) else {
+                    report.failed.push(format!("{}: 缺少渲染结果", n.title));
+                    continue;
+                };
+                if !doc_body.is_empty() {
+                    doc_body.push_str("\n<hr>\n");
+                }
+                doc_body.push_str(&format!("<h1>{}</h1>\n{}", html_escape(&merged_note_title(n)), body));
+                report.exported += 1;
+            }
+            if report.exported == 0 {
+                return Ok(());
+            }
+            let doc = inline_note_images(&export_document_html(doc_title, &doc_body));
+            match format {
+                "html" => std::fs::write(&target, doc).map_err(|e| format!("写入失败: {e}"))?,
+                _ => {
+                    let app = app.ok_or_else(|| "PDF 渲染不可用".to_string())?;
+                    crate::export_render::render_pdf_with_fallback(app, &doc, &target)?;
+                }
+            }
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+/// 合并导出小节标题：空标题回退「无标题笔记」（正文里的标题行不受此影响）
+fn merged_note_title(n: &Note) -> &str {
+    let t = n.title.trim();
+    if t.is_empty() { "无标题笔记" } else { t }
 }
 
 /// 确保 path 有指定扩展名（用户「另存为」可能手滑不带后缀）
@@ -1313,6 +1434,59 @@ mod tests {
             out,
             format!("<p>前文</p><img src=\"data:image/png;base64,{b64}\" alt=\"图\"><p>后文</p>")
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn merged_markdown_sections_with_headings_and_separator() {
+        let dir = std::env::temp_dir().join(format!("xhub-io-test-merged-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let n = |id: i64, title: &str, content: &str| Note {
+            id,
+            title: title.into(),
+            content: content.into(),
+            created_at: "2026-01-02 03:04:05.000".into(),
+            updated_at: "2026-01-02 03:04:05.000".into(),
+            folder_id: Some(1),
+            source_url: String::new(),
+            deleted_at: None,
+            icon: None,
+            sort_order: None,
+            kind: "text".into(),
+        };
+        let notes = vec![
+            n(1, "第一篇", "内容甲\n"),
+            n(2, "第二篇", "内容乙"),
+            n(3, "  ", "内容丙"),
+        ];
+        let body_map = HashMap::new();
+        let mut report = ExportReport {
+            exported: 0,
+            images: 0,
+            failed: Vec::new(),
+            dir: String::new(),
+            cancelled: false,
+        };
+        export_subtree_merged(
+            None,
+            &notes,
+            &body_map,
+            "日记",
+            &dir.join("日记"),
+            "markdown",
+            &mut report,
+        )
+        .unwrap();
+        // 不带后缀自动补 .md；空/空白标题回退「无标题笔记」
+        let md = std::fs::read_to_string(dir.join("日记.md")).unwrap();
+        assert_eq!(
+            md,
+            "# 第一篇\n\n内容甲\n\n---\n\n# 第二篇\n\n内容乙\n\n---\n\n# 无标题笔记\n\n内容丙\n"
+        );
+        assert_eq!(report.exported, 3);
+        assert!(report.failed.is_empty());
+        assert!(!report.cancelled);
+        assert!(report.dir.ends_with("日记.md"));
         std::fs::remove_dir_all(&dir).ok();
     }
 

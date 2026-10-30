@@ -6,6 +6,7 @@ import type { ExportFormat } from '../utils/noteExport'
 /**
  * 速记随手导出弹窗（单条/整夹共用，2026-10-22 #t69）：
  * 格式三选一（Markdown / HTML / PDF）+ 确定；整夹批量时切进度态（逐条 PDF 较慢，可取消）。
+ * 整夹可勾「合并为一个文件」（子树笔记写进同一文件，另存为单个文件）。
  * 导出动作由宿主（SpeednoteView）执行，本组件只管选格式与展示进度。
  */
 const props = defineProps<{
@@ -18,15 +19,19 @@ const props = defineProps<{
   progress: { done: number; total: number } | null
 }>()
 
-const emit = defineEmits<{ confirm: [format: ExportFormat]; cancel: []; cancelExport: [] }>()
+const emit = defineEmits<{ confirm: [format: ExportFormat, merged: boolean]; cancel: []; cancelExport: [] }>()
 
 const format = ref<ExportFormat>('markdown')
+const merged = ref(false)
 
-// 每次打开重置为 Markdown（最高频选择）
+// 每次打开重置为 Markdown（最高频选择）+ 不合并（默认每条一个文件）
 watch(
   () => props.visible,
   (on) => {
-    if (on) format.value = 'markdown'
+    if (on) {
+      format.value = 'markdown'
+      merged.value = false
+    }
   },
 )
 
@@ -40,7 +45,7 @@ function onKeydown(e: KeyboardEvent) {
     emit('cancel')
   } else if (e.key === 'Enter') {
     e.preventDefault()
-    emit('confirm', format.value)
+    emit('confirm', format.value, merged.value)
   }
 }
 
@@ -86,10 +91,22 @@ const options: { value: ExportFormat; label: string; desc: string }[] = [
             </label>
           </div>
 
+          <label
+            v-if="kind === 'folder'"
+            class="export-opt export-merge"
+            :class="{ on: merged }"
+          >
+            <input v-model="merged" type="checkbox" name="export-merge" />
+            <span class="export-opt-label">合并为一个文件</span>
+            <span class="export-opt-desc">所有笔记（含子文件夹）按顺序写进同一个文件</span>
+          </label>
+
           <p class="export-hint">
             {{
               kind === 'folder'
-                ? '将导出到所选目录下以文件夹名命名的子目录，每条笔记一个文件'
+                ? merged
+                  ? '将整棵子树的笔记合并写入一个文件，保存时指定文件名与位置'
+                  : '将导出到所选目录下以文件夹名命名的子目录，每条笔记一个文件'
                 : '选择保存位置后自动生成'
             }}
           </p>
@@ -99,7 +116,7 @@ const options: { value: ExportFormat; label: string; desc: string }[] = [
             <button
               type="button"
               class="export-btn export-btn--primary"
-              @click="emit('confirm', format)"
+              @click="emit('confirm', format, merged)"
             >
               导出
             </button>
@@ -151,6 +168,9 @@ const options: { value: ExportFormat; label: string; desc: string }[] = [
   display: flex;
   flex-direction: column;
   gap: 6px;
+  margin-bottom: 6px;
+}
+.export-merge {
   margin-bottom: 12px;
 }
 .export-opt {

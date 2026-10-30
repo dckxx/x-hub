@@ -3083,6 +3083,20 @@ function onEditorAreaMouseDown(e: MouseEvent) {
   scrollbar-gutter: stable;
 }
 
+/* 正文溢出时常显滚动条滑块：全局滚动条是「悬停可滚动区域才显示」（App.vue 靠 pointermove
+   加 .scrollbar-hover），但滚轮读长文时指针不动，永远等不到那次 move——内容太长却全程
+   看不到滚动条。编辑器两个正文滚动容器（wysiwyg/预览的 .milkdown 与源码 textarea）
+   改为溢出即常显滑块，样式沿用全局滚动条同款（40% text-3 圆角胶囊）；悬停滑块提亮
+   （50%）与轨道悬停显底色仍走全局规则 */
+.crepe-root :deep(.milkdown)::-webkit-scrollbar-thumb,
+.md-source::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-3) 40%, transparent);
+}
+.crepe-root :deep(.milkdown)::-webkit-scrollbar-thumb:hover,
+.md-source::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--text-3) 50%, transparent);
+}
+
 /* 斜杠菜单隐藏态用 visibility 隐藏而非 display:none：Crepe 定位用的 floating-ui
    flip() 在菜单 display:none 时量到 0 高度 → 判定“放得下”而从不翻转，编辑框贴近
    窗口底部时菜单就贴着下方被截断。保持元素可测量，flip 才能在下方不足时翻到光标上方。

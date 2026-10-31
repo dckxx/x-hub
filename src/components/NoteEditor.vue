@@ -8,6 +8,7 @@ import type { Ctx } from '@milkdown/kit/ctx'
 import { LanguageDescription, type LanguageSupport } from '@codemirror/language'
 import { languages as cmLanguages } from '@codemirror/language-data'
 import { imageBlockSchema } from '@milkdown/kit/component/image-block'
+import { listItemBlockConfig } from '@milkdown/kit/component/list-item-block'
 import { codeBlockSchema } from '@milkdown/kit/preset/commonmark'
 import { createTable } from '@milkdown/kit/preset/gfm'
 import { Fragment, Slice, type Node as ProseNode, type Schema } from '@milkdown/kit/prose/model'
@@ -195,7 +196,7 @@ async function destroyEditor() {
 
 /** 公共 Crepe 配置：主编辑区与分屏预览共用同一份，保证两个实例渲染完全一致 */
 function buildCrepe(root: HTMLElement, content: string): Crepe {
-  return new Crepe({
+  const crepe = new Crepe({
     root,
     defaultValue: loosenHtmlBreaks(content),
     // AI 特性需外部模型服务，保持纯本地
@@ -287,6 +288,20 @@ function buildCrepe(root: HTMLElement, content: string): Crepe {
         },
       },
   })
+  // Crepe 的任务标签在 checked 有值时只画勾选框，有序列表的「1.」被丢掉。
+  // 解析结果里 label / listType 还在，这里把序号拼回勾选框前面。实时预览和分屏预览都走 buildCrepe。
+  crepe.editor.config((ctx) => {
+    ctx.update(listItemBlockConfig.key, (prev) => ({
+      ...prev,
+      renderLabel: (props) => {
+        const icon = prev.renderLabel(props)
+        if (props.checked == null || props.listType !== 'ordered') return icon
+        const num = (props.label ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        return `<span class="ol-task-no">${num}</span>${icon}`
+      },
+    }))
+  })
+  return crepe
 }
 
 async function mountEditor(content: string) {
@@ -3772,6 +3787,32 @@ function onEditorAreaMouseDown(e: MouseEvent) {
 <style>
 /* Crepe 主题变量对齐应用设计令牌（全局块：高优先级选择器压过 frame.css 的 .milkdown 定义）。
    亮色基线 + [data-theme="dark"] 暗色覆盖，替代 Crepe 缺失的动态主题切换（Milkdown #1839） */
+/* 有序任务项：序号和勾选框并排。默认标签槽只有 24px，只够放下勾选框。 */
+.crepe-root .milkdown .milkdown-list-item-block li .label-wrapper:has(.ol-task-no) {
+  width: auto;
+  min-width: 24px;
+}
+.crepe-root .milkdown .milkdown-list-item-block li .label-wrapper .label:has(.ol-task-no) {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+.crepe-root .milkdown .ol-task-no {
+  min-width: 1.25em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  line-height: 1;
+  font-size: 0.875em;
+}
+.crepe-root .milkdown .ol-task-no + svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
 .crepe-root .milkdown {
   --crepe-base-font-size: calc(15px * var(--fs-notes, 1));
   --crepe-color-background: transparent;

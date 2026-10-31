@@ -1018,4 +1018,12 @@
   color: var(--text-4);
 }
 
+/* GIF 录制：保存目录操作钮组 */
+.settings-view .gif-dir-actions{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 /* 更改数据存储路径弹窗 */

@@ -551,7 +551,7 @@ fn export_subtree_merged(
                     report.cancelled = true;
                     break;
                 }
-                let mut body = rewrite_image_urls_to_relative(&n.content);
+                let body = rewrite_image_urls_to_relative(&n.content);
                 copy_note_assets(&body, &n.title, &mut ctx, report);
                 let title = merged_note_title(n);
                 sections.push(format!("# {title}\n\n{}", body.trim()));

@@ -17,6 +17,9 @@ import TodoFloat from './components/TodoFloat.vue'
 import FloatingBallWindow from './components/FloatingBallWindow.vue'
 import ChatWindow from './components/ChatWindow.vue'
 import NoticeOverlay from './components/NoticeOverlay.vue'
+import RecorderOverlay from './components/RecorderOverlay.vue'
+import RecorderControl from './components/RecorderControl.vue'
+import PinShotWindow from './components/PinShotWindow.vue'
 import BrowserChrome from './components/BrowserChrome.vue'
 import UpdateCheckDialog from './components/UpdateCheckDialog.vue'
 import WindowResizeEdges from './components/WindowResizeEdges.vue'
@@ -33,6 +36,11 @@ const isTodoFloat = label === 'todo-float'
 const isFloatingBall = label === 'floating-ball'
 const isChatWindow = label === 'chat'
 const isNoticeWindow = label === 'notice'
+// 截图 / GIF 录屏（recorder.rs）：选区覆盖层与录制控制条，两窗由后端预创建复用
+const isRecorderOverlay = label === 'recorder-overlay'
+const isRecorderControl = label === 'recorder-control'
+// 贴图窗口（盯住功能）：pin-shot-{0..2} 池，每张钉屏贴图一个窗口
+const isPinShotWindow = label.startsWith('pin-shot-')
 // 速达独立应用内浏览器（ADR 0011）：chrome webview 渲染顶栏；content webview 只加载
 // 外站页面，不会加载本 SPA，但万一误加载也渲染空白兜底（绝不能落到 Index 整窗 UI）
 const isSudaBrowserChrome = /^suda-web-\d+-chrome$/.test(label)
@@ -60,7 +68,13 @@ if (isTauri()) {
                 ? 'x-hub 便签'
                 : isCountdownFloat
                   ? 'x-hub 倒计时'
-                  : document.title
+                  : isRecorderOverlay
+                    ? 'x-hub 截图选区'
+                    : isRecorderControl
+                      ? 'x-hub 录制'
+                      : isPinShotWindow
+                        ? 'x-hub 贴图'
+                        : document.title
 }
 
 // 主窗口：记录最后聚焦的可编辑元素。剪贴板浮层粘贴到主窗口输入框时，
@@ -175,6 +189,9 @@ onBeforeUnmount(() => {
   <FloatingBallWindow v-else-if="isFloatingBall" />
   <ChatWindow v-else-if="isChatWindow" />
   <NoticeOverlay v-else-if="isNoticeWindow" />
+  <RecorderOverlay v-else-if="isRecorderOverlay" />
+  <RecorderControl v-else-if="isRecorderControl" />
+  <PinShotWindow v-else-if="isPinShotWindow" />
   <BrowserChrome v-else-if="isSudaBrowserChrome" />
   <div v-else-if="isSudaBrowserContent" class="suda-content-blank" />
   <Index v-else />

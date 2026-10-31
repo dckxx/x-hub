@@ -6,7 +6,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { doneMetaLabel, dueBadge, fmtDueFull } from '../src/utils/todoSchedule.ts'
+import { doneMetaLabel, dueBadge, fmtDueFull, nextRepeatLabel } from '../src/utils/todoSchedule.ts'
 
 const at = (y, m, d, h = 12, min = 0) => new Date(y, m - 1, d, h, min).getTime()
 /** 后端 completed_at 的存储形态：本地时刻 → 无时区后缀的 UTC 字符串 */
@@ -93,4 +93,13 @@ test('完成时间说明：旧数据缺完成时间时不编造时刻', () => {
 test('完整截止文案：日期型截止（23:5x）不显示时刻，带时刻的照常显示', () => {
   assert.equal(fmtDueFull(at(2026, 10, 20, 23, 59)), '2026年10月20日')
   assert.equal(fmtDueFull(at(2026, 10, 20, 9, 5)), '2026年10月20日 09:05')
+})
+
+test('周期滚动文案：今天/明天直接说，其余给月日（跨年补年份），无截止说「下一轮」', () => {
+  const now = new Date(2026, 9, 17, 20, 0)
+  assert.equal(nextRepeatLabel({ due_at: at(2026, 10, 17, 23, 59) }, now), '今天')
+  assert.equal(nextRepeatLabel({ due_at: at(2026, 10, 18, 9, 30) }, now), '明天')
+  assert.equal(nextRepeatLabel({ due_at: at(2026, 10, 25, 9, 30) }, now), '10月25日')
+  assert.equal(nextRepeatLabel({ due_at: at(2027, 1, 3, 9, 30) }, now), '2027年1月3日')
+  assert.equal(nextRepeatLabel({ due_at: null }, now), '下一轮')
 })

@@ -2087,6 +2087,8 @@ enum ConfiguredShortcut {
     Search,
     Chat,
     Notes,
+    Shot,
+    Recorder,
 }
 
 impl ConfiguredShortcut {
@@ -2097,6 +2099,8 @@ impl ConfiguredShortcut {
             ConfiguredShortcut::Search => &mut cfg.search_shortcut,
             ConfiguredShortcut::Chat => &mut cfg.chat_shortcut,
             ConfiguredShortcut::Notes => &mut cfg.notes_shortcut,
+            ConfiguredShortcut::Shot => &mut cfg.shot_shortcut,
+            ConfiguredShortcut::Recorder => &mut cfg.recorder_shortcut,
         }
     }
 
@@ -2107,6 +2111,8 @@ impl ConfiguredShortcut {
             ConfiguredShortcut::Search => "搜索",
             ConfiguredShortcut::Chat => "AI 对话",
             ConfiguredShortcut::Notes => "速记",
+            ConfiguredShortcut::Shot => "截图",
+            ConfiguredShortcut::Recorder => "GIF 录制",
         }
     }
 
@@ -2118,6 +2124,8 @@ impl ConfiguredShortcut {
             ConfiguredShortcut::Search => cfg.search_shortcut_enabled,
             ConfiguredShortcut::Chat => cfg.chat_shortcut_enabled,
             ConfiguredShortcut::Notes => cfg.notes_shortcut_enabled,
+            ConfiguredShortcut::Shot => cfg.shot_shortcut_enabled,
+            ConfiguredShortcut::Recorder => cfg.recorder_shortcut_enabled,
         }
     }
 
@@ -2128,6 +2136,8 @@ impl ConfiguredShortcut {
             ConfiguredShortcut::Search => cfg.search_shortcut_enabled = value,
             ConfiguredShortcut::Chat => cfg.chat_shortcut_enabled = value,
             ConfiguredShortcut::Notes => cfg.notes_shortcut_enabled = value,
+            ConfiguredShortcut::Shot => cfg.shot_shortcut_enabled = value,
+            ConfiguredShortcut::Recorder => cfg.recorder_shortcut_enabled = value,
         }
     }
 
@@ -2153,6 +2163,12 @@ impl ConfiguredShortcut {
             (ConfiguredShortcut::Search, cfg.search_shortcut.clone(), "搜索"),
             (ConfiguredShortcut::Chat, cfg.chat_shortcut.clone(), "AI 对话"),
             (ConfiguredShortcut::Notes, cfg.notes_shortcut.clone(), "速记"),
+            (ConfiguredShortcut::Shot, cfg.shot_shortcut.clone(), "截图"),
+            (
+                ConfiguredShortcut::Recorder,
+                cfg.recorder_shortcut.clone(),
+                "GIF 录制",
+            ),
         ];
         others
             .into_iter()
@@ -2218,6 +2234,8 @@ fn config_field(cfg: &crate::config::AppConfig, which: &ConfiguredShortcut) -> S
         ConfiguredShortcut::Search => cfg.search_shortcut.clone(),
         ConfiguredShortcut::Chat => cfg.chat_shortcut.clone(),
         ConfiguredShortcut::Notes => cfg.notes_shortcut.clone(),
+        ConfiguredShortcut::Shot => cfg.shot_shortcut.clone(),
+        ConfiguredShortcut::Recorder => cfg.recorder_shortcut.clone(),
     }
 }
 
@@ -2239,6 +2257,18 @@ pub fn set_chat_shortcut(app: tauri::AppHandle, value: String) -> Result<String,
     set_configured_shortcut(app, value, ConfiguredShortcut::Chat)
 }
 
+/// 更新截图呼出快捷键（唤起选区层，框选松手直接出图）
+#[tauri::command]
+pub fn set_shot_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    set_configured_shortcut(app, value, ConfiguredShortcut::Shot)
+}
+
+/// 更新 GIF 录制呼出快捷键（唤起选区层，框选后设参数再录）
+#[tauri::command]
+pub fn set_recorder_shortcut(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    set_configured_shortcut(app, value, ConfiguredShortcut::Recorder)
+}
+
 /// 启用/禁用某个可自定义全局快捷键：禁用 = 注销该热键但保留键值；启用 = 按当前键值重新注册。
 /// 与 set_*_shortcut 分开：这里只切开关，不动键值本身。
 #[tauri::command]
@@ -2253,6 +2283,8 @@ pub fn set_shortcut_enabled(
         "search" => ConfiguredShortcut::Search,
         "chat" => ConfiguredShortcut::Chat,
         "notes" => ConfiguredShortcut::Notes,
+        "shot" => ConfiguredShortcut::Shot,
+        "recorder" => ConfiguredShortcut::Recorder,
         _ => return Err("未知的快捷键类型".into()),
     };
     let _guard = crate::config::lock();

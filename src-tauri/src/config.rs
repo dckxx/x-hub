@@ -183,6 +183,18 @@ pub struct AppConfig {
     /// 速记呼出快捷键（默认 Ctrl+Shift+N，可配置，全局注册；唤起主窗→切速记→聚焦新建）
     #[serde(default = "default_notes_shortcut")]
     pub notes_shortcut: String,
+    /// 截图呼出快捷键（默认 Ctrl+Shift+A，可配置，全局注册；唤起选区层，框选松手直接出图）
+    #[serde(default = "default_shot_shortcut")]
+    pub shot_shortcut: String,
+    /// GIF 录制呼出快捷键（默认 Ctrl+Shift+G，可配置，全局注册；唤起选区层，框选后设参数再录）
+    #[serde(default = "default_recorder_shortcut")]
+    pub recorder_shortcut: String,
+    /// GIF 保存目录（设置 → 功能可选；空 = 默认 数据根\captures，失效时自动回退默认）
+    #[serde(default)]
+    pub recorder_save_dir: String,
+    /// GIF 录制默认帧率（1–60，默认 20；选区层不再逐次选择，统一用此默认值）
+    #[serde(default = "default_recorder_fps")]
+    pub recorder_fps: u32,
     /// 各全局快捷键是否启用（默认开）。关掉 = 注销该热键且不再注册，但**保留已录的键值**，
     /// 重新打开即恢复——比「清空键值」更明确，也不会因录错删空而悄悄失效。
     #[serde(default = "default_true")]
@@ -195,6 +207,10 @@ pub struct AppConfig {
     pub chat_shortcut_enabled: bool,
     #[serde(default = "default_true")]
     pub notes_shortcut_enabled: bool,
+    #[serde(default = "default_true")]
+    pub shot_shortcut_enabled: bool,
+    #[serde(default = "default_true")]
+    pub recorder_shortcut_enabled: bool,
     /// 剪贴板历史最大条数（含置顶；置顶豁免自动清理但计入上限）
     pub clipboard_max_items: i64,
     /// 非置顶记录的保留天数
@@ -398,6 +414,21 @@ fn default_notes_shortcut() -> String {
     crate::shortcut::DEFAULT_NOTES_SHORTCUT.to_string()
 }
 
+/// 截图呼出快捷键默认值（与 shortcut.rs 的 DEFAULT_SHOT_SHORTCUT 同源）
+fn default_shot_shortcut() -> String {
+    crate::shortcut::DEFAULT_SHOT_SHORTCUT.to_string()
+}
+
+/// GIF 录制呼出快捷键默认值（与 shortcut.rs 的 DEFAULT_RECORDER_SHORTCUT 同源）
+fn default_recorder_shortcut() -> String {
+    crate::shortcut::DEFAULT_RECORDER_SHORTCUT.to_string()
+}
+
+/// GIF 录制默认帧率 20fps（BitBlt 采集几 ms/帧，20 已流畅；体积敏感再手动降档）
+fn default_recorder_fps() -> u32 {
+    20
+}
+
 /// 通知驻留时长默认 5 秒
 fn default_notice_duration_ms() -> i64 {
     5000
@@ -551,11 +582,17 @@ impl Default for AppConfig {
             search_shortcut: crate::shortcut::DEFAULT_SEARCH_SHORTCUT.to_string(),
             chat_shortcut: crate::shortcut::DEFAULT_CHAT_SHORTCUT.to_string(),
             notes_shortcut: crate::shortcut::DEFAULT_NOTES_SHORTCUT.to_string(),
+            shot_shortcut: crate::shortcut::DEFAULT_SHOT_SHORTCUT.to_string(),
+            recorder_shortcut: crate::shortcut::DEFAULT_RECORDER_SHORTCUT.to_string(),
+            recorder_save_dir: String::new(),
+            recorder_fps: 20,
             global_shortcut_enabled: true,
             clipboard_shortcut_enabled: true,
             search_shortcut_enabled: true,
             chat_shortcut_enabled: true,
             notes_shortcut_enabled: true,
+            shot_shortcut_enabled: true,
+            recorder_shortcut_enabled: true,
             clipboard_max_items: 500,
             clipboard_ttl_days: 7,
             clipboard_paused: false,

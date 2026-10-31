@@ -133,6 +133,38 @@ const {
   showToast,
 })
 
+const {
+  value: shotShortcut,
+  error: shotError,
+  listening: shotListening,
+  inputRef: shotInputRef,
+  commit: commitShotShortcut,
+  startListening: startListenShotShortcut,
+  onBlur: onShotShortcutBlur,
+  onKeydown: onShotShortcutKeydown,
+} = useShortcutRecorder({
+  initial: normalizeShortcutDisplay(store.state.config.shot_shortcut ?? 'Ctrl+Shift+A'),
+  label: '截图快捷键',
+  save: (v) => store.setShotShortcut(v),
+  showToast,
+})
+
+const {
+  value: recorderShortcut,
+  error: recorderError,
+  listening: recorderListening,
+  inputRef: recorderInputRef,
+  commit: commitRecorderShortcut,
+  startListening: startListenRecorderShortcut,
+  onBlur: onRecorderShortcutBlur,
+  onKeydown: onRecorderShortcutKeydown,
+} = useShortcutRecorder({
+  initial: normalizeShortcutDisplay(store.state.config.recorder_shortcut ?? 'Ctrl+Shift+G'),
+  label: 'GIF 录制快捷键',
+  save: (v) => store.setRecorderShortcut(v),
+  showToast,
+})
+
 // inputRef 仅在模板 ref 绑定中使用（把 DOM 输入框连到 recorder 内部，点击「录入」自动聚焦），
 // vue-tsc 不把模板 ref 视为「读取」，这里显式求值一次以通过 noUnusedLocals
 void shortcutInputRef
@@ -140,9 +172,11 @@ void clipInputRef
 void searchInputRef
 void chatInputRef
 void notesInputRef
+void shotInputRef
+void recorderInputRef
 
 // ---- 快捷键启用/禁用：关掉 = 注销热键但保留键值（重开即恢复），比「清空」更明确、不会误失效 ----
-type ShortcutKind = 'main' | 'clipboard' | 'search' | 'chat' | 'notes'
+type ShortcutKind = 'main' | 'clipboard' | 'search' | 'chat' | 'notes' | 'shot' | 'recorder'
 
 function shortcutEnabled(kind: ShortcutKind): boolean {
   const c = store.state.config
@@ -157,6 +191,10 @@ function shortcutEnabled(kind: ShortcutKind): boolean {
       return c.chat_shortcut_enabled
     case 'notes':
       return c.notes_shortcut_enabled
+    case 'shot':
+      return c.shot_shortcut_enabled
+    case 'recorder':
+      return c.recorder_shortcut_enabled
   }
 }
 
@@ -168,7 +206,7 @@ async function toggleShortcutEnabled(kind: ShortcutKind) {
   shortcutToggleBusy.value = true
   try {
     await store.setShortcutEnabled(kind, next)
-    const label = { main: '全局', clipboard: '剪贴板', search: '搜索', chat: 'AI 对话', notes: '速记' }[kind]
+    const label = { main: '全局', clipboard: '剪贴板', search: '搜索', chat: 'AI 对话', notes: '速记', shot: '截图', recorder: 'GIF 录制' }[kind]
     showToast(next ? `${label}快捷键已启用` : `${label}快捷键已禁用（键值保留，随时可重开）`)
   } catch (e) {
     showToast(`设置失败：${String(e)}`)
@@ -267,6 +305,10 @@ onMounted(async () => {
   chatShortcut.value = normalizeShortcutDisplay(store.state.config.chat_shortcut ?? 'Ctrl+Shift+K')
 
   notesShortcut.value = normalizeShortcutDisplay(store.state.config.notes_shortcut ?? 'Ctrl+Shift+N')
+
+  shotShortcut.value = normalizeShortcutDisplay(store.state.config.shot_shortcut ?? 'Ctrl+Shift+A')
+
+  recorderShortcut.value = normalizeShortcutDisplay(store.state.config.recorder_shortcut ?? 'Ctrl+Shift+G')
 
   noticeSeconds.value = Math.round((store.state.config.notice_duration_ms ?? 5000) / 1000)
 
@@ -629,5 +671,85 @@ onMounted(async () => {
             </div>
           </div>
           <p v-if="notesError" class="shortcut-error">{{ notesError }}</p>
+
+          <div class="setting-row shortcut-row">
+            <div class="setting-info">
+              <span class="setting-name">截图呼出快捷键</span>
+              <span class="setting-desc">任何应用中框选屏幕区域直接出图（存 captures 目录 + 自动复制剪贴板）；右侧开关可临时禁用（保留键值）</span>
+            </div>
+            <div class="shortcut-edit" :class="{ off: !store.state.config.shot_shortcut_enabled }">
+              <div class="shortcut-input-wrap">
+                <Keyboard :size="14" :stroke-width="2" class="shortcut-icon" />
+                <input
+                  ref="shotInputRef"
+                  v-model="shotShortcut"
+                  class="shortcut-input"
+                  type="text"
+                  spellcheck="false"
+                  :readonly="shotListening"
+                  placeholder="Ctrl+Shift+A"
+                  @keydown="onShotShortcutKeydown"
+                  @keydown.enter="commitShotShortcut"
+                  @blur="onShotShortcutBlur"
+                />
+                <button class="shortcut-record-btn" type="button" @click="startListenShotShortcut">
+                  {{ shotListening ? '按下组合键…' : '录入' }}
+                </button>
+              </div>
+              <button
+                class="toggle shortcut-toggle"
+                role="switch"
+                type="button"
+                :aria-checked="store.state.config.shot_shortcut_enabled"
+                :class="{ on: store.state.config.shot_shortcut_enabled }"
+                :disabled="shortcutToggleBusy"
+                :title="store.state.config.shot_shortcut_enabled ? '点击禁用该快捷键' : '点击启用该快捷键'"
+                @click="toggleShortcutEnabled('shot')"
+              >
+                <span class="toggle-knob"></span>
+              </button>
+            </div>
+          </div>
+          <p v-if="shotError" class="shortcut-error">{{ shotError }}</p>
+
+          <div class="setting-row shortcut-row">
+            <div class="setting-info">
+              <span class="setting-name">GIF 录制呼出快捷键</span>
+              <span class="setting-desc">任何应用中框选屏幕区域录制为 GIF（可选帧率与最长时长）；右侧开关可临时禁用（保留键值）</span>
+            </div>
+            <div class="shortcut-edit" :class="{ off: !store.state.config.recorder_shortcut_enabled }">
+              <div class="shortcut-input-wrap">
+                <Keyboard :size="14" :stroke-width="2" class="shortcut-icon" />
+                <input
+                  ref="recorderInputRef"
+                  v-model="recorderShortcut"
+                  class="shortcut-input"
+                  type="text"
+                  spellcheck="false"
+                  :readonly="recorderListening"
+                  placeholder="Ctrl+Shift+G"
+                  @keydown="onRecorderShortcutKeydown"
+                  @keydown.enter="commitRecorderShortcut"
+                  @blur="onRecorderShortcutBlur"
+                />
+                <button class="shortcut-record-btn" type="button" @click="startListenRecorderShortcut">
+                  {{ recorderListening ? '按下组合键…' : '录入' }}
+                </button>
+              </div>
+              <button
+                class="toggle shortcut-toggle"
+                role="switch"
+                type="button"
+                :aria-checked="store.state.config.recorder_shortcut_enabled"
+                :class="{ on: store.state.config.recorder_shortcut_enabled }"
+                :disabled="shortcutToggleBusy"
+                :title="store.state.config.recorder_shortcut_enabled ? '点击禁用该快捷键' : '点击启用该快捷键'"
+                @click="toggleShortcutEnabled('recorder')"
+              >
+                <span class="toggle-knob"></span>
+              </button>
+            </div>
+          </div>
+          <p v-if="recorderError" class="shortcut-error">{{ recorderError }}</p>
         </section>
 </template>

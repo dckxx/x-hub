@@ -198,6 +198,19 @@ export function dueBadge(t: { due_at: number | null }, today: Date): DueBadge | 
   return { kind: 'date', text: `${y}${fmtDay(d)}` }
 }
 
+/**
+ * 周期待办勾掉一轮后「已滚到 X」的文案：今天 / 明天 / M月D日（跨年补年份）。
+ * 行勾选（TodoRow）与日历当天明细（TodoView）的撤销提示共用这一份，别各写一套。
+ */
+export function nextRepeatLabel(t: { due_at: number | null }, now: Date): string {
+  if (t.due_at == null) return '下一轮'
+  const badge = dueBadge(t, now)
+  if (badge && (badge.kind === 'today' || badge.kind === 'tmr')) return badge.text
+  const d = new Date(t.due_at)
+  const y = d.getFullYear() !== now.getFullYear() ? `${d.getFullYear()}年` : ''
+  return `${y}${d.getMonth() + 1}月${d.getDate()}日`
+}
+
 /** 下一个周一：从明天起找（今天恰好是周一时返回下周一，避免「下周一」快捷键选回当天） */
 export function nextMonday(today: Date): Date {
   const d = addDays(startOfDay(today), 1)

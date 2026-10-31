@@ -34,6 +34,9 @@ const SECTIONS = [
   { id: 'workbench', label: '工作台' },
   { id: 'shortcut', label: '快捷键' },
   { id: 'clipboard', label: '剪贴板' },
+  // GIF 录制（2026-10-31）：截图/GIF 录屏功能设置分区（默认帧率/保存目录）。
+  // ⚠️ 左栏子项由 SECTIONS + SECTION_GROUP 自动派生，面板 section 的 id 必须与这里一致
+  { id: 'gif', label: 'GIF 录制' },
   { id: 'online', label: '联网' },
   { id: 'mem', label: '性能' },
   { id: 'account', label: '账号' },
@@ -79,6 +82,7 @@ const SECTION_GROUP: Record<SectionId, GroupId> = {
   clipboard: 'features',
   online: 'features',
   mem: 'features',
+  gif: 'features',
   extensions: 'extensions',
   skills: 'extensions',
   account: 'account',

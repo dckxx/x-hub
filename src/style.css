@@ -765,6 +765,27 @@ html[data-clipboard-window] body {
 html[data-clipboard-window] #app {
   padding: 0;
 }
+/* 截图 / GIF 录屏选区覆盖层：body 透明，全屏显示拖拽遮罩（recorder.rs 两窗） */
+html[data-recorder-overlay] body {
+  background: transparent !important;
+}
+html[data-recorder-overlay] #app {
+  padding: 0;
+}
+/* GIF 录制控制条：body 透明，只显示悬浮控制条本体 */
+html[data-recorder-control] body {
+  background: transparent !important;
+}
+html[data-recorder-control] #app {
+  padding: 0;
+}
+/* 贴图窗口（盯住功能）：body 透明，只显示钉屏的截图本体 */
+html[data-pin-shot] body {
+  background: transparent !important;
+}
+html[data-pin-shot] #app {
+  padding: 0;
+}
 /* 提示词 / 待办浮窗：窗口透明，body 透明，只显示卡片本体 */
 html[data-prompt-float] body,
 html[data-todo-float] body {

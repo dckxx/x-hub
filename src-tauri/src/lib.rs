@@ -31,6 +31,7 @@ mod precheck;
 mod process;
 mod proxy;
 mod publisher;
+mod recorder;
 mod repo;
 mod runtime;
 mod secret;
@@ -71,6 +72,38 @@ use tauri::{Listener, Manager};
 /// 全局 AppHandle：setup 时登记，供拿不到 handle 的上下文广播事件用
 /// （如 chat.rs 的平台 400 自愈路径触发 `chat-models-changed`）。
 pub static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// 屏蔽 WebView2 的浏览器相关功能（右键默认菜单、浏览器加速键 Ctrl+R/F5/F12 等、
+/// DevTools），只保留应用自身的交互。这些属于 WebView2 Settings 层的能力，前端 JS
+/// 拦不到（事件不进页面）。**只接截图/录屏的两个窗口**（recorder.rs）：全屏透明选区层
+/// 上 F5 刷新页面 / 右键菜单是纯干扰；主窗与既有浮窗刻意不接，保留 DevTools 开发能力。
+#[cfg(target_os = "windows")]
+pub fn lockdown_webview(win: &tauri::WebviewWindow) {
+    use tauri::webview::PlatformWebview;
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+    use windows_core::Interface;
+
+    let _ = win.with_webview(|platform: PlatformWebview| {
+        unsafe {
+            let controller = platform.controller();
+            if let Ok(core) = controller.CoreWebView2() {
+                if let Ok(settings) = core.Settings() {
+                    // 关闭默认右键菜单（页面自身的 @contextmenu 自定义菜单不受影响）
+                    let _ = settings.SetAreDefaultContextMenusEnabled(false);
+                    // 关闭 F12 等 DevTools
+                    let _ = settings.SetAreDevToolsEnabled(false);
+                    // 关闭浏览器加速键（Ctrl+R / Ctrl+Shift+R / F5 / Ctrl+Shift+I / Ctrl+P 等）
+                    if let Ok(s3) = settings.cast::<ICoreWebView2Settings3>() {
+                        let _ = s3.SetAreBrowserAcceleratorKeysEnabled(false);
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn lockdown_webview(_win: &tauri::WebviewWindow) {}
 
 /// 初始化数据库并返回连接
 fn init_database() -> Result<Connection, Box<dyn std::error::Error>> {
@@ -669,8 +702,8 @@ pub fn run() {
             // 是**全局单例**，而扩展 iframe 与资产资源同源 ⇒ 放行数据根等于任何扩展都能直接
             // fetch 到用户数据库（xhub.db）、app.json 与日志，从而绕开桥 API 的权限系统。
             // 数据目录可被改到 %APPDATA% 之外（自定义目录 / U 盘便携），故必须动态放行。
-            const ASSET_SCOPE_SUBDIRS: [&str; 3] =
-                ["icons", "wallpapers", "clipboard/images"];
+            const ASSET_SCOPE_SUBDIRS: [&str; 4] =
+                ["icons", "wallpapers", "clipboard/images", "captures/pins"];
             for rel in ASSET_SCOPE_SUBDIRS {
                 let dir = crate::paths::data_root().join(rel);
                 // 目录必须先存在：allow_directory 会额外注册 canonicalize 后的模式变体，
@@ -698,6 +731,11 @@ pub fn run() {
     // Agent 运行时状态（#t44）：审批挂起表 / 会话级授权 / 中断旗标
     app.manage(std::sync::Arc::new(agent::state::AgentState::new()));
             app.manage(clipboard::ClipboardState::default());
+            // 截图 / GIF 录制会话状态：open_overlay/recorder_start 等命令经
+            // app.state::<RecorderState>() 取用，漏 manage 会在按下快捷键时 panic 闪退
+            app.manage(recorder::RecorderState::default());
+            // 贴图（盯住）slot 状态：每张钉屏贴图占一个窗口 + 一个落盘路径
+            app.manage(recorder::PinState::default());
             app.manage(service::ServiceState::default());
             // 开发扩展目录映射（「我的扩展」登记；扩展协议与扫描按它解析源码目录）
             app.manage(ext_protocol::DevExtensionDirs::default());
@@ -877,6 +915,10 @@ pub fn run() {
             // （全部页面收进 tab；无条件预创建隐藏常驻，运行期只 show/hide/navigate/set_bounds，见 suda_browser.rs）
             suda_browser::init(app.handle());
 
+            // 截图 / GIF 录屏：选区覆盖层 + 录制控制条（无条件预创建隐藏常驻，
+            // 运行期只重定位 + 显隐，绝不建窗——快捷键触发必须即时弹出，见 recorder.rs）
+            recorder::init(app.handle());
+
             // WebView2 内存级别联动（P0，webview_mem.rs）：窗口隐藏时把常驻 renderer
             // 的内存目标级别设为 Low（弃缓存换页、脚本照常跑），显示前恢复 Normal。
             // 快路径接在各显隐函数里，这里起的是 300ms 轮询纠偏兜底线程
@@ -920,6 +962,31 @@ pub fn run() {
             let app_handle = app.handle().clone();
             app.listen("clipboard-toggle", move |_| {
                 crate::clipboard::toggle_overlay(&app_handle);
+            });
+
+            // 截图快捷键事件：唤起选区层（shot 模式，框选松手直接出图）。
+            // 主窗可能正隐藏着，必须在这里（Rust 侧）处理而非主窗前端。
+            // open_overlay 内部说明：事件回调不在主线程，可安全操作窗口
+            let app_handle = app.handle().clone();
+            app.listen("shot-shortcut", move |_| {
+                if let Err(e) = crate::recorder::open_overlay(&app_handle, crate::recorder::OverlayMode::Shot) {
+                    log::warn!("[截图] 唤起选区层失败: {e}");
+                }
+            });
+
+            // GIF 录制快捷键事件：唤起选区层（record 模式，框选后设帧率/时长再录）
+            let app_handle = app.handle().clone();
+            app.listen("recorder-shortcut", move |_| {
+                if let Err(e) = crate::recorder::open_overlay(&app_handle, crate::recorder::OverlayMode::Record) {
+                    log::warn!("[GIF 录制] 唤起选区层失败: {e}");
+                }
+            });
+
+            // 选区层 Esc 快捷取消（全局热键动态注册，recorder.rs::register_esc_hotkey）：
+            // 不依赖键盘焦点——SetForegroundWindow 前台锁定下 webview 可能收不到按键
+            let app_handle = app.handle().clone();
+            app.listen("recorder-overlay-esc", move |_| {
+                crate::recorder::hide_overlay(&app_handle);
             });
 
             // 搜索快捷键事件：唤起主窗（对话框由主窗前端收到同名事件后打开）
@@ -1070,7 +1137,23 @@ pub fn run() {
             commands::set_search_shortcut,
             commands::set_chat_shortcut,
             commands::set_notes_shortcut,
+            commands::set_shot_shortcut,
+            commands::set_recorder_shortcut,
             commands::set_shortcut_enabled,
+            // 截图 / GIF 录屏（recorder.rs）：选区层 + 控制条 + 产物落盘
+            recorder::recorder_open_overlay,
+            recorder::recorder_close_overlay,
+            recorder::recorder_start,
+            recorder::recorder_stop,
+            recorder::recorder_cancel,
+            recorder::recorder_capture_shot,
+            recorder::recorder_reveal,
+            // 贴图（盯住）：钉屏展示截图
+            recorder::recorder_pin_shot,
+            recorder::recorder_pin_take,
+            recorder::recorder_pin_close,
+            // 窗口自动识别：用户首次交互后停跟随
+            recorder::recorder_hover_lock,
             commands::get_run_at_startup,
             commands::set_run_at_startup,
             commands::get_startup_hidden,

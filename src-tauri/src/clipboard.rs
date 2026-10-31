@@ -866,10 +866,37 @@ fn clipboard_image_payload(bytes: &[u8]) -> Result<ClipboardImagePayload, String
 /// 写回后记录回声指纹，抑制监听线程重复入库。
 pub fn set_clipboard_image(path: &str) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("读取图片快照失败: {}", e))?;
-    let payload = clipboard_image_payload(&bytes)?;
+    set_clipboard_image_bytes(&bytes)
+}
+
+/// 同 set_clipboard_image，但直接接受图片字节（截图不落盘，内存 PNG 直接进剪贴板）。
+pub fn set_clipboard_image_bytes(bytes: &[u8]) -> Result<(), String> {
+    let payload = clipboard_image_payload(bytes)?;
     // 回声指纹基于「写回剪贴板的实际字节」（PNG 原始字节 / 剥掉文件头的 DIB），
     // 与监听端读到的一致，确保粘贴后能被正确识别为自身写入回声。
     let hash = hash_bytes(payload.bytes());
+    // PNG 载荷要**双格式写**（CF_DIB + PNG）：只写 PNG 格式时，只认位图的应用
+    // （Office 部分/旧输入框/IM 粘贴板桥）粘贴无效——截图「复制了却粘不出来」的根因。
+    // DIB 侧从 PNG 现转（解码 → BMP 文件 → 剥 14 字节文件头）。
+    let dib_for_png: Option<Vec<u8>> = match &payload {
+        ClipboardImagePayload::Png(data) => match image::load_from_memory(data) {
+            Ok(img) => {
+                let mut bmp = std::io::Cursor::new(Vec::new());
+                match img.write_to(&mut bmp, image::ImageFormat::Bmp) {
+                    Ok(()) => Some(bmp_to_dib(&bmp.into_inner()).to_vec()),
+                    Err(e) => {
+                        log::warn!("[剪贴板] PNG 转 DIB 失败（仅写 PNG 格式）: {e}");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("[剪贴板] PNG 解码失败（仅写 PNG 格式）: {e}");
+                None
+            }
+        },
+        ClipboardImagePayload::Dib(_) => None,
+    };
     unsafe {
         if OpenClipboard(std::ptr::null_mut()) == 0 {
             return Err("无法打开系统剪贴板".into());
@@ -881,12 +908,24 @@ pub fn set_clipboard_image(path: &str) -> Result<(), String> {
         let result = match payload {
             ClipboardImagePayload::Dib(data) => set_global_data(CF_DIB as u32, &data),
             ClipboardImagePayload::Png(data) => {
+                let mut first_err: Option<String> = None;
+                if let Some(dib) = &dib_for_png {
+                    if let Err(e) = set_global_data(CF_DIB as u32, dib) {
+                        first_err = Some(e);
+                    }
+                }
                 let fmt = RegisterClipboardFormatW(windows_sys::core::w!("PNG"));
                 if fmt == 0 {
-                    Err("无法注册 PNG 格式".into())
-                } else {
-                    set_global_data(fmt, &data)
+                    if first_err.is_none() {
+                        first_err = Some("无法注册 PNG 格式".into());
+                    }
+                } else if let Err(e) = set_global_data(fmt, &data) {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
                 }
+                // DIB 或 PNG 任一写成功即视为成功（互补兼容面）
+                first_err.map_or(Ok(()), Err)
             }
         };
         CloseClipboard();

@@ -22,6 +22,7 @@ import {
   dueBadge,
   doneAtLabel,
   fmtHM,
+  nextRepeatLabel,
   repeatEndLabel,
   repeatLabel,
 } from '../utils/todoSchedule'
@@ -200,7 +201,7 @@ async function applyToggle() {
     if (!wasDone && props.todo.repeat_mode !== 'once') {
       const updated = await store.completeTodoRecurring(props.todo.id)
       if (updated) {
-        const next = updated.repeat_mode === 'once' ? '周期已结束' : `已滚到 ${nextLabel(updated)}`
+        const next = updated.repeat_mode === 'once' ? '周期已结束' : `已滚到 ${nextRepeatLabel(updated, new Date())}`
         showToast(next, {
           label: '撤销',
           onClick: () => void store.undoTodoRecurring(props.todo.id),
@@ -218,17 +219,6 @@ async function applyToggle() {
   } finally {
     busy.value = false
   }
-}
-
-/** 滚动后的下一个截止文案：今天 / 明天 / M月D日（跨年补年份） */
-function nextLabel(t: Todo): string {
-  if (t.due_at == null) return '下一轮'
-  const d = new Date(t.due_at)
-  const now = new Date()
-  const badge = dueBadge({ due_at: t.due_at }, now)
-  if (badge && (badge.kind === 'today' || badge.kind === 'tmr')) return badge.text
-  const y = d.getFullYear() !== now.getFullYear() ? `${d.getFullYear()}年` : ''
-  return `${y}${d.getMonth() + 1}月${d.getDate()}日`
 }
 
 /** 确认弹窗状态：未完成子待办数量（> 0 时弹窗） */

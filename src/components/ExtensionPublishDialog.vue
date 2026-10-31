@@ -5,6 +5,7 @@ import { ImagePlus, Info, X } from 'lucide-vue-next'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import AppSelect from './AppSelect.vue'
 import { EXTENSION_CATEGORIES } from '../utils/extensionMeta'
+import { allShotsReferenced, referencedShotCount, shotBasename } from '../utils/shotRefs'
 import {
   isTauri,
   tauriApi,
@@ -364,8 +365,10 @@ async function loadRevokedKeys() {
     revokedKeys.value = status?.revoked ?? []
     // 顺手取该扩展当前已上架版本的截图 URL ——「引用上一版截图」的数据源（未上架 = 空，按钮不出现）。
     // 响应回来时可能已切到别的扩展：只在本扩展仍在场时才落位，防串台
-    if (props.extension?.id === extId) {
+    if (extId && props.extension?.id === extId) {
       prevShots.value = status?.extensions?.find((e) => e.id === extId)?.screenshots?.slice() ?? []
+      // 到位即自动带进表单（同一份数据源；未上架/没有图时自然什么都不做）
+      await autoRefPrevShots(extId)
     }
   } catch {
     revokedKeys.value = []
@@ -399,6 +402,18 @@ const shotPreviews = ref<Record<string, string>>({})
 const prevShots = ref<string[]>([])
 /** 正在下载上一版截图（按钮 busy 态） */
 const fetchingShots = ref(false)
+/** 本轮弹窗是否已自动引用过：用户把自动带进来的图删掉 = 这版不要图，不能反复补回 */
+let autoRefTried = false
+/** 自动引用一张都没下来（有上一版图却在下载/网络这一步失败）：只落一行轻提示，不弹 toast 打扰 */
+const autoRefFailed = ref(false)
+/** 本轮确实由自动引用带入了图（决定说明文案措辞；手动点按钮有自己的 toast，不必重复说明） */
+const autoRefApplied = ref(false)
+/** 表单里有多少张来自上一版截图（自动/手动引用同口径，供说明文案用） */
+const referencedShots = computed(() =>
+  referencedShotCount(prevShots.value, screenshots.value),
+)
+/** 上一版截图已全部带齐：不再给「引用上一版」入口（要重选点「添加图片」） */
+const allPrevReferenced = computed(() => allShotsReferenced(prevShots.value, screenshots.value))
 
 async function pickScreenshots() {
   if (!isTauri()) return
@@ -434,18 +449,27 @@ async function pickScreenshots() {
  * 「引用上一版截图」：把市场清单里已上架版本的截图下载成本地临时文件（Rust 按文件头嗅探类型、
  * 限 2MB、内容哈希命名），之后与手选图片走同一条上传链路——服务端截图本就按内容哈希存储，
  * 同图重传不占新空间。接口未变时发布新版本可整组复用，不必重新选图。
+ * `auto` = 弹窗打开时的自动引用：失败只置一行轻提示（`autoRefFailed`），不弹 toast 打扰。
  */
-async function reusePrevShots() {
+async function reusePrevShots(opt: { auto?: boolean } = {}) {
   if (!isTauri() || fetchingShots.value) return
+  const extId = props.extension?.id
   const room = MAX_SHOTS - screenshots.value.length
   if (room <= 0) {
-    showToast(`最多 ${MAX_SHOTS} 张截图`)
+    if (!opt.auto) showToast(`最多 ${MAX_SHOTS} 张截图`)
     return
   }
+  // 只取还没带进来的那几张：按「前 room 张」硬取的话，已带进来的会全部撞上按路径去重，
+  // 白下一轮还报一句「0 张失败」（删掉一张后再点就是这个场面）
+  const have = new Set(screenshots.value.map(shotBasename))
+  const urls = prevShots.value.filter((u) => !have.has(shotBasename(u))).slice(0, room)
+  if (!urls.length) return
   fetchingShots.value = true
   try {
-    // 空位不够时只取前 room 张（与手选多处同口径）；单张失败由 Rust 跳过并落日志
-    const paths = await tauriApi.fetchRemoteScreenshots(prevShots.value.slice(0, room))
+    const paths = await tauriApi.fetchRemoteScreenshots(urls)
+    // 下载期间可能已切到别的扩展（自动引用尤其如此）：结果只落给发起时那个扩展，
+    // 否则 B 扩展的弹窗会凭空多出 A 扩展的截图
+    if (props.extension?.id !== extId) return
     let added = 0
     for (const p of paths) {
       if (screenshots.value.length >= MAX_SHOTS) break
@@ -458,13 +482,33 @@ async function reusePrevShots() {
         /* 下载侧已验过文件头，预览失败极罕见；模板会给「无法预览」占位 */
       }
     }
-    const failed = Math.max(0, Math.min(prevShots.value.length, room) - added)
+    if (opt.auto) {
+      autoRefFailed.value = added === 0
+      autoRefApplied.value = added > 0
+      return
+    }
+    const failed = urls.length - added
     showToast(failed ? `已引用 ${added} 张，${failed} 张下载失败` : `已引用上一版 ${added} 张截图`)
   } catch (e) {
-    showToast(String(e))
+    if (opt.auto) autoRefFailed.value = true
+    else showToast(String(e))
   } finally {
     fetchingShots.value = false
   }
+}
+
+/**
+ * 弹窗打开时自动引用上一版截图：发新版本基本不必重新选图，忘了点「引用上一版」等于把市场
+ * 详情页的截图弄丢。与手动按钮同一条链路（同一份 `prevShots`、同一套去重与限张）。
+ * 每个弹窗会话只尝试一次（`autoRefTried`）；用户手动选过图时也不抢——那是他明确选过的物料。
+ */
+async function autoRefPrevShots(extId: string) {
+  if (autoRefTried) return
+  if (!prevShots.value.length) return
+  if (screenshots.value.length > 0) return
+  if (props.extension?.id !== extId) return
+  autoRefTried = true
+  await reusePrevShots({ auto: true })
 }
 
 function removeShot(path: string) {
@@ -570,6 +614,10 @@ function initDialog() {
   // 且此时提交会把 A 扩展挑的截图挂到 B 扩展名下（组件常驻挂载、只靠 v-if 隐藏）
   screenshots.value = []
   shotPreviews.value = {}
+  // 自动引用也按会话重置：换了扩展要重新判定一次，并清掉上一轮的失败提示
+  autoRefTried = false
+  autoRefFailed.value = false
+  autoRefApplied.value = false
   // 上一版截图同样跟着扩展走；清单在异步拉取，到位后由 loadRevokedKeys 落位
   prevShots.value = []
   detailId.value = null
@@ -693,13 +741,14 @@ onBeforeUnmount(() => {
           <div class="pub-field">
             <div class="pub-shots-head">
               <span>截图（可选，最多 {{ MAX_SHOTS }} 张 · 单张 ≤ 2MB）</span>
+              <!-- 打开弹窗时已自动带入上一版（见 autoRefPrevShots）；全部带齐后这里就不再出现 -->
               <button
-                v-if="prevShots.length"
+                v-if="prevShots.length && !allPrevReferenced"
                 class="pub-shot-reuse"
                 type="button"
                 :disabled="fetchingShots || screenshots.length >= MAX_SHOTS"
                 title="下载市场清单里当前已上架版本的截图，直接作为本版截图；界面没变时不必重新选图"
-                @click="reusePrevShots"
+                @click="reusePrevShots()"
               >
                 {{ fetchingShots ? '正在引用…' : `引用上一版截图（${prevShots.length} 张）` }}
               </button>
@@ -722,6 +771,12 @@ onBeforeUnmount(() => {
                 <span>添加图片</span>
               </button>
             </div>
+            <p v-if="autoRefApplied && referencedShots > 0" class="pub-shot-note">
+              已自动带入上一版 {{ referencedShots }} 张截图，界面没变可以直接发布；要换图就在上面移除后重选
+            </p>
+            <p v-else-if="autoRefFailed" class="pub-shot-note pub-shot-note-warn">
+              上一版截图没能自动带入（网络或图片已失效），可手动添加
+            </p>
             <p class="pub-hint">
               截图会展示在扩展详情页 —— 建议 1~3 张：主界面 + 典型用法，用户一眼就知道这扩展能干什么
             </p>
@@ -1338,6 +1393,16 @@ onBeforeUnmount(() => {
 .pub-shot-reuse:disabled {
   opacity: 0.55;
   cursor: default;
+}
+/* 自动引用结果说明：绿 = 已带入；橙 = 没能带入（两种都只是提示，不影响提交） */
+.pub-shot-note {
+  margin: 6px 0 0;
+  font-size: 0.68rem;
+  line-height: 1.5;
+  color: var(--c-green-ink);
+}
+.pub-shot-note-warn {
+  color: var(--c-orange-ink);
 }
 .pub-shots {
   display: flex;

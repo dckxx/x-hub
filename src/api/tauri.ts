@@ -340,12 +340,22 @@ export interface AppConfig {
   chat_shortcut: string
   /** 速记呼出快捷键（默认 Ctrl+Shift+N）：唤起主窗→切速记视图→聚焦新建 */
   notes_shortcut: string
+  /** 截图呼出快捷键（默认 Ctrl+Shift+A）：唤起选区层，框选松手直接出图 */
+  shot_shortcut: string
+  /** GIF 录制呼出快捷键（默认 Ctrl+Shift+G）：唤起选区层，框选后设帧率/时长再录 */
+  recorder_shortcut: string
+  /** GIF 保存目录（空 = 默认 数据根\captures；失效时后端自动回退默认） */
+  recorder_save_dir: string
+  /** GIF 录制默认帧率（1-60，默认 20；选区层不再逐次选择） */
+  recorder_fps: number
   /** 各全局快捷键是否启用（默认开）：关掉 = 注销热键但保留键值，重开即恢复 */
   global_shortcut_enabled: boolean
   clipboard_shortcut_enabled: boolean
   search_shortcut_enabled: boolean
   chat_shortcut_enabled: boolean
   notes_shortcut_enabled: boolean
+  shot_shortcut_enabled: boolean
+  recorder_shortcut_enabled: boolean
   /** 剪贴板历史最大条数（含置顶） */
   clipboard_max_items: number
   /** 非置顶记录保留天数 */
@@ -1015,6 +1025,52 @@ export interface Countdown {
   updated_at: string
 }
 
+// ---- 截图 / GIF 录屏（recorder.rs） ----
+
+/** 屏幕区域（物理像素、屏幕坐标） */
+export interface RecRegion {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** GIF 录制结果 */
+export interface RecorderResult {
+  path: string
+  width: number
+  height: number
+  frames: number
+  duration_ms: number
+  size_bytes: number
+}
+
+/** 截图标注：一笔/一形 = 归一化坐标（相对选区左上角 0..1）。
+ *  stroke 用 points（轨迹点列）；rect / ellipse 用 x/y/w/h（归一化包围盒） */
+export interface CaptureAnnotation {
+  kind: 'stroke' | 'rect' | 'ellipse'
+  points?: [number, number][]
+  x?: number
+  y?: number
+  w?: number
+  h?: number
+}
+
+/** 截图结果（图已复制剪贴板，不落盘） */
+export interface CaptureShotResult {
+  width: number
+  height: number
+  size_bytes: number
+}
+
+/** 贴图结果（图同时在剪贴板 + 钉屏展示） */
+export interface PinShotResult {
+  slot: number
+  path: string
+  width: number
+  height: number
+}
+
 export interface DroppedAppInfo {
   name: string
   target: string
@@ -1537,9 +1593,38 @@ export const tauriApi = {
   setSearchShortcut: (value: string) => invoke<string>('set_search_shortcut', { value }),
   setChatShortcut: (value: string) => invoke<string>('set_chat_shortcut', { value }),
   setNotesShortcut: (value: string) => invoke<string>('set_notes_shortcut', { value }),
+  setShotShortcut: (value: string) => invoke<string>('set_shot_shortcut', { value }),
+  setRecorderShortcut: (value: string) => invoke<string>('set_recorder_shortcut', { value }),
   /** 启用/禁用某个可自定义全局快捷键（禁用保留键值，只注销热键） */
-  setShortcutEnabled: (kind: 'main' | 'clipboard' | 'search' | 'chat' | 'notes', enabled: boolean) =>
+  setShortcutEnabled: (kind: 'main' | 'clipboard' | 'search' | 'chat' | 'notes' | 'shot' | 'recorder', enabled: boolean) =>
     invoke<void>('set_shortcut_enabled', { kind, enabled }),
+  // ---- 截图 / GIF 录屏（recorder.rs；选区层与控制条两窗由后端预创建复用） ----
+  /** 唤起全屏选区层（mode：shot 框选松手即出图 / record 框选后设帧率时长再录） */
+  recorderOpenOverlay: (mode: 'shot' | 'record') =>
+    invoke<void>('recorder_open_overlay', { mode }),
+  /** 收起选区层（Esc 取消；只隐藏，窗口复用） */
+  recorderCloseOverlay: () => invoke<void>('recorder_close_overlay'),
+  /** 截图：框选区域采单帧 + 标注（画笔/矩形/圆形）合成，复制剪贴板（不落盘） */
+  recorderShot: (region: RecRegion, annotations: CaptureAnnotation[]) =>
+    invoke<CaptureShotResult>('recorder_capture_shot', { region, annotations }),
+  /** 贴图（盯住）：同款采屏+剪贴板，图钉到选区原位置置顶展示 */
+  recorderPinShot: (region: RecRegion, annotations: CaptureAnnotation[]) =>
+    invoke<PinShotResult>('recorder_pin_shot', { region, annotations }),
+  /** 贴图窗口拉取自己的截图 asset URL（挂载后调用） */
+  recorderPinTake: () => invoke<string>('recorder_pin_take'),
+  /** 关闭贴图：清 slot + 删 pins 文件 + 收窗 */
+  recorderPinClose: () => invoke<void>('recorder_pin_close'),
+  /** 用户开始手动交互：停掉窗口自动识别跟随（选框交还用户） */
+  recorderHoverLock: () => invoke<void>('recorder_hover_lock'),
+  /** 开始 GIF 录制（fps 省略时用设置默认值 recorder_fps；maxSeconds 1-300） */
+  recorderStart: (region: RecRegion, fps: number | null, maxSeconds: number) =>
+    invoke<void>('recorder_start', { region, fps, maxSeconds }),
+  /** 停止录制并编码 GIF（控制条留在已保存态） */
+  recorderStop: () => invoke<RecorderResult>('recorder_stop'),
+  /** 取消录制：丢弃数据并清临时文件 */
+  recorderCancel: () => invoke<void>('recorder_cancel'),
+  /** 在资源管理器中定位产物文件 */
+  recorderReveal: (path: string) => invoke<void>('recorder_reveal', { path }),
   getRunAtStartup: () =>
     invoke<AutostartStatus>('get_run_at_startup'),
   setRunAtStartup: (enabled: boolean) => invoke<void>('set_run_at_startup', { enabled }),

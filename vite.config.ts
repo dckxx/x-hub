@@ -1,9 +1,57 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import AutoImport from 'unplugin-auto-import/vite'
 
 const host = process.env.TAURI_DEV_HOST
+
+// 剔除 Univer engine-render 内嵌的连字断词词典（pattern-loaders.gen.ts 的 77 个
+// 语言动态 import，af/be/de-1901/hu/nn… 共 ~4.4MB）。这是 docs 文本排版引擎的
+// 连字数据，表格笔记的单元格排版根本不做连字，运行时永远不会加载；但 Tauri 是
+// 全 dist 目录嵌入 exe，一个不落。替换为 null 后 _loadPattern 走 `if (!loader)
+// return` 优雅降级（消费端有判空，不 throw），且无引用者 → rolldown 不再生成
+// 对应 chunk。正则按「小写语言码(-变体)*-8位hash.js」匹配；engine-render 内的
+// 动态 import 已核实全部是断词词典（无其它形态），升级 Univer 后仍适用。
+function stripUniverHyphenationPatterns(): Plugin {
+  return {
+    name: 'strip-univer-hyphenation-patterns',
+    transform(code, id) {
+      if (!id.includes('@univerjs/engine-render')) return null
+      if (!code.includes('import("./')) return null
+      const next = code.replace(
+        /import\("\.\/[a-z]{2,3}(?:-[a-z0-9]+)*-[A-Za-z0-9_-]{6,12}\.js"\)/g,
+        'null',
+      )
+      return next === code ? null : { code: next, map: null }
+    },
+  }
+}
+
+// KaTeX 字体三格式只留 woff2：WebView2 是 Chromium，woff2 全支持，
+// ttf/woff 是纯冗余（~0.78MB）。generateBundle 阶段直接改产物：从 @font-face 的
+// src 列表删掉 woff/ttf 引用 + 从 bundle 删掉这两份字体文件。
+// （transform 阶段做不了：rolldown-vite 的 CSS 管线在 transform 时已把 url() 改写
+// 成 asset 占位符，enforce: 'post' 也拿不到原始 fonts/*.woff 路径；产物层正则按
+// format("woff"/"truetype") 匹配，特异性足够，不会误伤业务 CSS。）
+function stripKaTeXLegacyFonts(): Plugin {
+  return {
+    name: 'strip-katex-legacy-fonts',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      for (const file of Object.values(bundle)) {
+        if (file.type !== 'asset' || !String(file.fileName).endsWith('.css')) continue
+        const css = String(file.source)
+        const next = css
+          .replace(/,\s*url\([^)]*?\.woff\)\s*format\("woff"\)/g, '')
+          .replace(/,\s*url\([^)]*?\.ttf\)\s*format\("truetype"\)/g, '')
+        if (next !== css) file.source = next
+      }
+      for (const name of Object.keys(bundle)) {
+        if (/\.(woff|ttf)$/.test(name)) delete bundle[name]
+      }
+    },
+  }
+}
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -13,6 +61,8 @@ export default defineConfig({
     AutoImport({
       imports: ['vue'],
     }),
+    stripUniverHyphenationPatterns(),
+    stripKaTeXLegacyFonts(),
   ],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

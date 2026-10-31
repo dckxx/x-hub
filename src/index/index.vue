@@ -24,7 +24,7 @@ import { isTauri, tauriApi } from '../api/tauri'
 import { effectiveKeepAliveIds } from '../utils/extensionKeepAlive'
 import { useTitlebarWidget } from '../composables/useTitlebarWidget'
 import { convertFileSrc } from '@tauri-apps/api/core'
-import type { Countdown, ExtensionEntry, Note, Resource, Todo } from '../api/tauri'
+import type { Countdown, ExtensionEntry, Note, RecorderResult, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
 import { FileText, FolderOpen, LayoutDashboard, ListTodo, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
@@ -737,6 +737,19 @@ onMounted(async () => {
         persistChatPanelSize()
       }
     })
+    // GIF 录制完成（recorder.rs）：toast 提示 + 打开所在文件夹（主窗可见时；不可见时有控制条已保存态兜底）
+    unlistenRecorderDone = await on<RecorderResult>('recorder-done', (e) => {
+      const r = e.payload
+      if (!r) return
+      const kb = (r.size_bytes / 1024).toFixed(1)
+      showToast(`GIF 已保存（${r.frames} 帧，${kb} KB）`, { label: '打开文件夹', onClick: () => void tauriApi.recorderReveal(r.path) })
+    })
+    // 截图完成（recorder.rs）：轻 toast「已复制」（不落盘，无「打开文件夹」；不用右下角系统通知）
+    unlistenShotDone = await on<{ message: string; size_bytes: number; width: number; height: number }>('shot-done', (e) => {
+      const p = e.payload
+      if (!p) return
+      showToast(p.message)
+    })
   }
   // 浏览器预览没有全局快捷键：保留应用内 Ctrl+K / Ctrl+Shift+K 兜底。
   // 桌面端一律走全局注册 + 事件分发（在这里注册应用内监听会与全局事件双触发、
@@ -765,6 +778,8 @@ let unlistenChatShortcut: (() => void) | null = null
 let unlistenNotesShortcut: (() => void) | null = null
 let unlistenOpenExtSettings: (() => void) | null = null
 let unlistenChatMode: (() => void) | null = null
+let unlistenRecorderDone: (() => void) | null = null
+let unlistenShotDone: (() => void) | null = null
 
 onUnmounted(() => {
   store.stopOnlineMonitor()
@@ -783,6 +798,8 @@ onUnmounted(() => {
   unlistenNotesShortcut?.()
   unlistenOpenExtSettings?.()
   unlistenChatMode?.()
+  unlistenRecorderDone?.()
+  unlistenShotDone?.()
   window.removeEventListener('suda-open-web-panel', onSudaWebPanelEvent)
   window.removeEventListener('keydown', onSearchKeydown)
   window.removeEventListener('keydown', onChatKeydown)

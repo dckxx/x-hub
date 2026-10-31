@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Copy, MessageSquare, Minus, Music2, Pause, Pin, PinOff, Play, Search, SkipBack, SkipForward, Square, X } from 'lucide-vue-next'
+import { Copy, MessageSquare, Minus, Music2, Pause, Pin, PinOff, Play, Search, SkipBack, SkipForward, Square, X, Clapperboard } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useTitlebarWidget } from '../composables/useTitlebarWidget'
@@ -135,6 +135,16 @@ function minimize() {
   if (isTauri()) tauriApi.minimizeWindow()
 }
 
+/** GIF 录屏：唤起全屏选区层（快捷键的按钮入口；截图以快捷键为主入口） */
+async function openRecorder() {
+  if (!isTauri()) return
+  try {
+    await tauriApi.recorderOpenOverlay('record')
+  } catch (e) {
+    showToast(String(e))
+  }
+}
+
 function toggleMaximize() {
   if (isTauri()) tauriApi.toggleMaximize()
 }
@@ -241,6 +251,9 @@ function close() {
       </button>
       <button class="tool-btn" data-chat-opener :title="`AI 对话 (${store.state.config.chat_shortcut || 'Ctrl+Shift+K'}，可在设置中自定义)`" @click="$emit('chat')">
         <MessageSquare :size="15" :stroke-width="1.8" />
+      </button>
+      <button class="tool-btn" :title="`GIF 录屏 (${store.state.config.recorder_shortcut || 'Ctrl+Shift+G'}，可在设置中自定义；截图 ${store.state.config.shot_shortcut || 'Ctrl+Shift+A'}）`" @click="openRecorder">
+        <Clapperboard :size="15" :stroke-width="1.8" />
       </button>
       <div class="tool-divider"></div>
       <button

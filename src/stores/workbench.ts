@@ -186,11 +186,17 @@ const state = reactive<StoreState>({
     search_shortcut: DEFAULT_SEARCH_SHORTCUT,
     chat_shortcut: DEFAULT_CHAT_SHORTCUT,
     notes_shortcut: IS_MAC_PREVIEW ? 'CommandOrControl+Shift+N' : 'Ctrl+Shift+N',
+    shot_shortcut: IS_MAC_PREVIEW ? 'CommandOrControl+Shift+A' : 'Ctrl+Shift+A',
+    recorder_shortcut: IS_MAC_PREVIEW ? 'CommandOrControl+Shift+G' : 'Ctrl+Shift+G',
+    recorder_save_dir: '',
+    recorder_fps: 20,
     global_shortcut_enabled: true,
     clipboard_shortcut_enabled: true,
     search_shortcut_enabled: true,
     chat_shortcut_enabled: true,
     notes_shortcut_enabled: true,
+    shot_shortcut_enabled: true,
+    recorder_shortcut_enabled: true,
     note_trash_retention_days: 0,
     clipboard_max_items: 500,
     clipboard_ttl_days: 7,
@@ -1565,9 +1571,39 @@ export function useStore() {
     return saved
   }
 
+  async function setShotShortcut(value: string) {
+    state.config.shot_shortcut = value
+    if (!isTauri()) return value
+    const saved = await tauriApi.setShotShortcut(value)
+    state.config.shot_shortcut = saved
+    return saved
+  }
+
+  async function setRecorderShortcut(value: string) {
+    state.config.recorder_shortcut = value
+    if (!isTauri()) return value
+    const saved = await tauriApi.setRecorderShortcut(value)
+    state.config.recorder_shortcut = saved
+    return saved
+  }
+
+  /** GIF 保存目录（空 = 默认 数据根\captures）；整体 saveConfig 落盘 */
+  async function setRecorderSaveDir(value: string) {
+    state.config.recorder_save_dir = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
+  /** GIF 录制默认帧率（1-60，选区层不再逐次选择）；整体 saveConfig 落盘 */
+  async function setRecorderFps(value: number) {
+    state.config.recorder_fps = Math.min(60, Math.max(1, Math.round(value) || 20))
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   /** 启用/禁用某个全局快捷键：禁用 = 后端注销热键但保留键值（重开即恢复），失败回滚内存状态 */
   async function setShortcutEnabled(
-    kind: 'main' | 'clipboard' | 'search' | 'chat' | 'notes',
+    kind: 'main' | 'clipboard' | 'search' | 'chat' | 'notes' | 'shot' | 'recorder',
     enabled: boolean,
   ) {
     const key = (
@@ -1577,6 +1613,8 @@ export function useStore() {
         search: 'search_shortcut_enabled',
         chat: 'chat_shortcut_enabled',
         notes: 'notes_shortcut_enabled',
+        shot: 'shot_shortcut_enabled',
+        recorder: 'recorder_shortcut_enabled',
       } as const
     )[kind]
     const prev = state.config[key]
@@ -2226,6 +2264,10 @@ export function useStore() {
     setSearchShortcut,
     setChatShortcut,
     setNotesShortcut,
+    setShotShortcut,
+    setRecorderShortcut,
+    setRecorderSaveDir,
+    setRecorderFps,
     setShortcutEnabled,
     setDashboardMidContent,
     setDashboardLayout,

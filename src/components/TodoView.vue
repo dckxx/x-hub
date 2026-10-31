@@ -17,6 +17,7 @@ import {
   fmtHM,
   inHorizon,
   isoKey,
+  nextRepeatLabel,
   parseServerDate,
   startOfDay,
   viewGroupOf,
@@ -473,6 +474,29 @@ function askCompleteOverdue() {
   if (overdueTodos.value.length) overdueConfirm.value = true
 }
 
+/**
+ * 行勾选的完整语义（与 TodoRow.applyToggle 同一套，别各写一份）：
+ * 周期待办 = 「完成本轮」、截止滚到下一轮（带撤销提示）；普通待办 = 翻转完成，
+ * 勾上时未完成子待办一并勾上（取消完成不连带走子待办）。
+ * `quiet` = 批量场景：不逐条弹「已滚到…」的撤销提示，由调用方统一汇报。
+ */
+async function applyToggleTodo(t: Todo, quiet = false): Promise<void> {
+  const wasDone = t.done
+  if (!wasDone && t.repeat_mode !== 'once') {
+    const updated = await store.completeTodoRecurring(t.id)
+    if (updated && !quiet) {
+      const next = updated.repeat_mode === 'once' ? '周期已结束' : `已滚到 ${nextRepeatLabel(updated, new Date())}`
+      showToast(next, { label: '撤销', onClick: () => void store.undoTodoRecurring(t.id) })
+    }
+    return
+  }
+  await store.toggleTodo(t.id)
+  if (wasDone) return
+  for (const k of kidsOf.value.get(t.id) ?? []) {
+    if (!k.done) await store.toggleTodo(k.id)
+  }
+}
+
 async function completeOverdue() {
   overdueConfirm.value = false
   if (completingOverdue) return
@@ -481,27 +505,52 @@ async function completeOverdue() {
   completingOverdue = true
   let ok = 0
   try {
-    // 与 TodoRow 行勾选同一套语义：周期 = completeTodoRecurring 滚到下一轮；
-    // 普通 = toggleTodo 置完成 + 未完成子待办跟随。单条失败不中断整批
+    // 单条失败不中断整批，结尾统一汇报成功数
     for (const t of list) {
       try {
-        if (t.repeat_mode !== 'once') {
-          await store.completeTodoRecurring(t.id)
-        } else {
-          await store.toggleTodo(t.id)
-          for (const k of kidsOf.value.get(t.id) ?? []) {
-            if (!k.done) await store.toggleTodo(k.id)
-          }
-        }
+        await applyToggleTodo(t, true)
         ok++
       } catch {
-        // 继续处理下一条，结尾统一汇报成功数
+        // 继续处理下一条
       }
     }
   } finally {
     completingOverdue = false
   }
   showToast(ok === list.length ? `已处理 ${ok} 条逾期待办` : `已处理 ${ok}/${list.length} 条，其余没能完成，请重试`)
+}
+
+/** 日历当天明细里正在提交的那几条（防连点把同一条连续翻转两次，同 TodoRow 的 busy；
+ *  用集合而不是单个 id：同一时刻勾掉几条是正常操作，不该互相挡住） */
+const dayToggling = ref<Set<number>>(new Set())
+
+/**
+ * 点日历当天明细**前方圆点** = 完成/取消完成（行其余区域仍是打开编辑，见 template）。
+ * 勾父带子：有未完成子待办时先确认——静默连勾用户看不见（与行勾选同款弹窗，宿主层单实例）。
+ */
+function toggleDayTodo(t: Todo) {
+  if (!t.done) {
+    const undone = (kidsOf.value.get(t.id) ?? []).filter((k) => !k.done)
+    if (undone.length) {
+      rowConfirm.value = { todo: t, kids: undone.length, onConfirm: () => void applyDayToggle(t) }
+      return
+    }
+  }
+  void applyDayToggle(t)
+}
+
+async function applyDayToggle(t: Todo) {
+  if (dayToggling.value.has(t.id)) return
+  dayToggling.value = new Set(dayToggling.value).add(t.id)
+  try {
+    await applyToggleTodo(t)
+  } catch {
+    showToast('待办状态没能保存，请重试')
+  } finally {
+    const next = new Set(dayToggling.value)
+    next.delete(t.id)
+    dayToggling.value = next
+  }
 }
 
 /** 日历格子里日期徽标的逾期判定（行内的徽标由 TodoRow 自己算） */
@@ -823,37 +872,56 @@ function onVirtualDown(e: PointerEvent) {
               <p class="tv-dv-sub">
                 未完成 <span class="cnt">{{ selectedDayParts.undone.length }}</span>
               </p>
-              <button
+              <!-- 前方圆点 = 完成开关，右侧标题/时间 = 打开编辑：两个动作各有各的命中区，
+                   别再整行一键（整行点开编辑会把「勾掉」这件事挡死，用户报的就是这个） -->
+              <div
                 v-for="t in selectedDayParts.undone"
                 :key="t.id"
-                type="button"
                 class="tv-dayview-row"
-                :title="t.title"
-                @click="openEdit(t)"
               >
-                <span class="tv-dv-mark"></span>
-                <span class="tv-dv-title">{{ t.title }}</span>
-                <span class="tv-dv-time">{{ t.due_at ? fmtHM(t.due_at) : '' }}</span>
-              </button>
+                <button
+                  type="button"
+                  class="tv-dv-check"
+                  :disabled="dayToggling.has(t.id)"
+                  :title="`完成「${t.title}」`"
+                  :aria-label="`完成「${t.title}」`"
+                  @click="toggleDayTodo(t)"
+                ></button>
+                <button type="button" class="tv-dv-open" :title="t.title" @click="openEdit(t)">
+                  <span class="tv-dv-title">{{ t.title }}</span>
+                  <span class="tv-dv-time">{{ t.due_at ? fmtHM(t.due_at) : '' }}</span>
+                </button>
+              </div>
             </template>
             <template v-if="selectedDayParts.done.length">
               <p class="tv-dv-sub">
                 已完成 <span class="cnt">{{ selectedDayParts.done.length }}</span>
               </p>
-              <button
+              <div
                 v-for="t in selectedDayParts.done"
                 :key="t.id"
-                type="button"
                 class="tv-dayview-row done"
-                :title="`${t.title}（${doneMetaLabel(t, today)}）`"
-                @click="openEdit(t)"
               >
-                <span class="tv-dv-mark on">
+                <button
+                  type="button"
+                  class="tv-dv-check on"
+                  :disabled="dayToggling.has(t.id)"
+                  :title="`取消完成「${t.title}」`"
+                  :aria-label="`取消完成「${t.title}」`"
+                  @click="toggleDayTodo(t)"
+                >
                   <Check :size="11" :stroke-width="3" />
-                </span>
-                <span class="tv-dv-title">{{ t.title }}</span>
-                <span class="tv-dv-time">{{ doneRowTime(t) }}</span>
-              </button>
+                </button>
+                <button
+                  type="button"
+                  class="tv-dv-open"
+                  :title="`${t.title}（${doneMetaLabel(t, today)}）`"
+                  @click="openEdit(t)"
+                >
+                  <span class="tv-dv-title">{{ t.title }}</span>
+                  <span class="tv-dv-time">{{ doneRowTime(t) }}</span>
+                </button>
+              </div>
             </template>
           </div>
         </div>
@@ -1393,6 +1461,7 @@ function onVirtualDown(e: PointerEvent) {
   min-height: 0;
   overflow-y: auto;
 }
+/* 行本身不是按钮：命中区一分为二——左边圆点完成/取消，右边标题区打开编辑 */
 .tv-dayview-row {
   display: flex;
   align-items: center;
@@ -1402,28 +1471,58 @@ function onVirtualDown(e: PointerEvent) {
   font-size: 0.75rem;
   text-align: left;
   color: var(--text-1);
-  background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  cursor: pointer;
 }
 .tv-dayview-row:hover {
   background: var(--bg-card-soft);
 }
-.tv-dv-mark {
+/* 前方圆点 = 完成开关：尺寸与列表行的 .todo-check 取齐（18px，可点面积不打折），
+   视觉仍是原来的细描边圆点 */
+.tv-dv-check {
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
   border: 1.5px solid var(--border-strong);
   border-radius: 50%;
-  color: #fff;
+  background: transparent;
+  color: var(--text-on-accent);
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s, transform 0.18s;
 }
-.tv-dv-mark.on {
+.tv-dv-check:hover:not(:disabled) {
+  border-color: var(--brand-500);
+  background: var(--brand-50);
+}
+.tv-dv-check:active:not(:disabled) {
+  transform: scale(0.9);
+}
+.tv-dv-check.on {
   background: var(--brand-500);
   border-color: var(--brand-500);
+}
+.tv-dv-check:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* 标题/时间区：点它打开编辑弹窗（铺满圆点右侧，空白处也落在它身上） */
+.tv-dv-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 .tv-dv-title {
   flex: 1;

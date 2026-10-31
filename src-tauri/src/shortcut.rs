@@ -32,6 +32,19 @@ pub const DEFAULT_NOTES_SHORTCUT: &str = "CommandOrControl+Shift+N";
 #[cfg(not(target_os = "macos"))]
 pub const DEFAULT_NOTES_SHORTCUT: &str = "Ctrl+Shift+N";
 
+/// 截图默认快捷键：唤起全屏选区层，框选松手直接出图（存 captures + 复制剪贴板）。
+#[cfg(target_os = "macos")]
+pub const DEFAULT_SHOT_SHORTCUT: &str = "CommandOrControl+Shift+A";
+#[cfg(not(target_os = "macos"))]
+pub const DEFAULT_SHOT_SHORTCUT: &str = "Ctrl+Shift+A";
+
+/// GIF 录制默认快捷键：唤起全屏选区层，框选后设帧率/时长再录。
+/// 避开浏览器刷新（Ctrl+R/F5）与已有各键；与截图键同族（Shift+字母）便于记忆。
+#[cfg(target_os = "macos")]
+pub const DEFAULT_RECORDER_SHORTCUT: &str = "CommandOrControl+Shift+G";
+#[cfg(not(target_os = "macos"))]
+pub const DEFAULT_RECORDER_SHORTCUT: &str = "Ctrl+Shift+G";
+
 /// 判断两个快捷键字符串是否代表同一个物理按键组合
 /// （如 Windows 上 CommandOrControl 与 Ctrl 是同一个键，仅写法不同）
 pub fn same_hotkey(a: &str, b: &str) -> bool {
@@ -66,10 +79,16 @@ pub fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 if event.state == ShortcutState::Pressed {
                     // 诊断：确认全局热键事件是否到达本进程（用于定位「录入成功但呼出/隐藏不生效」）
                     log::info!("[快捷键] 事件触发: {} state={:?}", shortcut, event.state);
-                    // 按当前配置分发四个全局快捷键（搜索 / AI 对话事件由主窗前端监听处理，
-                    // 见 index.vue；剪贴板与主窗显隐由 lib.rs 的 app.listen 处理）
-                    let cfg = crate::config::load();
+                    // Esc 是截图/录屏选区层的动态热键（显示期间注册、收窗即反注册，
+                    // 见 recorder.rs::register_esc_hotkey）：触发即取消选区，不落常规分发
                     let pressed = shortcut.to_string();
+                    if same_hotkey(pressed.as_str(), "Escape") {
+                        let _ = app.emit("recorder-overlay-esc", ());
+                        return;
+                    }
+                    // 按当前配置分发七个全局快捷键（搜索 / AI 对话事件由主窗前端监听处理，
+                    // 见 index.vue；剪贴板/主窗显隐/截图/GIF 录制由 lib.rs 的 app.listen 处理）
+                    let cfg = crate::config::load();
                     if same_hotkey(&cfg.clipboard_shortcut, &pressed) {
                         let _ = app.emit("clipboard-toggle", ());
                     } else if same_hotkey(&cfg.search_shortcut, &pressed) {
@@ -78,6 +97,10 @@ pub fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                         let _ = app.emit("chat-shortcut", ());
                     } else if same_hotkey(&cfg.notes_shortcut, &pressed) {
                         let _ = app.emit("notes-shortcut", ());
+                    } else if same_hotkey(&cfg.shot_shortcut, &pressed) {
+                        let _ = app.emit("shot-shortcut", ());
+                    } else if same_hotkey(&cfg.recorder_shortcut, &pressed) {
+                        let _ = app.emit("recorder-shortcut", ());
                     } else {
                         let _ = app.emit("global-shortcut-toggle", ());
                     }
@@ -124,21 +147,44 @@ pub fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         log::info!("[快捷键] 已注册速记快捷键: {}", config.notes_shortcut);
     }
+    if !config.shot_shortcut_enabled {
+        log::info!("[快捷键] 截图快捷键已禁用，跳过注册");
+    } else if let Err(e) = register_toggle_shortcut(&handle, &config.shot_shortcut) {
+        log::warn!("[快捷键] 注册截图快捷键失败: {}", e);
+    } else {
+        log::info!("[快捷键] 已注册截图快捷键: {}", config.shot_shortcut);
+    }
+    if !config.recorder_shortcut_enabled {
+        log::info!("[快捷键] GIF 录制快捷键已禁用，跳过注册");
+    } else if let Err(e) = register_toggle_shortcut(&handle, &config.recorder_shortcut) {
+        log::warn!("[快捷键] 注册 GIF 录制快捷键失败: {}", e);
+    } else {
+        log::info!("[快捷键] 已注册 GIF 录制快捷键: {}", config.recorder_shortcut);
+    }
     Ok(())
 }
 
 /// 把「旧快捷键 → 新快捷键」的改绑一次做完：冲突预检、反注册旧的、注册新的，
-/// 注册失败时回滚旧键。五个可自定义快捷键（主窗/剪贴板/搜索/AI 对话/速记）的
-/// set_*_shortcut 命令共用这一份逻辑，只是各自读写配置里自己的字段。
+/// 注册失败时回滚旧键。七个可自定义快捷键（主窗/剪贴板/搜索/AI 对话/速记/截图/GIF 录制）
+/// 的 set_*_shortcut 命令共用这一份逻辑，只是各自读写配置里自己的字段。
 pub fn rebind_shortcut(app: &AppHandle, previous: &str, next: &str) -> Result<(), String> {
     if crate::shortcut::is_shortcut_registered(app, next) {
         return Err("快捷键冲突".into());
     }
     if let Err(e) = unregister_toggle_shortcut(app, previous) {
-        if !is_conflict_error(&e) {
+        // 旧键在登记表里本就不存在（启动注册被别的程序占用、当时只落了日志；或系统已
+        // 清掉残留）：没有东西可反注册，跳过直接注册新键——否则用户永远改不走这个键
+        // （2026-10-30 实测：截图默认 Ctrl+Shift+A 被其它程序占用时，改键报
+        // Failed to unregister hotkey，改绑被中止）。登记表说还在却反注册失败才是真失败。
+        if !is_shortcut_registered(app, previous) {
+            log::info!(
+                "[快捷键] 旧键 {previous} 本就未注册（启动时可能被其它程序占用），跳过反注册直接改绑"
+            );
+        } else if !is_conflict_error(&e) {
             return Err(e);
+        } else {
+            return Err("快捷键冲突".into());
         }
-        return Err("快捷键冲突".into());
     }
     if let Err(e) = register_toggle_shortcut(app, next) {
         // 旧键已反注册，任何失败都必须把它装回去，否则用户改坏一个键会连带丢掉原来那个。

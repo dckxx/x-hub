@@ -6,6 +6,7 @@
 // 首次打开只需外壳 + 当前大类的代码，切大类时才加载对应面板。
 import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { open } from '@tauri-apps/plugin-dialog';
 import { LocateFixed, MapPin, Trash2 } from 'lucide-vue-next';
 import { isPlatformModel, isTauri, tauriApi, PLATFORM_ENTRY_NAME, type ChatModelConfig } from '../../api/tauri';
 import AppSelect from '../AppSelect.vue';
@@ -32,6 +33,39 @@ function onSudaOpenModeChange(v: string | number) {
 
 async function onToggleSudaPanelToolbar() {
   await store.setSudaPanelToolbar(!store.state.config.suda_panel_toolbar)
+}
+
+// ---- GIF 录制（保存目录，recorder.rs captures_dir 消费；空 = 默认数据目录\captures）----
+const recorderSaveDir = computed(() => store.state.config.recorder_save_dir ?? '')
+
+async function chooseRecorderDir() {
+  if (!isTauri()) return
+  const dir = await open({ multiple: false, directory: true })
+  if (typeof dir !== 'string' || !dir.trim()) return
+  await store.setRecorderSaveDir(dir)
+  showToast('GIF 保存目录已更新')
+}
+
+async function resetRecorderDir() {
+  await store.setRecorderSaveDir('')
+  showToast('已恢复默认保存目录')
+}
+
+// ---- GIF 录制默认帧率（选区面板不再逐次选择，recorder_start 收到 null 由后端读本值）----
+// AppSelect 的 value 是 string：档位以字符串存储、change 时转 number
+const RECORDER_FPS_OPTIONS = [
+  { value: '5', label: '5 fps（最省体积）' },
+  { value: '10', label: '10 fps' },
+  { value: '15', label: '15 fps' },
+  { value: '20', label: '20 fps（推荐 · 最流畅）' },
+]
+const recorderFps = computed(() => String(store.state.config.recorder_fps ?? 20))
+
+function onRecorderFpsChange(v: string | number) {
+  const fps = Number(v)
+  if (!Number.isFinite(fps)) return
+  void store.setRecorderFps(fps)
+  showToast(`GIF 默认帧率已设为 ${fps}`)
 }
 
 // ---- 联网 / 在线服务 ----
@@ -411,6 +445,44 @@ onMounted(() => {
               <Trash2 :size="14" :stroke-width="2" />
               清空
             </button>
+          </div>
+        </section>
+
+        <section id="sv-sec-gif" class="sv-sec" aria-label="GIF 录制">
+          <h3 class="sv-sec-title">GIF 录制</h3>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">默认帧率</span>
+              <span class="setting-desc">每秒采集的画面数：数字越大越流畅、文件越大；选区面板不再逐次选择，统一用此默认值</span>
+            </div>
+            <AppSelect
+              :model-value="recorderFps"
+              :options="RECORDER_FPS_OPTIONS"
+              aria-label="默认帧率"
+              @update:model-value="onRecorderFpsChange"
+            />
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">保存目录</span>
+              <span class="setting-desc">
+                {{ recorderSaveDir || `默认（数据目录下的 captures 文件夹）` }}
+                <template v-if="recorderSaveDir">（目录失效时自动回退默认）</template>
+              </span>
+            </div>
+            <div class="gif-dir-actions">
+              <button class="ghost-btn" type="button" @click="chooseRecorderDir">选择目录</button>
+              <button
+                v-if="recorderSaveDir"
+                class="ghost-btn"
+                type="button"
+                @click="resetRecorderDir"
+              >
+                恢复默认
+              </button>
+            </div>
           </div>
         </section>
 

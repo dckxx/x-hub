@@ -12,7 +12,10 @@
     "todo-float",
     "floating-ball",
     "chat",
-    "notice"
+    "notice",
+    "recorder-overlay",
+    "recorder-control",
+    "pin-shot-*"
   ],
   "webviews": [
     "suda-web-*-chrome"

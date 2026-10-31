@@ -8,6 +8,7 @@ import {
   type AppConfig,
   type ChatModelConfig,
   type Countdown,
+  type DashboardLayoutPreset,
   type DetachedSticky,
   type GeoLocation,
   type Note,
@@ -161,6 +162,7 @@ const state = reactive<StoreState>({
     dashboard_mid_content: 'countdown',
     dashboard_layout: '',
     dashboard_default_layout: '',
+    dashboard_layout_presets: [],
     countdown_sound: false,
     clock_quote: '',
     notice_duration_ms: 5000,
@@ -1656,6 +1658,13 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 用户保存的工作台布局方案（最多 3 个；保存整份配置以保持与其它设置一致） */
+  async function setDashboardLayoutPresets(value: DashboardLayoutPreset[]) {
+    state.config.dashboard_layout_presets = value.slice(0, 3)
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   /** 倒计时到点提示音开关 */
   async function setCountdownSound(value: boolean) {
     state.config.countdown_sound = value
@@ -2273,6 +2282,7 @@ export function useStore() {
     setDashboardLayout,
     setDashboardDefaultLayout,
     setSysMonitorMetrics,
+    setDashboardLayoutPresets,
     setCountdownSound,
     setNoticeDuration,
     setClockQuote,

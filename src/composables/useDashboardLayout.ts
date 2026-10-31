@@ -1,6 +1,6 @@
 import { computed, ref, watch } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { isTauri, tauriApi } from '../api/tauri'
+import { isTauri, tauriApi, type DashboardLayoutPreset } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { reportClientError } from '../utils/error-report'
 
@@ -19,6 +19,7 @@ import { reportClientError } from '../utils/error-report'
  * - 持久化到应用配置（AppConfig.dashboard_layout，经 Rust config.json 落盘）；浏览器预览回退 localStorage
  * - 默认布局快照：编辑器「存为默认布局」把当前画布存进 AppConfig.dashboard_default_layout（预览回退 localStorage），
  *   「恢复默认布局」随时一键回到快照——编辑器内 = 回到草稿（确认后生效），编辑器外 = 立即生效
+ * - 自定义布局方案：最多保存 3 个命名快照；编辑器内载入只替换草稿，工作台右键恢复立即生效
  * - 单例状态：编辑器与主界面共享同一份 placements，变更实时同步
  */
 
@@ -34,6 +35,15 @@ const STORAGE_KEY = 'xhub.dashboard.layout.v2'
 
 /** 默认布局快照的 localStorage key（仅浏览器预览用；Tauri 走 AppConfig.dashboard_default_layout） */
 const STORAGE_KEY_DEFAULT = 'xhub.dashboard.layout.default.v1'
+
+/** 自定义布局方案的 localStorage key（仅浏览器预览用；Tauri 走 AppConfig） */
+const STORAGE_KEY_PRESETS = 'xhub.dashboard.layout.presets.v1'
+
+/** 自定义布局方案名称上限，避免右键菜单与编辑器表单被超长文案撑破 */
+export const DASHBOARD_LAYOUT_PRESET_NAME_MAX = 24
+
+/** 自定义布局方案最多保存 3 个，右键菜单按保存顺序展示 */
+export const MAX_DASHBOARD_LAYOUT_PRESETS = 3
 
 /** 形态定义：min = 内容完整展示的最小格子，ideal = 内容正好铺满的推荐格子 */
 export interface DashVariantDef {
@@ -528,6 +538,54 @@ function loadDefaultFromLocalStorage(): string {
 const savedDefaultRaw = ref(isTauri() ? '' : loadDefaultFromLocalStorage())
 const hasSavedDefault = computed(() => savedDefaultRaw.value.trim().length > 0)
 
+/** 从配置 / localStorage 读取布局方案时只保留结构完整的条目，并强制上限为 3 个。 */
+function normalizeLayoutPresets(raw: unknown): DashboardLayoutPreset[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .slice(0, MAX_DASHBOARD_LAYOUT_PRESETS)
+    .filter((item): item is DashboardLayoutPreset => {
+      if (!item || typeof item !== 'object') return false
+      const preset = item as Partial<DashboardLayoutPreset>
+      return (
+        typeof preset.name === 'string' &&
+        preset.name.trim().length > 0 &&
+        typeof preset.layout === 'string' &&
+        preset.layout.trim().length > 0
+      )
+    })
+    .map((preset) => ({
+      name: preset.name.trim().slice(0, DASHBOARD_LAYOUT_PRESET_NAME_MAX),
+      layout: preset.layout,
+    }))
+}
+
+function loadLayoutPresetsFromLocalStorage(): DashboardLayoutPreset[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_PRESETS)
+    return raw ? normalizeLayoutPresets(JSON.parse(raw) as unknown) : []
+  } catch {
+    return []
+  }
+}
+
+const layoutPresets = ref<DashboardLayoutPreset[]>(
+  isTauri() ? [] : loadLayoutPresetsFromLocalStorage(),
+)
+
+function persistLayoutPresets(value: DashboardLayoutPreset[]) {
+  const normalized = normalizeLayoutPresets(value)
+  layoutPresets.value = normalized
+  if (isTauri()) {
+    void store.setDashboardLayoutPresets(normalized)
+    return
+  }
+  try {
+    localStorage.setItem(STORAGE_KEY_PRESETS, JSON.stringify(normalized))
+  } catch {
+    // 存储失败静默，不影响当前编辑器与工作台使用
+  }
+}
+
 /** 加载声明 module 形态的扩展，注册进工作台模块库（id 用 `ext:<扩展id>` 前缀与内置模块区分）。
  *  manifest.moduleVariants 声明的形态直接进模块库（形态芯片 / 尺寸钳制 / 适配徽标全生效）；
  *  未声明则注册单个默认形态（min 1×1 / ideal 4×3）——拖入按最小尺寸落位，小部件类扩展
@@ -587,6 +645,7 @@ watch(
     // 默认布局快照：config 非空才覆盖（浏览器预览 config 为空串，保留 localStorage 快照）
     const cfgDefault = store.state.config.dashboard_default_layout
     if (cfgDefault) savedDefaultRaw.value = cfgDefault
+    layoutPresets.value = normalizeLayoutPresets(store.state.config.dashboard_layout_presets)
     const cfg = store.state.config.dashboard_layout
     if (cfg) {
       const parsed = parsePlacements(cfg)
@@ -779,6 +838,47 @@ function saveDefaultLayout(): boolean {
   return true
 }
 
+/** 保存当前布局到指定方案槽位；省略槽位时追加到第一个空槽位。 */
+function saveLayoutPreset(name: string, slotIndex?: number): boolean {
+  if (!placements.value.length) return false
+  const cleanName = name.trim().slice(0, DASHBOARD_LAYOUT_PRESET_NAME_MAX)
+  if (!cleanName) return false
+
+  const index = slotIndex ?? layoutPresets.value.length
+  if (index < 0 || index > layoutPresets.value.length || index >= MAX_DASHBOARD_LAYOUT_PRESETS) {
+    return false
+  }
+
+  const next = layoutPresets.value.map((preset) => ({ ...preset }))
+  next[index] = {
+    name: cleanName,
+    layout: serializePlacements(),
+  }
+  persistLayoutPresets(next)
+  return true
+}
+
+/** 恢复指定布局方案：编辑器内只替换草稿，编辑器外立即落盘生效。 */
+function restoreLayoutPreset(index: number): boolean {
+  const preset = layoutPresets.value[index]
+  if (!preset) return false
+  const parsed = parsePlacements(preset.layout)
+  if (!parsed) return false
+  // 走 adoptPlacements 唯一入口：预设里已卸载/未注册的 ext: 条目归入休眠，
+  // 直接赋值会让它们以「在用」身份进画布渲染成占格的幽灵空卡（同 restoreDefaultLayout 口径）
+  adoptPlacements(parsed)
+  persistIfIdle()
+  return true
+}
+
+/** 删除布局方案；删除后后续槽位左移，保持最多 3 个连续槽位。 */
+function removeLayoutPreset(index: number): boolean {
+  if (index < 0 || index >= layoutPresets.value.length) return false
+  const next = layoutPresets.value.filter((_preset, i) => i !== index)
+  persistLayoutPresets(next)
+  return true
+}
+
 /** 恢复为保存的默认布局：编辑器内回到草稿（确认后生效），编辑器外立即生效并落盘。无快照/快照失效返回 false */
 function restoreDefaultLayout(): boolean {
   const parsed = parsePlacements(savedDefaultRaw.value)
@@ -809,6 +909,10 @@ export function useDashboardLayout() {
     saveDefaultLayout,
     restoreDefaultLayout,
     hasSavedDefault,
+    layoutPresets,
+    saveLayoutPreset,
+    restoreLayoutPreset,
+    removeLayoutPreset,
     beginEdit,
     commitEdit,
     cancelEdit,

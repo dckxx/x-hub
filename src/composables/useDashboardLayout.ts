@@ -864,7 +864,9 @@ function restoreLayoutPreset(index: number): boolean {
   if (!preset) return false
   const parsed = parsePlacements(preset.layout)
   if (!parsed) return false
-  placements.value = parsed
+  // 走 adoptPlacements 唯一入口：预设里已卸载/未注册的 ext: 条目归入休眠，
+  // 直接赋值会让它们以「在用」身份进画布渲染成占格的幽灵空卡（同 restoreDefaultLayout 口径）
+  adoptPlacements(parsed)
   persistIfIdle()
   return true
 }

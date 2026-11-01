@@ -338,6 +338,11 @@ fn hide_window(win: &WebviewWindow) {
     let _ = win.hide();
 }
 
+#[cfg(not(target_os = "windows"))]
+fn hide_window(win: &WebviewWindow) {
+    let _ = win.hide();
+}
+
 // ---------- 非 Windows 兜底：用 Tauri 显示器逻辑（无工作区，仅整屏右下） ----------
 
 #[cfg(not(target_os = "windows"))]
@@ -349,12 +354,13 @@ fn simple_bottom_right(win: &WebviewWindow, width_logical: f64, height_logical: 
         .flatten()
         .or_else(|| win.primary_monitor().ok().flatten());
     let Some(m) = monitor else { return };
-    let size = m.size(); // 物理 px
-    let origin = m.position();
+    // 工作区（macOS = NSScreen.visibleFrame，自动避让菜单栏与程序坞；原实现用整屏
+    // 尺寸会把通知压到程序坞底下）——与悬浮球 place_initial 同口径
+    let wa = m.work_area();
     let w = (width_logical * scale).round() as i32;
     let h = (height_logical * scale).round() as i32;
     let m2 = (NOTICE_MARGIN * scale).round() as i32;
-    let x = origin.x + size.width as i32 - w - m2;
-    let y = origin.y + size.height as i32 - h - m2;
+    let x = wa.position.x + wa.size.width as i32 - w - m2;
+    let y = wa.position.y + wa.size.height as i32 - h - m2;
     let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(x, y)));
 }

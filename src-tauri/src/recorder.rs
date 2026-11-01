@@ -382,15 +382,15 @@ pub fn open_overlay(app: &AppHandle, mode: OverlayMode) -> Result<(), String> {
     let mon = monitor_under_cursor()
         .or_else(primary_monitor)
         .ok_or("未找到可用显示器")?;
-    let mx = mon.x().unwrap_or(0);
-    let my = mon.y().unwrap_or(0);
-    let mw = mon.width().unwrap_or(1920);
-    let mh = mon.height().unwrap_or(1080);
+    // 原点/尺寸统一取**物理像素**：Windows 上 xcap 原样即物理；mac 上 xcap 的
+    // x/y/width/height 是 CGDisplayBounds 的 CG 逻辑点，须 ×scale（mon_rect_physical）
+    let (mx, my, mwi, mhi) = mon_rect_physical(&mon);
+    let (mw, mh) = (mwi as u32, mhi as u32);
 
     let Some(win) = app.get_webview_window(RECORDER_OVERLAY_LABEL) else {
         return Err("选区窗口未就绪，请重启应用".to_string());
     };
-    // 先按逻辑坐标创建（init），再改用物理坐标铺满目标显示器（xcap 返回的是物理像素，
+    // 先按逻辑坐标创建（init），再改用物理坐标铺满目标显示器（上方已统一物理口径；
     // HiDPI 下 builder 的 inner_size/position 是逻辑值，直接传会错位）。
     // resizable(false) 会把 min/max 锁死、后续 set_size 被 WM_GETMINMAXINFO 静默钳制
     // （notify.rs::apply_size 同坑）：临时解锁 → 物理尺寸 → 锁回。
@@ -425,6 +425,9 @@ pub fn open_overlay(app: &AppHandle, mode: OverlayMode) -> Result<(), String> {
         let state = app.state::<RecorderState>();
         state.hover_locked.store(false, Ordering::Relaxed);
     }
+    // hover 跟随依赖窗口自动识别（window_rect_under_cursor），mac 未实现——
+    // 线程纯空转，不启动
+    #[cfg(target_os = "windows")]
     spawn_hover_follow(app.clone(), RecRegion { x: mx, y: my, width: mw, height: mh });
     log::info!(
         "[截图/录屏] 选区层已显示（{}）：{}x{} @ ({},{})",
@@ -454,19 +457,18 @@ pub async fn recorder_close_overlay(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 选区裁剪到所在显示器边界（截图与录制共用）：xcap 采集参数不允许越界
+/// 选区裁剪到所在显示器边界（截图与录制共用）：xcap 采集参数不允许越界。
+/// 入参/返回均为**全局物理像素**（RecRegion 语义）；显示器物理矩形由
+/// mon_rect_physical 统一口径（Windows 原样，mac 逻辑点 ×scale）。
 fn clamp_and_clip_region(region: RecRegion) -> Option<RecRegion> {
     let width = region.width.clamp(16, 7680);
     let height = region.height.clamp(16, 7680);
     let mon = find_monitor(region.x, region.y)?;
-    let mx = mon.x().unwrap_or(0);
-    let my = mon.y().unwrap_or(0);
-    let mw = mon.width().unwrap_or(1920);
-    let mh = mon.height().unwrap_or(1080);
+    let (mx, my, mw, mh) = mon_rect_physical(&mon);
     let rx = (region.x - mx).max(0);
     let ry = (region.y - my).max(0);
-    let w = (width as i32).min(mw as i32 - rx).max(16) as u32;
-    let h = (height as i32).min(mh as i32 - ry).max(16) as u32;
+    let w = (width as i32).min(mw - rx).max(16) as u32;
+    let h = (height as i32).min(mh - ry).max(16) as u32;
     Some(RecRegion { x: mx + rx, y: my + ry, width: w, height: h })
 }
 
@@ -1027,13 +1029,6 @@ fn capture_loop(
             return;
         }
     };
-    #[cfg(not(target_os = "windows"))]
-    let (rx, ry) = {
-        let mx = mon.x().unwrap_or(0);
-        let my = mon.y().unwrap_or(0);
-        (region.x - mx, region.y - my)
-    };
-
     let frame_interval = Duration::from_millis((1000 / fps.max(1)) as u64);
     let max_duration = Duration::from_secs(max_seconds as u64);
     let mut last_progress = Instant::now();
@@ -1066,7 +1061,7 @@ fn capture_loop(
             { gdi_capture_region(&region) }
             #[cfg(not(target_os = "windows"))]
             {
-                mon.capture_region(rx as u32, ry as u32, region.width, region.height)
+                xcap_capture_physical(&mon, &region)
                     .map(|img| img.into_raw())
                     .map_err(|e| format!("屏幕采集失败: {e}"))
             }
@@ -1361,7 +1356,14 @@ fn monitor_under_cursor() -> Option<xcap::Monitor> {
         }
         xcap::Monitor::from_point(pt.x, pt.y).ok()
     }
-    #[cfg(not(target_os = "windows"))]
+    // HIGetMousePosition 给主屏左上原点、y 向下的 CG 全局**逻辑点**，与
+    // CGDisplayBounds 同坐标系，可直接喂 CGGetDisplaysWithPoint（xcap from_point）
+    #[cfg(target_os = "macos")]
+    {
+        let (px, py) = crate::floating_ball::mac_input::cursor_point()?;
+        xcap::Monitor::from_point(px as i32, py as i32).ok()
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     None
 }
 
@@ -1372,8 +1374,88 @@ fn primary_monitor() -> Option<xcap::Monitor> {
         .find(|m| m.is_primary().unwrap_or(false))
 }
 
+/// 显示器物理矩形 (x, y, w, h)：全局物理像素，与 RecRegion 同口径。
+/// Windows：xcap 原样即物理像素；mac：xcap 的 x/y/width/height 是 CGDisplayBounds
+/// 的 CG 逻辑点，须 ×scale（全屏统一 scale 布局下精确；混合 DPI 为已知限制，
+/// 见 PORTING_MAC.md 截图/录屏节）。
+fn mon_rect_physical(mon: &xcap::Monitor) -> (i32, i32, i32, i32) {
+    let x = mon.x().unwrap_or(0);
+    let y = mon.y().unwrap_or(0);
+    let w = mon.width().unwrap_or(1920) as i32;
+    let h = mon.height().unwrap_or(1080) as i32;
+    #[cfg(target_os = "windows")]
+    {
+        (x, y, w, h)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let scale = mon.scale_factor().unwrap_or(1.0).max(0.5) as f64;
+        (
+            (x as f64 * scale).round() as i32,
+            (y as f64 * scale).round() as i32,
+            (w as f64 * scale).round() as i32,
+            (h as f64 * scale).round() as i32,
+        )
+    }
+}
+
+/// 按全局**物理点**找所在显示器。Windows：from_point 即物理语义；
+/// 非 Windows：xcap 的 from_point 只认逻辑点，遍历显示器物理矩形命中，
+/// 找不到回退主显示器。
 fn find_monitor(x: i32, y: i32) -> Option<xcap::Monitor> {
-    xcap::Monitor::from_point(x, y).ok().or_else(primary_monitor)
+    #[cfg(target_os = "windows")]
+    {
+        xcap::Monitor::from_point(x, y).ok().or_else(primary_monitor)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        xcap::Monitor::all()
+            .ok()?
+            .into_iter()
+            .find(|m| {
+                let (mx, my, mw, mh) = mon_rect_physical(m);
+                x >= mx && x < mx + mw && y >= my && y < my + mh
+            })
+            .or_else(primary_monitor)
+    }
+}
+
+/// 物理 region → xcap `capture_region` 入参（非 Windows 换算）。
+/// xcap 在 mac 上的坐标口径是**分裂**的：入参是屏内 CG 逻辑偏移 + 逻辑尺寸
+/// （内部拼 CGRect 走 CGWindowListCreateImage），返回位图却是**物理分辨率**
+/// （逻辑尺寸 ×scale）。偏移四舍五入、尺寸向上取整（位图 ⊇ 请求区域，由
+/// xcap_capture_physical 裁回精确值），并收口到显示器逻辑边界内防越界报错。
+#[cfg(not(target_os = "windows"))]
+fn region_to_xcap(region: &RecRegion, mon: &xcap::Monitor) -> RecRegion {
+    let (px, py, _, _) = mon_rect_physical(mon);
+    let mon_lw = mon.width().unwrap_or(1920) as i32;
+    let mon_lh = mon.height().unwrap_or(1080) as i32;
+    let scale = mon.scale_factor().unwrap_or(1.0).max(0.5) as f64;
+    let x = ((region.x - px) as f64 / scale).round().max(0.0);
+    let y = ((region.y - py) as f64 / scale).round().max(0.0);
+    let w = ((region.width as f64 / scale).ceil().max(1.0)).min((mon_lw as f64 - x).max(1.0));
+    let h = ((region.height as f64 / scale).ceil().max(1.0)).min((mon_lh as f64 - y).max(1.0));
+    RecRegion { x: x as i32, y: y as i32, width: w as u32, height: h as u32 }
+}
+
+/// 非 Windows 物理口径采集统一入口：物理 region → 逻辑入参 → capture_region
+/// （返回物理位图，尺寸 = 逻辑 ×scale）→ 裁回精确 region.width×height。
+/// 截图单帧与 GIF 逐帧共用，保证调用方拿到的缓冲尺寸恒等于请求物理尺寸。
+#[cfg(not(target_os = "windows"))]
+fn xcap_capture_physical(mon: &xcap::Monitor, region: &RecRegion) -> Result<image::RgbaImage, String> {
+    let r = region_to_xcap(region, mon);
+    let img = mon
+        .capture_region(r.x as u32, r.y as u32, r.width, r.height)
+        .map_err(|e| format!("屏幕采集失败: {e}"))?;
+    let (iw, ih) = img.dimensions();
+    if iw == region.width && ih == region.height {
+        return Ok(img);
+    }
+    if iw >= region.width && ih >= region.height {
+        // ceil 取整让位图比请求区域大出 ≤1px，从原点裁齐
+        return Ok(image::imageops::crop_imm(&img, 0, 0, region.width, region.height).to_image());
+    }
+    Err(format!("屏幕采集分辨率异常：期望 {}x{}，实际 {}x{}", region.width, region.height, iw, ih))
 }
 
 // ---------------------------------------------------------------------------
@@ -1494,6 +1576,8 @@ fn window_rect_under_cursor(_app: &AppHandle) -> Option<RecRegion> {
 
 /// hover 跟随线程：选区层显示期间轮询光标下窗口，矩形变化即 emit 给选区层预选。
 /// 用户首次交互（前端置 hover_locked）或选区层隐藏后线程退出。
+/// 仅 Windows：依赖窗口自动识别（window_rect_under_cursor），mac 未实现该能力。
+#[cfg(target_os = "windows")]
 fn spawn_hover_follow(app: AppHandle, mon: RecRegion) {
     tauri::async_runtime::spawn_blocking(move || loop {
         std::thread::sleep(Duration::from_millis(120));
@@ -1617,12 +1701,7 @@ fn gdi_capture_region(region: &RecRegion) -> Result<Vec<u8>, String> {
 #[cfg(not(target_os = "windows"))]
 fn gdi_capture_region(region: &RecRegion) -> Result<Vec<u8>, String> {
     let mon = find_monitor(region.x, region.y).ok_or("未找到可用显示器")?;
-    let mx = mon.x().unwrap_or(0);
-    let my = mon.y().unwrap_or(0);
-    let img = mon
-        .capture_region((region.x - mx) as u32, (region.y - my) as u32, region.width, region.height)
-        .map_err(|e| format!("屏幕采集失败: {e}"))?;
-    Ok(img.into_raw())
+    Ok(xcap_capture_physical(&mon, region)?.into_raw())
 }
 
 // ---------------------------------------------------------------------------
@@ -1774,10 +1853,8 @@ fn show_control_window(app: &AppHandle, region: &RecRegion) {
     let ch = 64i32;
     let mon = find_monitor(region.x, region.y);
     if let Some(m) = mon {
-        let mx = m.x().unwrap_or(0);
-        let my = m.y().unwrap_or(0);
-        let mw = m.width().unwrap_or(1920) as i32;
-        let mh = m.height().unwrap_or(1080) as i32;
+        // 物理口径（mac 上 xcap 是逻辑点，×scale 统一；region 本就是物理）
+        let (mx, my, mw, mh) = mon_rect_physical(&m);
         if cx + cw > mx + mw {
             cx = region.x;
             cy = region.y + region.height as i32 + 8;

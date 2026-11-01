@@ -5,6 +5,8 @@ import { Copy, MessageSquare, Minus, Music2, Pause, Pin, PinOff, Play, Search, S
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useTitlebarWidget } from '../composables/useTitlebarWidget'
+import { normalizeShortcutDisplay } from '../composables/useShortcutRecorder'
+import { IS_MAC } from '../utils/platform'
 import type { TitlebarSegment, TitlebarWidget } from '../composables/useTitlebarWidget'
 import TitlebarSegments from './TitlebarSegments.vue'
 
@@ -246,13 +248,13 @@ function close() {
       </template>
     </div>
     <div class="window-controls">
-      <button class="tool-btn" :title="`全局搜索 (${store.state.config.search_shortcut || 'Ctrl+K'}，可在设置中自定义)`" @click="$emit('search')">
+      <button class="tool-btn" :title="`全局搜索 (${normalizeShortcutDisplay(store.state.config.search_shortcut || (IS_MAC ? 'Cmd+K' : 'Ctrl+K'))}，可在设置中自定义)`" @click="$emit('search')">
         <Search :size="15" :stroke-width="1.8" />
       </button>
-      <button class="tool-btn" data-chat-opener :title="`AI 对话 (${store.state.config.chat_shortcut || 'Ctrl+Shift+K'}，可在设置中自定义)`" @click="$emit('chat')">
+      <button class="tool-btn" data-chat-opener :title="`AI 对话 (${normalizeShortcutDisplay(store.state.config.chat_shortcut || (IS_MAC ? 'Cmd+Shift+K' : 'Ctrl+Shift+K'))}，可在设置中自定义)`" @click="$emit('chat')">
         <MessageSquare :size="15" :stroke-width="1.8" />
       </button>
-      <button class="tool-btn" :title="`GIF 录屏 (${store.state.config.recorder_shortcut || 'Ctrl+Shift+G'}，可在设置中自定义；截图 ${store.state.config.shot_shortcut || 'Ctrl+Shift+A'}）`" @click="openRecorder">
+      <button class="tool-btn" :title="`GIF 录屏 (${normalizeShortcutDisplay(store.state.config.recorder_shortcut || (IS_MAC ? 'Cmd+Shift+G' : 'Ctrl+Shift+G'))}，可在设置中自定义；截图 ${normalizeShortcutDisplay(store.state.config.shot_shortcut || (IS_MAC ? 'Cmd+Shift+A' : 'Ctrl+Shift+A'))})`" @click="openRecorder">
         <Clapperboard :size="15" :stroke-width="1.8" />
       </button>
       <div class="tool-divider"></div>

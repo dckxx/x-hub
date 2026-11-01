@@ -63,6 +63,24 @@ pub fn launch_program(path: &str, args: Option<&str>) -> Result<(), String> {
         return shell_execute_app(path.trim());
     }
     let target = std::path::Path::new(path);
+    // macOS：路径是 .app 包（目录而非文件），不能用 Command::new 直接启动，须走 `open`
+    // 让系统按 bundle 语义拉起（保持与应用正常启动一致，也能正确切回已有实例）。
+    #[cfg(target_os = "macos")]
+    if target.is_dir() {
+        return open_macos_app(path, args);
+    }
+    // 非 Windows：`sh -c` 对不存在路径与 Windows cmd /C 一样「假成功」（spawn 成功、
+    // 命令在 shell 内才失败），点错路径界面上毫无反应。对「单一路径形态」的目标
+    // （无空白、含分隔符）先做存在性校验直接报错；带空白的 shell 片段（如
+    // "python x.py"）与裸命令名（如 "code"，PATH 查找）保持 cmd /C 的等价能力
+    // 照旧交 sh -c。
+    #[cfg(not(target_os = "windows"))]
+    if !target.exists() {
+        let t = path.trim();
+        if !t.is_empty() && !t.contains(char::is_whitespace) && (t.contains('/') || t.contains('\\')) {
+            return Err(format!("启动程序失败「{path}」: 路径不存在"));
+        }
+    }
     let mut cmd = if target.is_file() {
         let mut c = Command::new(path);
         // 便携软件（如绿色版 exe）依赖同目录资源文件，工作目录设为 exe 所在目录
@@ -104,6 +122,24 @@ pub fn launch_program(path: &str, args: Option<&str>) -> Result<(), String> {
         }
         Err(e) => Err(format!("启动程序失败「{}」: {}", path, e)),
     }
+}
+
+/// 用 macOS 系统 `open` 启动 .app 包。参数经 `--args` 透传（`open` 会按 bundle 接收）。
+#[cfg(target_os = "macos")]
+fn open_macos_app(path: &str, args: Option<&str>) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("open");
+    cmd.arg(path);
+    if let Some(a) = args {
+        if !a.trim().is_empty() {
+            cmd.arg("--args");
+            for arg in split_args(a) {
+                cmd.arg(arg);
+            }
+        }
+    }
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("启动应用失败「{path}」: {e}"))
 }
 
 /// ShellExecuteExW 打开 shell:AppsFolder\<AUMID>（Windows）。失败码如实上抛：
@@ -200,7 +236,8 @@ pub fn open_url(url: &str) -> Result<(), String> {
     opener::open(url).map_err(|e| format!("打开链接失败: {}", e))
 }
 
-/// 用指定浏览器打开 URL（browser_exe 必须存在；URL 仅放行 http/https，由调用方校验）
+/// 用指定浏览器打开 URL（URL 仅放行 http/https，由调用方校验）
+#[cfg(target_os = "windows")]
 pub fn open_with_browser(browser_exe: &str, url: &str) -> Result<(), String> {
     let path = std::path::Path::new(browser_exe);
     if !path.is_file() {
@@ -209,6 +246,33 @@ pub fn open_with_browser(browser_exe: &str, url: &str) -> Result<(), String> {
     // 浏览器已经在运行：先把它的窗口调度到前台。主流浏览器收到 URL 会复用现有实例、
     // 以新标签页打开，这里再置前一次，避免用户以为「点了没反应」。
     let _ = activate_existing(browser_exe);
+    let mut cmd = Command::new(path);
+    cmd.arg(url);
+    cmd.no_console_window();
+    match cmd.spawn() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("启动浏览器失败「{}」: {}", browser_exe, e)),
+    }
+}
+
+/// macOS：浏览器是 .app 目录（is_file 不成立），交给 `open -a`——它自带
+/// 「复用已运行实例 + 激活置前」语义（等价 Windows 版 activate_existing 的效果），
+/// 新 URL 由浏览器以新标签页打开。兼容直接传 .app 内部二进制的罕见场景。
+#[cfg(not(target_os = "windows"))]
+pub fn open_with_browser(browser_exe: &str, url: &str) -> Result<(), String> {
+    let path = std::path::Path::new(browser_exe);
+    if path.is_dir() {
+        let mut cmd = Command::new("open");
+        cmd.arg("-a").arg(path).arg(url);
+        cmd.no_console_window();
+        return match cmd.spawn() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("启动浏览器失败「{}」: {}", browser_exe, e)),
+        };
+    }
+    if !path.is_file() {
+        return Err(format!("浏览器不存在: {}", browser_exe));
+    }
     let mut cmd = Command::new(path);
     cmd.arg(url);
     cmd.no_console_window();
@@ -244,11 +308,15 @@ pub fn activate_existing(exe_path: &str) -> bool {
 
 /// 取可执行文件名（按进程名匹配用；输入可以是完整路径）
 fn exe_file_name(path: &str) -> Option<String> {
-    std::path::Path::new(path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(str::to_string)
+    // 两种分隔符都要认（数据可从 Windows 同步而来，如速达资源）：Path::file_name
+    // 只认本平台分隔符，macOS 上会把整串 "C:\…\chrome.exe" 当成文件名，
+    // 进程名匹配就全废了。尾分隔符（"/usr/bin/"）与 Path 行为对齐取 "bin"。
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    trimmed
+        .rsplit(['/', '\\'])
+        .next()
         .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 #[cfg(target_os = "windows")]
@@ -465,9 +533,26 @@ pub fn reveal_in_explorer(path: &str) -> Result<(), String> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        // 非 Windows 无「选中」等价语义：退回打开其所在目录
-        let dir = if target.is_dir() { target } else { target.parent().unwrap_or(target) };
-        opener::open(dir).map_err(|e| format!("打开所在文件夹失败: {}", e))
+        // macOS：`open -R` 在 Finder 中定位并选中该项（与 explorer /select 同语义，
+        // 文件与文件夹通用——文件夹会在其父目录中被选中）
+        #[cfg(target_os = "macos")]
+        {
+            if !target.exists() {
+                return Err(format!("路径不存在: {path}"));
+            }
+            Command::new("open")
+                .arg("-R")
+                .arg(target)
+                .spawn()
+                .map_err(|e| format!("打开文件所在位置失败: {}", e))?;
+            return Ok(());
+        }
+        // 其余平台无「选中」等价语义：退回打开其所在目录
+        #[cfg(not(target_os = "macos"))]
+        {
+            let dir = if target.is_dir() { target } else { target.parent().unwrap_or(target) };
+            opener::open(dir).map_err(|e| format!("打开所在文件夹失败: {}", e))
+        }
     }
 }
 

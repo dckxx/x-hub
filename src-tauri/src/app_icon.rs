@@ -261,7 +261,94 @@ pub fn icon_png_padded(path: &std::path::Path) -> bool {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+pub fn extract_icon_png(path: &str) -> Option<Vec<u8>> {
+    // macOS 上程序以 .app 包存在：图标是 Contents/Resources 里的 .icns（或 png/tiff）。
+    let app = std::path::Path::new(path);
+    if !app.is_dir() || app.extension().and_then(|e| e.to_str()) != Some("app") {
+        return None;
+    }
+    let info = app.join("Contents").join("Info.plist");
+    let resources = app.join("Contents").join("Resources");
+    if !resources.is_dir() {
+        return None;
+    }
+    // 1) 优先按 CFBundleIconFile 精确定位（用 plutil 读 plist，兼容二进制 plist）。
+    //    名称可能带或不带扩展名，补全后先在 Resources 里找 .icns。
+    let icon_name = plutil_string(&info, "CFBundleIconFile");
+    let mut icns = icon_name
+        .map(|name| {
+            let full = if name.ends_with(".icns") { name } else { format!("{name}.icns") };
+            resources.join(full)
+        })
+        .filter(|p| p.is_file());
+    // 2) 兜底：Resources 里扫第一个 .icns（很多应用只有一个）。
+    if icns.is_none() {
+        icns = find_first_icns(&resources);
+    }
+    let icns = icns?;
+    icns_to_png(&icns)
+}
+
+/// macOS 应用图标：.icns → PNG（走系统自带 `sips`，无新 Rust 依赖、跨架构稳定）。
+/// 转换失败返回 None（图标是锦上添花，调用方回退旧缓存或名称首字母）。
+#[cfg(target_os = "macos")]
+fn icns_to_png(icns: &std::path::Path) -> Option<Vec<u8>> {
+    use std::process::Command;
+    let tmp = std::env::temp_dir().join(format!("xhub-icon-{}.png", std::process::id()));
+    let out = Command::new("sips")
+        .arg("-s").arg("format").arg("png")
+        .arg(icns)
+        .arg("--out").arg(&tmp)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        return None;
+    }
+    let bytes = std::fs::read(&tmp).ok();
+    let _ = std::fs::remove_file(&tmp);
+    bytes
+}
+
+/// 用 `plutil` 读 Info.plist 的字符串键（返回去掉引号/原始值后的值；失败返回 None）。
+#[cfg(target_os = "macos")]
+fn plutil_string(info: &std::path::Path, key: &str) -> Option<String> {
+    use std::process::Command;
+    let out = Command::new("plutil")
+        .arg("-extract").arg(key)
+        .arg("raw")
+        .arg("-o").arg("-")
+        .arg(info)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?;
+    let s = s.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// 在 Resources 里找第一个 .icns（简单场景兜底；偏好尺寸大的，现代 app 常带多尺寸）。
+#[cfg(target_os = "macos")]
+fn find_first_icns(resources: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut best: Option<(u64, std::path::PathBuf)> = None;
+    let entries = std::fs::read_dir(resources).ok()?;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("icns") {
+            continue;
+        }
+        let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+        if best.as_ref().map_or(true, |(s, _)| size > *s) {
+            best = Some((size, p));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn extract_icon_png(_path: &str) -> Option<Vec<u8>> {
     None
 }

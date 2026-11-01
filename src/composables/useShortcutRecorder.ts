@@ -1,6 +1,7 @@
 import { computed, nextTick, ref } from 'vue'
 import { isTauri } from '../api/tauri'
 import { reportClientError } from '../utils/error-report'
+import { IS_MAC } from '../utils/platform'
 import {
   formatShortcutTokens,
   modifierTokenFromEvent,
@@ -18,15 +19,18 @@ import {
  * 绝不把坏值落盘（旧实现会把裸空格存成全局快捷键，见该文件的实测说明）。
  */
 
-const IS_MAC =
-  /Mac|iPhone|iPad/.test(navigator.userAgent) || /Mac|iPhone|iPad/.test(navigator.platform)
+/** 平台别名映射：让用户看到平台习惯的修饰键写法，而不是插件内部 token。
+ * 存储值始终是规范写法（CommandOrControl+…），展示层才做别名转换；
+ * 手工输入的别名（Cmd+K 等）在 commit 时经 formatShortcutTokens 归一回去。 */
+const DISPLAY_ALIAS: Record<string, string> = IS_MAC
+  ? { CommandOrControl: 'Cmd', Alt: 'Option' }
+  : { CommandOrControl: 'Ctrl' }
 
-/** 把 CommandOrControl 按平台显示为 Ctrl（macOS 保持不变） */
+/** 把插件规范串转成平台习惯的展示写法（Windows: CommandOrControl→Ctrl；macOS: →Cmd、Alt→Option） */
 export function normalizeShortcutDisplay(s: string): string {
-  if (IS_MAC) return s
   return s
     .split('+')
-    .map((p) => (p === 'CommandOrControl' ? 'Ctrl' : p))
+    .map((p) => DISPLAY_ALIAS[p.trim()] ?? p)
     .join('+')
 }
 
@@ -54,13 +58,16 @@ export function useShortcutRecorder(options: ShortcutRecorderOptions) {
 
   async function commit() {
     if (!isTauri() || saving.value) return
-    const v = normalized.value
-    if (!v || v === saved.value) {
+    // 手工输入可能是任意写法（mac 上的别名「Cmd+K」、修饰键乱序、大小写不一）：
+    // 先归一成插件认的规范串再校验/保存，展示层的别名也由此回到 CommandOrControl。
+    // 单独一个空格/字母存进去就是全局劫持该按键，校验同样不能免
+    const tokens = normalized.value.split('+').map((p) => p.trim()).filter(Boolean)
+    const v = formatShortcutTokens(tokens)
+    if (!v || v === formatShortcutTokens(saved.value.split('+').map((p) => p.trim()).filter(Boolean))) {
       error.value = ''
       return
     }
-    // 手工输入的旁路同样过一遍校验：单独一个空格/字母存进去就是全局劫持该按键
-    const invalid = validateShortcutTokens(v.split('+').map((p) => p.trim()).filter(Boolean))
+    const invalid = validateShortcutTokens(tokens)
     if (invalid) {
       error.value = invalid
       value.value = saved.value
@@ -118,7 +125,8 @@ export function useShortcutRecorder(options: ShortcutRecorderOptions) {
     const modifier = modifierTokenFromEvent(e, IS_MAC)
     if (modifier) {
       pressedKeys.value.add(modifier)
-      value.value = formatShortcutTokens(pressedKeys.value)
+      // 录制中间态也按平台写法展示（Cmd+…），存储/保存仍走规范串
+      value.value = normalizeShortcutDisplay(formatShortcutTokens(pressedKeys.value))
       return
     }
     // 输入法组合态（中文选词中）的按键不是用户想录的快捷键，直接忽略：
@@ -128,7 +136,7 @@ export function useShortcutRecorder(options: ShortcutRecorderOptions) {
     // 主键按下即完成录制（一个快捷键只有一个主键），避免后续按键污染组合
     const keys = new Set(pressedKeys.value)
     keys.add(token)
-    const display = formatShortcutTokens(keys)
+    const display = normalizeShortcutDisplay(formatShortcutTokens(keys))
     const invalid = validateShortcutTokens(keys)
     if (invalid) {
       // 不保存、不留在录入态空等：还原成原值并说明原因（如「空格不能单独作快捷键」）

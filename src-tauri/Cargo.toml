@@ -23,7 +23,7 @@ tauri-build = { version = "2.6.3", features = [] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.11.3", features = ["protocol-asset", "tray-icon", "unstable"] }
+tauri = { version = "2.11.3", features = ["protocol-asset", "tray-icon", "unstable", "macos-private-api"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-log = "2"
 tauri-plugin-global-shortcut = "2"
@@ -50,8 +50,9 @@ base64 = "0.22"
 semver = "1"
 sysinfo = "0.32"
 # 剪贴板 BMP 快照导出转 PNG + 图标导入 .ico 解码（ico 内部复用 bmp/png 管线），避免拖入全家桶；
-# jpeg/webp/gif 是笔记内嵌图片的合法格式，复制笔记图片上剪贴板时需解码重编码成 PNG
-image = { version = "0.25", default-features = false, features = ["bmp", "png", "ico", "jpeg", "webp", "gif"] }
+# jpeg/webp/gif 是笔记内嵌图片的合法格式，复制笔记图片上剪贴板时需解码重编码成 PNG；
+# tiff：macOS NSPasteboard 图片主流是 public.tiff（截图/预览/Finder 拷贝），快照统一转 PNG 落盘
+image = { version = "0.25", default-features = false, features = ["bmp", "png", "ico", "jpeg", "webp", "gif", "tiff"] }
 # 截图/GIF 录屏（recorder.rs）：xcap 屏幕采集（Windows 走 WGC，GPU 加速），
 # gif + color_quant 停止后两遍编码（NeuQuant 256 色全局调色板）；不捆绑 ffmpeg
 xcap = "0.9"
@@ -72,13 +73,20 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
-# WebView2 内存级别联动（webview_mem.rs）：与 tauri/wry 锁定的同版本，保证 COM
-# 类型同源可 cast（ICoreWebView2_19::SetMemoryUsageTargetLevel）
-webview2-com = "0.38.2"
-windows-core = "0.61"
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+# 备注/敏感字段落盘加密（secret.rs 非 Windows 分支）：AES-256-GCM 纯 Rust 实现，
+# 无 C 依赖。密钥为随机 32 字节、存放在数据目录之外的固定文件，语义对齐 Windows
+# DPAPI 的用户作用域（同机同用户可解、数据目录迁移后不可解）。Windows 走 DPAPI，不编译本依赖。
+aes-gcm = "0.10"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
+# WebView2 内存级别联动（webview_mem.rs）：与 tauri/wry 锁定的同版本，保证 COM
+# 类型同源可 cast（ICoreWebView2_19::SetMemoryUsageTargetLevel）。
+# 仅 Windows 使用，故与 webview_mem.rs 的 cfg 门控一致按目标平台隔离，macOS 不编译。
+webview2-com = "0.38.2"
+windows-core = "0.61"
 # 防火墙规则改走 COM（service.rs::firewall_com，INetFwPolicy2）：不再 spawn netsh.exe——
 # 开机自启/关机退出时控制台子系统未就绪，netsh 会以 0xC0000142 弹系统错误框
 windows = { version = "0.61", features = [

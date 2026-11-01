@@ -3,7 +3,7 @@
   "productName": "x-hub",
   "mainBinaryName": "x-hub",
   "version": "0.9.6",
-  "identifier": "x-hub",
+  "identifier": "com.xhub.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -11,6 +11,7 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "x-hub",
@@ -23,8 +24,7 @@
         "center": true,
         "visible": false,
         "decorations": false,
-        "shadow": false,
-        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --js-flags=--scavenger_max_new_space_capacity_mb=8 --disk-cache-size=33554432"
+        "shadow": false
       }
     ],
     "security": {
@@ -32,10 +32,10 @@
         "default-src": "'self'",
         "script-src": "'self' 'unsafe-inline'",
         "style-src": "'self' 'unsafe-inline'",
-        "img-src": "'self' asset: http://*.localhost xhub-note: xhub-ext: data: blob: https:",
+        "img-src": "'self' asset: http://*.localhost http://*.localhost:* xhub-note: xhub-ext: data: blob: https:",
         "font-src": "'self' data:",
         "connect-src": "ipc: http://ipc.localhost http://xhub-sheet.localhost",
-        "frame-src": "http://*.localhost xhub-ext:",
+        "frame-src": "http://*.localhost http://*.localhost:* xhub-ext:",
         "media-src": "'self' asset: http://asset.localhost blob:",
         "object-src": "'none'",
         "base-uri": "'self'",
@@ -49,8 +49,8 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": [],
+    "active": true,
+    "targets": ["app", "dmg"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -58,6 +58,12 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "category": "Productivity",
+    "shortDescription": "本地个人效率工作台",
+    "longDescription": "时钟 / 倒计时 / 便签 / 待办 / 速记 / 速达 / AI 对话 / 剪贴板历史，所有数据本地存储、不上云端。",
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }

@@ -242,6 +242,9 @@ mod tests {
     /// P3 守卫：Rust 常量与 tauri.conf.json 主窗的 additionalBrowserArgs 必须逐字
     /// 一致——两处都是真相源，不一致时 WebView2 按参数差分裂 environment，
     /// 多出一整棵浏览器进程树（内存不降反暴增）。
+    /// macOS 移植说明：主窗配置**有意去掉**了该 WebView2 专属字段（WKWebView 不
+    /// 消费它），守卫只在 Windows 生效，防止平台差异被误「修」回来。
+    #[cfg(target_os = "windows")]
     #[test]
     fn additional_browser_args_match_tauri_conf() {
         let conf: serde_json::Value =

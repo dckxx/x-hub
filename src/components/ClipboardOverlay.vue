@@ -9,6 +9,7 @@ import { isTauri, tauriApi, type ClipboardInfo, type ClipboardItem } from '../ap
 import { useStore } from '../stores/workbench'
 import { useTheme } from '../composables/useTheme'
 import { parseTimestamp } from '../utils/time'
+import { IS_MAC } from '../utils/platform'
 
 const store = useStore()
 useTheme()
@@ -18,7 +19,7 @@ const keyword = ref('')
 const items = ref<ClipboardItem[]>([])
 const selected = ref(0)
 const loading = ref(false)
-const info = ref<ClipboardInfo>({ paused: false, max_items: 500, ttl_days: 7, total: 0, shortcut: 'Ctrl+`' })
+const info = ref<ClipboardInfo>({ paused: false, max_items: 500, ttl_days: 7, total: 0, shortcut: IS_MAC ? 'Cmd+Option+V' : 'Ctrl+`' })
 const listRef = ref<HTMLElement | null>(null)
 const toasts = ref<{ id: number; text: string }[]>([])
 

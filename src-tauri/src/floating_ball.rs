@@ -245,8 +245,9 @@ fn lmb_down() -> bool {
 // 左键：CGEventSourceButtonState 真实签名是 (stateID, button)——传合并会话态的
 // stateID 即可，不需要 CGEventSourceCreate 创建 source 引用。
 // （注：CoreGraphics 并不存在 CGEventSourceGetCursorPosition 这个函数，勿凭记忆写。）
+// pub(crate)：recorder.rs 的 monitor_under_cursor 也用它取全局逻辑点（喂 xcap from_point）
 #[cfg(target_os = "macos")]
-mod mac_input {
+pub(crate) mod mac_input {
     #[repr(C)]
     #[derive(Clone, Copy)]
     pub struct CGPoint {

@@ -39,6 +39,7 @@
 | `scripts/build-mac.sh` | **新增** | macOS 一键构建脚本（依赖检查 + npm install + tauri build / dev / test） |
 | **上游 v0.9.6 同步**（2026-11-01） | 43 文件 patch + 7 冲突手工合并 | 上游 v0.9.5→v0.9.6（截图标注/GIF 录屏/待办一键完成逾期/日历圆点勾选/整夹导出合并/滚动条修复/构建瘦身）。36 文件干净应用；7 冲突中 Cargo.lock 与 package-lock 取上游、Cargo.toml/tauri.conf.json/tauri.ts/TitleBar/GeneralPanel 手工合并（保留 tiff/自启移除/贴边解禁/快捷键平台化等本地改动）。**recorder.rs 上游自带平台分支**：采集 mac 走 xcap、光标叠加/窗口自动识别为 Windows 分支（mac 无）；我们补 clipboard_mac.rs 的 `set_clipboard_image_bytes`（上游只给了 clipboard.rs 的 Windows 实现，截图进剪贴板的关键缺口，实现为临时文件中转 JXA 写 public.png） |
 | `src-tauri/src/clipboard_mac.rs` | 补 `set_clipboard_image_bytes`（上游 v0.9.6 新增接口） | 字节入口统一转 PNG 经临时文件中转给 JXA 写 public.png；原 `set_clipboard_image` 重构为读文件后走字节入口，两处口径统一；截图（不落盘）经此进剪贴板 |
+| `src-tauri/src/recorder.rs` + `floating_ball.rs` | **修复截图/录屏选区层只铺主屏一角（多显示器+HiDPI）**（2026-11-01，PR #44 作者反馈） | 根因两层：① `monitor_under_cursor` mac 分支恒 None → 选区层永远回退主屏；② xcap 在 mac 的坐标口径**分裂**——`x/y/width/height` 是 CGDisplayBounds **逻辑点**、`capture_region` 入参是屏内逻辑偏移+逻辑尺寸但返回**物理分辨率**位图，而 recorder 全按 Windows 物理语义使用 → retina 上选区层只盖 1/4 屏、采集区域偏移+放大 2 倍。修复：内部坐标统一物理口径——新增 `mon_rect_physical`（mac ×scale）/`region_to_xcap`（物理→逻辑入参，偏移 round、尺寸 ceil+边界收口）/`xcap_capture_physical`（采集后裁回精确物理尺寸，截图单帧与 GIF 逐帧共用）；`monitor_under_cursor` mac 复用 floating_ball 的 `mac_input::cursor_point`（HIGetMousePosition 逻辑点与 CGDisplayBounds 同坐标系，直接喂 from_point，模块改 pub(crate)）；`find_monitor` 非 Windows 遍历物理矩形命中；`clamp_and_clip_region`/`open_overlay`/`show_control_window` 全改物理口径；`spawn_hover_follow` 门控 Windows（mac 窗口识别未移植，纯空转）。已知限制：混合 DPI 多屏（不同 scale）下「全局×scale」假设不精确，同 scale 布局（含 2x 单/双屏）精确 |
 
 **前端无需大改**：`src/stores/workbench.ts`、`src/composables/useShortcutRecorder.ts` 已通过 `navigator.userAgent/platform` 检测，把默认全局快捷键自动切成 `CommandOrControl+…`；`shortcut.rs` 后端也已有 `#[cfg(target_os = "macos")]` 的 Cmd 默认值。
 
@@ -96,6 +97,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 - 悬浮球：`cargo test` 478 全绿（含 12 个贴边几何/FFI/换算测试）+ 前端构建通过；运行时验证点 = 换装新包启动后日志应出现「悬浮球窗口已创建」（失败则记「悬浮球窗口创建失败: …」）；贴边交互验证（拖到边缘吸附半隐/悬停滑出/移开隐回/甩出屏外救球）待用户装新包实测
 - 剪贴板闭环实测（2026-11-01）：同进程 JXA 写入→立即读回码点正确；图片写→探→读回 sha 一致；多文件含中文/空格路径往返一致；文件读取走 readObjectsForClasses 主路径
 - 上游 v0.9.6 同步验证（2026-11-01）：Rust 481 全绿（含上游新增 3 测试）、前端 141 全过、构建通过；截图/GIF 录屏首次使用时系统会弹「屏幕录制」权限（xcap 采集，拒绝后采集报错），GIF 帧率性能与选区层收窗延迟待实测（mac 无 GDI BitBlt 快路径，逐帧 xcap）
+- recorder 多显示器/HiDPI 坐标修复（2026-11-01）：Rust 481 全绿、构建换装完成；运行验证点 = 按快捷键后日志「选区层已显示（shot）：2940x1912 @ (0,0)」应为**全屏物理尺寸**（修复前错现 1470x956），双屏下光标所在屏也要铺满 |
 
 ### ⚠️ 密钥文件须知
 
@@ -112,7 +114,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 3. **自启动**：已按用户要求移除（2026-10-31）；启动时会自动清理历史残留的 `~/Library/LaunchAgents/com.xhub.app.plist`。
 4. **签名/公证**：若要分发给他人的 `.dmg`，需配置 Apple Developer ID 签名 + notarization（本项目 `bundle.macOS` 未配签名，交付的本地构建适合自用/内网）。
 5. **「天翼云电脑」剪贴板同步干扰（环境因素，非本应用缺陷）**：云桌面客户端开着时会双向同步剪贴板，把本机内容经云端 Windows（GBK 代码页）回写——中文文本会被改写成 GBK 字节、多文件列表被展平成只留第一个。实测铁证：同进程写入后立即读回码点完全正确，300ms 后跨进程读被改成 GBK。排查剪贴板问题时先关云客户端对照，勿误判为应用 bug。
-6. **截图/GIF 录屏需要「屏幕录制」权限**（上游 v0.9.6 功能）：首次按 Cmd+Shift+A/G 时系统弹「"x-hub"想要录制屏幕」，需在 系统设置 → 隐私与安全性 → 屏幕录制 里勾选 x-hub；拒绝后采集报错（选区层无画面）。已知 mac 缺项：GIF 内不叠加鼠标光标、选区层无「光标下窗口自动识别高亮」（上游均为 Windows 分支，需时再移植）
+6. **截图/GIF 录屏需要「屏幕录制」权限**（上游 v0.9.6 功能）：首次按 Cmd+Shift+A/G 时系统弹「"x-hub"想要录制屏幕」，需在 系统设置 → 隐私与安全性 → 屏幕录制 里勾选 x-hub；拒绝后采集报错（选区层无画面）。每次重新构建换装后签名变化，系统可能要求重新授权，勾选后需重启应用。已知 mac 缺项：GIF 内不叠加鼠标光标、选区层无「光标下窗口自动识别高亮」（上游均为 Windows 分支，需时再移植）；选区层坐标已统一物理口径（2026-11-01 修复，见一、表格 recorder.rs 行），混合 DPI 多屏布局有已知换算误差，同 scale 布局不受影响
 
 ## 四、Windows 独有功能全面清点（2026-11-01 自查）
 
@@ -151,6 +153,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ## 五、上游同步流程（SOP，2026-11-01 首次执行沉淀）
 
 本地副本不是 git 仓库（解压源码 + mac 移植改动），与上游（GitHub dckxx/x-hub）同步的固定流程：
+
+0. **更新地址说明**：
+   - 源代码上游（同步对象）：`https://github.com/dckxx/x-hub`（Releases/tag 判断新版）
+   - 应用内更新器（**mac 不走这条线**）：`https://x-hub.xfactor.top/api/v1/app/update`（上游作者服务端，官方清单只含 `windows-x86_64` 条目）——updater.rs 已按目标平台查键（mac 查 `darwin-aarch64`），无条目即「无更新」，不会误装 Windows 包；mac 更新 = 本 SOP 的源码同步 + 本地构建 + 换装
+   - 版本号锚点：维护者本地另存一份版本记录（同步后更新），四处版本号须一致
 
 1. **拉取上游两版源码**：`.temp/upstream` 浅 fetch 上一 tag 与新 tag（如 v0.9.5 / v0.9.6）
 2. **生成 patch 并预检**：`git diff <旧tag> <新tag> > patch`，到项目根 `git apply --check` 分出「干净可应用」与「冲突」两组

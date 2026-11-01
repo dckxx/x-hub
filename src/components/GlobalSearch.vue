@@ -5,6 +5,8 @@ import type { Note, Resource, Todo } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { markdownPlainText } from '../utils/markdown'
+import { normalizeShortcutDisplay } from '../composables/useShortcutRecorder'
+import { IS_MAC } from '../utils/platform'
 
 const props = defineProps<{
   visible: boolean
@@ -20,7 +22,9 @@ const emit = defineEmits<{
 const store = useStore()
 
 /** 弹窗内展示当前生效的呼出快捷键：跟随设置 → 快捷键的自定义配置 */
-const searchShortcutLabel = computed(() => store.state.config.search_shortcut || 'Ctrl+K')
+const searchShortcutLabel = computed(() =>
+  normalizeShortcutDisplay(store.state.config.search_shortcut || (IS_MAC ? 'Cmd+K' : 'Ctrl+K')),
+)
 
 const keyword = ref('')
 const results = ref<{ resources: Resource[]; notes: Note[]; todos: Todo[] }>({

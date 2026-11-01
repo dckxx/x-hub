@@ -18,6 +18,7 @@ import { isPlatformModel, isTauri, tauriApi, PLATFORM_ENTRY_NAME, type Note, typ
 import { cleanModelMarkdownNoise } from '../utils/markdownLines'
 import { useStore } from '../stores/workbench'
 import { normalizeShortcutDisplay } from '../composables/useShortcutRecorder'
+import { IS_MAC } from '../utils/platform'
 import { attachBlockDrag } from '../utils/blockDrag'
 import { guessCodeLanguage, looksLikeCode, normalizeClipboardText, unwrapFencedCode } from '../utils/pasteCode'
 import { beautifyNoteMarkdown } from '../utils/markdownBeautify'
@@ -69,7 +70,7 @@ const showToast = inject<((message: string) => void) | undefined>('showToast', u
 /** 空态快捷键提示与设置 → 快捷键同源同格式（键值 + 启用开关）；禁用时不出键提示 */
 const notesShortcutHint = computed(() =>
   store.state.config.notes_shortcut_enabled
-    ? normalizeShortcutDisplay(store.state.config.notes_shortcut || 'Ctrl+Shift+N')
+    ? normalizeShortcutDisplay(store.state.config.notes_shortcut || (IS_MAC ? 'Cmd+Shift+N' : 'Ctrl+Shift+N'))
     : '',
 )
 

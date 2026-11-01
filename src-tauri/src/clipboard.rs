@@ -1158,10 +1158,19 @@ fn resolve_paste_method(cfg: &str, target_hwnd: isize) -> &'static str {
 /// 恢复焦点 + 注入 Ctrl+V 依赖窗口激活/焦点时序，实际不可靠，
 /// 改为直接向主窗口 JS 派发内容、由其插回原输入框。
 fn is_main_window(app: &AppHandle, prev_hwnd: isize) -> bool {
-    crate::main_window(app)
-        .and_then(|w| w.hwnd().ok())
-        .map(|h| h.0 as isize == prev_hwnd)
-        .unwrap_or(false)
+    #[cfg(target_os = "windows")]
+    {
+        crate::main_window(app)
+            .and_then(|w| w.hwnd().ok())
+            .map(|h| h.0 as isize == prev_hwnd)
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 非 Windows 无 hwnd 语义，恒 false：走「外部窗口」粘贴分支
+        let _ = (app, prev_hwnd);
+        false
+    }
 }
 
 /// 粘贴到唤起浮层前聚焦的窗口：

@@ -1886,18 +1886,8 @@ export function useStore() {
 
   // ---- 开机自启动 ----
   /** 应用开机自启动开关，失败回滚内存状态 */
-  async function setRunAtStartup(enabled: boolean) {
-    const prevEnabled = state.config.run_at_startup
-    state.config.run_at_startup = enabled
-    if (!isTauri()) return
-    try {
-      await tauriApi.setRunAtStartup(enabled)
-      await tauriApi.saveConfig(state.config)
-    } catch (e) {
-      state.config.run_at_startup = prevEnabled
-      throw e
-    }
-  }
+  // 开机自启动已按用户要求移除（2026-10-31，macOS 移植版）：设置页不再提供开关，
+  // 后端启动时统一清理历史残留（见 lib.rs）。
 
   // ---- 桌面悬浮球（ADR 0004）：开关/贴边隐藏/同显/按钮统一经 floating_ball_save_settings 落盘，
   // 不走 saveConfig（后端对悬浮球字段做磁盘合并保护，见 commands::save_config） ----
@@ -2298,7 +2288,7 @@ export function useStore() {
     setKeepAliveRunning,
     setExtensionAgentGrant,
     setExtensionRowClick,
-    setRunAtStartup,
+    // 开机自启动 setRunAtStartup 已移除（2026-10-31 用户要求，见上方注释）
     setFloatingBallEnabled,
     setFloatingBallAutoHide,
     setFloatingBallWithMain,

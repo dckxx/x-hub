@@ -7,6 +7,7 @@ import { categorize } from '../utils/categories'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { useStore } from '../stores/workbench'
 import { deriveFaviconUrl, normalizeWebUrl } from '../utils/web'
+import { IS_MAC } from '../utils/platform'
 import AppSelect, { type AppSelectOption } from './AppSelect.vue'
 
 const store = useStore()
@@ -114,9 +115,12 @@ const targetLabel = computed(() => {
 })
 
 const targetPlaceholder = computed(() => {
-  if (kind.value === 'file') return '选择要链接的文件或文件夹'
+  if (kind.value === 'file') return isDir.value ? '文件夹路径' : '文件路径'
   if (kind.value === 'app')
-    return '如：C:\\Program Files\\...\\code.exe；Store 应用填 shell:AppsFolder\\包名!应用ID'
+    // mac 的应用是 .app 包（选择后经系统 open 启动）；也支持命令行工具/shell 脚本
+    return IS_MAC
+      ? '如：/Applications/Visual Studio Code.app，也可选命令行工具或脚本'
+      : '如：C:\\Program Files\\...\\code.exe；Store 应用填 shell:AppsFolder\\包名!应用ID'
   return '如：github.com、https://… 或 smb://nas/share、ftp://…'
 })
 
@@ -213,7 +217,10 @@ async function pickTarget() {
     const file = await open({
       multiple: false,
       directory: false,
-      filters: [{ name: '程序', extensions: ['exe', 'lnk'] }],
+      // ⚠️ 平台差异：Windows 只放行 .exe/.lnk；macOS 的应用是 .app 包（NSOpenPanel
+      // 里包整体可选），命令行工具/shell 脚本无扩展名——mac 不做扩展名过滤，否则
+      // 文件选择框里所有文件都会置灰（用户只能眼看着选不了）
+      filters: IS_MAC ? undefined : [{ name: '程序', extensions: ['exe', 'lnk'] }],
     })
     if (typeof file !== 'string') return
     target.value = file
@@ -222,7 +229,8 @@ async function pickTarget() {
       if (!name.value.trim()) name.value = info.name
       if (!icon.value.trim()) icon.value = info.icon ?? ''
     } catch {
-      // 解析失败时仅保留手动填写的路径
+      // 解析失败时仅保留手动填写的路径（macOS 下 .app 已在后端支持；真不支持的
+      // 目标仍可手填名称后添加）
     }
     return
   }

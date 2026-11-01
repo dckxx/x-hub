@@ -344,7 +344,7 @@ export interface AppConfig {
   shot_shortcut: string
   /** GIF 录制呼出快捷键（默认 Ctrl+Shift+G）：唤起选区层，框选后设帧率/时长再录 */
   recorder_shortcut: string
-  /** GIF 保存目录（空 = 默认 数据根\captures；失效时后端自动回退默认） */
+  /** GIF 保存目录（空 = 默认 数据根/captures；失效时后端自动回退默认） */
   recorder_save_dir: string
   /** GIF 录制默认帧率（1-60，默认 20；选区层不再逐次选择） */
   recorder_fps: number
@@ -900,17 +900,9 @@ export interface DataPathInfo {
   mode: 'default' | 'custom' | 'portable'
 }
 
-/** 开机自启动真实状态：区分「用户意图」与「系统里是否真的会生效」 */
-export interface AutostartStatus {
-  /** 是否真正会开机自启 = configured && registered && !os_disabled */
-  enabled: boolean
-  /** 用户开关意图（config.run_at_startup） */
-  configured: boolean
-  /** Run 键存在且指向当前 exe */
-  registered: boolean
-  /** 被任务管理器/安全软件在启动项里禁用 */
-  os_disabled: boolean
-}
+// 开机自启动已按用户要求移除（2026-10-31，macOS 移植版）：后端命令仍在
+//（留作后续恢复入口），前端不再提供设置项与调用。
+
 
 export interface WeatherCurrent {
   temperature: number
@@ -1596,12 +1588,13 @@ export const tauriApi = {
   setShotShortcut: (value: string) => invoke<string>('set_shot_shortcut', { value }),
   setRecorderShortcut: (value: string) => invoke<string>('set_recorder_shortcut', { value }),
   /** 启用/禁用某个可自定义全局快捷键（禁用保留键值，只注销热键） */
-  setShortcutEnabled: (kind: 'main' | 'clipboard' | 'search' | 'chat' | 'notes' | 'shot' | 'recorder', enabled: boolean) =>
-    invoke<void>('set_shortcut_enabled', { kind, enabled }),
+  setShortcutEnabled: (
+    kind: 'main' | 'clipboard' | 'search' | 'chat' | 'notes' | 'shot' | 'recorder',
+    enabled: boolean,
+  ) => invoke<void>('set_shortcut_enabled', { kind, enabled }),
   // ---- 截图 / GIF 录屏（recorder.rs；选区层与控制条两窗由后端预创建复用） ----
   /** 唤起全屏选区层（mode：shot 框选松手即出图 / record 框选后设帧率时长再录） */
-  recorderOpenOverlay: (mode: 'shot' | 'record') =>
-    invoke<void>('recorder_open_overlay', { mode }),
+  recorderOpenOverlay: (mode: 'shot' | 'record') => invoke<void>('recorder_open_overlay', { mode }),
   /** 收起选区层（Esc 取消；只隐藏，窗口复用） */
   recorderCloseOverlay: () => invoke<void>('recorder_close_overlay'),
   /** 截图：框选区域采单帧 + 标注（画笔/矩形/圆形）合成，复制剪贴板（不落盘） */
@@ -1623,11 +1616,8 @@ export const tauriApi = {
   recorderStop: () => invoke<RecorderResult>('recorder_stop'),
   /** 取消录制：丢弃数据并清临时文件 */
   recorderCancel: () => invoke<void>('recorder_cancel'),
-  /** 在资源管理器中定位产物文件 */
+  /** 在资源管理器/Finder 中定位产物文件 */
   recorderReveal: (path: string) => invoke<void>('recorder_reveal', { path }),
-  getRunAtStartup: () =>
-    invoke<AutostartStatus>('get_run_at_startup'),
-  setRunAtStartup: (enabled: boolean) => invoke<void>('set_run_at_startup', { enabled }),
   getStartupHidden: () => invoke<boolean>('get_startup_hidden'),
   /** 右下角通知窗：前端上报内容高度→后端锚定工作区右下角并显示 */
   noticeReady: () => invoke<void>('notice_ready'),

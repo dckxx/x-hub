@@ -2974,9 +2974,28 @@ pub fn parse_dropped_path(path: String) -> Result<DroppedAppInfo, String> {
             let (target, icon) = resolve_lnk_target_and_icon(&path)?;
             (name, target, icon)
         }
+        "app" => {
+            // macOS 应用包：target 即 .app 目录本身（launch_program 识别 .app 目录后
+            // 经系统 `open` 启动）。名称取包目录名（一般即应用名）；图标经
+            // extract_app_icon → app_icon::extract_icon_png 的 macOS 分支读
+            // Contents/Info.plist 的 CFBundleIconFile 并转 PNG（Windows 上 .app
+            // 不存在、图标提取返回 None，天然安全）。
+            let name = p
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("本地应用")
+                .to_string();
+            let target = path.clone();
+            let icon = extract_app_icon(&target);
+            (name, target, icon)
+        }
         _ => {
-            log::warn!("拖入文件不支持: {}", path);
-            return Err("仅支持 .exe 文件或 .lnk 快捷方式".into());
+            log::warn!("拖入/选择文件不支持: {}", path);
+            return Err(if cfg!(target_os = "macos") {
+                "仅支持 .app 应用包（或直接填入命令行工具路径）".into()
+            } else {
+                "仅支持 .exe 文件或 .lnk 快捷方式".into()
+            });
         }
     };
     log::info!("拖入解析成功: {} -> {} (图标: {})", name, target, if icon.is_some() { "有" } else { "无" });
@@ -3070,17 +3089,31 @@ fn extract_app_icon_with_source(target: &str, icon_source: Option<&str>) -> Opti
     if let Some(dir) = output_path.parent() {
         std::fs::create_dir_all(dir).ok()?;
     }
-    let resolved;
-    let bmp_source: &str = if let Some(s) = icon_source {
-        s
-    } else if process::is_shell_app_target(target) {
-        resolved = match resolve_packaged_icon_source(target) {
-            Some(s) => s,
-            None => return old_cache_fallback(&output_path, target),
-        };
-        &resolved
-    } else {
-        target
+    let bmp_source: &str = {
+        #[cfg(target_os = "windows")]
+        {
+            let resolved;
+            if let Some(s) = icon_source {
+                s
+            } else if process::is_shell_app_target(target) {
+                resolved = match resolve_packaged_icon_source(target) {
+                    Some(s) => s,
+                    None => return old_cache_fallback(&output_path, target),
+                };
+                &resolved
+            } else {
+                target
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // 非 Windows 无 shell:AppsFolder 打包应用语义，位图来源即 target 本身
+            if let Some(s) = icon_source {
+                s
+            } else {
+                target
+            }
+        }
     };
     match crate::app_icon::extract_icon_png(bmp_source) {
         Some(png) => {
@@ -5606,6 +5639,26 @@ fn parse_kind(kind: &str) -> Result<ResourceKind, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// macOS：速达「添加应用」选择 .app 包 → parse_dropped_path 解析
+    /// 名称（包目录名）+ target（.app 目录本身）+ 图标（plutil 读 CFBundleIconFile、
+    /// sips 转 PNG 落缓存）。拿系统自带 Safari 验证全链路（Info.plist 是二进制 plist，
+    /// 正好覆盖 plutil 路径）。
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn parse_dropped_path_supports_mac_app_bundle() {
+        let target = "/Applications/Safari.app";
+        if !std::path::Path::new(target).is_dir() {
+            // 极少数精简系统可能没有 Safari：退而用任意存在的 .app；再没有就跳过
+            eprintln!("Safari 不存在，跳过 .app 解析测试");
+            return;
+        }
+        let info = parse_dropped_path(target.to_string()).expect(".app 解析不应失败");
+        assert_eq!(info.name, "Safari");
+        assert_eq!(info.target, target);
+        // 图标缓存路径（存在与否取决于 sips 转换成功；Safari 系统必有图标）
+        assert!(info.icon.is_some(), "Safari 应能提取出图标缓存");
+    }
 
     /// 迁移时只跳过可重建/一次性/会带来不一致的条目，业务数据一律跟着走
     /// （扩展/笔记图片/壁纸/市场缓存漏掉一个，用户就看到「数据消失」）

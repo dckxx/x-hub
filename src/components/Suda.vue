@@ -26,6 +26,7 @@ import { isTauri, tauriApi, type InstalledBrowser, type Resource, type ResourceZ
 import { categorize } from '../utils/categories'
 import { useStore } from '../stores/workbench'
 import { reportClientError } from '../utils/error-report'
+import { IS_MAC } from '../utils/platform'
 import { accentOf, fileAccentOf, iconSrc, useResourceIcon } from '../composables/useResourceIcon'
 import { useAdaptivePolling } from '../composables/useAdaptivePolling'
 import { useSudaDrag } from '../composables/useSudaDrag'
@@ -982,7 +983,8 @@ async function onResourceContext(e: MouseEvent, r: Resource) {
   if (batchMode.value) return
   const items: ContextMenuItem[] = [{ label: '打开', onClick: () => onOpen(r) }]
   const isApp = r.kind === 'app'
-  if (isApp) {
+  // UAC 提权是 Windows 专属（PowerShell Start-Process -Verb RunAs）；macOS 无对应语义，不显示
+  if (isApp && !IS_MAC) {
     items.push({ label: '以管理员身份运行', onClick: () => void onOpenAsAdmin(r) })
   }
   // 「打开文件所在位置」只对本地路径型资源有意义（程序/文件），网页没有所在目录

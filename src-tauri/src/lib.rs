@@ -6,6 +6,10 @@ mod browsers;
 mod app_icon;
 mod chat;
 mod chat_window;
+#[cfg(target_os = "windows")]
+mod clipboard;
+#[cfg(not(target_os = "windows"))]
+#[path = "clipboard_mac.rs"]
 mod clipboard;
 mod commands;
 mod config;
@@ -793,6 +797,71 @@ pub fn run() {
                     0
                 });
             app.manage(proxy::ProxyState::new(proxy_port));
+            // macOS：扩展内容经该本地 HTTP 服务器承载（/xext/ 路由），入口 URL 需要
+            // 端口才能拼出 http://e-<hash>.localhost:<port>——见 ext_protocol::origin 注释
+            ext_protocol::set_http_port(proxy_port);
+
+            // ===== 扩展 iframe 加载诊断探针（排障用，XHUB_EXT_DIAG=<扩展 id> 时启用）=====
+            // 背景：macOS 上扩展页白屏，但「裸 WKWebView + 真实服务器」整链验证全通，
+            // 需要拿真实 app 内 webview 的行为证据。做法：启动 10 秒（等主窗 SPA 就绪）
+            // 后向主窗 eval 注入探针脚本，动态创建 iframe 加载该扩展真实入口；全部事件
+            // （onload / 桥消息 / 文档状态）经 Image() 回传到内容服务器——host/路径与扩展
+            // 身份不符 → 403，由 proxy.rs 的 [扩展内容] 日志完整记录，无需 GUI 操作。
+            if let Ok(diag_env) = std::env::var("XHUB_EXT_DIAG") {
+                let diag_id = diag_env.trim().to_string();
+                if !diag_id.is_empty() {
+                    let app_handle = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(10));
+                        use tauri::Manager;
+                        let origin = ext_protocol::origin(&diag_id);
+                        let entry = format!("{}/{}/view/index.html", origin, diag_id);
+                        // 双通道回传：事件既写 document.title（Rust 侧轮询读回，不依赖
+                        // 网络层），也经 Image() 打内容服务器（host/路径不匹配扩展身份
+                        // → 403 → [扩展内容] 日志）。两条通道互为备份。
+                        // 导航模式与 useExtensionFrame.load() 修复后完全一致：
+                        // src='about:blank'（销毁旧页）→ 30ms 后设真实入口（错开 WebKit
+                        // 的同周期导航丢弃竞态，见该文件的修复注释）。
+                        let script = format!(
+                            r#"(function(){{var E=[];var O='{origin}';function rep(){{try{{document.title='XHUBDIAG:'+JSON.stringify(E).slice(0,900)}}catch(e){{}}}}function send(m){{E.push(String(m));rep();try{{var i=new Image();i.src=O+'/xdiag/'+encodeURIComponent(String(m));}}catch(e){{}}}}var f=document.createElement('iframe');f.id='xhub-diag-frame';f.style.cssText='position:fixed;top:10px;left:10px;width:420px;height:320px;z-index:2147483647;background:#fff';f.onload=function(){{send('iframe-onload')}};f.onerror=function(){{send('iframe-onerror')}};window.addEventListener('message',function(e){{if(e.source===f.contentWindow){{send('MSG origin='+e.origin+' data='+JSON.stringify(e.data).slice(0,200))}}}});send('probe-start parent-origin='+window.location.origin);document.body.appendChild(f);f.src='about:blank';send('blank-set');setTimeout(function(){{if(!f.isConnected){{return}}f.src='{entry}';send('url-set')}},30);setTimeout(function(){{send('t3s')}},3000);setTimeout(function(){{send('t8s-final')}},8000);}})();"#
+                        );
+                        let eval_ok = match app_handle.get_webview_window("main") {
+                            Some(win) => {
+                                let _ = win.eval(&script);
+                                true
+                            }
+                            None => match app_handle.get_webview("main") {
+                                // 主窗是「Window + 子 webview」多 webview 结构时，
+                                // WebviewWindow 表查不到，走 webview 表（同 setup 里铺底色的写法）
+                                Some(wv) => {
+                                    let _ = wv.eval(&script);
+                                    true
+                                }
+                                None => {
+                                    log::warn!("[探针] 主窗 webview 不可用");
+                                    false
+                                }
+                            },
+                        };
+                        if eval_ok {
+                            log::info!("[探针] 已注入主窗，入口: {entry}");
+                            // 轮询 title 回读事件（12 次 × 1.2s，覆盖探针全部事件）
+                            let mut last = String::new();
+                            for _ in 0..12 {
+                                std::thread::sleep(std::time::Duration::from_millis(1200));
+                                if let Some(win) = crate::main_window(&app_handle) {
+                                    if let Ok(t) = win.title() {
+                                        if t.starts_with("XHUBDIAG:") && t != last {
+                                            last = t.clone();
+                                            log::info!("[探针] 事件: {t}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+            }
 
             tray::setup(app)?;
             shortcut::setup(app)?;
@@ -816,17 +885,18 @@ pub fn run() {
             // 若 show 早于首帧绘制，也只会闪主题色而非纯白
             // 主题三态：dark，或 system 且系统偏好深色 → 暗色底色；light / 系统浅色 → 亮色
             let config = config::load();
-            // 开机自启动自愈：用户开了自启动、但 Run 键因换目录/被清理工具删除/路径变更而失效时，
-            // 按当前 exe 重写。放在主窗显示前，静默修复，不阻断启动。
+            // 开机自启动已按用户要求移除（2026-10-31，macOS 移植版）：设置页不再提供
+            // 该开关。这里静默清理历史残留——配置开关置回 false、删除可能存在的
+            // LaunchAgent，防止出现「无 UI 可关」的僵尸自启动。
             if config.run_at_startup {
-                match autostart::ensure_registered() {
-                    // 自愈详情已由 ensure_registered 内部记录（键缺失/路径不符两种），
-                    // 这里不再重复写一条
-                    Ok(true) => {}
-                    Ok(false) => {}
-                    Err(e) => log::warn!("开机自启动自愈失败: {e}"),
+                let _guard = config::lock();
+                let mut c = config::load();
+                c.run_at_startup = false;
+                if config::save(&c).is_ok() {
+                    log::info!("[自启动] 功能已移除：配置开关已清理");
                 }
             }
+            let _ = autostart::apply(false);
             let mut dark = config.theme_mode == "dark";
             if config.theme_mode == "system" {
                 dark = matches!(

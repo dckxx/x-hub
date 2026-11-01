@@ -174,7 +174,9 @@ function onResizeStart(e: MouseEvent, dir: ResizeDirection) {
       ></textarea>
     </div>
 
-    <div class="tf-body">
+    <!-- data-todo-list：子待办拖到本容器内的空白处 = 升为顶级（TodoRow 升挂落点判定范围）；
+         浮窗无 toast 体系，成功靠列表即时刷新反馈（同删除口径） -->
+    <div class="tf-body" data-todo-list>
       <div v-if="pendingTodos.length === 0" class="tf-empty">
         <p>暂无待办</p>
       </div>

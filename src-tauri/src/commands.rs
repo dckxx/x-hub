@@ -1138,7 +1138,8 @@ pub fn reorder_todo_orders(
     Ok(())
 }
 
-/// 跨父拖拽：把子待办改挂到另一个顶级父待办下，并按传入顺序重写目标父下的子项排序。
+/// 跨父拖拽：改挂父级并按传入顺序重写目标父下的子项排序。
+/// 两个方向：子待办挂到另一顶级父下；无子待办的一级拖到另一级下变为其子待办。
 /// `ordered_ids` 为目标落点后的完整子项顺序（含被移动项）。
 #[tauri::command]
 pub fn move_todo_child(
@@ -1153,11 +1154,26 @@ pub fn move_todo_child(
     drop(conn);
     let _ = app.emit("todos-changed", ());
     log::info!(
-        "子待办改挂父级: id={} -> parent={} (目标下 {} 条)",
+        "待办改挂父级: id={} -> parent={} (目标下 {} 条)",
         id,
         new_parent_id,
         ordered_ids.len()
     );
+    Ok(t)
+}
+
+/// 子待办升回顶级（拖到列表空白处）：parent_id 与 sort_order 一并清空
+#[tauri::command]
+pub fn detach_todo_child(
+    app: tauri::AppHandle,
+    state: State<'_, DbState>,
+    id: i64,
+) -> Result<Todo, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let t = todo::detach_child(&conn, id)?;
+    drop(conn);
+    let _ = app.emit("todos-changed", ());
+    log::info!("子待办升回顶级: id={}", id);
     Ok(t)
 }
 
@@ -4678,6 +4694,16 @@ pub fn set_chat_panel_side(side: String) -> Result<(), String> {
     let _guard = crate::config::lock();
     let mut config = config::load();
     config.chat_panel_side = side;
+    config::save(&config)
+}
+
+/// 全局记住 AI 对话模型选择（无会话态/新建会话使用；主窗与独立窗共用，锁内读改写
+/// 避免整份 saveConfig 从过期快照覆盖其它字段）
+#[tauri::command]
+pub fn set_chat_selected_model(name: String) -> Result<(), String> {
+    let _guard = crate::config::lock();
+    let mut config = config::load();
+    config.chat_selected_model = name;
     config::save(&config)
 }
 

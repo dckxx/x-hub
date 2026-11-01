@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, toRef, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, toRef, watch } from 'vue'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import type { ExportFormat } from '../utils/noteExport'
 
@@ -7,6 +7,7 @@ import type { ExportFormat } from '../utils/noteExport'
  * 速记随手导出弹窗（单条/整夹共用，2026-10-22 #t69）：
  * 格式三选一（Markdown / HTML / PDF）+ 确定；整夹批量时切进度态（逐条 PDF 较慢，可取消）。
  * 整夹可勾「合并为一个文件」（子树笔记写进同一文件，另存为单个文件）。
+ * 单条且目标是表格笔记（kind='sheet'）时在最前多一项 Excel（.xlsx）并默认选中（2026-10-31）。
  * 导出动作由宿主（SpeednoteView）执行，本组件只管选格式与展示进度。
  */
 const props = defineProps<{
@@ -15,6 +16,8 @@ const props = defineProps<{
   kind: 'note' | 'folder'
   /** 笔记标题 / 文件夹名（展示用） */
   title: string
+  /** 目标是否表格笔记（仅 kind='note' 有意义；true 时多出 Excel 格式） */
+  sheet: boolean
   busy: boolean
   progress: { done: number; total: number } | null
 }>()
@@ -24,12 +27,12 @@ const emit = defineEmits<{ confirm: [format: ExportFormat, merged: boolean]; can
 const format = ref<ExportFormat>('markdown')
 const merged = ref(false)
 
-// 每次打开重置为 Markdown（最高频选择）+ 不合并（默认每条一个文件）
+// 每次打开重置默认格式（表格笔记默认 Excel，其余默认 Markdown，均为最高频选择）+ 不合并（默认每条一个文件）
 watch(
   () => props.visible,
   (on) => {
     if (on) {
-      format.value = 'markdown'
+      format.value = props.kind === 'note' && props.sheet ? 'excel' : 'markdown'
       merged.value = false
     }
   },
@@ -63,11 +66,18 @@ onBeforeUnmount(() => {
   if (typeof window !== 'undefined') window.removeEventListener('keydown', onKeydown)
 })
 
-const options: { value: ExportFormat; label: string; desc: string }[] = [
-  { value: 'markdown', label: 'Markdown（.md）', desc: '通用笔记格式，图片存到旁边的 assets 文件夹' },
-  { value: 'html', label: 'HTML（.html）', desc: '单文件网页，双击即可查看，图片内嵌其中' },
-  { value: 'pdf', label: 'PDF（.pdf）', desc: '适合打印与分享，文字可选中、可搜索' },
-]
+/** 表格笔记在最前多一项 Excel（整夹导出不出现——合并/逐条的表格处置是另一个话题） */
+const options = computed<{ value: ExportFormat; label: string; desc: string }[]>(() => {
+  const base: { value: ExportFormat; label: string; desc: string }[] = [
+    { value: 'markdown', label: 'Markdown（.md）', desc: '通用笔记格式，图片存到旁边的 assets 文件夹' },
+    { value: 'html', label: 'HTML（.html）', desc: '单文件网页，双击即可查看，图片内嵌其中' },
+    { value: 'pdf', label: 'PDF（.pdf）', desc: '适合打印与分享，文字可选中、可搜索' },
+  ]
+  if (props.kind === 'note' && props.sheet) {
+    base.unshift({ value: 'excel', label: 'Excel（.xlsx）', desc: '电子表格格式，可用 Excel / WPS 打开继续编辑' })
+  }
+  return base
+})
 </script>
 
 <template>

@@ -24,6 +24,7 @@ import BrowserChrome from './components/BrowserChrome.vue'
 import UpdateCheckDialog from './components/UpdateCheckDialog.vue'
 import WindowResizeEdges from './components/WindowResizeEdges.vue'
 import { isTauri } from './api/tauri'
+import { useScrollbarHover } from './composables/useScrollbarHover'
 
 const label = isTauri() ? getCurrentWebview().label : ''
 const isMainWindow = label === 'main'
@@ -114,51 +115,10 @@ function insertTextAtCaret(el: HTMLElement, text: string) {
   }
 }
 
-// ---- 滚动条 hover 显隐：鼠标悬停到可滚动区域时给该滚动容器加 .scrollbar-hover ----
-let hoveredScroller: HTMLElement | null = null
-let scrollRaf: number | null = null
-let pendingTarget: Element | null = null
-
-function findScrollable(el: Element | null): HTMLElement | null {
-  let cur = el as HTMLElement | null
-  while (cur && cur !== document.documentElement) {
-    const s = getComputedStyle(cur)
-    const y = s.overflowY
-    const x = s.overflowX
-    const canY = (y === 'auto' || y === 'scroll' || y === 'overlay') && cur.scrollHeight > cur.clientHeight + 1
-    const canX = (x === 'auto' || x === 'scroll' || x === 'overlay') && cur.scrollWidth > cur.clientWidth + 1
-    if (canY || canX) return cur
-    cur = cur.parentElement
-  }
-  return null
-}
-
-function onScrollPointerMove(e: PointerEvent) {
-  // 同步捕获 target：rAF 回调里事件对象可能已被复用，不能再读 e.target
-  pendingTarget = e.target as Element | null
-  if (scrollRaf != null) return
-  scrollRaf = requestAnimationFrame(() => {
-    scrollRaf = null
-    const target = pendingTarget
-    pendingTarget = null
-    const scroller = findScrollable(target)
-    if (scroller === hoveredScroller) return
-    hoveredScroller?.classList.remove('scrollbar-hover')
-    hoveredScroller = scroller
-    scroller?.classList.add('scrollbar-hover')
-  })
-}
-
-function onScrollMouseLeave() {
-  hoveredScroller?.classList.remove('scrollbar-hover')
-  hoveredScroller = null
-}
+// ---- 滚动条 hover 显隐：抽到 composable，轻量壳窗口（chat.html / clipboard.html）也复用 ----
+useScrollbarHover()
 
 onMounted(async () => {
-  // 滚动条 hover 显隐（所有窗口 + 浏览器预览均生效）
-  document.addEventListener('pointermove', onScrollPointerMove, { passive: true })
-  document.addEventListener('mouseleave', onScrollMouseLeave)
-
   if (!isTauri() || !isMainWindow) return
   document.addEventListener('focusin', onFocusIn)
   unlistenPasteRequest = await listen('clipboard-paste-request', (e) => {
@@ -172,8 +132,6 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('pointermove', onScrollPointerMove)
-  document.removeEventListener('mouseleave', onScrollMouseLeave)
   document.removeEventListener('focusin', onFocusIn)
   unlistenPasteRequest?.()
 })

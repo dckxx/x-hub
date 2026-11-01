@@ -151,7 +151,9 @@ fn initial_center(app: &AppHandle, width: f64, height: f64) -> Option<(i32, i32)
 fn build(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     let cfg = config::load();
     let mut builder =
-        tauri::WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
+        // 轻量入口 chat.html（P2 续，2026-10-31）：只挂 ChatWindow，
+        // 不加载完整 SPA（本窗无条件预创建隐藏常驻，见 src/light/chat.ts）
+        tauri::WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("chat.html".into()))
             .title("AI 对话")
             .inner_size(
                 cfg.chat_window_width.clamp(MIN_WIDTH, MAX_WIDTH),

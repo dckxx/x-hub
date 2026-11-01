@@ -499,9 +499,11 @@ pub fn reorder(conn: &Connection, ids: &[i64]) -> Result<()> {
     tx.commit()
 }
 
-/// 把子待办改挂到另一个**顶级**父待办下（跨父拖拽），并重写目标父下的子项顺序。
+/// 改挂父级（跨父拖拽），并重写目标父下的子项顺序。
 /// `ordered_ids` 为目标父落点后的完整子项顺序（含被移动项）。
-/// 仅支持一层：新父必须是顶级（`parent_id IS NULL`），挡住「子待办挂到子待办下」。
+/// 两个方向：子待办改挂到另一顶级父下；**无子待办的一级**拖到另一级下变为其子待办。
+/// 仅支持一层：新父必须是顶级（`parent_id IS NULL`），挡住「子待办挂到子待办下」；
+/// 顶级源自身带子待办时拒绝——整体改挂会造出 UI 不可见的孙级。
 /// 源父剩余子项各自 `sort_order` 相对顺序不变，无需回写。
 pub fn move_child(
     conn: &Connection,
@@ -510,9 +512,6 @@ pub fn move_child(
     ordered_ids: &[i64],
 ) -> Result<Todo, String> {
     let child = get(conn, id).map_err(|e| e.to_string())?;
-    let Some(old_parent) = child.parent_id else {
-        return Err(format!("INVALID_STATE: 待办 {id} 不是子待办，无法改挂父级"));
-    };
     let parent = get(conn, new_parent_id)
         .map_err(|_| format!("NOT_FOUND: 目标父待办 {new_parent_id} 不存在"))?;
     if parent.parent_id.is_some() {
@@ -520,7 +519,23 @@ pub fn move_child(
             "INVALID_STATE: 目标 {new_parent_id} 不是顶级待办，子待办仅支持一层"
         ));
     }
-    if old_parent == new_parent_id {
+    let old_parent = child.parent_id;
+    if old_parent.is_none() {
+        // 顶级 → 子：保持「仅一层」不变量——自己有子待办的一级不许整体改挂
+        let kid_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM todos WHERE parent_id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if kid_count > 0 {
+            return Err(format!(
+                "INVALID_STATE: 待办 {id} 自己有子待办，不能整体挂到其它待办下"
+            ));
+        }
+    }
+    if old_parent == Some(new_parent_id) {
         // 同父：只重排，不写 parent_id（与顶层拖拽同一语义，也不额外推进版本）
         reorder(conn, ordered_ids).map_err(|e| e.to_string())?;
         return get(conn, id).map_err(|e| e.to_string());
@@ -542,6 +557,23 @@ pub fn move_child(
         .map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
+    get(conn, id).map_err(|e| e.to_string())
+}
+
+/// 子待办升回顶级（拖到列表空白处）：parent_id 清空、sort_order 一并清空——
+/// 回到按截止日期分组的默认排序（同「换组清手动排序位」口径），而不是带着
+/// 子项序位混进顶级的 sort_order 序列。
+pub fn detach_child(conn: &Connection, id: i64) -> Result<Todo, String> {
+    let child = get(conn, id).map_err(|e| e.to_string())?;
+    if child.parent_id.is_none() {
+        return Err(format!("INVALID_STATE: 待办 {id} 已是顶级待办"));
+    }
+    let ts = now();
+    conn.execute(
+        "UPDATE todos SET parent_id = NULL, sort_order = NULL, updated_at = ?1, version = version + 1 WHERE id = ?2",
+        params![ts, id],
+    )
+    .map_err(|e| e.to_string())?;
     get(conn, id).map_err(|e| e.to_string())
 }
 
@@ -1239,11 +1271,55 @@ mod tests {
     }
 
     #[test]
-    fn move_child_rejects_top_level_source() {
+    fn move_child_accepts_top_level_source_without_kids() {
         let conn = setup();
         let p = create(&conn, "父", None, None).unwrap();
         let top = create(&conn, "顶级待办", None, None).unwrap();
+
+        // 无子待办的一级可以整体改挂为子待办（一级拖到另一条中部）
+        let moved = move_child(&conn, top.id, p.id, &[top.id]).unwrap();
+        assert_eq!(moved.parent_id, Some(p.id));
+        assert_eq!(moved.sort_order, Some(1));
+        assert_eq!(moved.version, top.version + 1);
+        assert!(children_ids(&conn, p.id).unwrap().contains(&top.id));
+    }
+
+    #[test]
+    fn move_child_rejects_top_level_source_with_kids() {
+        let conn = setup();
+        let p = create(&conn, "父", None, None).unwrap();
+        let top = create(&conn, "顶级待办", None, None).unwrap();
+        let kid = create(&conn, "它的子待办", Some(top.id), None).unwrap();
+
+        // 自己带子待办的一级拒绝整体改挂：会造出 UI 不可见的孙级
         let err = move_child(&conn, top.id, p.id, &[top.id]).unwrap_err();
+        assert!(err.starts_with("INVALID_STATE"), "{err}");
+        assert_eq!(get(&conn, top.id).unwrap().parent_id, None);
+        assert_eq!(get(&conn, kid.id).unwrap().parent_id, Some(top.id));
+    }
+
+    // ---------- 子待办升回顶级（拖到列表空白处） ----------
+
+    #[test]
+    fn detach_child_promotes_to_top_level() {
+        let conn = setup();
+        let p = create(&conn, "父", None, None).unwrap();
+        let k = create(&conn, "子", Some(p.id), None).unwrap();
+        reorder(&conn, &[k.id]).unwrap();
+        assert_eq!(get(&conn, k.id).unwrap().sort_order, Some(1));
+
+        let detached = detach_child(&conn, k.id).unwrap();
+        assert_eq!(detached.parent_id, None);
+        // 手动排序位一并清空：回到分组默认排序，不带着子项序位混进顶级序列
+        assert_eq!(detached.sort_order, None);
+        assert_eq!(detached.version, k.version + 1);
+    }
+
+    #[test]
+    fn detach_child_rejects_top_level_todo() {
+        let conn = setup();
+        let top = create(&conn, "顶级待办", None, None).unwrap();
+        let err = detach_child(&conn, top.id).unwrap_err();
         assert!(err.starts_with("INVALID_STATE"), "{err}");
         assert_eq!(get(&conn, top.id).unwrap().parent_id, None);
     }

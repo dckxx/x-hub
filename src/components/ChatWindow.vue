@@ -11,17 +11,19 @@ import { listen } from '@tauri-apps/api/event'
 import { Pin, PinOff, X } from 'lucide-vue-next'
 import ChatPanel from './ChatPanel.vue'
 import { isTauri, tauriApi } from '../api/tauri'
-import { applyTheme, useTheme } from '../composables/useTheme'
-import { useStore } from '../stores/workbench'
+import { applyTheme } from '../composables/themeCore'
+import { useShellThemeConfig } from '../composables/useShellThemeConfig'
+import { useScrollbarHover } from '../composables/useScrollbarHover'
 
-const store = useStore()
 const panelRef = ref<InstanceType<typeof ChatPanel> | null>(null)
 const pinned = ref(false)
 const appWindow = isTauri() ? getCurrentWindow() : null
 
-// 主题三轴 + 字号缩放：启动自取（独立 WebView 不经过主窗 store 初始化链路），
-// 运行时由主窗 useTheme 的 chat-theme 推送跟随
-useTheme()
+// 主题三轴 + 字号缩放：轻量壳窗口（chat.html）不加载 store，走 get_ui_config 自举
+// （口径与主窗 useTheme 逐条对齐）；运行时跟随主窗 useTheme 的 chat-theme 推送。
+const shellTheme = useShellThemeConfig()
+// 消息列表/输入区有滚动，滚动条 hover 显隐要显式接（原先靠 App.vue 那段统一挂）
+useScrollbarHover()
 document.documentElement.dataset.chatWindow = ''
 
 // ---- 窗内轻提示：ChatPanel 的「未配置模型」等提示经此渲染（主窗的 provide 到这里不可见） ----
@@ -46,9 +48,9 @@ onMounted(async () => {
   window.addEventListener('mousemove', onWinMouseMove)
   window.addEventListener('mouseup', onWinMouseUp)
   try {
-    // 主题的唯一来源是 useTheme 对 config 三件套的 watch：refreshConfig 更新 config
-    // 即触发 applyTheme，不再直调 getThemeConfig（避免同一主题应用多遍）
-    await store.refreshConfig()
+    // 主题的唯一来源是 useShellThemeConfig 对 config 的 watch：refresh 更新 config
+    // 即触发 applyTheme/字号/玻璃全套，不再直调 getThemeConfig（避免同一主题应用多遍）
+    await shellTheme.refresh()
   } catch {
     // 忽略：命令未就绪时用默认配置渲染
   }
@@ -66,7 +68,7 @@ onMounted(async () => {
   // （只拉 config，业务数据由 ChatPanel.refresh 自己拉，不整库搬运）
   unlistenShown = await listen('chat-window-shown', async () => {
     try {
-      await store.refreshConfig()
+      await shellTheme.refresh()
       const st = await tauriApi.chatWindowGetState()
       pinned.value = st.pinned
     } catch {

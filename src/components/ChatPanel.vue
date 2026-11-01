@@ -4,7 +4,7 @@ import { marked, Renderer } from 'marked'
 import DOMPurify from 'dompurify'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { Check, ChevronDown, CircleOff, Copy, MessageSquare, PanelRightClose, Plus, Send, Settings2, Square, X, Zap } from 'lucide-vue-next'
-import { PLATFORM_ENTRY_NAME, isPlatformModel, isTauri, tauriApi, type AccountStatus, type AgentApprovalAsk, type ChatMessage, type ChatModelConfig, type ChatSession, type ChatStreamEvent } from '../api/tauri'
+import { PLATFORM_ENTRY_NAME, isPlatformModel, isTauri, tauriApi, type AccountStatus, type AgentApprovalAsk, type AppConfig, type ChatMessage, type ChatModelConfig, type ChatSession, type ChatStreamEvent } from '../api/tauri'
 import AppSelect from './AppSelect.vue'
 
 const props = defineProps<{
@@ -475,27 +475,39 @@ async function loadModels() {
   // 完整状态留存（含积分账本），头部剩余积分用（#t47）
   account.value = await tauriApi.accountStatus()
   accountLoggedIn.value = account.value.loggedIn
-  await loadDefaultPerm()
+  // 配置一次读取两用：权限默认档 + 全局记住的模型选择
+  let cfg: AppConfig | null = null
+  try {
+    cfg = await tauriApi.getUiConfig()
+  } catch {
+    // 读不到配置就保持当前值，不影响对话
+  }
+  applyDefaultPerm(cfg)
   // 归一当前选中值：历史会话存的可能是某个具体平台模型名（平台已折叠成入口）、
   // 也可能是已被移除的自备模型 —— 都回落到默认项
   const cur = displayModelName(selectedModel.value)
-  selectedModel.value = modelOptions.value.some((o) => o.value === cur) ? cur : defaultModelName()
+  if (modelOptions.value.some((o) => o.value === cur)) {
+    selectedModel.value = cur
+  } else {
+    // 没有会话挂着的实例从全局记忆恢复上次选择；会话实例由 openSession 按会话自己的
+    // model_name 恢复，不掺入全局值。记忆值也不在 options（模型被删/下架）时仍回落默认项
+    const remembered = activeSessionId.value === null ? (cfg?.chat_selected_model ?? '') : ''
+    selectedModel.value =
+      remembered && modelOptions.value.some((o) => o.value === remembered)
+        ? remembered
+        : defaultModelName()
+  }
   await commitSessionModel()
 }
 
 /** 权限档快捷切换的初始值 = 设置里的持久默认档（#t47）。
  *  refreshModels（模型配置保存后）也会重走这里：设置改了默认档，面板即刻对齐 */
-async function loadDefaultPerm() {
-  if (!isTauri()) return
-  try {
-    const cfg = await tauriApi.getUiConfig()
-    if (cfg.agent_permission_mode === 'readonly' || cfg.agent_permission_mode === 'full') {
-      permMode.value = cfg.agent_permission_mode
-    } else {
-      permMode.value = 'ask'
-    }
-  } catch {
-    // 读不到配置就保持当前值/默认 ask，不影响对话
+function applyDefaultPerm(cfg: AppConfig | null) {
+  const mode = cfg?.agent_permission_mode
+  if (mode === 'readonly' || mode === 'full') {
+    permMode.value = mode
+  } else {
+    permMode.value = 'ask'
   }
 }
 
@@ -513,7 +525,10 @@ function refreshCredits() {
 
 async function switchModel(name: string) {
   selectedModel.value = name
-  if (!activeSessionId.value || !isTauri()) return
+  if (!isTauri()) return
+  // 全局记住本次选择：重启/重开面板后，无会话态仍回到这里（写入失败静默，不影响对话）
+  void tauriApi.setChatSelectedModel(name).catch(() => {})
+  if (!activeSessionId.value) return
   await tauriApi.setChatSessionModel(activeSessionId.value, name)
   const s = sessions.value.find((x) => x.id === activeSessionId.value)
   if (s) s.model_name = name

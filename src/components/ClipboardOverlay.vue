@@ -6,12 +6,18 @@ import { save } from '@tauri-apps/plugin-dialog'
 import { emit, listen } from '@tauri-apps/api/event'
 import { Boxes, Copy, Download, FileText, Pin, PinOff, Search, Trash2, X, ZoomIn } from 'lucide-vue-next'
 import { isTauri, tauriApi, type ClipboardInfo, type ClipboardItem } from '../api/tauri'
-import { useStore } from '../stores/workbench'
-import { useTheme } from '../composables/useTheme'
+import { useShellThemeConfig } from '../composables/useShellThemeConfig'
+import { useScrollbarHover } from '../composables/useScrollbarHover'
 import { parseTimestamp } from '../utils/time'
 
-const store = useStore()
-useTheme()
+// 轻量壳窗口（clipboard.html）：不加载全量 store。
+// 主题自举：原 useTheme 对本窗口真正起作用的只有 config 的主题三轴/玻璃/沉浸/字号，
+// 见 useShellThemeConfig（口径与 useTheme 逐条对齐）。
+// 「存为速记 / 加入提示词」原先经 store.addNote/saveNote/addSnippet——那三个方法
+// 除了调后端命令就只往 store.state 数组里 push，而本窗口从不读那些数组，故直接调
+// 命令；跨窗口刷新照旧靠既有的 notes-changed / snippets-changed 广播（消费方在主窗）。
+useShellThemeConfig()
+useScrollbarHover()
 
 const appWindow = isTauri() ? getCurrentWindow() : null
 const keyword = ref('')
@@ -156,7 +162,9 @@ function onSearchFocus() {
 }
 
 onMounted(async () => {
-  await store.loadInitialData()
+  // 不再 loadInitialData()：这里原先只是为了让 store 有数据可供 addNote/saveNote
+  // 之类的方法内部使用，而本窗口只读剪贴板自身数据（loadList/loadInfo 各自拉）。
+  // 那份全量数据（资源/笔记/待办/便签/提示词…）是浮层 renderer 活堆的大头。
   reset()
   appWindow?.onFocusChanged(onFocusChanged)
   if (isTauri()) await listen('clipboard-shown', onShown)
@@ -206,8 +214,9 @@ async function onSaveNote(item: ClipboardItem) {
   if (!isTauri()) return
   try {
     const title = firstLine(item.content) || '无标题速记'
-    const note = await store.addNote(title)
-    await store.saveNote(note.id, title, item.content)
+    // 直接调命令（原 store.addNote + saveNote 两个包装）：createNoteIn 的 content 参数
+    // 已是完整正文，无需再 updateNote 补一次；folderId=null 落树根，与 addNote 默认一致
+    await tauriApi.createNoteIn(title, item.content, null, '')
     await emit('notes-changed')
     toast('已存为速记')
   } catch (e) {
@@ -219,7 +228,7 @@ async function onSavePrompt(item: ClipboardItem) {
   if (!isTauri()) return
   try {
     const title = firstLine(item.content) || '未命名提示词'
-    await store.addSnippet(title, item.content)
+    await tauriApi.createSnippet(title, item.content)
     await emit('snippets-changed')
     toast('已加入提示词库')
   } catch (e) {

@@ -196,7 +196,9 @@ pub fn init(app: &AppHandle) {
         match tauri::WebviewWindowBuilder::new(
             app,
             RECORDER_OVERLAY_LABEL,
-            tauri::WebviewUrl::App("index.html".into()),
+            // 轻量入口 recorder.html（P2 续，2026-10-31）：只挂 RecorderOverlay，
+            // 不加载完整 SPA（内存优化，见 src/light/recorder.ts）
+            tauri::WebviewUrl::App("recorder.html".into()),
         )
         .title("截图 / 录屏选区")
         .inner_size(800.0, 600.0) // 占位；每次唤起按目标显示器物理尺寸重设
@@ -221,7 +223,7 @@ pub fn init(app: &AppHandle) {
         match tauri::WebviewWindowBuilder::new(
             app,
             RECORDER_CONTROL_LABEL,
-            tauri::WebviewUrl::App("index.html".into()),
+            tauri::WebviewUrl::App("recorder.html".into()),
         )
         .title("GIF 录制")
         .inner_size(200.0, 64.0)
@@ -251,7 +253,9 @@ pub fn init(app: &AppHandle) {
         match tauri::WebviewWindowBuilder::new(
             app,
             &label,
-            tauri::WebviewUrl::App("index.html".into()),
+            // 轻量入口 pin.html（P2 续，2026-10-31）：只挂 PinShotWindow，
+            // 不加载完整 SPA（三个贴图窗启动即隐藏常驻，见 src/light/pin.ts）
+            tauri::WebviewUrl::App("pin.html".into()),
         )
         .title("贴图")
         .inner_size(320.0, 240.0) // 占位；每次贴图按选区物理尺寸重设

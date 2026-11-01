@@ -1,12 +1,14 @@
 import type { Note, NoteFolder } from '../api/tauri'
 
 /**
- * 速记随手导出的纯函数工具（单条/整夹 × Markdown/HTML/PDF，2026-10-22 #t69）。
+ * 速记随手导出的纯函数工具（单条/整夹 × Markdown/HTML/PDF，2026-10-22 #t69；
+ * 表格笔记单条导出另有 excel，2026-10-31）。
  * 与 Rust 侧口径对齐的少量前端逻辑：子树圈定、保存对话框默认文件名清洗。
  * 渲染（md→html）动态 import utils/markdownHtml，勿在此静态引入 marked/DOMPurify。
  */
 
-export type ExportFormat = 'markdown' | 'html' | 'pdf'
+/** excel 仅单条表格笔记出现（弹窗按 note+sheet 注入选项，Rust 直拷/前端转换见 export_note_sheet） */
+export type ExportFormat = 'markdown' | 'html' | 'pdf' | 'excel'
 
 /** 文件夹 id 的子树（含自身）；环路与超深靠 visited + 上限剪枝（与后端 subtree_folder_ids 同口径） */
 export function subtreeFolderIds(

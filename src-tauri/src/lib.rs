@@ -1076,8 +1076,9 @@ pub fn run() {
             note_io::export_notes,
             note_io::import_notes,
             note_io::import_notes_cancel,
-            // 随手导出（单条/整夹 × Markdown/HTML/PDF，见 note_io.rs #t69）
+            // 随手导出（单条/整夹 × Markdown/HTML/PDF，表格笔记单条另有 Excel，见 note_io.rs #t69）
             note_io::export_note_file,
+            note_io::export_note_sheet,
             note_io::export_notes_of_folder,
             note_io::export_notes_cancel,
             commands::list_todos,
@@ -1089,6 +1090,7 @@ pub fn run() {
             commands::set_todo_notify_mode,
             commands::reorder_todo_orders,
             commands::move_todo_child,
+            commands::detach_todo_child,
             commands::set_todo_description,
             commands::set_todo_pinned,
             commands::set_todo_repeat,
@@ -1212,6 +1214,7 @@ pub fn run() {
             commands::set_chat_panel,
             commands::get_chat_panel,
             commands::set_chat_panel_side,
+            commands::set_chat_selected_model,
             commands::get_ui_config,
             chat_window::chat_window_get_state,
             chat_window::chat_window_toggle,

@@ -26,7 +26,7 @@ import {
   repeatEndLabel,
   repeatLabel,
 } from '../utils/todoSchedule'
-import { useTodoSubDrag } from '../composables/useTodoSubDrag'
+import { resolveChildDrop, useTodoSubDrag } from '../composables/useTodoSubDrag'
 import ConfirmDialog from './ConfirmDialog.vue'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 
@@ -238,16 +238,18 @@ async function cyclePriority() {
   await store.updateTodo(props.todo.id, props.todo.title, (props.todo.priority + 1) % 3)
 }
 
-// ---- 子待办拖拽排序 / 跨父改挂 ----
+// ---- 子待办拖拽排序 / 跨父改挂 / 升回顶级 ----
 // 指针实现原因同卡片层顶级行拖拽：Tauri 主窗口原生拖放拦截与 HTML5 DnD 互斥。
 // 子行 pointerdown 经 subdrag 事件上报到宿主父行：移动超阈值才激活。
-// 落点不再限于本父行——用 elementFromPoint 命中任意顶级行，落到它的子列表；
-// 命中空 / 折叠父行时，共享的 dropTargetParentId 让该行临时展开出放置区。
-// 仅「未完成」视图开放（同顶级行）。
-const { subDragId, dropTargetParentId, dropLineClientY, dropLineLeft, dropLineWidth } =
+// 落点不再限于本父行——命中任意顶级行落到它的子列表（resolveChildDrop，
+// 与一级拖拽改挂共用同一份命中/几何逻辑）；未命中行且指针在列表容器内
+// = 升为顶级落点。仅「未完成」视图开放（同顶级行）。
+const { subDragId, dropTargetParentId, dropLineClientY, dropLineLeft, dropLineWidth, promoteActive } =
   useTodoSubDrag()
 /** 本行是否为当前拖拽源（只有源行绘制那唯一一条插入线） */
 const ownsSubDrag = ref(false)
+/** 本行是否为「一级拖拽改挂」的源行：改挂落点的插入线也由源行绘制（共享 useTodoSubDrag 状态） */
+const isTopDragSource = computed(() => !props.isSub && dragId.value === props.todo.id)
 
 const isSubDropTarget = computed(
   () => !props.isSub && subDragId.value != null && dropTargetParentId.value === props.todo.id,
@@ -260,11 +262,17 @@ function kidsOfParent(parentId: number): Todo[] {
 
 let subDragState: {
   id: number
-  /** 拖拽项当前所属父（区分同父重排 vs 跨父改挂） */
+  /** 拖拽项当前所属父（区分同父重排 vs 跨父改挂 vs 升为顶级的撤销） */
   sourceParentId: number
+  /** 拖拽项标题（升为顶级的撤销 toast 用，落库期间行可能已移位） */
+  title: string
   /** 插入下标（相对目标父下含被拖项的可见数组）；null = 未命中有效落点 */
   insert: number | null
   targetParentId: number | null
+  /** 升为顶级落点激活（未命中行且指针在列表容器内） */
+  promote: boolean
+  /** 列表滚动容器（升为顶级落点的判定与线宽基准），拖拽开始时从源行向上找 */
+  scope: HTMLElement | null
 } | null = null
 
 function onSubDragStart(k: Todo, e: PointerEvent) {
@@ -291,10 +299,19 @@ function onSubDragStart(k: Todo, e: PointerEvent) {
     } catch {
       /* 指针已释放时忽略，window 监听兜底场景极少 */
     }
-    subDragState = { id: k.id, sourceParentId: props.todo.id, insert: null, targetParentId: null }
+    subDragState = {
+      id: k.id,
+      sourceParentId: props.todo.id,
+      title: k.title,
+      insert: null,
+      targetParentId: null,
+      promote: false,
+      scope: el.closest<HTMLElement>('[data-todo-list]'),
+    }
     subDragId.value = k.id
     dropTargetParentId.value = props.todo.id
     ownsSubDrag.value = true
+    promoteActive.value = false
     document.body.classList.add('todo-row-dragging')
     document.getSelection()?.removeAllRanges()
     return true
@@ -328,75 +345,82 @@ function onSubDragStart(k: Todo, e: PointerEvent) {
 }
 
 /**
- * 指针位置 → 落点：取最靠近的顶级 `.todo-row`，用其子列表算插入下标，
- * 并把插入线（视口坐标）写进共享态；未命中顶级行则清空落点。
+ * 指针位置 → 落点：命中顶级行 = 改挂/重排落点（resolveChildDrop 与一级拖拽共用）；
+ * 未命中任何行且指针在列表容器内 = 升为顶级落点（虚线 + 提示随指针）。
+ * 落点信息（视口坐标）写进共享态。
  */
 function updateSubDragLine(clientX: number, clientY: number) {
   const ds = subDragState
   if (!ds) return
-  const under = document.elementFromPoint(clientX, clientY) as HTMLElement | null
-  // 命中子行时 closest 会越过它找到所属顶级行；拖到顶级行本身即落该父下
-  const targetRow = under?.closest<HTMLElement>('.todo-row:not(.sub)') ?? null
-  const pidRaw = targetRow?.dataset.todoId
-  if (!targetRow || !pidRaw) {
-    ds.insert = null
-    ds.targetParentId = null
-    dropTargetParentId.value = null
-    dropLineClientY.value = null
+  const hit = resolveChildDrop(clientX, clientY, (pid) => kidsOfParent(pid).length)
+  if (hit) {
+    ds.insert = hit.insert
+    ds.targetParentId = hit.parentId
+    ds.promote = false
+    dropTargetParentId.value = hit.parentId
+    dropLineClientY.value = hit.edgeY
+    dropLineLeft.value = hit.left
+    dropLineWidth.value = hit.width
+    promoteActive.value = false
     return
   }
-  const pid = Number(pidRaw)
-  const subsEl = targetRow.querySelector<HTMLElement>('.todo-subs')
-  const rowRect = targetRow.getBoundingClientRect()
-  let insert: number
-  let edgeY: number
-  let left: number
-  let width: number
-  if (subsEl) {
-    const rect = subsEl.getBoundingClientRect()
-    const rows = Array.from(subsEl.querySelectorAll<HTMLElement>(':scope > .todo-row'))
-    left = rect.left
-    width = rect.width
-    insert = rows.length
-    edgeY = rect.bottom
-    if (rows.length && clientY >= rect.top && clientY <= rect.bottom) {
-      for (let i = 0; i < rows.length; i++) {
-        const r = rows[i].getBoundingClientRect()
-        if (clientY < r.top + r.height / 2) {
-          edgeY = r.top
-          insert = i
-          break
-        }
-        edgeY = r.bottom
-        insert = i + 1
-      }
-    }
-  } else {
-    // 空父行 / 折叠父行：共享态会让它临时展开，下一次 move 会重算；
-    // 先按「追加到末尾」给落点（空父行即 0）
-    insert = kidsOfParent(pid).length
-    edgeY = rowRect.bottom
-    left = rowRect.left + 24
-    width = Math.max(rowRect.width - 24, 40)
+  // 未命中行：指针在列表容器内（含容器本体）→ 升为顶级落点；容器外无落点
+  const under = document.elementFromPoint(clientX, clientY) as HTMLElement | null
+  const scope = ds.scope
+  const inScope = scope != null && under != null && (under === scope || scope.contains(under))
+  if (inScope && scope) {
+    // 列表空白处：松手 = 升为顶级（parent_id / sort_order 双清，回到分组默认排序）
+    const rect = scope.getBoundingClientRect()
+    ds.insert = null
+    ds.targetParentId = null
+    ds.promote = true
+    dropTargetParentId.value = null
+    dropLineClientY.value = clientY
+    dropLineLeft.value = rect.left + 8
+    dropLineWidth.value = Math.max(rect.width - 16, 40)
+    promoteActive.value = true
+    return
   }
-  ds.insert = insert
-  ds.targetParentId = pid
-  dropTargetParentId.value = pid
-  dropLineClientY.value = edgeY
-  dropLineLeft.value = left
-  dropLineWidth.value = width
+  ds.insert = null
+  ds.targetParentId = null
+  ds.promote = false
+  dropTargetParentId.value = null
+  dropLineClientY.value = null
+  promoteActive.value = false
 }
 
-/** 松开落点：同父 = 重排；跨父 = 改挂（写 parent_id + 目标父下整列 sort_order） */
+/** 松开落点：同父 = 重排；跨父 = 改挂（写 parent_id + 目标父下整列 sort_order）；列表空白 = 升为顶级 */
 function finishSubDrag() {
   const ds = subDragState
   document.body.classList.remove('todo-row-dragging')
   subDragId.value = null
   dropTargetParentId.value = null
   dropLineClientY.value = null
+  promoteActive.value = false
   ownsSubDrag.value = false
   subDragState = null
-  if (!ds || ds.insert == null || ds.targetParentId == null) return
+  if (!ds) return
+  if (ds.promote) {
+    const sub = { id: ds.id, title: ds.title, oldParentId: ds.sourceParentId }
+    void store
+      .detachTodoChild(sub.id)
+      .then(() => {
+        showToast(`「${sub.title}」已升为顶级待办`, {
+          label: '撤销',
+          onClick: () => {
+            // 撤销 = 挂回原子父（追加到末尾，与新建子待办同落位）
+            const ids = kidsOfParent(sub.oldParentId).map((x) => x.id)
+            ids.push(sub.id)
+            void store
+              .moveTodoChild(sub.id, sub.oldParentId, ids)
+              .catch(() => showToast('恢复失败，请重试'))
+          },
+        })
+      })
+      .catch(() => showToast('升为顶级失败，请重试'))
+    return
+  }
+  if (ds.insert == null || ds.targetParentId == null) return
   const targetKids = kidsOfParent(ds.targetParentId)
   if (ds.targetParentId === ds.sourceParentId) {
     // 同父：插入下标相对「含被拖项」的数组，先移除再插入需换算
@@ -782,14 +806,24 @@ function hideTip() {
     </Transition>
   </Teleport>
 
-  <!-- 跨父拖拽插入线：只由拖拽源行绘制一条，fixed 定位（视口坐标） -->
+  <!-- 跨父拖拽插入线：只由拖拽源行绘制一条（子待办拖拽源 = ownsSubDrag；
+       一级拖拽改挂源 = isTopDragSource，两种源共用 useTodoSubDrag 的落点状态），
+       fixed 定位（视口坐标）；升为顶级落点转虚线样式 -->
   <Teleport to="body">
     <div
-      v-if="ownsSubDrag && dropLineClientY != null"
+      v-if="(ownsSubDrag || isTopDragSource) && dropLineClientY != null"
       class="todo-sub-drop-line"
+      :class="{ promote: promoteActive }"
       :style="{ left: dropLineLeft + 'px', top: dropLineClientY + 'px', width: dropLineWidth + 'px' }"
       aria-hidden="true"
     ></div>
+    <div
+      v-if="ownsSubDrag && promoteActive"
+      class="todo-sub-promote-tip"
+      :style="{ left: dropLineLeft + 'px', top: (dropLineClientY ?? 0) + 8 + 'px' }"
+    >
+      松手升为顶级待办
+    </div>
   </Teleport>
 
   <ConfirmDialog
@@ -1192,6 +1226,26 @@ function hideTip() {
   height: 6px;
   border-radius: 50%;
   background: var(--brand-500);
+}
+/* 升为顶级落点：同一根线转虚线（与改挂/重排的实线区分开，松手语义不同） */
+.todo-sub-drop-line.promote {
+  background: repeating-linear-gradient(90deg, var(--brand-500) 0 7px, transparent 7px 13px);
+  box-shadow: none;
+}
+/* 升为顶级落点的跟随提示：钉在虚线下方，松手前一眼看懂去向 */
+.todo-sub-promote-tip {
+  position: fixed;
+  z-index: 30;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--brand-500);
+  color: var(--text-on-accent);
+  font-size: 0.625rem;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 0 6px var(--brand-glow);
 }
 .todo-sub-input-row {
   display: flex;

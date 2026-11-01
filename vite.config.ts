@@ -71,10 +71,16 @@ export default defineConfig({
     // 分包：速记编辑器依赖（Milkdown/ProseMirror/KaTeX）单独成 chunk——仅打开速记时按需加载，
     // 且这些库版本稳定，独立 chunk 可长期命中缓存
     rolldownOptions: {
-      // 多页入口（内存优化 P1/P2）：chrome / 悬浮球 / 通知窗三个常驻壳窗口走轻量
-      // 入口（chrome.html / ball.html / notice.html + src/light/*.ts），只挂自己的
-      // 组件、不加载完整 SPA 的活堆——隐藏窗口 renderer 从 ~100MB 降到 ~20-30MB。
-      // index.html 仍是主窗/对话/剪贴板/浮窗等完整 UI 的入口。
+      // 多页入口（内存优化 P1/P2）：常驻壳窗口一律走轻量入口，只挂自己的组件、
+      // 不加载完整 SPA 的活堆——隐藏窗口 renderer 从 ~100MB 降到 ~20-30MB。
+      //
+      // P1/P2（v0.7.0）：chrome.html / ball.html / notice.html
+      // P2 续（2026-10-31）：pin.html / recorder.html / clipboard.html / chat.html
+      //   —— 这四个原先挂 index.html，哪怕只渲染一个 147 行的贴图组件，也要解析执行
+      //   整个工作台模块图（main-*.js 498KB + 166KB CSS + 全套 store/组件表）。
+      //
+      // index.html 现在是「主窗 + 便签/倒计时浮窗 + 扩展窗 + 提示词/待办浮窗」的入口
+      // （那批是低频瞬态或按需创建，不在启动常驻之列）。
       // export.html：导出渲染窗占位页（纯静态零脚本，见 export_render.rs）
       input: {
         main: 'index.html',
@@ -82,13 +88,34 @@ export default defineConfig({
         ball: 'ball.html',
         notice: 'notice.html',
         export: 'export.html',
+        pin: 'pin.html',
+        recorder: 'recorder.html',
+        clipboard: 'clipboard.html',
+        chat: 'chat.html',
       },
       output: {
         codeSplitting: {
           groups: [
+            // Vue 运行时单独成 chunk（2026-10-31）：**必须在 editor-vendor 之前**。
+            // 此前 Vue 被打进 editor-vendor 组（该组 test 只匹配 milkdown/prosemirror，
+            // 但 Vue 最终被合并进同一 chunk），后果是所有入口的 `createApp` 都从
+            // editor-vendor 里 import ⇒ 连悬浮球/通知窗/贴图窗这些「轻量」壳窗口
+            // 也要执行整个 1.25MB 的 Milkdown/ProseMirror 模块图。切开后轻量入口
+            // 只 preload 这份纯 Vue（~百 KB），编辑器依赖仍按需加载。
+            {
+              name: 'vue-vendor',
+              test: /[\\/]node_modules[\\/](vue|@vue)[\\/]/,
+            },
             {
               name: 'editor-vendor-katex',
               test: /[\\/]node_modules[\\/]katex[\\/]/,
+            },
+            // DOMPurify 单独成 chunk（2026-10-31）：对话面板渲染 Markdown 只要它一份，
+            // 若被合并进 editor-vendor，chat.html 就得为「净化一段 Markdown」加载
+            // 整个 Milkdown/ProseMirror（1.14MB）。
+            {
+              name: 'dompurify',
+              test: /[\\/]node_modules[\\/]dompurify[\\/]/,
             },
             {
               name: 'editor-vendor',

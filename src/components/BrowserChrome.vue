@@ -10,10 +10,12 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { ArrowLeft, ArrowRight, ExternalLink, RotateCw, X } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { reportClientError } from '../utils/error-report'
-import { useTheme } from '../composables/useTheme'
+import { useShellThemeConfig } from '../composables/useShellThemeConfig'
 
 // 池窗口是正常窗口：进任务栏、可 Alt+Tab 唤回（区别于应用内其他浮窗）
-useTheme()
+// 主题走轻量自举（chrome.html 不加载 store——原先 useTheme() 会把整份 store
+// 拖进这个只有一条顶栏的 webview，见 useShellThemeConfig 注释）
+useShellThemeConfig()
 
 const m = getCurrentWebview().label.match(/^suda-web-(\d+)-chrome$/)
 const slot = m ? Number(m[1]) : -1

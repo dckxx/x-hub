@@ -20,6 +20,7 @@ use tauri::{Emitter, State};
 /// 速记视图内的随手导出（2026-10-22，#t69）：
 /// - 单条（树右键）三种格式：Markdown 纯正文（**不带** front-matter，分享/外带场景）；
 ///   HTML 自包含单文件（CSS 内联 + 图片 base64）；PDF（export_render 静默矢量导出）。
+///   表格笔记（kind='sheet'）单条另有 Excel（.xlsx）四格式（2026-10-31，见 export_note_sheet）。
 /// - 整夹（文件夹右键）：落点 <所选目录>/<文件夹名>/，**每条一个文件**（三种格式同结构）；
 ///   Markdown 带 front-matter（与全库导出同格式，可再导回）；HTML/PDF 纯内容。
 ///   弹窗勾「合并为一个文件」则整棵子树写进单个文件（md 每条一节无 front-matter、
@@ -364,6 +365,61 @@ pub async fn export_note_file(
         Ok(())
     })?;
     Ok(report)
+}
+
+/// 随手导出表格笔记为 Excel（.xlsx，ExportNoteDialog 仅对表格笔记注入此格式）。
+/// excel_b64 = Some：前端已把 csv 落盘文件转成 xlsx 字节（csv 无样式，只保值与数字识别，
+///   见前端 noteSheet.sheetExcelExportB64），解码后直接写盘；
+/// = None：落盘文件本身就是 xlsx，**直拷原文件**——保真最高（Univer 互转层第一版不覆盖的
+///   图表/图片等高级元素在原文件里仍健在），也免大文件 base64 过 IPC。
+#[tauri::command]
+pub async fn export_note_sheet(
+    state: State<'_, DbState>,
+    id: i64,
+    path: String,
+    excel_b64: Option<String>,
+) -> Result<ExportReport, String> {
+    // 锁内只读 DB，文件 IO 全在锁外
+    let n = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        note::get(&conn, id).map_err(|e| e.to_string())?
+    };
+    // 落盘名从严校验（16 位哈希 + xlsx/csv 白名单），join 无路径穿越风险
+    let stored = crate::commands::note_sheet_stored_name(n.content.trim())
+        .ok_or_else(|| "不是表格笔记".to_string())?;
+    let target = ensure_ext(PathBuf::from(&path), "xlsx");
+    tokio::task::block_in_place(|| -> Result<(), String> {
+        match excel_b64 {
+            Some(b64) => {
+                use base64::Engine as _;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&b64)
+                    .map_err(|e| format!("表格数据解码失败: {e}"))?;
+                if bytes.is_empty() {
+                    return Err("表格数据为空".into());
+                }
+                std::fs::write(&target, &bytes).map_err(|e| format!("写入失败: {e}"))?;
+            }
+            None => {
+                let src = crate::paths::data_root()
+                    .join("notes")
+                    .join("files")
+                    .join(&stored);
+                if !src.is_file() {
+                    return Err("表格文档不存在或已被清理".into());
+                }
+                std::fs::copy(&src, &target).map_err(|e| format!("写入失败: {e}"))?;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(ExportReport {
+        exported: 1,
+        images: 0,
+        failed: Vec::new(),
+        dir: target.display().to_string(),
+        cancelled: false,
+    })
 }
 
 #[derive(Deserialize)]

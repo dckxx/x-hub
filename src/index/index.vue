@@ -39,6 +39,9 @@ import {
   type DashPlacement,
 } from '../composables/useDashboardLayout'
 import SettingsSkeleton from '../components/SettingsSkeleton.vue'
+// AI 助手视图的左侧会话列表（轻组件，与常驻 ChatPanel 并排渲染，见约定 33）
+import ChatSessionSidebar from '../components/ChatSessionSidebar.vue'
+import type ChatPanelComponent from '../components/ChatPanel.vue'
 
 // 大体量/低频视图异步分包按需加载，缩小首屏主 chunk
 // 速记视图：两栏容器（NoteFolderTree 树 + NoteEditor，编辑器在其内部异步分包）
@@ -57,7 +60,6 @@ const SettingsView = defineAsyncComponent({
 const PromptManageDialog = defineAsyncComponent(() => import('../components/PromptManageDialog.vue'))
 const SudaCustomEditDialog = defineAsyncComponent(() => import('../components/SudaCustomEditDialog.vue'))
 const ChatPanel = defineAsyncComponent(() => import('../components/ChatPanel.vue'))
-const ChatView = defineAsyncComponent(() => import('../components/ChatView.vue'))
 const ExtensionCenter = defineAsyncComponent(() => import('../components/ExtensionCenter.vue'))
 const ExtensionView = defineAsyncComponent(() => import('../components/ExtensionView.vue'))
 const DashboardLayoutEditor = defineAsyncComponent(() => import('../components/DashboardLayoutEditor.vue'))
@@ -151,9 +153,10 @@ function onNavClick(id: ViewId) {
 }
 
 // 进入「AI 助手」视图的唯一入口：先收抽屉再切视图。侧栏点击、悬浮球 view:chat
-// 都必须走这里；绕开的话抽屉里的 ChatPanel 还挂着、视图又挂一份 = 同窗双实例，
-// 同一会话可被两份实例并发开回合（历史交叉落库、双倍模型消耗）
+// 都必须走这里。ChatPanel 是常驻单实例（约定 33），视图形态只是同一个实例换容器
+// 布局；这里收抽屉是为了离开视图后抽屉不突然弹回（保持「进视图收抽屉」的既有手感）
 function enterChatView() {
+  chatPanelAlive.value = true
   if (chatOpen.value) {
     chatOpen.value = false
     persistChatPanelSize()
@@ -756,7 +759,7 @@ onMounted(async () => {
         if (v === 'chat') {
           // 悬浮球「AI 对话」= 切到侧栏视图（纯切换，不再顺带开抽屉；
           // 独立窗模式下 Rust 侧直接唤起小窗，根本不经这里）。
-          // 走 enterChatView 收抽屉，防同窗双 ChatPanel
+          // 走 enterChatView 收抽屉并切到 view 形态（同一常驻实例，见约定 33）
           enterChatView()
         } else {
           activeView.value = v as ViewId
@@ -917,7 +920,13 @@ function onSearchKeydown(e: KeyboardEvent) {
 }
 
 // ---- AI 对话抽屉（支持上下左右四个方位）----
+// ChatPanel 常驻单实例（约定 33）：首次打开抽屉/进视图才挂载（保持异步分包的启动性能），
+// 之后只做 v-show 显隐绝不卸载——流式回复、回合时间线、输入草稿在收抽屉/切视图期间全保留
+const chatPanelAlive = ref(false)
 const chatOpen = ref(false)
+// 常驻实例的模板 ref：ChatSessionSidebar 经 props 驱动会话列表（defineExpose 的 ref 属性访问时自动解包）。
+// ChatPanel 经 defineAsyncComponent 分包，expose 类型取自组件本体（type import 不影响分包）
+const chatPanelRef = ref<InstanceType<typeof ChatPanelComponent> | null>(null)
 const chatWidth = ref(420)
 const chatHeight = ref(380)
 // 方位取自配置（设置页可切换），default 回退右侧
@@ -929,6 +938,39 @@ const chatDockStyle = computed(() =>
     : { width: chatWidth.value + 'px', height: '100%' },
 )
 
+// chat-dock 显隐该放什么过渡（约定 33）：drawer = 抽屉开合的方位滑入/滑出；
+// fade = 进「AI 助手」视图的淡入；none = 离开视图直接切（2026-10-31 修：Transition 的
+// name 在 leave 触发时 activeView 已是目标视图，按 `activeView === 'chat'` 计算会错放成
+// 抽屉滑出——表现为「从 AI 助手切走时整个面板收拢成抽屉」。所以按「这次显隐是什么语义」
+// 在 watcher（pre，先于重渲染触发 leave）里定，而不是在模板上按当前视图算）
+const chatDockAnim = ref<'drawer' | 'fade' | 'none'>('drawer')
+// view 形态的视觉锁（class / mode / 会话侧栏都跟它走，不跟 activeView 走）：
+// Transition 隐藏要等 nextFrame 帧延迟（display:none 约 1~2 帧后才生效），而 class
+// 翻转是当帧生效——离开视图时若立即翻回 dock，会先闪现一帧右侧抽屉再消失
+// （2026-10-31 修）。所以离开方向等 @after-leave（已隐藏）再翻回，进场方向在
+// watcher（pre，先于渲染）里提前翻好
+const chatViewVisual = ref(false)
+watch([chatOpen, activeView], ([openNow, viewNow], [openPrev]) => {
+  if (viewNow === 'chat') {
+    chatViewVisual.value = true
+  } else if (openNow !== openPrev) {
+    // 抽屉开合（含 view 形态直接开抽屉的改道）：当帧翻回 dock 形态
+    chatViewVisual.value = false
+  }
+  // chatOpen 动了的显隐（无论哪一处关抽屉）都是抽屉语义；只有视图进出才单独分类
+  chatDockAnim.value =
+    openNow !== openPrev ? 'drawer' : viewNow === 'chat' ? 'fade' : 'none'
+})
+const chatDockTransition = computed(() => {
+  if (chatDockAnim.value === 'drawer') return `chat-drawer-${chatSide.value}`
+  return chatDockAnim.value === 'fade' ? 'chat-layer-fade' : ''
+})
+// leave 结束（元素已 display:none）才解除视觉锁；若 leave 被「立即重开抽屉」打断
+// 不会触发 after-leave，由 watcher 的抽屉分支兜底翻回
+function onChatDockAfterLeave() {
+  if (activeView.value !== 'chat' && !chatOpen.value) chatViewVisual.value = false
+}
+
 function toggleChat() {
   // 独立窗口形态（设置「AI 助手 → 以独立窗口打开」决定，与内嵌抽屉互斥）：
   // 唤起/收起后端常驻的对话小窗，抽屉状态不参与
@@ -936,11 +978,12 @@ function toggleChat() {
     void tauriApi.chatWindowToggle().catch(() => {})
     return
   }
-  // 抽屉打开方向若正处于「AI 助手」视图：先离开视图再开抽屉——视图里的 ChatPanel
-  // 还挂着时再挂抽屉那份就是同窗双实例（同会话可被并发开回合）。关闭方向不参与
+  // 抽屉打开方向若正处于「AI 助手」视图：先离开视图再开抽屉——同一常驻实例的
+  // view 形态占满主区，开抽屉前回到工作台才有抽屉滑入的落点。关闭方向不参与
   if (!chatOpen.value && activeView.value === 'chat') {
     activeView.value = 'dashboard'
   }
+  chatPanelAlive.value = true
   chatOpen.value = !chatOpen.value
   // 窗口开关状态不持久化：重启后始终默认收起，仅保存尺寸
   persistChatPanelSize()
@@ -1291,13 +1334,7 @@ provide('showToast', showToast)
           />
         </section>
 
-        <!-- AI 助手：完整视图（左会话列表 + 右会话框，与抽屉/独立窗共用会话数据） -->
-        <section v-else-if="activeView === 'chat'" class="view view-chat" tabindex="-1" aria-label="AI 助手">
-          <ChatView
-            @open-model-settings="onOpenChatSettings"
-            @open-account-settings="onOpenAccountSettings"
-          />
-        </section>
+        <!-- AI 助手视图见下方 chat-layer：ChatPanel 常驻单实例，view 形态只是同一容器换布局（约定 33） -->
 
         <!-- 设置：独立视图 -->
         <section v-else-if="activeView === 'settings'" class="view view-settings" tabindex="-1" aria-label="设置">
@@ -1308,8 +1345,16 @@ provide('showToast', showToast)
           />
         </section>
 
-        <!-- 自定义布局编辑器：独立视图（从设置进入，完成后回主页面） -->
-        <section v-else class="view view-layout-editor" tabindex="-1" aria-label="自定义布局">
+        <!-- 自定义布局编辑器：独立视图（从设置进入，完成后回主页面）。
+             这里必须写显式 v-else-if、不能留裸 v-else 兜底——activeView === 'chat' 的画面
+             由下方常驻 chat-layer 渲染（约定 33），兜底分支会把 chat 错捕成布局编辑器，
+             表现为「AI 助手视图透出整块编辑器画布」（2026-10-31 踩过） -->
+        <section
+          v-else-if="activeView === 'layout-editor'"
+          class="view view-layout-editor"
+          tabindex="-1"
+          aria-label="自定义布局"
+        >
           <DashboardLayoutEditor @done="activeView = 'dashboard'" />
         </section>
         </main>
@@ -1336,19 +1381,29 @@ provide('showToast', showToast)
           </div>
         </div>
 
-        <!-- AI 对话抽屉（覆盖式，悬浮在内容上方，可从上下左右滑入，尺寸可拖拽） -->
-        <Transition :name="`chat-drawer-${chatSide}`">
+        <!-- AI 对话常驻层（约定 33）：同一个 ChatPanel 实例的两种形态——
+             dock = 覆盖式抽屉悬浮在内容上方（可从上下左右滑入，尺寸可拖拽）；
+             view = 「AI 助手」视图，占满主区（左会话列表 + 右会话框）。
+             首次使用才挂载（异步分包），之后只做 v-show 显隐，流式期间收抽屉/切视图不中断 -->
+        <Transition :name="chatDockTransition" @after-leave="onChatDockAfterLeave">
           <div
-            v-if="chatOpen"
+            v-if="chatPanelAlive"
+            v-show="chatOpen || activeView === 'chat'"
             class="chat-dock"
-            :class="`dock-${chatSide}`"
-            :style="{
+            :class="chatViewVisual ? 'layer-view' : `dock-${chatSide}`"
+            :style="chatViewVisual ? undefined : {
               opacity: store.state.config.chat_panel_opacity ?? 1,
               ...chatDockStyle,
             }"
           >
+            <ChatSessionSidebar
+              v-show="chatViewVisual"
+              :panel="chatPanelRef"
+            />
             <ChatPanel
+              ref="chatPanelRef"
               :side="chatSide"
+              :mode="chatViewVisual ? 'view' : 'dock'"
               @toggle="onChatToggle"
               @open-model-settings="onOpenChatSettings"
               @open-account-settings="onOpenAccountSettings"
@@ -1751,6 +1806,33 @@ html[data-wallpaper='1'] .title-bar [data-tip]::after {
   bottom: 0;
   left: 0;
   right: 0;
+}
+
+/* view 形态（「AI 助手」视图）：同一常驻容器换布局——占满主区，左会话列表 + 右面板。
+   定位/尺寸交给 inset+flex，不再吃 dock 的宽高内联样式与透明度设置 */
+.main-area .chat-dock.layer-view {
+  inset: 0;
+  display: flex;
+  gap: 10px;
+}
+.main-area .chat-dock.layer-view :deep(.chat-panel) {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+/* 左栏与容器同享 pointer-events（容器本身 none，面板内已 auto） */
+.main-area .chat-dock.layer-view :deep(.cv-side) {
+  pointer-events: auto;
+}
+
+/* view 形态的显隐过渡：全屏面板不用抽屉的方位滑入，淡入淡出 */
+.chat-layer-fade-enter-active,
+.chat-layer-fade-leave-active {
+  transition: opacity 0.18s ease-out;
+}
+.chat-layer-fade-enter-from,
+.chat-layer-fade-leave-to {
+  opacity: 0;
 }
 
 /* 四个方位的滑入/滑出过渡（配合 ChatPanel 内部尺寸拖拽，动画只做 transform） */

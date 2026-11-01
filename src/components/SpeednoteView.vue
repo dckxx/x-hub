@@ -292,16 +292,16 @@ function onConfirmDialogConfirm() {
   void c?.onConfirm()
 }
 
-// ---- 随手导出（树右键：单条笔记 / 整夹；格式 Markdown/HTML/PDF；整夹可勾「合并为一个文件」，2026-10-22 #t69） ----
+// ---- 随手导出（树右键：单条笔记 / 整夹；格式 Markdown/HTML/PDF，表格笔记单条另有 Excel；整夹可勾「合并为一个文件」，2026-10-22 #t69） ----
 const showToast = inject<(msg: string) => void>('showToast', () => {})
-const exportTarget = ref<{ kind: 'note' | 'folder'; id: number; title: string } | null>(null)
+const exportTarget = ref<{ kind: 'note' | 'folder'; id: number; title: string; sheet?: boolean } | null>(null)
 const exporting = ref(false)
 const exportProgress = ref<{ done: number; total: number } | null>(null)
 
 function onExportNote(id: number) {
   const n = store.state.notes.find((x) => x.id === id)
   if (!n) return
-  exportTarget.value = { kind: 'note', id, title: n.title.trim() || '无标题笔记' }
+  exportTarget.value = { kind: 'note', id, title: n.title.trim() || '无标题笔记', sheet: isSheetNote(n) }
 }
 
 function onExportFolder(id: number) {
@@ -323,6 +323,24 @@ async function onExportConfirm(format: ExportFormat, merged: boolean) {
     if (t.kind === 'note') {
       const note = store.state.notes.find((n) => n.id === t.id)
       if (!note) return
+      if (format === 'excel') {
+        // 表格笔记导 Excel（弹窗仅表格笔记出现此项）：xlsx 落盘文件 Rust 直拷原文件（保真），
+        // csv 落盘文件前端转 xlsx 字节（口径见 noteSheet.sheetExcelExportB64）
+        const path = await save({
+          title: '导出表格',
+          defaultPath: sanitizeExportFilename(note.title, 'xlsx'),
+          filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }],
+        })
+        if (typeof path !== 'string' || !path) return
+        exporting.value = true
+        exportProgress.value = null
+        const { sheetExcelExportB64 } = await import('../utils/noteSheet')
+        const excelB64 = await sheetExcelExportB64(note.content.trim(), note.title)
+        const r = await tauriApi.exportNoteSheet(note.id, path, excelB64)
+        if (r.failed.length > 0) showToast(`导出失败：${r.failed[0]}`)
+        else showToast(`已导出 → ${r.dir}`)
+        return
+      }
       const ext = format === 'markdown' ? 'md' : format
       const path = await save({
         title: '导出笔记',
@@ -337,6 +355,8 @@ async function onExportConfirm(format: ExportFormat, merged: boolean) {
       if (r.failed.length > 0) showToast(`导出失败：${r.failed[0]}`)
       else showToast(`已导出 → ${r.dir}`)
     } else {
+      // excel 仅在单条表格笔记的弹窗里出现，整夹走不到；此处收窄类型供 exportNotesOfFolder 用
+      if (format === 'excel') return
       // 整夹：默认选目录，落 <目录>/<文件夹名>/ 每条一文件；勾「合并」则另存为单个文件
       const ext = format === 'markdown' ? 'md' : format
       let dest: string
@@ -497,11 +517,12 @@ defineExpose({ openNote, createNote })
       @cancel="confirmState = null"
     />
 
-    <!-- 导出弹窗：单条笔记 / 整夹共用（格式三选一；批量时切进度态） -->
+    <!-- 导出弹窗：单条笔记 / 整夹共用（三格式 + 表格笔记单条另有 Excel；批量时切进度态） -->
     <ExportNoteDialog
       :visible="exportTarget != null"
       :kind="exportTarget?.kind ?? 'note'"
       :title="exportTarget?.title ?? ''"
+      :sheet="exportTarget?.sheet ?? false"
       :busy="exporting"
       :progress="exportProgress"
       @confirm="(f, m) => onExportConfirm(f, m)"

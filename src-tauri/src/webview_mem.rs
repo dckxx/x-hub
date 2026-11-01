@@ -79,11 +79,19 @@ fn poll_loop(app: tauri::AppHandle) {
     }
 }
 
-/// 参与联动的窗口：可见性取自窗口本身（win），级别设到它的 webview 上
-/// （单 webview 窗两者同 label；速达池窗口额外覆盖 chrome/content 两个子 webview，
-/// 同窗口的 webview 大概率共享 renderer，翻转一次即覆盖）。
+/// 固定常驻窗清单（不含按需窗 ext-*，那批由调用方按前缀补）。
+///
+/// ⚠️ 遗漏即白烧内存（2026-10-31 实测）：录屏三窗 + 贴图池**启动即隐藏、可能整场
+/// 会话都不显示**，全靠轮询纠偏才会落 Low——`on_hidden` 快路径永远不会为它们触发。
+/// 此前它们不在表里，3 个加载完整 SPA 的贴图 renderer 常年停在 Normal 档。
+///
+/// 刻意排除的两类：
+/// - `sticky-*` / `countdown-*`：低频瞬态窗，用完即毁，没有常驻代价；
+/// - `export-render`：按需渲染表面，`render_pdf` 语义是「**隐藏但活跃**」（先 hide
+///   再 on_shown 恢复 Normal 去跑打印管线）。可见性在这里不是忙碌信号，纳入本表
+///   会被轮询每 300ms 打回 Low，与它自己的 on_shown/on_hidden 语义打架。
 #[cfg(target_os = "windows")]
-fn managed_targets(app: &tauri::AppHandle) -> Vec<(String, Vec<String>)> {
+fn resident_targets() -> Vec<(String, Vec<String>)> {
     let mut targets: Vec<(String, Vec<String>)> = vec![
         ("main".to_string(), vec!["main".to_string()]),
         (
@@ -110,7 +118,30 @@ fn managed_targets(app: &tauri::AppHandle) -> Vec<(String, Vec<String>)> {
             crate::float_window::TODO_FLOAT_LABEL.to_string(),
             vec![crate::float_window::TODO_FLOAT_LABEL.to_string()],
         ),
+        // 截图/录屏：选区层 + 控制条
+        (
+            crate::recorder::RECORDER_OVERLAY_LABEL.to_string(),
+            vec![crate::recorder::RECORDER_OVERLAY_LABEL.to_string()],
+        ),
+        (
+            crate::recorder::RECORDER_CONTROL_LABEL.to_string(),
+            vec![crate::recorder::RECORDER_CONTROL_LABEL.to_string()],
+        ),
     ];
+    // 贴图窗口池（pin-shot-{0..N-1}）：启动预创建、隐藏常驻，可能整场会话都不显示
+    for i in 0..crate::recorder::PIN_WINDOW_COUNT {
+        let label = format!("{}{}", crate::recorder::PIN_LABEL_PREFIX, i);
+        targets.push((label.clone(), vec![label]));
+    }
+    targets
+}
+
+/// 参与联动的窗口：可见性取自窗口本身（win），级别设到它的 webview 上
+/// （单 webview 窗两者同 label；速达池窗口额外覆盖 chrome/content 两个子 webview，
+/// 同窗口的 webview 大概率共享 renderer，翻转一次即覆盖）。
+#[cfg(target_os = "windows")]
+fn managed_targets(app: &tauri::AppHandle) -> Vec<(String, Vec<String>)> {
+    let mut targets = resident_targets();
     for i in 0..crate::suda_browser::POOL_SIZE {
         targets.push((
             crate::suda_browser::win_label(i),
@@ -239,6 +270,42 @@ pub fn on_slot(app: &tauri::AppHandle, i: usize, shown: bool) {
 
 #[cfg(test)]
 mod tests {
+    /// 守卫：所有「启动即隐藏常驻、可能整场会话都不显示」的窗口都必须在常驻表里
+    /// ——它们的 `on_hidden` 快路径永远不会触发，漏登记 = 完整 SPA 的 renderer 常年
+    /// 停在 Normal 档白烧内存（2026-10-31 实测贴图池 + 录屏三窗全漏）。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resident_targets_cover_startup_hidden_windows() {
+        use super::resident_targets;
+        let labels: Vec<String> = resident_targets().into_iter().map(|(w, _)| w).collect();
+        let mut expected = vec![
+            crate::recorder::RECORDER_OVERLAY_LABEL.to_string(),
+            crate::recorder::RECORDER_CONTROL_LABEL.to_string(),
+            crate::export_render::WINDOW_LABEL.to_string(),
+        ];
+        for i in 0..crate::recorder::PIN_WINDOW_COUNT {
+            expected.push(format!("{}{}", crate::recorder::PIN_LABEL_PREFIX, i));
+        }
+        for label in expected {
+            // export-render 是刻意排除项（见 resident_targets 注释），只断言不存在
+            if label == crate::export_render::WINDOW_LABEL {
+                assert!(
+                    !labels.contains(&label),
+                    "{label} 是「隐藏但活跃」的渲染表面，不进常驻表"
+                );
+                continue;
+            }
+            assert!(labels.contains(&label), "{label} 必须进常驻表（启动即隐藏）");
+        }
+        // 每个窗口的 webview label 必须自带一份（apply 按 webview label 设级别）
+        for (win, webviews) in resident_targets() {
+            assert!(
+                webviews.contains(&win),
+                "{win} 的 webview 列表必须包含自身 label"
+            );
+        }
+    }
+
     /// P3 守卫：Rust 常量与 tauri.conf.json 主窗的 additionalBrowserArgs 必须逐字
     /// 一致——两处都是真相源，不一致时 WebView2 按参数差分裂 environment，
     /// 多出一整棵浏览器进程树（内存不降反暴增）。

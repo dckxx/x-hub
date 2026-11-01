@@ -39,7 +39,7 @@ import {
 const WRITE_CMD_DOMAIN: Record<string, string> = {
   // todos / todo-tags
   createTodo: 'todos', toggleTodo: 'todos', updateTodo: 'todos', deleteTodo: 'todos',
-  scheduleTodo: 'todos', setTodoNotifyMode: 'todos', reorderTodoOrders: 'todos', moveTodoChild: 'todos',
+  scheduleTodo: 'todos', setTodoNotifyMode: 'todos', reorderTodoOrders: 'todos', moveTodoChild: 'todos', detachTodoChild: 'todos',
   setTodoDescription: 'todos', setTodoPinned: 'todos', setTodoRepeat: 'todos',
   completeTodoRecurring: 'todos', undoTodoRecurring: 'todos',
   createTodoTag: 'todoTags', updateTodoTag: 'todoTags', deleteTodoTag: 'todoTags', setTodoTags: 'todoTags',
@@ -179,6 +179,7 @@ const state = reactive<StoreState>({
     chat_panel_height: 380,
     chat_panel_opacity: 1,
     chat_window_mode: false,
+    chat_selected_model: '',
     chat_window_width: 460,
     chat_window_height: 640,
     chat_window_x: null,
@@ -1115,6 +1116,32 @@ export function useStore() {
     if (!isTauri()) return
     try {
       await tauriApi.moveTodoChild(id, newParentId, orderedIds)
+    } catch (e) {
+      const byId = new Map(snapshot.map((s) => [s.id, s]))
+      state.todos = state.todos.map((t) => {
+        const s = byId.get(t.id)
+        return s ? { ...t, parent_id: s.parent_id, sort_order: s.sort_order } : t
+      })
+      throw e
+    }
+  }
+
+  /**
+   * 子待办升回顶级（拖到列表空白处）：parent_id 与 sort_order 一并清空（落回分组默认排序）。
+   * 本地乐观更新 + 失败回滚，同 moveTodoChild。
+   */
+  async function detachTodoChild(id: number) {
+    const snapshot = state.todos.map((t) => ({
+      id: t.id,
+      parent_id: t.parent_id,
+      sort_order: t.sort_order,
+    }))
+    state.todos = state.todos.map((t) =>
+      t.id === id ? { ...t, parent_id: null, sort_order: null } : t,
+    )
+    if (!isTauri()) return
+    try {
+      await tauriApi.detachTodoChild(id)
     } catch (e) {
       const byId = new Map(snapshot.map((s) => [s.id, s]))
       state.todos = state.todos.map((t) => {
@@ -2227,6 +2254,7 @@ export function useStore() {
     setTodoNotifyMode,
     reorderTodos,
     moveTodoChild,
+    detachTodoChild,
     refreshTodos,
     setTodoDescription,
     setTodoPinned,

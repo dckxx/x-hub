@@ -4,20 +4,12 @@
 // chrome 页只需要顶栏一条，换轻量入口后隐藏态降到 ~20-30MB。
 // 只挂 BrowserChrome + 主题自举；splash / 滚动条 hover 联动 / UpdateCheckDialog
 // 等主窗启动环境都不需要。
+//
+// 主题由 BrowserChrome 内部的 useShellThemeConfig 自举（2026-10-31 起）：
+// 原先这里补一次 getThemeConfig + 组件内 useTheme()，而 useTheme 会 import
+// useStore —— 于是这个「轻量」入口实际 preload 了全量 store（workbench-*.js）。
 import { createApp } from 'vue'
 import '../style.css'
 import BrowserChrome from '../components/BrowserChrome.vue'
-import { applyTheme } from '../composables/useTheme'
-import { isTauri, tauriApi } from '../api/tauri'
-
-// BrowserChrome 内部的 useTheme 只能 watch 到本窗口 store 的默认值（轻量入口
-// 不加载全量配置），这里用 getThemeConfig 补一次真实主题（悬浮球同款自举口径）。
-// 时序：mount 先以默认主题渲染（窗口隐藏态无感），本 Promise 随后覆盖为真实主题。
-if (isTauri()) {
-  tauriApi
-    .getThemeConfig()
-    .then((t) => applyTheme({ mode: t.mode, preset: t.preset, accent: t.accent }))
-    .catch(() => {})
-}
 
 createApp(BrowserChrome).mount('#app')

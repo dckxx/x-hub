@@ -33,15 +33,17 @@ import { parseCsvRows, sheetStoredNameFromUrl } from './noteSheetRef'
  *   图表、图片、透视表、条件格式、数据验证等高级元素第一版不保留（导入时在卡片提示）。
  */
 
-async function fileToBase64(file: Blob): Promise<string> {
-  const buf = await file.arrayBuffer()
+function bytesToBase64(bytes: Uint8Array): string {
   let binary = ''
-  const bytes = new Uint8Array(buf)
   const chunk = 0x8000
   for (let i = 0; i < bytes.length; i += chunk) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
   }
   return btoa(binary)
+}
+
+async function fileToBase64(file: Blob): Promise<string> {
+  return bytesToBase64(new Uint8Array(await file.arrayBuffer()))
 }
 
 /**
@@ -584,4 +586,20 @@ export async function fetchSheetBytes(url: string): Promise<{ bytes: ArrayBuffer
   const resp = await fetch(url)
   if (!resp.ok) throw new Error('表格文档读取失败')
   return { bytes: await resp.arrayBuffer(), ext }
+}
+
+/**
+ * 随手导出表格笔记为 Excel（.xlsx）的字节载荷（SpeednoteView → export_note_sheet）：
+ * - 落盘文件本身是 xlsx → 返回 null，调用方传 null 让 Rust 直拷原文件
+ *   （零转换保真最高——互转层第一版不覆盖的图表/图片等高级元素在原文件里仍健在，
+ *   也免大文件 base64 过 IPC）；
+ * - 落盘文件是 csv → 前端转成 xlsx 字节并 base64（值 + 数字识别，与打开表格同一解析口径，
+ *   复用 csvToUniver / univerToSheetBytes，csv 本就无样式可保）。
+ */
+export async function sheetExcelExportB64(url: string, title: string): Promise<string | null> {
+  const { bytes, ext } = await fetchSheetBytes(url)
+  if (ext !== 'csv') return null
+  const snapshot = csvToUniver(bytes, title)
+  const xlsx = await univerToSheetBytes(snapshot, 'xlsx')
+  return bytesToBase64(new Uint8Array(xlsx))
 }

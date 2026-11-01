@@ -332,6 +332,8 @@ export interface AppConfig {
   chat_panel_height: number
   /** AI 对话是否以独立窗口打开（false = 主窗内嵌抽屉） */
   chat_window_mode: boolean
+  /** 全局记住的 AI 对话模型选择（无会话态/新建会话使用；空串 = 未设置） */
+  chat_selected_model: string
   /** AI 对话独立窗口尺寸（逻辑 px，由后端拖拽/缩放记忆） */
   chat_window_width: number
   chat_window_height: number
@@ -1442,6 +1444,17 @@ export const tauriApi = {
       bodyHtml: bodyHtml ?? null,
     }),
   /**
+   * 随手导出表格笔记为 Excel（.xlsx，弹窗仅表格笔记出现）：
+   * excelB64 = null 时 Rust 直拷落盘的 xlsx 原文件（保真最高）；
+   * csv 落盘的表格由前端转成 xlsx 字节后传 base64（见 noteSheet.sheetExcelExportB64）。
+   */
+  exportNoteSheet: (id: number, path: string, excelB64: string | null) =>
+    invoke<{ exported: number; failed: string[]; dir: string }>('export_note_sheet', {
+      id,
+      path,
+      excelB64,
+    }),
+  /**
    * 整夹导出：merged=false 落 <dir>/<文件夹名>/，每条一个文件（dir 为所选目录）；
    * merged=true（弹窗勾「合并为一个文件」）时 dir 为目标**文件**路径，子树笔记合并写进同一文件。
    * 批量 PDF 逐条 emit note-export-progress（合并 PDF 整篇一次渲染，无逐条进度）。
@@ -1485,9 +1498,11 @@ export const tauriApi = {
     invoke<Todo>('set_todo_notify_mode', { id, mode }),
   /** 待办拖拽排序：按传入顺序写入手动排序位（前端按分组计算完整顺序） */
   reorderTodoOrders: (ids: number[]) => invoke<void>('reorder_todo_orders', { ids }),
-  /** 跨父拖拽：子待办改挂到另一个顶级父待办，并重写目标父下子项顺序 */
+  /** 跨父拖拽：子待办改挂到另一个顶级父待办（或无子待办的一级改挂为子待办），并重写目标父下子项顺序 */
   moveTodoChild: (id: number, newParentId: number, orderedIds: number[]) =>
     invoke<Todo>('move_todo_child', { id, newParentId, orderedIds }),
+  /** 子待办升回顶级（拖到列表空白处）：parent_id 与 sort_order 一并清空 */
+  detachTodoChild: (id: number) => invoke<Todo>('detach_todo_child', { id }),
   /** 设置待办描述（轻量 Markdown） */
   setTodoDescription: (id: number, description: string) =>
     invoke<Todo>('set_todo_description', { id, description }),
@@ -1757,6 +1772,8 @@ export const tauriApi = {
     invoke<void>('set_chat_panel', { width, height, open }),
   getChatPanel: () => invoke<[number, number, boolean]>('get_chat_panel'),
   setChatPanelSide: (side: string) => invoke<void>('set_chat_panel_side', { side }),
+  /** 全局记住 AI 对话模型选择（后端锁内读改写，主窗/独立窗共用不冲配置） */
+  setChatSelectedModel: (name: string) => invoke<void>('set_chat_selected_model', { name }),
   // ---- AI 对话独立窗口（与主窗内嵌抽屉互斥，窗口常驻隐藏、只做 show/hide） ----
   chatWindowGetState: () => invoke<ChatWindowState>('chat_window_get_state'),
   chatWindowToggle: () => invoke<void>('chat_window_toggle'),

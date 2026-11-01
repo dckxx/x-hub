@@ -184,6 +184,21 @@ const {
   labelOf: (t) => GROUP_META[groupOf(t, new Date())].label,
   enabled: () => view.value === 'pending',
   reorder: (ids) => void store.reorderTodos(ids),
+  // 一级拖到另一条中部 = 变为其子待办（有子待办的一级不可整体改挂，保持纯排序）
+  childIdsOf: (pid) => childrenMap.value.get(pid)?.map((t) => t.id) ?? [],
+  nestable: (id) => !(childrenMap.value.get(id)?.length),
+  moveChild: (id, pid, ids) => {
+    void store
+      .moveTodoChild(id, pid, ids)
+      .then(() => {
+        const parent = store.state.todos.find((t) => t.id === pid)
+        showToast(parent ? `已移到「${parent.title}」下作为子待办` : '已移为子待办', {
+          label: '撤销',
+          onClick: () => void store.detachTodoChild(id).catch(() => showToast('恢复失败，请重试')),
+        })
+      })
+      .catch(() => showToast('移动失败，请重试'))
+  },
 })
 provide('todoDragStart', onRowPointerDown)
 provide('todoDragId', todoDragId)
@@ -451,7 +466,8 @@ watch(
       </button>
     </div>
 
-    <div ref="bodyRef" class="todo-body">
+    <!-- data-todo-list：子待办拖到本容器内的空白处 = 升为顶级（TodoRow 升挂落点判定范围） -->
+    <div ref="bodyRef" class="todo-body" data-todo-list>
       <template v-if="view === 'pending'">
         <div v-if="pendingGroups.length === 0" class="empty-state todo-empty">
           <p>{{ tagFilter.length ? '没有符合所选标签的待办' : '今天要做什么？' }}</p>

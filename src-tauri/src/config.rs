@@ -178,6 +178,10 @@ pub struct AppConfig {
     /// AI 对话是否以独立窗口打开（true = 独立小窗，false = 主窗内嵌抽屉，默认）
     #[serde(default)]
     pub chat_window_mode: bool,
+    /// 全局记住的 AI 对话模型选择（无会话态/新建会话使用；空串 = 未设置，回落默认模型）。
+    /// 会话内切模型同时写会话 model_name，打开旧会话仍跟随会话自己的模型
+    #[serde(default)]
+    pub chat_selected_model: String,
     /// AI 对话独立窗口宽度（逻辑 px，由窗口缩放拖拽记忆）
     #[serde(default = "default_chat_window_width")]
     pub chat_window_width: f64,
@@ -597,6 +601,7 @@ impl Default for AppConfig {
             chat_panel_height: 380.0,
             chat_panel_opacity: 1.0,
             chat_window_mode: false,
+            chat_selected_model: String::new(),
             chat_window_width: default_chat_window_width(),
             chat_window_height: default_chat_window_height(),
             chat_window_x: None,

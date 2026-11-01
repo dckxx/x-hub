@@ -1396,7 +1396,9 @@ fn build_overlay_window(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> 
     let mut builder = tauri::WebviewWindowBuilder::new(
         app,
         CLIPBOARD_WINDOW_LABEL,
-        WebviewUrl::App("index.html".into()),
+        // 轻量入口 clipboard.html（P2 续，2026-10-31）：只挂 ClipboardOverlay，
+        // 不加载完整 SPA（内存优化，见 src/light/clipboard.ts）
+        WebviewUrl::App("clipboard.html".into()),
     )
     .title("剪贴板历史")
     .inner_size(CLIPBOARD_WIDTH, CLIPBOARD_HEIGHT)

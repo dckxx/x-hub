@@ -33,56 +33,113 @@ pub fn sync_status(state: State<'_, DbState>) -> Result<Value, String> {
     }))
 }
 
-/// 开启云同步：设口令 → 派生 → 建空间（或轮换桌面设备）→ 落 meta 与钥匙串。
+/// 开启云同步：设口令 → 派生 → 建空间 / 轮换桌面设备 → 绑定恢复校验值 → 落 meta 与钥匙串。
+///
+/// 两条硬约束：
+/// 1. 派生必须用**服务端实际存储的 kdf_salt**：新建时即本端刚提交的盐，重装时是空间
+///    创建时的旧盐（绝不能用新的随机盐，否则解不开既有密文）。
+/// 2. `recovery_prf` 以 space_id 作 HKDF salt，而 space_id 建空间后才由服务端生成，
+///    因此 recovery_hash 只能在建空间之后单独绑定（PUT /sync/spaces/:id/recovery-hash）。
 #[tauri::command]
 pub async fn sync_enable(state: State<'_, DbState>, passphrase: String) -> Result<Value, String> {
     if passphrase.trim().chars().count() < 8 {
         return Err("口令至少 8 位".into());
     }
-    let salt: [u8; 16] = {
-        let mut s = [0u8; 16];
-        getrandom::fill(&mut s).map_err(err_str)?;
-        s
-    };
-    let master = crypto::derive_master(&passphrase, &salt);
-    let recovery_prf = crypto::derive_recovery_prf(&master, "placeholder-space");
 
     // 锁段 1：是否已有空间绑定（重装 = rotate，首开 = create）
-    let has_space = {
+    let (has_space, local_space_id) = {
         let conn = lock(&state)?;
-        repo::meta_get(&conn, engine::META_SPACE).map_err(err_str)?.is_some()
+        let sid = repo::meta_get(&conn, engine::META_SPACE).map_err(err_str)?;
+        (sid.is_some(), sid.filter(|s| !s.is_empty()))
+    };
+
+    // 新建空间时盐由本端生成（服务端只存不复算）；此时还没拿到 space_id，
+    // recovery_hash 先用随机占位值顶住（不参与任何派生），拿到 space_id 后立刻绑定真值。
+    let local_salt: Option<[u8; 16]> = if has_space {
+        None
+    } else {
+        Some(random_bytes(16)?.try_into().expect("16 字节盐"))
     };
 
     // HTTP（锁外）
-    let resp = if has_space {
-        api::owner_post("/sync/devices/rotate-desktop", json!({
-            "kdf_salt": hex(&salt), "kdf_params": kdf_params_json(), "recovery_hash": sha256_hex(&recovery_prf),
+    let resp = if let Some(salt) = &local_salt {
+        api::owner_post("/sync/spaces", json!({
+            "kdf_salt": crypto::hex_encode(salt),
+            "kdf_params": kdf_params_json(),
+            "recovery_hash": crypto::hex_encode(&random_bytes(32)?),
         })).await?
     } else {
-        api::owner_post("/sync/spaces", json!({
-            "kdf_salt": hex(&salt), "kdf_params": kdf_params_json(), "recovery_hash": sha256_hex(&recovery_prf),
-        })).await?
+        api::owner_post("/sync/devices/rotate-desktop", json!({})).await?
     };
 
-    let space_id = resp["space_id"].as_str().ok_or("服务端缺 space_id")?.to_string();
+    let space_id = resp["space_id"]
+        .as_str()
+        .map(str::to_string)
+        .or(local_space_id)
+        .ok_or("服务端缺 space_id")?;
     let device_token = resp["device_token"].as_str().ok_or("服务端缺 device_token")?.to_string();
     let device_id = resp["device_id"].as_str().ok_or("服务端缺 device_id")?.to_string();
-    let server_salt = hex_decode_32(&resp["kdf_salt"].as_str().unwrap_or(&hex(&salt)))?;
+    let key_version = resp["key_version"].as_i64().unwrap_or(1);
 
-    // 以服务端确认的空间 ID 重派生（space_id 参与 HKDF salt，两端必须一致）
+    // 派生口径 = 服务端存储的盐；新建时再校验它确实是我们提交的那个值。
+    let server_salt = resp["kdf_salt"].as_str().unwrap_or_default().to_ascii_lowercase();
+    let salt_bytes = match hex_to_bytes(&server_salt) {
+        Ok(b) if b.len() == 16 => b,
+        _ => {
+            if local_salt.is_some() {
+                let _ = api::owner_delete(&format!("/sync/spaces/{space_id}")).await;
+            }
+            return Err("服务端 kdf_salt 不合法（应为 32 位 hex）".into());
+        }
+    };
+    if let Some(local) = &local_salt {
+        if crypto::hex_encode(local) != server_salt {
+            // 服务端没有按提交值存储：回滚刚建的空空间，避免留下无法恢复的空间
+            let _ = api::owner_delete(&format!("/sync/spaces/{space_id}")).await;
+            return Err("服务端返回的 kdf_salt 与提交值不一致，已回滚新建空间".into());
+        }
+    }
+
+    let master = crypto::derive_master(&passphrase, &salt_bytes);
     let record_key = crypto::derive_record_key(&master, &space_id);
     let recovery_prf = crypto::derive_recovery_prf(&master, &space_id);
-    let _ = server_salt; // 口径以服务端存储为准，仅校验非空
-    crypto::store_keys(&record_key, &recovery_prf)?;
-    crypto::store_device_token(&device_token)?;
-    crypto::store_device_id(&device_id)?;
+
+    // 绑定真实 recovery_hash：新建首绑；重装时顺带自愈旧版本写错的占位值。
+    // 只改 hash 不动 salt / key_version，密文与 record_key 都不受影响。
+    if let Err(e) = api::owner_put(
+        &format!("/sync/spaces/{space_id}/recovery-hash"),
+        json!({ "recovery_hash": sha256_hex(&recovery_prf) }),
+    )
+    .await
+    {
+        if local_salt.is_some() {
+            let _ = api::owner_delete(&format!("/sync/spaces/{space_id}")).await;
+            return Err(format!("初始化恢复凭据失败，已回滚新建空间: {e}"));
+        }
+        return Err(format!("更新恢复凭据失败: {e}"));
+    }
+
+    // 重装：先证明这枚口令能解开空间里已有的记录，再落钥匙（否则会静默用错口令同步出一堆 failed）。
+    if local_salt.is_none() {
+        verify_record_key(&device_token, &device_id, &record_key).await?;
+    }
+
+    if let Err(e) = crypto::store_keys(&record_key, &recovery_prf)
+        .and_then(|_| crypto::store_device_token(&device_token))
+        .and_then(|_| crypto::store_device_id(&device_id))
+    {
+        if local_salt.is_some() {
+            let _ = api::owner_delete(&format!("/sync/spaces/{space_id}")).await;
+        }
+        return Err(format!("写入本机钥匙串失败{}{e}", if local_salt.is_some() { "，已回滚新建空间: " } else { ": " }));
+    }
 
     // 锁段 2：落 meta；新空间标记初始全量推送
     {
         let conn = lock(&state)?;
         repo::meta_set(&conn, engine::META_SPACE, &space_id).map_err(err_str)?;
         repo::meta_set(&conn, engine::META_DEVICE, &device_id).map_err(err_str)?;
-        repo::meta_set(&conn, engine::META_KEY_VERSION, "1").map_err(err_str)?;
+        repo::meta_set(&conn, engine::META_KEY_VERSION, &key_version.to_string()).map_err(err_str)?;
         engine::mark_all_dirty_if_first_push(&conn).map_err(err_str)?;
     }
     Ok(json!({ "spaceId": space_id, "deviceId": device_id }))
@@ -238,23 +295,52 @@ fn device_creds() -> Result<(String, String), String> {
     Ok((id, token))
 }
 
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
-
 fn sha256_hex(b: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(b);
-    hex(&h.finalize())
+    crypto::hex_encode(&h.finalize())
 }
 
 fn kdf_params_json() -> String {
     json!({ "N": 32768, "r": 8, "p": 1, "dkLen": 64 }).to_string()
 }
 
-fn hex_decode_32(s: &str) -> Result<Vec<u8>, String> {
+/// 重装场景的端到端校验：拉空间里最新一条记录试解，能解开才说明「服务端盐 + 输入口令」
+/// 确实对得上。空空间（没有任何记录）无从验证，直接放行。
+async fn verify_record_key(device_token: &str, device_id: &str, record_key: &[u8; 32]) -> Result<(), String> {
+    let resp = api::device_get("/sync/changes?since=0&limit=1", device_token, device_id).await?;
+    let Some(change) = resp["changes"].as_array().and_then(|a| a.first()) else {
+        return Ok(());
+    };
+    let entity = change["entity"].as_str().unwrap_or_default();
+    let uid = change["uid"].as_str().unwrap_or_default();
+    let updated_at = change["updated_at"].as_i64().unwrap_or(0);
+    let nonce: [u8; crypto::NONCE_LEN] = decode_b64(change["nonce"].as_str().unwrap_or_default())?
+        .try_into()
+        .map_err(|_| "记录 nonce 长度不合法".to_string())?;
+    let ct = decode_b64(change["payload_ct"].as_str().unwrap_or_default())?;
+    crypto::open_record(record_key, entity, uid, updated_at, &nonce, &ct)
+        .map(|_| ())
+        .map_err(|_| "PASSPHRASE_MISMATCH: 口令不正确，或该空间的密钥已轮换；请核对口令后重试".to_string())
+}
+
+fn decode_b64(s: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.decode(s).map_err(|_| "记录编码不合法".to_string())
+}
+
+fn hex_to_bytes(s: &str) -> Result<Vec<u8>, String> {
+    if s.len() % 2 != 0 {
+        return Err("salt hex 长度不是偶数".into());
+    }
     (0..s.len() / 2)
         .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|_| "salt hex 非法".to_string()))
         .collect()
+}
+
+fn random_bytes(n: usize) -> Result<Vec<u8>, String> {
+    let mut v = vec![0u8; n];
+    getrandom::fill(&mut v).map_err(err_str)?;
+    Ok(v)
 }

@@ -68,6 +68,11 @@ pub async fn owner_post(path: &str, body: Value) -> Result<Value, String> {
     send(reqwest::Method::POST, path, &token, None, Some(body)).await
 }
 
+pub async fn owner_put(path: &str, body: Value) -> Result<Value, String> {
+    let token = crate::account::load_token().ok_or("NOT_LOGGED_IN: 请先在设置中登录 x-hub 账号")?;
+    send(reqwest::Method::PUT, path, &token, None, Some(body)).await
+}
+
 pub async fn owner_delete(path: &str) -> Result<Value, String> {
     let token = crate::account::load_token().ok_or("NOT_LOGGED_IN: 请先在设置中登录 x-hub 账号")?;
     send(reqwest::Method::DELETE, path, &token, None, None).await

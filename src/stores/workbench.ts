@@ -1,5 +1,6 @@
 import { reactive, readonly } from 'vue'
 import { normalizeNoteEditorMode } from '../utils/noteEditorMode'
+import { needsFullNoteFetch } from '../utils/noteRefresh'
 import { compareByOrder, groupOf } from '../utils/todoSchedule'
 import { isHttpWebTarget } from '../utils/web'
 import {
@@ -811,11 +812,14 @@ export function useStore() {
     state.notes = state.notes.filter((x) => x.id !== id)
   }
 
-  /** 剪贴板浮层等外部保存速记后，主窗口刷新笔记列表（仅拉元信息，轻量）。
+  /** 剪贴板浮层 / AI 助手工具 / 云同步等外部写入后，主窗口刷新笔记列表（仅拉元信息，轻量）。
    *  标签关联一并刷新：外部进程改标签时筛选映射也要跟上。
-   *  ⚠️ list_notes 不含正文：必须按 id 合并保留本地已知 content（外部新建的
-   *  条目单条补拉全量）。整表替换会把所有笔记正文清空，编辑器下次切笔记
-   *  把空正文写回库 = 永久丢稿 */
+   *  ⚠️ list_notes 不含正文：必须按 id 合并保留本地已知 content，整表替换会把所有
+   *  笔记正文清空、编辑器下次切笔记把空正文写回库 = 永久丢稿。
+   *  ⚠️ 但「保留本地正文」的判据必须是 **updated_at 没变**（`needsFullNoteFetch`）：
+   *  只按 id 命中就沿用旧正文，会让外部写入永远进不了界面——AI 助手说「已记录」、
+   *  速记树里搜不到（筛选搜的是 content）、点开还是旧文，重启才出现（2026-11-04 排查）。
+   *  外部新建的条目本来就进不了 byId，同样走这条补拉分支。 */
   async function refreshNotes() {
     if (!isTauri()) return
     const meta = await tauriApi.listNotes()
@@ -823,9 +827,13 @@ export function useStore() {
     state.notes = await Promise.all(
       meta.map(async (m) => {
         const old = byId.get(m.id)
-        if (old) return { ...m, content: old.content }
+        // 版本没变：本地正文即最新，省掉一条 get_note
+        if (!needsFullNoteFetch(old, m)) return { ...m, content: old!.content }
+        // 外部改过/新建：单条补拉全量。拉失败时保留本地正文（旧文总比空文安全——
+        // 空文会被编辑器写回库），本地也没有就只能是元信息（正文为空直到下次打开）
         const full = await tauriApi.getNote(m.id).catch(() => null)
-        return full ?? m
+        if (full) return full
+        return old ? { ...m, content: old.content } : m
       }),
     )
     void refreshNoteTagRows()

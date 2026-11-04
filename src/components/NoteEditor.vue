@@ -645,6 +645,46 @@ function syncLocal() {
   dirty.value = false
 }
 
+// 外部改写落地中：记住刚灌进编辑器的正文，用来吞掉由此引发的那次 markdownUpdated。
+// 用内容而不是布尔：Crepe 的 markdownUpdated 可能在一个微任务后才到，布尔在 finally
+// 里已复位，挡不住迟到的回调（会导致把刚拉进来的正文再排一次保存）。
+let externalAppliedContent: string | null = null
+
+/**
+ * 同一篇笔记被**外部**改写后的就地重载（AI 助手工具 / 云同步 / 剪贴板浮层写库）。
+ *
+ * 这些写入走 Rust 直写库 + `notes-changed`，store.refreshNotes 会把新正文拉进
+ * `props.note`；但编辑器此前只在 id 变化时重挂，同一 id 的正文更新无人接管——
+ * 用户打开着那篇笔记时看不到外部写进来的内容（2026-11-04 排查「AI 记录的速记
+ * 要重启才出现」的界面侧一半）。
+ *
+ * **本地有未保存编辑时不覆盖**（用户输入优先）：600ms 防抖窗口里的字比远端新，
+ * 抢过来覆盖会让用户当场丢字。此时等用户的保存把内容写回去，远端那份自然被覆盖，
+ * 与「最后写入者胜」的既有口径一致。
+ */
+function applyExternalNoteUpdate() {
+  const note = props.note
+  if (!note) return
+  if (dirty.value || saveTimer) return
+  // 标题只认真正的外部改名：空标题落库时会被归一成「无标题笔记」（normalizeTitle），
+  // 那是自己保存的回写，不能把用户刚清空的输入框顶掉
+  const titleChanged = note.title !== localTitle.value && note.title !== normalizeTitle(localTitle.value)
+  const contentChanged = note.content !== localContent.value
+  if (!titleChanged && !contentChanged) return
+  if (titleChanged) localTitle.value = note.title
+  if (contentChanged) {
+    localContent.value = note.content
+    lastNoteId = note.id
+    if (isLiveMode(mode.value) && crepe) {
+      // 实时预览/仅预览共用实例：整篇替换（单事务），失败就交给重挂兜底
+      externalAppliedContent = note.content
+      if (!replaceWholeDocWithMarkdown(note.content)) void mountEditor(note.content)
+    }
+    // 源码/分屏：textarea 的 :value 直接绑 localContent，赋值即生效；
+    // 分屏右侧预览由 localContent 的 watch 300ms 防抖跟进
+  }
+}
+
 /** 立即落盘防抖中未保存的编辑（若存在），并取消挂起的定时器 */
 function flushPendingSave() {
   if (!saveTimer) return
@@ -664,6 +704,16 @@ function normalizeTitle(title: string): string {
 
 function onEdited(markdown: string) {
   if (!props.note || mode.value !== 'wysiwyg') return
+  // 外部改写引起的整篇替换不是用户输入：放过这一发，否则会把刚拉进来的正文再排一次保存。
+  // Crepe 序列化会加转义/改写列表符，所以比对要先过 restoreCrepeMarkdown 再和原文比。
+  if (externalAppliedContent != null) {
+    const incoming = restoreCrepeMarkdown(markdown)
+    const wasExternal = incoming === externalAppliedContent
+    // 无论是否命中都只守这一次：Crepe 若不产出回写（内容序列化后等价），
+    // 留着标记会误吞用户后来的第一次真实编辑
+    externalAppliedContent = null
+    if (wasExternal) return
+  }
   // Crepe 序列化会加上 \[ \* 并把列表/分隔线改写成星号。收回来再存，切到分屏才和实时预览一致。
   adoptMarkdown(restoreCrepeMarkdown(markdown))
   // ratio 等图片属性可能经撤销/属性事务变化，同步一次宽度（幂等、无强制布局）
@@ -1932,11 +1982,28 @@ function scheduleSave() {
 // 切笔记时 id 也变了，绝不能在这里清：本 watch 默认 flush:'pre'，会先于下面那个
 // flush:'post' 的切笔记 watch 执行，dirty 被清成 false 后 flushLeavingNote 会直接返回，
 // 最后一整段 600ms 防抖窗口内的编辑就此静默丢失（切笔记丢字）。
+//
+// ⚠️ 同一 id 的 updated_at 也可能来自**外部写入**（AI 助手工具 / 云同步），不全是自己保存
+// 的回写。此时若把 dirty 清掉，用户的未保存编辑就再也不会落盘（静默丢字）。判据加一道
+// 「正文确实变成了我刚编辑的那份」——只有回写的正文与本地一致才算自己保存成功。
 watch(
   () => [props.note?.id, props.note?.updated_at] as const,
   ([id], [prevId]) => {
-    if (id === prevId) dirty.value = false
+    if (id !== prevId) return
+    if (props.note && props.note.content === localContent.value) dirty.value = false
   },
+)
+
+// 同一篇被外部改写 → 就地重载正文（见 applyExternalNoteUpdate）。
+// 用 flush:'post'：等本轮渲染把新的 props.note.content 落定再灌进编辑器。
+// 它不碰 dirty，用户有未保存编辑时函数内部直接跳过。
+watch(
+  () => [props.note?.id, props.note?.updated_at] as const,
+  ([id, updatedAt], prev) => {
+    if (!prev || id !== prev[0] || updatedAt === prev[1]) return
+    applyExternalNoteUpdate()
+  },
+  { flush: 'post' },
 )
 
 // ---- 来源链接（剪藏笔记展示原文出处，ADR 0014 口径：source_url 存在才显示） ----

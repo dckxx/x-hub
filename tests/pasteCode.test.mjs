@@ -1,6 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { looksLikeCode, guessCodeLanguage, normalizeClipboardText, unwrapFencedCode } from '../src/utils/pasteCode.ts'
+import {
+  hasMarkdownSyntax,
+  looksLikeCode,
+  guessCodeLanguage,
+  normalizeClipboardText,
+  splitPlainTextLines,
+  unwrapFencedCode,
+} from '../src/utils/pasteCode.ts'
 
 // ---- normalizeClipboardText：CRLF/孤立 CR → LF（成码文本换行口径）----
 // PM 文本节点保留 \r，Crepe 代码块的 CM 节点视图建文档/收 change 都丢 \r——含 \r 成块
@@ -125,4 +132,56 @@ test('guessCodeLanguage 识别常见语言', () => {
   assert.equal(guessCodeLanguage('public class Main {\n    public static void main(String[] args) {}\n}'), 'java')
   assert.equal(guessCodeLanguage('#include <stdio.h>\nint main() { return 0; }'), 'cpp')
   assert.equal(guessCodeLanguage('随便一段话\n第二行'), '')
+})
+
+// ---- hasMarkdownSyntax / splitPlainTextLines：纯文本粘贴保留原换行 ----
+// 粘贴时 Milkdown 无 HTML 会把 text/plain 当 Markdown 解析，单换行被折成空格。
+// 只有「无 Markdown 语法」的纯文字才由编辑器还原为段落 + 硬换行。
+
+test('hasMarkdownSyntax 认块级与行内 Markdown', () => {
+  for (const sample of [
+    '# 标题\n正文',
+    '## 二级标题',
+    '> 引用\n> 第二行',
+    '- 要点一\n- 要点二',
+    '* item',
+    '+ item',
+    '1. 第一步\n2. 第二步',
+    '```js\nconst a = 1\n```',
+    '~~~\nplain\n~~~',
+    '| A | B |\n| - | - |',
+    '---',
+    '***',
+    '___',
+    '**粗体**\n第二行',
+    '行内 `code`\n第二行',
+    '看这个 [链接](https://example.com)',
+    '![图](a.png)',
+    '<https://example.com>',
+  ]) {
+    assert.equal(hasMarkdownSyntax(sample), true, `应识别为 Markdown: ${JSON.stringify(sample)}`)
+  }
+})
+
+test('hasMarkdownSyntax 对普通多行文字返回 false', () => {
+  for (const sample of [
+    '今天天气不错\n我们出去玩吧\n顺便吃个饭',
+    'Here is the plan.\nWe start with the review.\nThen we ship.',
+    '第一行\n第二行',
+    '单行普通文本',
+    '',
+  ]) {
+    assert.equal(hasMarkdownSyntax(sample), false, `不应识别为 Markdown: ${JSON.stringify(sample)}`)
+  }
+})
+
+test('splitPlainTextLines 段内按单换行切行、空行分段、CRLF 归一', () => {
+  assert.deepEqual(splitPlainTextLines('a\nb\nc'), [['a', 'b', 'c']])
+  assert.deepEqual(splitPlainTextLines('a\r\nb\rc'), [['a', 'b', 'c']])
+  assert.deepEqual(splitPlainTextLines('a\n\nb'), [['a'], ['b']])
+  assert.deepEqual(splitPlainTextLines('a\n\n\nb'), [['a'], ['b']])
+  assert.deepEqual(splitPlainTextLines('a\n\nb\nc'), [['a'], ['b', 'c']])
+  assert.deepEqual(splitPlainTextLines('a\n\n'), [['a']])
+  assert.deepEqual(splitPlainTextLines(''), [])
+  assert.deepEqual(splitPlainTextLines('\n\n'), [])
 })

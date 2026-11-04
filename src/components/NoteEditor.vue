@@ -20,7 +20,7 @@ import { cleanModelMarkdownNoise } from '../utils/markdownLines'
 import { useStore } from '../stores/workbench'
 import { normalizeShortcutDisplay } from '../composables/useShortcutRecorder'
 import { attachBlockDrag } from '../utils/blockDrag'
-import { guessCodeLanguage, looksLikeCode, normalizeClipboardText, unwrapFencedCode } from '../utils/pasteCode'
+import { guessCodeLanguage, hasMarkdownSyntax, looksLikeCode, normalizeClipboardText, splitPlainTextLines, unwrapFencedCode } from '../utils/pasteCode'
 import { beautifyNoteMarkdown } from '../utils/markdownBeautify'
 import { copyPlainText } from '../utils/clipboardPlainText'
 import { restoreNoteImageSyntax } from '../utils/noteImageSyntax'
@@ -414,15 +414,48 @@ function attachCodePasteListener(root: HTMLElement, view: EditorView): () => voi
     const text = normalizeClipboardText(cd.getData('text/plain'))
     if (!text) return
     const fenced = unwrapFencedCode(text)
-    if (!fenced && !looksLikeCode(text)) return
-    event.preventDefault()
-    event.stopPropagation()
-    const code = fenced ? fenced.code : text.replace(/\n+$/, '')
-    const language = fenced ? fenced.language : guessCodeLanguage(code)
-    insertPastedCodeBlock(view, code, language)
+    if (fenced || looksLikeCode(text)) {
+      event.preventDefault()
+      event.stopPropagation()
+      const code = fenced ? fenced.code : text.replace(/\n+$/, '')
+      const language = fenced ? fenced.language : guessCodeLanguage(code)
+      insertPastedCodeBlock(view, code, language)
+      return
+    }
+    // 无 HTML 的多行纯文本：Milkdown 会把它当 Markdown 解析，单换行被折成空格（软换行），
+    // 三行文字粘进来会并成一行。带 Markdown 语法的仍走默认解析；纯文字则按原样还原行。
+    const html = cd.getData('text/html')
+    if (!html.trim() && text.includes('\n') && !hasMarkdownSyntax(text)) {
+      event.preventDefault()
+      event.stopPropagation()
+      insertPastedPlainText(view, text)
+    }
   }
   root.addEventListener('paste', onPaste, true)
   return () => root.removeEventListener('paste', onPaste, true)
+}
+
+/**
+ * 把多行纯文本按原排版插入：段内单换行 → hard_break，空行 → 新段落。
+ * 单事务提交，一次 Ctrl+Z 可整体撤销。
+ */
+function insertPastedPlainText(view: EditorView, raw: string) {
+  const { schema } = view.state
+  const paragraph = schema.nodes.paragraph
+  const hardBreak = schema.nodes.hard_break
+  if (!paragraph) return
+  const blocks = splitPlainTextLines(raw)
+  if (!blocks.length) return
+  const nodes: ProseNode[] = blocks.map((lines) => {
+    const content: ProseNode[] = []
+    lines.forEach((line, i) => {
+      if (i > 0 && hardBreak) content.push(hardBreak.create())
+      if (line) content.push(schema.text(line))
+    })
+    return paragraph.create(null, content)
+  })
+  const slice = new Slice(Fragment.fromArray(nodes), 0, 0)
+  view.dispatch(view.state.tr.replaceSelection(slice).scrollIntoView())
 }
 
 // ---- 分屏预览：右侧挂一个只读 Crepe（同一渲染器 = 与编辑/仅预览格式一致），源码侧防抖同步 ----

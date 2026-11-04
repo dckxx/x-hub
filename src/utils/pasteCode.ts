@@ -26,6 +26,37 @@ export function normalizeClipboardText(raw: string): string {
 }
 
 /**
+ * 纯文本剪贴板里是否带有 Markdown 语法。
+ *
+ * 背景：Milkdown 的 clipboard 插件在没有 text/html 时会把 text/plain **当 Markdown 解析**，
+ * 而 CommonMark 的单个换行只是软换行（渲染成一个空格）——从聊天窗口/终端/记事本复制三行
+ * 普通文字，粘进来就并成一行再自动折行，原排版全丢。
+ *
+ * 因此编辑器对「无 HTML + 多行 + 不含 Markdown 语法」的纯文本改用「段落 + 硬换行」还原；
+ * 带 Markdown 语法（标题/列表/引用/表格/加粗/链接/行内码…）的仍交给默认解析，避免把
+ * 用户刻意复制的 Markdown 源码变成字面量。
+ */
+export function hasMarkdownSyntax(raw: string): boolean {
+  const text = normalizeClipboardText(raw)
+  // 块级：ATX 标题 / 引用 / 围栏 / 无序与有序列表 / 表格 / 分隔线
+  if (/^[ \t]{0,3}(#{1,6}[ \t]|>[ \t]?|`{3,}|~{3,}|[-*+][ \t]|\d+[.)][ \t]|\|)/m.test(text)) return true
+  if (/^[ \t]{0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$/m.test(text)) return true
+  // 行内：加粗/斜体/行内码/链接/图片/自动链接（避免把 ** 之类转成字面量）
+  if (/(\*\*|__|`[^`\n]+`|!?\[[^\]\n]*\]\([^)\n]*\)|<https?:\/\/)/.test(text)) return true
+  return false
+}
+
+/**
+ * 把纯文本按空行切段、段内按单换行切行，供编辑器用「段落 + 硬换行」还原原始排版。
+ * 段内单换行是硬换行（视觉上就是原样的一行行），空行才是新段落。
+ */
+export function splitPlainTextLines(raw: string): string[][] {
+  const text = normalizeClipboardText(raw).replace(/\n+$/, '')
+  if (!text) return []
+  return text.split(/\n{2,}/).map((block) => block.split('\n'))
+}
+
+/**
  * 整段文本恰为一个 ```/~~~ 围栏块时解出语言与内容；夹在散文里的围栏不认
  * （返回 null 走默认管线，避免误吞围栏外的文字）。
  */

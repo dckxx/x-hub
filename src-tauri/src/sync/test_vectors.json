@@ -1,0 +1,32 @@
+{
+  "v": 1,
+  "note": "由 x-hub-miniprogram/scripts/gen-sync-vectors.mjs 生成；桌面仓 vendored 副本须同步更新",
+  "kdf": {
+    "alg": "scrypt",
+    "N": 32768,
+    "r": 8,
+    "p": 1,
+    "dkLen": 64
+  },
+  "input": {
+    "passphrase": "楼梯 trumpet 朝北的窗 42  ",
+    "salt_hex": "e5f1a8c39d27b460f8d2e1c4a9b6f735",
+    "space_id": "K7M2QP4X"
+  },
+  "expect": {
+    "master_hex": "a0b3225244f60cda27bf473eaf711f3675c77a9cd315ad43bf621e25c86c2c4d662394a0fa10b309b7297f0c8ba8657c324d230d8d0915724912275b2358ff0c",
+    "record_key_hex": "468c5d274ce1c98ef19d7a196d7daac36b1eedc2088c5b3a8290ba287aeb3c5e",
+    "recovery_prf_hex": "50d46eee8735ce4399dca988b944939dab93cf05fc8a34d857e37090e3ccd1d0",
+    "recovery_hash_hex": "c2590d19fa163a0d349afab1faeab8e2c08dce9b66b9997cde831dc4df604545",
+    "record": {
+      "entity": "todo",
+      "uid": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "updated_at": 1730000123456,
+      "aad": "v1|todo|01ARZ3NDEKTSV4RRFFQ69G5FAV|1730000123456",
+      "payload_json": "{\"v\":1,\"kind\":\"todo\",\"uid\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"fields\":{\"title\":\"给花浇水 🌱\",\"description\":\"阳台的两盆**绿萝**，周六上午。\",\"done\":false,\"priority\":1,\"due_at\":1730419200000,\"pinned\":false,\"repeat_mode\":\"once\"},\"x\":{}}",
+      "nonce_hex": "8f2c4e6a8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a1c3e5b70",
+      "ct_hex": "177d00dd6be2b68248484c607ffd347ad0d4cb5bb4a9bb4f3eb675ae933c768330fa5200778e504619f38901d780dbaaf7a7def4768d1a68650cef623f404f78e6cd0843bc32666eda978e28da5b53f4be6eb178e50097ad8cb2e27755c7fbcc0f25511d737a4be373605629ffa69c22799cb00d890058e286955a23c3a01766f4216929e987044236ffce8ecba00d2ec897f94d7d9f90588dfd0722887a1875b367e29e59b2b29b0da824cb4d78b22b78b01d0eddd4558e249adef41694f395871b69c4b52d42cac8812fe41d2c775c932ffb86383d6f1a6420c5e881ee617d5baabc74fd3507a870a8fe4fe217b4ec32e1462e3fe7c0fd429f79a6fa43dd92ab5badb2f37e70",
+      "payload_sha256_hex": "6837f47aa7e10164cb248aecee13bfc7ddb93c2b37308562608788ce2f29c137"
+    }
+  }
+}

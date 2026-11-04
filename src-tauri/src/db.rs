@@ -5,6 +5,9 @@ pub fn init(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // 云同步墓碑依赖级联删除也触发 DELETE 触发器（删父待办时子待办要留墓碑）：
+    // SQLite 默认 recursive_triggers=OFF，级联动作不触发触发器，必须显式打开。
+    conn.pragma_update(None, "recursive_triggers", "ON")?;
     migrate(&conn)?;
     Ok(conn)
 }
@@ -13,6 +16,7 @@ pub fn init(path: &Path) -> Result<Connection> {
 pub fn init_in_memory() -> Result<Connection> {
     let conn = Connection::open_in_memory()?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "recursive_triggers", "ON")?;
     migrate(&conn)?;
     Ok(conn)
 }
@@ -735,13 +739,312 @@ fn migrate(conn: &Connection) -> Result<()> {
         ",
     )?;
 
+    migrate_sync(conn)?;
+
     Ok(())
+}
+
+/// 云同步数据层（docs/sync-protocol.md §8.1/§8.2）：补列 + outbox/墓碑/透传表 + 触发器。
+///
+/// 设计要点：
+/// - outbox 以 **本地行 id**（不是 uid）为键：新行插入时 sync_uid 还是 NULL（SQLite 无法在
+///   触发器里生成 ULID），uid 由同步引擎在推送前惰性回填（repo::sync::ensure_uids）。
+/// - 删除墓碑只在 sync_uid 非空时产生——没拿到过 uid = 从未上过云 = 不需要墓碑。
+/// - sync_updated_at 的单调递增放在 UPDATE 触发器里，用
+///   `WHEN NEW.sync_updated_at IS OLD.sync_updated_at` 防递归：内层 UPDATE 写完新值后
+///   再次触发本触发器时条件不成立，自然终止。
+/// - sync_guard 有行 = 引擎正在应用远端数据，触发器全部静默（远端数据不能被当成自己的改动回推）。
+fn migrate_sync(conn: &Connection) -> Result<()> {
+    let todo_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(todos)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !todo_cols.iter().any(|c| c == "sync_uid") {
+        conn.execute("ALTER TABLE todos ADD COLUMN sync_uid TEXT", [])?;
+    }
+    if !todo_cols.iter().any(|c| c == "sync_updated_at") {
+        conn.execute("ALTER TABLE todos ADD COLUMN sync_updated_at INTEGER", [])?;
+    }
+    let note_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(notes)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    if !note_cols.iter().any(|c| c == "sync_uid") {
+        conn.execute("ALTER TABLE notes ADD COLUMN sync_uid TEXT", [])?;
+    }
+    if !note_cols.iter().any(|c| c == "sync_updated_at") {
+        conn.execute("ALTER TABLE notes ADD COLUMN sync_updated_at INTEGER", [])?;
+    }
+
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS sync_outbox (
+          entity TEXT NOT NULL,          -- todo / note
+          rowid_ref INTEGER NOT NULL,    -- 业务表的本地 id（新行此时还没有 sync_uid）
+          op TEXT NOT NULL,              -- upsert / delete
+          uid TEXT,                      -- delete 时由触发器写入 OLD.sync_uid（行已删，uid 只在这里）
+          PRIMARY KEY (entity, rowid_ref)
+        );
+        CREATE TABLE IF NOT EXISTS sync_tombstones (
+          entity TEXT NOT NULL,
+          uid TEXT NOT NULL,             -- 已上过云的行才留墓碑
+          deleted_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (entity, uid)
+        );
+        CREATE TABLE IF NOT EXISTS sync_x (
+          entity TEXT NOT NULL,
+          uid TEXT NOT NULL,
+          json TEXT NOT NULL,            -- 手机专有键（x）的透传缓存
+          PRIMARY KEY (entity, uid)
+        );
+        CREATE TABLE IF NOT EXISTS sync_guard (on_ INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS sync_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+        ",
+    )?;
+
+    // 脏追踪触发器：任何写路径（commands / 扩展桥 / agent 工具 / 周期滚动）都逃不过。
+    // outbox 以 rowid 为键，op 取"当前期望状态"——先增后删收敛为一条 delete，不堆事件日志。
+    conn.execute_batch(
+        "
+        CREATE TRIGGER IF NOT EXISTS trg_todo_sync_ins AFTER INSERT ON todos
+        WHEN NOT EXISTS (SELECT 1 FROM sync_guard)
+        BEGIN
+          INSERT INTO sync_outbox(entity, rowid_ref, op, uid) VALUES ('todo', NEW.id, 'upsert', NULL)
+            ON CONFLICT(entity, rowid_ref) DO UPDATE SET op = 'upsert';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_todo_sync_upd AFTER UPDATE ON todos
+        WHEN NOT EXISTS (SELECT 1 FROM sync_guard)
+        BEGIN
+          INSERT INTO sync_outbox(entity, rowid_ref, op, uid) VALUES ('todo', NEW.id, 'upsert', NULL)
+            ON CONFLICT(entity, rowid_ref) DO UPDATE SET op = 'upsert';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_todo_sync_ts AFTER UPDATE ON todos
+        WHEN NEW.sync_updated_at IS OLD.sync_updated_at
+           AND NOT EXISTS (SELECT 1 FROM sync_guard)
+        BEGIN
+          UPDATE todos
+             SET sync_updated_at = MAX(CAST(strftime('%s','now') AS INTEGER) * 1000,
+                                       COALESCE(OLD.sync_updated_at, 0) + 1)
+           WHERE id = NEW.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_todo_sync_del AFTER DELETE ON todos
+        WHEN NOT EXISTS (SELECT 1 FROM sync_guard)
+        BEGIN
+          INSERT INTO sync_outbox(entity, rowid_ref, op, uid) VALUES ('todo', OLD.id, 'delete', OLD.sync_uid)
+            ON CONFLICT(entity, rowid_ref) DO UPDATE SET op = 'delete', uid = excluded.uid;
+          INSERT OR REPLACE INTO sync_tombstones(entity, uid, deleted_at_ms)
+            SELECT 'todo', OLD.sync_uid, CAST(strftime('%s','now') AS INTEGER) * 1000
+            WHERE OLD.sync_uid IS NOT NULL;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_note_sync_ins AFTER INSERT ON notes
+        WHEN NOT EXISTS (SELECT 1 FROM sync_guard)
+        BEGIN
+          INSERT INTO sync_outbox(entity, rowid_ref, op, uid) VALUES ('note', NEW.id, 'upsert', NULL)
+            ON CONFLICT(entity, rowid_ref) DO UPDATE SET op = 'upsert';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_note_sync_upd AFTER UPDATE ON notes
+        WHEN NOT EXISTS (SELECT 1 FROM sync_guard)
+        BEGIN
+          INSERT INTO sync_outbox(entity, rowid_ref, op, uid) VALUES ('note', NEW.id, 'upsert', NULL)
+            ON CONFLICT(entity, rowid_ref) DO UPDATE SET op = 'upsert';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_note_sync_ts AFTER UPDATE ON notes
+        WHEN NEW.sync_updated_at IS OLD.sync_updated_at
+           AND NOT EXISTS (SELECT 1 FROM sync_guard)
+        BEGIN
+          UPDATE notes
+             SET sync_updated_at = MAX(CAST(strftime('%s','now') AS INTEGER) * 1000,
+                                       COALESCE(OLD.sync_updated_at, 0) + 1)
+           WHERE id = NEW.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_note_sync_del AFTER DELETE ON notes
+        WHEN NOT EXISTS (SELECT 1 FROM sync_guard)
+        BEGIN
+          INSERT INTO sync_outbox(entity, rowid_ref, op, uid) VALUES ('note', OLD.id, 'delete', OLD.sync_uid)
+            ON CONFLICT(entity, rowid_ref) DO UPDATE SET op = 'delete', uid = excluded.uid;
+          INSERT OR REPLACE INTO sync_tombstones(entity, uid, deleted_at_ms)
+            SELECT 'note', OLD.sync_uid, CAST(strftime('%s','now') AS INTEGER) * 1000
+            WHERE OLD.sync_uid IS NOT NULL;
+        END;
+        ",
+    )?;
+
+    // 老数据回填：sync_uid 发 ULID（首次启动一次性；新行由引擎惰性回填）。
+    // sync_updated_at 取 updated_at 解析出的 ms，保证首推的 LWW 时间与本地展示一致。
+    // 回填必须用 guard 静默执行——它不是"改动"，触发全量推送的初始同步由引擎用 meta 标记显式发起。
+    conn.execute("INSERT INTO sync_guard (on_) VALUES (1)", [])?;
+    let need_uid = |conn: &Connection, table: &str| -> Result<Vec<i64>> {
+        let mut stmt = conn.prepare(&format!("SELECT id FROM {table} WHERE sync_uid IS NULL ORDER BY id"))?;
+        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+        rows.collect()
+    };
+    for table in ["todos", "notes"] {
+        for id in need_uid(conn, table)? {
+            let uid = ulid::Ulid::new().to_string();
+            conn.execute(&format!("UPDATE {table} SET sync_uid = ? WHERE id = ?"), [uid, id.to_string()])?;
+        }
+        let ts_rows: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT id, updated_at FROM {table} WHERE sync_updated_at IS NULL ORDER BY id"
+            ))?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            rows.collect::<rusqlite::Result<Vec<(i64, String)>>>()?
+        };
+        for (id, updated_at) in ts_rows {
+            let ms = parse_local_ts_ms(&updated_at).unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+            conn.execute(
+                &format!("UPDATE {table} SET sync_updated_at = ? WHERE id = ?"),
+                rusqlite::params![ms, id],
+            )?;
+        }
+    }
+    conn.execute_batch(
+        "
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_todos_sync_uid ON todos(sync_uid) WHERE sync_uid IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_sync_uid ON notes(sync_uid) WHERE sync_uid IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_sync_outbox_entity ON sync_outbox(entity, rowid_ref);
+        ",
+    )?;
+    conn.execute("DELETE FROM sync_guard", [])?;
+
+    Ok(())
+}
+
+/// 解析桌面库的时间戳（repo::now 的 UTC `%Y-%m-%d %H:%M:%S%.6f`）为毫秒；解析失败返回 None
+pub fn parse_local_ts_ms(s: &str) -> Option<i64> {
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
+        .ok()
+        .map(|t| t.and_utc().timestamp_millis())
+}
+
+/// ms → 桌面库时间戳文本（UTC，与 repo::now 同格式）
+pub fn format_local_ts_ms(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .unwrap_or_else(|| chrono::Utc::now())
+        .format("%Y-%m-%d %H:%M:%S%.6f")
+        .to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::params;
+
+    // ---- 云同步触发器（docs/sync-protocol.md §8.2）----
+
+    fn outbox_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r.get(0)).unwrap()
+    }
+
+    fn todo_uid(conn: &Connection, id: i64) -> Option<String> {
+        conn.query_row("SELECT sync_uid FROM todos WHERE id = ?1", params![id], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn sync_insert_marks_outbox_and_backfill_stays_quiet() {
+        let conn = init_in_memory().unwrap();
+        // 回填后 outbox 必须是空的（老数据静默获得 uid；初始全量推送由引擎显式发起）
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
+        if n > 0 {
+            assert_eq!(outbox_count(&conn), 0, "回填不得触发 outbox");
+        }
+
+        conn.execute("INSERT INTO todos (title) VALUES ('买牛奶')", []).unwrap();
+        let id: i64 = conn.last_insert_rowid();
+        assert!(todo_uid(&conn, id).is_none(), "新行 uid 由引擎惰性回填");
+        assert_eq!(outbox_count(&conn), 1, "新行必须进 outbox");
+
+        // 更新：仍是一条 upsert（收敛，不堆事件）；sync_updated_at 被触发器单调解析
+        conn.execute("UPDATE todos SET title = '买牛奶 x2' WHERE id = ?1", params![id]).unwrap();
+        assert_eq!(outbox_count(&conn), 1, "重复更新收敛为一条");
+        let ts: i64 = conn
+            .query_row("SELECT sync_updated_at FROM todos WHERE id = ?1", params![id], |r| r.get(0))
+            .unwrap();
+        assert!(ts > 0, "sync_updated_at 必须被触发器写入");
+
+        // 再次更新：单调 +1（时钟回拨也不能倒退）
+        conn.execute("UPDATE todos SET done = 1 WHERE id = ?1", params![id]).unwrap();
+        let ts2: i64 = conn
+            .query_row("SELECT sync_updated_at FROM todos WHERE id = ?1", params![id], |r| r.get(0))
+            .unwrap();
+        assert!(ts2 > ts, "sync_updated_at 必须严格单调");
+    }
+
+    #[test]
+    fn sync_delete_writes_tombstone_only_for_synced_rows() {
+        let conn = init_in_memory().unwrap();
+        conn.execute("INSERT INTO todos (title) VALUES ('已同步过的')", []).unwrap();
+        let id: i64 = conn.last_insert_rowid();
+        conn.execute("UPDATE todos SET sync_uid = '01ARZ3NDEKTSV4RRFFQ69G5FAV' WHERE id = ?1", params![id])
+            .unwrap();
+
+        conn.execute("INSERT INTO todos (title) VALUES ('从没上过云的')", []).unwrap();
+        let fresh_id: i64 = conn.last_insert_rowid();
+
+        conn.execute("DELETE FROM todos WHERE id = ?1", params![id]).unwrap();
+        conn.execute("DELETE FROM todos WHERE id = ?1", params![fresh_id]).unwrap();
+
+        let tombs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_tombstones", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tombs, 1, "只有上过云的行才留墓碑");
+        let op: String = conn
+            .query_row("SELECT op FROM sync_outbox WHERE rowid_ref = ?1 AND entity='todo'", params![id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(op, "delete", "outbox op 收敛为 delete");
+    }
+
+    #[test]
+    fn sync_cascade_delete_tombstones_children() {
+        let conn = init_in_memory().unwrap();
+        conn.execute("INSERT INTO todos (title) VALUES ('父')", []).unwrap();
+        let parent: i64 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO todos (title, parent_id) VALUES ('子', ?1)", params![parent]).unwrap();
+        let child: i64 = conn.last_insert_rowid();
+        // 给父子都发 uid（模拟已同步）
+        conn.execute("UPDATE todos SET sync_uid = '01ARZ3NDEKTSV4RRFFQ69G5FAV' WHERE id = ?1", params![parent])
+            .unwrap();
+        conn.execute("UPDATE todos SET sync_uid = '01ARZ3NDEKTSV4RRFFQ69G5FAW' WHERE id = ?1", params![child])
+            .unwrap();
+
+        conn.execute("DELETE FROM todos WHERE id = ?1", params![parent]).unwrap();
+
+        let tombs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_tombstones", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tombs, 2, "级联删除的子待办也必须留墓碑（recursive_triggers=ON）");
+    }
+
+    #[test]
+    fn sync_guard_silences_triggers() {
+        let conn = init_in_memory().unwrap();
+        conn.execute("INSERT INTO todos (title) VALUES ('远端来的')", []).unwrap();
+        let before = outbox_count(&conn);
+        conn.execute("INSERT INTO sync_guard (on_) VALUES (1)", []).unwrap();
+        conn.execute("UPDATE todos SET title = '远端应用' WHERE title = '远端来的'", []).unwrap();
+        conn.execute("DELETE FROM sync_guard", []).unwrap();
+        assert_eq!(outbox_count(&conn), before, "guard 期间不得进 outbox");
+        let ts: Option<i64> = conn
+            .query_row("SELECT sync_updated_at FROM todos WHERE title = '远端应用'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ts, None, "guard 期间 sync_updated_at 保持 NULL（远端应用时才写远端值）");
+    }
+
+    #[test]
+    fn sync_timestamp_conversion_roundtrips() {
+        let ms = 1_730_000_123_456i64;
+        let text = format_local_ts_ms(ms);
+        assert_eq!(parse_local_ts_ms(&text), Some(ms));
+        assert_eq!(parse_local_ts_ms("不是时间"), None);
+    }
 
     #[test]
     fn fresh_db_has_unified_resources() {

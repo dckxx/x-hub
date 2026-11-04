@@ -32,6 +32,7 @@
     "exceljs": "^4.4.0",
     "lucide-vue-next": "^0.577.0",
     "marked": "^18.0.7",
+    "qrcode": "^1.5.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "reka-ui": "^2.10.3",
@@ -41,6 +42,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
     "@types/node": "^24.13.3",
+    "@types/qrcode": "^1.5.6",
     "@univerjs/core": "^1.2.0",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/tsconfig": "^0.9.1",

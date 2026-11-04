@@ -39,6 +39,7 @@ mod service;
 mod shortcut;
 pub mod signing;
 mod skills;
+pub mod sync;
 mod suda_browser;
 mod sticky_window;
 mod sysmon;
@@ -1037,6 +1038,15 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_initial_data,
+            sync::commands::sync_status,
+            sync::commands::sync_enable,
+            sync::commands::sync_begin_pairing,
+            sync::commands::sync_poll_pairing,
+            sync::commands::sync_pairing_cancel,
+            sync::commands::sync_now,
+            sync::commands::sync_device_list,
+            sync::commands::sync_revoke_device,
+            sync::commands::sync_disable,
             commands::list_resources,
             commands::create_resource,
             commands::update_resource,

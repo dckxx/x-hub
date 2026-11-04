@@ -69,3 +69,4 @@ browse/
 
 # 扩展解包诊断临时目录（本地调试产物，不入库）
 .tmp-extdiag/
+dist-test/

@@ -3,7 +3,7 @@ use crate::repo::now;
 use crate::todo_recurrence;
 use rusqlite::{params, Connection, Result};
 
-const COLS: &str =
+pub(crate) const COLS: &str =
     "id, title, done, priority, created_at, updated_at, completed_at, due_at, remind_at, remind_fired, parent_id, sort_order, version, description, pinned, repeat_mode, repeat_every, repeat_unit, repeat_weekdays, repeat_month_day, repeat_month_nth, repeat_end_mode, repeat_end_at, repeat_count, repeat_done_count, repeat_last_done_at, remind_notify_mode";
 
 pub fn list(conn: &Connection) -> Result<Vec<Todo>> {

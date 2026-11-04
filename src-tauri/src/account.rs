@@ -118,7 +118,8 @@ fn save_token(token: &str) -> Result<(), String> {
     }
 }
 
-fn load_token() -> Option<String> {
+/// 云同步等本机模块复用同一枚平台会话 token（keyring；None = 未登录）
+pub(crate) fn load_token() -> Option<String> {
     if let Err(e) = crate::credentials::migrate_to_keyring(&token_file(), KEYRING_SERVICE, Some(TOKEN_KEY)) {
         log::warn!("旧账号凭据迁移未完成: {e}");
     }
@@ -143,7 +144,7 @@ pub fn server_url() -> String {
 }
 
 /// 设备名：给服务端「我的设备」列表显示用（不然只能看到 `reqwest/0.12` 这种无意义的 UA）
-fn device_label() -> String {
+pub(crate) fn device_label() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| std::env::consts::OS.to_string())

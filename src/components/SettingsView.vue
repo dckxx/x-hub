@@ -43,6 +43,8 @@ const SECTIONS = [
   { id: 'extensions', label: '扩展' },
   { id: 'skills', label: 'Skills' },
   { id: 'data', label: '数据' },
+  // 云同步（2026-11-02）：手机扫码配对 + E2EE，挂「数据与关于」大类（docs/sync-protocol.md §8.4）
+  { id: 'sync', label: '云同步' },
   { id: 'about', label: '关于' },
   // 使用说明（2026-10-24）：正文是仓库 docs/user-guide.md，面板内联渲染（见 GuidePanel.vue）
   { id: 'guide', label: '使用说明' },
@@ -87,6 +89,7 @@ const SECTION_GROUP: Record<SectionId, GroupId> = {
   skills: 'extensions',
   account: 'account',
   data: 'data',
+  sync: 'data',
   about: 'data',
   guide: 'guide',
 }

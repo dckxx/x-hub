@@ -11,6 +11,8 @@ import type { DataPathInfo, NoteImageGcReport } from '../../api/tauri';
 import { useStore } from '../../stores/workbench';
 import AppSelect from '../AppSelect.vue';
 import AboutSection from '../AboutSection.vue';
+// 云同步分区（sv-sec-sync）：E2EE 开关 / 口令 / 配对二维码 / 设备管理（docs/sync-protocol.md §8.4）
+import SyncPanel from './SyncPanel.vue';
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
@@ -337,9 +339,12 @@ onMounted(() => {
 
           <p class="settings-foot">
             <Lock :size="12" :stroke-width="2" class="settings-lock" aria-hidden="true" />
-            所有数据默认存储在本地，不会上传云端
+            所有数据默认存储在本地，不会上传云端；开启云同步后仅密文经云中枢多端同步
           </p>
         </section>
+
+        <!-- 云同步（扫码配对 + 客户端口令，与「数据」同属一个面板路由分区表：sv-sec-sync） -->
+        <SyncPanel />
 
         <!-- 更改数据存储路径确认弹窗 -->
         <Teleport to="body">

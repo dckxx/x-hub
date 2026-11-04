@@ -1,0 +1,465 @@
+//! 同步引擎：拉-合-推的 DB 编排（docs/sync-protocol.md §6）。
+//!
+//! 锁纪律：所有函数都是**同步**的 DB 操作，HTTP 由 commands 层在锁外穿插——
+//! 绝不跨 await 持 DbState 锁（与 agent 工具的短连接纪律一致）。
+//!
+//! LWW 口径：本端时间戳 = `sync_updated_at`（NULL 时回退解析 updated_at 文本）。
+//! 远端更新 → guard 下走 map::apply_*；本地更新 → 重新标脏等下轮推；
+//! 相等 → 已收敛，跳过。引擎永不依据"本地没有"推断删除（ADR 0001）。
+
+use base64::Engine as _;
+use rusqlite::{params, Connection};
+use serde_json::{json, Value};
+
+use super::crypto::{open_record, seal_record};
+use super::repo::{self, OutboxEntry};
+
+const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+
+/// meta 键：拉取游标 / 空间绑定 / 初始全量推送标记
+pub const META_PULL_SEQ: &str = "pull_seq";
+pub const META_SPACE: &str = "space_id";
+pub const META_DEVICE: &str = "device_id";
+pub const META_KEY_VERSION: &str = "key_version";
+pub const META_INITIAL_PUSHED: &str = "initial_pushed";
+
+// ---------------- 状态 ----------------
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Status {
+    pub space_id: Option<String>,
+    pub device_id: Option<String>,
+    pub key_ready: bool,
+    pub pull_seq: i64,
+    pub pending: i64,
+    pub key_version: i64,
+}
+
+pub fn status(conn: &Connection) -> Status {
+    let space_id = repo::meta_get(conn, META_SPACE).ok().flatten();
+    let device_id = repo::meta_get(conn, META_DEVICE).ok().flatten();
+    let key_ready = super::crypto::load_record_key().is_some();
+    let pull_seq: i64 = repo::meta_get(conn, META_PULL_SEQ)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let pending: i64 = conn
+        .query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r.get(0))
+        .unwrap_or(0);
+    let key_version: i64 = repo::meta_get(conn, META_KEY_VERSION)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    Status { space_id, device_id, key_ready, pull_seq, pending, key_version }
+}
+
+// ---------------- 本端时间戳 ----------------
+
+/// 行的 LWW 时间戳：sync_updated_at 优先，NULL 回退解析 updated_at 文本，再回退当前时间
+pub fn row_sync_ms(conn: &Connection, entity: &str, rowid: i64) -> i64 {
+    let table = if entity == "todo" { "todos" } else { "notes" };
+    let sql = format!("SELECT sync_updated_at, updated_at FROM {table} WHERE id = ?1");
+    let row: Option<(Option<i64>, String)> = conn
+        .query_row(&sql, params![rowid], |r| Ok((r.get(0)?, r.get(1)?)))
+        .ok();
+    match row {
+        Some((Some(ms), _)) => ms,
+        Some((None, text)) => crate::db::parse_local_ts_ms(&text).unwrap_or_else(|| now_ms()),
+        None => now_ms(),
+    }
+}
+
+pub fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+fn uid_of_row(conn: &Connection, entity: &str, rowid: i64) -> Option<String> {
+    repo::uid_of(conn, entity, rowid).ok().flatten()
+}
+
+// ---------------- 初始全量推送 ----------------
+
+/// 首次同步（云端为空）时把全部本地行标脏——"本地优先"的落云动作。
+/// 只做一次（meta 标记）；此后增量全部交给触发器。
+pub fn mark_all_dirty_if_first_push(conn: &Connection) -> rusqlite::Result<usize> {
+    if repo::meta_get(conn, META_INITIAL_PUSHED)?.is_some() {
+        return Ok(0);
+    }
+    let mut total = 0;
+    for (entity, table) in [("todo", "todos"), ("note", "notes")] {
+        let ids: Vec<i64> = {
+            let mut stmt = conn.prepare(&format!("SELECT id FROM {table} ORDER BY id"))?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<Vec<i64>>>()?
+        };
+        for id in ids {
+            conn.execute(
+                "INSERT INTO sync_outbox (entity, rowid_ref, op, uid) VALUES (?1, ?2, 'upsert', NULL)
+                 ON CONFLICT(entity, rowid_ref) DO UPDATE SET op = 'upsert'",
+                params![entity, id],
+            )?;
+            total += 1;
+        }
+    }
+    repo::meta_set(conn, META_INITIAL_PUSHED, "1")?;
+    Ok(total)
+}
+
+// ---------------- 推送批次构建 ----------------
+
+/// outbox → 加密后的推送条目。delete 条目从 outbox.uid + 墓碑表取证。
+/// 返回 (条目, 消费的 outbox 行)——**先推后清**：只有服务端确认 ok 才清 outbox。
+pub fn build_push_items(
+    conn: &Connection,
+    record_key: &[u8; 32],
+    limit: usize,
+) -> Result<(Vec<Value>, Vec<OutboxEntry>), String> {
+    // 推送前置：给还没有 uid 的行惰性发 ULID（SQLite 触发器造不出 ULID）
+    repo::ensure_uids(conn).map_err(|e| e.to_string())?;
+    let entries = repo::outbox_list(conn, limit as i64).map_err(|e| e.to_string())?;
+    let mut items = Vec::with_capacity(entries.len());
+    for e in &entries {
+        let uid = match (e.op.as_str(), e.uid.as_deref()) {
+            ("delete", Some(uid)) => uid.to_string(),
+            ("delete", None) => continue, // 行在拿到 uid 前就删了 = 从未上云
+            _ => match uid_of_row(conn, &e.entity, e.rowid) {
+                Some(uid) => uid,
+                None => continue, // 行已不在且无 uid：忽略并清掉
+            },
+        };
+        let env_updated_at = match e.op.as_str() {
+            "delete" => repo::tombstone_get(conn, &e.entity, &uid).ok().flatten().unwrap_or_else(now_ms),
+            _ => row_sync_ms(conn, &e.entity, e.rowid),
+        };
+        let deleted_at = if e.op == "delete" { Some(env_updated_at) } else { None };
+        // 载荷：upsert 用业务行；delete 用最小占位（服务端不读内容，但解密需要合法密文）
+        let payload_json = if e.op == "delete" {
+            json!({ "v": 1, "kind": e.entity, "uid": uid, "fields": {}, "x": {} }).to_string()
+        } else if e.entity == "todo" {
+            let t = load_todo(conn, e.rowid).ok_or("todo 行消失")?;
+            super::map::todo_payload(conn, &t)
+        } else {
+            let n = load_note(conn, e.rowid).ok_or("note 行消失")?;
+            super::map::note_payload(conn, &n)
+        };
+        let mut nonce = [0u8; 24];
+        getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
+        let ct = seal_record(record_key, &e.entity, &uid, env_updated_at, &payload_json, &nonce)?;
+        items.push(json!({
+            "entity": e.entity,
+            "uid": uid,
+            "updated_at": env_updated_at,
+            "deleted_at": deleted_at,
+            "key_version": key_version_of(conn),
+            "nonce": B64.encode(nonce),
+            "payload_ct": B64.encode(ct),
+        }));
+    }
+    Ok((items, entries))
+}
+
+/// 服务端确认 ok 的条目才清 outbox；stale/equal 保留（引擎随后重拉收敛）
+pub fn clear_consumed(conn: &Connection, consumed: &[OutboxEntry]) -> rusqlite::Result<()> {
+    for e in consumed {
+        repo::outbox_clear(conn, &e.entity, e.rowid)?;
+    }
+    Ok(())
+}
+
+fn key_version_of(conn: &Connection) -> i64 {
+    repo::meta_get(conn, META_KEY_VERSION).ok().flatten().and_then(|v| v.parse().ok()).unwrap_or(1)
+}
+
+// ---------------- 远端变更应用 ----------------
+
+#[derive(Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyStats {
+    pub applied: usize,
+    pub local_newer: usize,
+    pub tombstoned: usize,
+    pub deferred: usize,
+    pub failed: usize,
+}
+
+/// 远端 changes 页 → 本地。deferred 的 uid 由调用方在父行落库后重试。
+pub fn apply_remote_changes(
+    conn: &Connection,
+    record_key: &[u8; 32],
+    changes: &[Value],
+) -> Result<(ApplyStats, Vec<String>), String> {
+    let mut stats = ApplyStats::default();
+    let mut deferred = Vec::new();
+    for change in changes {
+        let entity = change["entity"].as_str().unwrap_or_default().to_string();
+        let uid = change["uid"].as_str().unwrap_or_default().to_string();
+        if entity.is_empty() || uid.is_empty() {
+            stats.failed += 1;
+            continue;
+        }
+        let remote_ms = change["updated_at"].as_i64().unwrap_or(0);
+        let local_ms = local_ms_by_uid(conn, &entity, &uid);
+
+        match local_ms {
+            Some(local) if local > remote_ms => {
+                // 本地较新：重新标脏，等下轮推回去（LWW 由服务端最终裁决）
+                mark_dirty_by_uid(conn, &entity, &uid).map_err(|e| e.to_string())?;
+                stats.local_newer += 1;
+                continue;
+            }
+            Some(local) if local == remote_ms => {
+                stats.applied += 0; // 已收敛
+                continue;
+            }
+            _ => {}
+        }
+
+        // 远端较新或本地缺失：解密 → guard 下应用
+        let nonce = match change["nonce"].as_str().map(|s| B64.decode(s)) {
+            Some(Ok(v)) if v.len() == 24 => v,
+            _ => {
+                stats.failed += 1;
+                continue;
+            }
+        };
+        let ct = match change["payload_ct"].as_str().map(|s| B64.decode(s)) {
+            Some(Ok(v)) => v,
+            _ => {
+                stats.failed += 1;
+                continue;
+            }
+        };
+        let payload: Value = match open_record(record_key, &entity, &uid, remote_ms, nonce.as_slice().try_into().unwrap(), &ct) {
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(_) => {
+                    stats.failed += 1;
+                    continue;
+                }
+            },
+            Err(_) => {
+                // 解密失败：口令不符或 key_version 落后。记失败让上层提示，不中断整页。
+                stats.failed += 1;
+                continue;
+            }
+        };
+        // 远端胜出即清算本行未推的本地脏标（内容已是远端版本，再推只是冗余）
+        let pending_rowid: Option<i64> = conn
+            .query_row(
+                &format!("SELECT id FROM {} WHERE sync_uid = ?1", if entity == "todo" { "todos" } else { "notes" }),
+                params![uid],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(rid) = pending_rowid {
+            let _ = conn.execute("DELETE FROM sync_outbox WHERE entity = ? AND rowid_ref = ?", params![entity, rid]);
+        }
+        let guard = repo::apply_begin(conn);
+        if guard.is_err() {
+            stats.failed += 1;
+            continue;
+        }
+        let outcome = if entity == "todo" {
+            super::map::apply_todo(conn, &payload)
+        } else {
+            super::map::apply_note(conn, &payload)
+        };
+        let _ = repo::apply_end(conn);
+        match outcome {
+            Ok(super::map::ApplyOutcome::Inserted) | Ok(super::map::ApplyOutcome::Updated) => stats.applied += 1,
+            Ok(super::map::ApplyOutcome::Tombstoned) => stats.tombstoned += 1,
+            Ok(super::map::ApplyOutcome::Deferred) => {
+                deferred.push(uid);
+                stats.deferred += 1;
+            }
+            Err(_) => stats.failed += 1,
+        }
+    }
+    Ok((stats, deferred))
+}
+
+fn local_ms_by_uid(conn: &Connection, entity: &str, uid: &str) -> Option<i64> {
+    let table = if entity == "todo" { "todos" } else { "notes" };
+    let sql = format!("SELECT id FROM {table} WHERE sync_uid = ?1");
+    let rowid: Option<i64> = conn.query_row(&sql, params![uid], |r| r.get(0)).ok();
+    rowid.map(|id| row_sync_ms(conn, entity, id))
+}
+
+/// 本地较新 → 重新标脏（outbox 同键 upsert 幂等）
+pub fn mark_dirty_by_uid(conn: &Connection, entity: &str, uid: &str) -> rusqlite::Result<()> {
+    let table = if entity == "todo" { "todos" } else { "notes" };
+    let rowid: Option<i64> = conn.query_row(&format!("SELECT id FROM {table} WHERE sync_uid = ?1"), params![uid], |r| r.get(0)).ok();
+    if let Some(rowid) = rowid {
+        conn.execute(
+            "INSERT INTO sync_outbox (entity, rowid_ref, op, uid) VALUES (?1, ?2, 'upsert', ?3)
+             ON CONFLICT(entity, rowid_ref) DO UPDATE SET op = 'upsert'",
+            params![entity, rowid, uid],
+        )?;
+    }
+    Ok(())
+}
+
+// ---------------- 载荷行加载 ----------------
+
+fn load_todo(conn: &Connection, id: i64) -> Option<crate::models::Todo> {
+    let sql = format!("SELECT {} FROM todos WHERE id = ?1", crate::repo::todo::COLS);
+    conn.query_row(&sql, params![id], |r| todo_row_to_model(r)).ok()
+}
+
+fn load_note(conn: &Connection, id: i64) -> Option<crate::models::Note> {
+    let sql = format!("SELECT {} FROM notes WHERE id = ?1", crate::repo::note::NOTE_COLS);
+    conn.query_row(&sql, params![id], |r| note_row_to_model(r)).ok()
+}
+
+// repo 模块的行转换是私有 fn——这里用等价的列序读取（列清单以 repo 常量为准，避免双写漂移）。
+// 若 repo 增列，此处的编译期断言（下方 tests::cols_aligned）会先炸。
+fn todo_row_to_model(r: &rusqlite::Row) -> rusqlite::Result<crate::models::Todo> {
+    // 列序必须与 repo::todo::COLS 逐字一致（remind_notify_mode 在最后一位）
+    Ok(crate::models::Todo {
+        id: r.get(0)?,
+        title: r.get(1)?,
+        done: r.get::<_, i64>(2)? != 0,
+        priority: r.get(3)?,
+        created_at: r.get(4)?,
+        updated_at: r.get(5)?,
+        completed_at: r.get(6)?,
+        due_at: r.get(7)?,
+        remind_at: r.get(8)?,
+        remind_fired: r.get::<_, i64>(9)? != 0,
+        parent_id: r.get(10)?,
+        sort_order: r.get(11)?,
+        version: r.get(12)?,
+        description: r.get(13)?,
+        pinned: r.get::<_, i64>(14)? != 0,
+        repeat_mode: r.get(15)?,
+        repeat_every: r.get(16)?,
+        repeat_unit: r.get(17)?,
+        repeat_weekdays: r.get(18)?,
+        repeat_month_day: r.get(19)?,
+        repeat_month_nth: r.get(20)?,
+        repeat_end_mode: r.get(21)?,
+        repeat_end_at: r.get(22)?,
+        repeat_count: r.get(23)?,
+        repeat_done_count: r.get(24)?,
+        repeat_last_done_at: r.get(25)?,
+        remind_notify_mode: r.get(26)?,
+    })
+}
+
+fn note_row_to_model(r: &rusqlite::Row) -> rusqlite::Result<crate::models::Note> {
+    Ok(crate::models::Note {
+        id: r.get(0)?,
+        title: r.get(1)?,
+        content: r.get(2)?,
+        created_at: r.get(3)?,
+        updated_at: r.get(4)?,
+        folder_id: r.get(5)?,
+        source_url: r.get(6)?,
+        deleted_at: r.get(7)?,
+        icon: r.get(8)?,
+        sort_order: r.get(9)?,
+        kind: r.get(10)?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+
+    fn keys() -> [u8; 32] {
+        let mut k = [0u8; 32];
+        getrandom::fill(&mut k).unwrap();
+        k
+    }
+
+    #[test]
+    fn initial_push_marks_all_and_push_items_decrypt_back() {
+        let conn = db::init_in_memory().unwrap();
+        crate::repo::todo::create(&conn, "t1", None, None).unwrap();
+        crate::repo::note::create(&conn, "n1").unwrap();
+        let n = mark_all_dirty_if_first_push(&conn).unwrap();
+        assert_eq!(n, 2, "两行全标脏");
+        assert_eq!(mark_all_dirty_if_first_push(&conn).unwrap(), 0, "meta 标记后不重复");
+
+        let key = keys();
+        let (items, entries) = build_push_items(&conn, &key, 10).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(entries.len(), 2);
+        // 密文能解回来且载荷就是业务内容
+        for item in &items {
+            let nonce = B64.decode(item["nonce"].as_str().unwrap()).unwrap();
+            let ct = B64.decode(item["payload_ct"].as_str().unwrap()).unwrap();
+            let pt = open_record(&key, item["entity"].as_str().unwrap(), item["uid"].as_str().unwrap(), item["updated_at"].as_i64().unwrap(), nonce.as_slice().try_into().unwrap(), &ct).unwrap();
+            let v: Value = serde_json::from_str(&pt).unwrap();
+            assert_eq!(v["kind"], item["entity"]);
+            assert!(v["fields"].is_object(), "载荷必须是业务字段对象");
+        }
+    }
+
+    #[test]
+    fn apply_remote_lww_and_local_newer_remarks_dirty() {
+        let conn = db::init_in_memory().unwrap();
+        crate::repo::todo::create(&conn, "本地较新", None, None).unwrap();
+        repo::ensure_uids(&conn).unwrap();
+        let t = crate::repo::todo::list(&conn).unwrap().remove(0);
+        let uid = repo::uid_of(&conn, "todo", t.id).ok().flatten().unwrap();
+        let local_ms = row_sync_ms(&conn, "todo", t.id);
+
+        let key = keys();
+        let mk = |title: &str, ms: i64| {
+            let mut nonce = [0u8; 24];
+            getrandom::fill(&mut nonce).unwrap();
+            let payload = json!({
+                "v": 1, "kind": "todo", "uid": uid,
+                "fields": { "title": title, "updated_at": ms, "repeat_mode": "once" },
+                "x": {},
+            });
+            let ct = seal_record(&key, "todo", &uid, ms, &payload.to_string(), &nonce).unwrap();
+            json!({
+                "entity": "todo", "uid": uid, "updated_at": ms, "deleted_at": Value::Null,
+                "key_version": 1, "nonce": B64.encode(nonce), "payload_ct": B64.encode(ct),
+            })
+        };
+
+        // 远端更旧 → 本地保留并重新标脏
+        let older = mk("远端旧版", local_ms - 1);
+        let (stats, _) = apply_remote_changes(&conn, &key, &[older]).unwrap();
+        assert_eq!(stats.local_newer, 1);
+        assert_eq!(repo::outbox_list(&conn, 10).unwrap().len(), 1, "本地较新必须重新标脏");
+
+        // 远端更新 → 覆盖本地（guard 下，无 outbox 泄漏）
+        let newer = mk("远端新版", local_ms + 5000);
+        let (stats, _) = apply_remote_changes(&conn, &key, &[newer]).unwrap();
+        assert_eq!(stats.applied, 1);
+        let title: String = conn.query_row("SELECT title FROM todos WHERE id = ?1", params![t.id], |r| r.get(0)).unwrap();
+        assert_eq!(title, "远端新版");
+        let dirty: i64 = conn.query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r.get(0)).unwrap();
+        assert_eq!(dirty, 0, "应用远端不得标脏");
+
+        // 相等 → 收敛跳过
+        let same = mk("远端新版", local_ms + 5000);
+        let (stats, _) = apply_remote_changes(&conn, &key, &[same]).unwrap();
+        assert_eq!(stats.applied + stats.local_newer, 0, "相等时间戳不再动作");
+    }
+
+    #[test]
+    fn delete_item_carries_uid_and_tombstone() {
+        let conn = db::init_in_memory().unwrap();
+        crate::repo::todo::create(&conn, "会删", None, None).unwrap();
+        repo::ensure_uids(&conn).unwrap();
+        let t = crate::repo::todo::list(&conn).unwrap().remove(0);
+        conn.execute("DELETE FROM todos WHERE id = ?1", params![t.id]).unwrap();
+        let key = keys();
+        let (items, entries) = build_push_items(&conn, &key, 10).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["deleted_at"].as_i64().unwrap() > 0, true, "delete 条目必须带 deleted_at");
+        assert_eq!(entries[0].op, "delete");
+        clear_consumed(&conn, &entries).unwrap();
+        assert_eq!(repo::outbox_list(&conn, 10).unwrap().len(), 0, "确认后清 outbox");
+        assert!(repo::tombstone_get(&conn, "todo", &items[0]["uid"].as_str().unwrap()).unwrap().is_some());
+    }
+}

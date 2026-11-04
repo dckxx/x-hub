@@ -8,7 +8,7 @@ use rusqlite::{params, Connection, Result};
 /// - delete 语义 = 软删（写 deleted_at 进回收站），硬删走 purge；
 /// - folder_id / source_url 一次建行（create_in），剪藏与「首行成标题」共用。
 
-const NOTE_COLS: &str =
+pub(crate) const NOTE_COLS: &str =
     "id, title, content, created_at, updated_at, folder_id, source_url, deleted_at, icon, sort_order, kind";
 
 /// 速记树展示口径（组内拖拽排序）：手动拖过的（sort_order 非空）按位升序在前，

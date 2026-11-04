@@ -47,6 +47,13 @@ sha2 = "0.10"
 getrandom = "0.3"
 ed25519-dalek = "2"
 base64 = "0.22"
+# 云同步加密（docs/sync-protocol.md §4）：参数必须与小程序 @noble/* 逐字节一致，
+# 锚点是 src/sync/test_vectors.json（由 x-hub-miniprogram/scripts/gen-sync-vectors.mjs 生成）
+chacha20poly1305 = "0.10"
+scrypt = "0.11"
+hkdf = "0.12"
+ulid = "1"
+unicode-normalization = "0.1"
 semver = "1"
 sysinfo = "0.32"
 # 剪贴板 BMP 快照导出转 PNG + 图标导入 .ico 解码（ico 内部复用 bmp/png 管线），避免拖入全家桶；

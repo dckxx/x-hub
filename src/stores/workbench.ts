@@ -316,6 +316,15 @@ export function useStore() {
         void refreshResources()
         void refreshSubcategories()
       })
+      // 云同步引擎应用了远端变更（Rust 直写库，不走 *-changed 命令通道，见 docs/sync-protocol.md §6.4）：
+      // 不做 isSelfWriteEcho 判断——同步写库与 UI 命令无关，直接全量重载相关数据
+      void listen('sync-applied', () => {
+        void refreshTodos()
+        void refreshTodoTags()
+        void refreshNotes()
+        void refreshNoteFolders()
+        void refreshNoteTagRows()
+      })
     })
   }
 

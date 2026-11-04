@@ -322,7 +322,7 @@ where
                 Decision::Execute => {
                     execute_call(
                         session_id, turn_id, &call, level, registry, &mut emit,
-                        art, &mut convo, &open_tool_conn,
+                        art, &mut convo, &open_tool_conn, &is_cancelled,
                     )?;
                 }
                 Decision::NeedApproval => {
@@ -360,7 +360,7 @@ where
                         ApproveAnswer::Once => {
                             execute_call(
                                 session_id, turn_id, &call, level, registry,
-                                &mut emit, art, &mut convo, &open_tool_conn,
+                                &mut emit, art, &mut convo, &open_tool_conn, &is_cancelled,
                             )?;
                         }
                         ApproveAnswer::Always => {
@@ -369,7 +369,7 @@ where
                             grants.grant(session_id, &perm_key);
                             execute_call(
                                 session_id, turn_id, &call, level, registry,
-                                &mut emit, art, &mut convo, &open_tool_conn,
+                                &mut emit, art, &mut convo, &open_tool_conn, &is_cancelled,
                             )?;
                         }
                     }
@@ -430,6 +430,7 @@ fn execute_call(
     art: &mut TurnArtifacts,
     convo: &mut Vec<ChatMessage>,
     open_conn: &dyn Fn() -> std::result::Result<rusqlite::Connection, String>,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<(), String> {
     emit(ChatStreamEvent::ToolCall {
         turn_id: turn_id.to_string(),
@@ -438,7 +439,7 @@ fn execute_call(
         args: call.arguments.clone(),
         level: level.as_str().to_string(),
     })?;
-    let outcome = run_tool(registry, call, open_conn);
+    let outcome = run_tool(registry, call, open_conn, is_cancelled);
     log::info!(
         "[agent:{turn_id}] 工具 {} {}",
         call.name,
@@ -459,6 +460,7 @@ fn run_tool(
     registry: &ToolRegistry,
     call: &ToolCallRequest,
     open_conn: &dyn Fn() -> std::result::Result<rusqlite::Connection, String>,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> ToolOutcome {
     let tool = match registry.get(&call.name) {
         Some(t) => t,
@@ -485,7 +487,7 @@ fn run_tool(
     };
     // 循环跨 await 不能持 DbState 锁：工具执行用调用方注入的短连接工厂
     match open_conn() {
-        Ok(conn) => tool.execute(&args, ToolCtx { conn: &conn }),
+        Ok(conn) => tool.execute(&args, ToolCtx::new(&conn).with_cancel(is_cancelled)),
         Err(e) => ToolOutcome::err(format!("打开本地数据库失败：{e}"), String::new()),
     }
 }

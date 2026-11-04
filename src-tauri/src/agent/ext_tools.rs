@@ -159,7 +159,12 @@ const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 /// 扩展后端端点约定：POST /xhub/agent-tool，body `{"tool": "...", "args": {...}}`，
 /// 2xx 响应体（任意 JSON）即工具结果；非 2xx 取 body 的 error/message 字段当报错。
 /// 请求头带 X-XHub-Ext-Id 供后端日志溯源。
-pub fn call(ext_id: &str, tool: &str, args: &Value) -> Result<Value, String> {
+pub fn call(
+    ext_id: &str,
+    tool: &str,
+    args: &Value,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<Value, String> {
     let app = app()?;
     // 只放行「声明过且当前可调」的工具。服务端口本就是扩展自己的进程，不校验也通——
     // 这道闸防的是 manifest 与代码漂移（声明删了代码还在）和聚合侧状态（禁用/未授权）漏拦
@@ -179,13 +184,27 @@ pub fn call(ext_id: &str, tool: &str, args: &Value) -> Result<Value, String> {
         };
         let _ = tx.send(res);
     });
-    match rx.recv_timeout(CALL_TIMEOUT + CONNECT_TIMEOUT) {
-        Ok(res) => res,
-        Err(_) => Err(format!(
-            "IO_ERROR: 扩展后端 {} 内没有响应（超过 {} 秒），可稍后重试",
-            ext_id,
-            (CALL_TIMEOUT + CONNECT_TIMEOUT).as_secs()
-        )),
+    // 轮询等待而不是一次性 recv_timeout：用户点停止后立刻返回，不再等扩展后端最长 25s
+    let deadline = Instant::now() + CALL_TIMEOUT + CONNECT_TIMEOUT;
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(res) => return res,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if is_cancelled() {
+                    return Err("IO_ERROR: 已中断".to_string());
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "IO_ERROR: 扩展后端 {} 内没有响应（超过 {} 秒），可稍后重试",
+                        ext_id,
+                        (CALL_TIMEOUT + CONNECT_TIMEOUT).as_secs()
+                    ));
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("IO_ERROR: 扩展后端调用线程意外结束".to_string())
+            }
+        }
     }
 }
 

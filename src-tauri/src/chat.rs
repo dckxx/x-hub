@@ -362,6 +362,13 @@ where
     // 服务端改名/换模型对用户无感，不必手动重开「平台额度」开关。
     let mut model = model.clone();
     let mut retried_platform_sync = false;
+    // 回合已被取消时直接返回，不再发起新的模型请求（停止后重试/自动纠错也不该续跑）
+    if cancel
+        .as_ref()
+        .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+    {
+        return Err("已中断".into());
+    }
     let resp = loop {
         let (api_key, is_platform) = resolve_api_key(&model.id);
         let api_key = api_key.ok_or_else(|| {
@@ -413,18 +420,22 @@ where
                 req = req.header("X-XHub-Turn-Id", t);
             }
         }
-        let resp = req
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| {
+        // 等待响应头也挂在取消旗标上：平台排队/首包慢时，用户点停止不能干等到
+        // read_timeout（120s）。这里和下面的 SSE 读取一起，保证「停止」立即生效。
+        let resp = tokio::select! {
+            r = req.json(&payload).send() => r.map_err(|e| {
                 // reqwest 的 Error 不含响应体，单独透出网络层错误
                 format!("请求失败: {}", e)
-            })?;
+            })?,
+            _ = wait_cancelled(&cancel) => return Err("已中断".into()),
+        };
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = tokio::select! {
+                b = resp.text() => b.unwrap_or_default(),
+                _ = wait_cancelled(&cancel) => return Err("已中断".into()),
+            };
             // 平台积分不足（429 insufficient_credits，#t39）单独成句：文案可读 + 带稳定 token，
             // 前端据此渲染「积分不足」分流卡片（去兑换 / 配置自备 Key），而不是裸报错
             if is_platform && status == reqwest::StatusCode::TOO_MANY_REQUESTS && is_insufficient_credits(&body) {

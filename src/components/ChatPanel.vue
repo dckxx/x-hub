@@ -37,7 +37,19 @@ const sessions = ref<ChatSession[]>([])
 const activeSessionId = ref<number | null>(null)
 const messages = ref<ChatMessage[]>([])
 const input = ref('')
-const sending = ref(false)
+
+/** 每个会话各自的进行中回合：新建/切换会话时不再继承上一个会话的「思考中」与停止键。
+ *  turnId 为空串 = 回合已开始但还没收到 TurnStart。 */
+interface TurnState {
+  turnId: string
+  stopping: boolean
+}
+const turnStates = ref<Record<number, TurnState>>({})
+/** 用户已点停止的回合：迟到的流式/工具事件一律丢弃（后端仍按自己的收尾口径落库） */
+const stoppedTurns = new Set<string>()
+const sending = computed(
+  () => activeSessionId.value != null && !!turnStates.value[activeSessionId.value],
+)
 const streamingContent = ref('')
 // 流式渲染节流产物：每次增量不再全量重解析 markdown，按 ~80ms 节流刷新，
 // 避免长回复 O(n²) 的 marked 重解析与整块 v-html 替换把主线程卡死、反压流式推送
@@ -124,8 +136,36 @@ function flushStreamToStep() {
   }
 }
 
-/** 进行中回合的 turn_id（中断按钮用） */
-const activeTurnId = ref('')
+/** 当前会话进行中回合的 turn_id（中断按钮用） */
+const activeTurnId = computed(() => {
+  const sid = activeSessionId.value
+  return sid != null ? (turnStates.value[sid]?.turnId ?? '') : ''
+})
+/** 当前会话是否已点过停止、正在等后端终态事件 */
+const stopping = computed(() => {
+  const sid = activeSessionId.value
+  return sid != null ? !!turnStates.value[sid]?.stopping : false
+})
+
+function beginTurn(sessionId: number) {
+  turnStates.value = { ...turnStates.value, [sessionId]: { turnId: '', stopping: false } }
+}
+function setTurnId(sessionId: number, turnId: string) {
+  const cur = turnStates.value[sessionId]
+  if (!cur) return
+  turnStates.value = { ...turnStates.value, [sessionId]: { ...cur, turnId } }
+}
+function markStopping(sessionId: number) {
+  const cur = turnStates.value[sessionId]
+  if (!cur) return
+  turnStates.value = { ...turnStates.value, [sessionId]: { ...cur, stopping: true } }
+}
+function endTurn(sessionId: number) {
+  if (!(sessionId in turnStates.value)) return
+  const next = { ...turnStates.value }
+  delete next[sessionId]
+  turnStates.value = next
+}
 /** 权限档快捷切换（§5：像模型选择器一样随时切）。初始值 = 设置里的持久默认档（loadDefaultPerm） */
 const permMode = ref<'readonly' | 'ask' | 'full'>('ask')
 const permOptions = [
@@ -166,13 +206,22 @@ async function respondApproval(card: ToolCard, answer: 'once' | 'always' | 'deny
     }
   }
 }
-/** 中断当前回合：已执行的操作不回滚（后端口径），后端收尾后回 TurnDone/Error */
+/** 中断当前回合：先本地立即冻结流式输出（不等后端），再通知后端掐断请求。
+ *  已执行的操作不回滚；后端稍后的终态事件只用来清掉回合状态。 */
 async function stopTurn() {
-  if (!activeTurnId.value) return
+  const sid = activeSessionId.value
+  const turnId = activeTurnId.value
+  if (sid == null || !turnId) return
+  stoppedTurns.add(turnId)
+  markStopping(sid)
+  // 冻结当前已流出的文字：丢弃节流中的渲染任务，但把已有缓冲完整渲染一次
+  cancelStreamRender()
+  streamHtml.value = streamingContent.value ? renderMd(streamingContent.value) : ''
   try {
-    await tauriApi.cancelAgentTurn(activeTurnId.value)
-    showToast('已请求中断，正在收尾…')
+    await tauriApi.cancelAgentTurn(turnId)
   } catch (err) {
+    endTurn(sid)
+    stoppedTurns.delete(turnId)
     showToast(String(err))
   }
 }
@@ -226,8 +275,8 @@ async function restorePendingApprovals(sessionId: number) {
     })
   }
   if (pending.length) {
-    sending.value = true
-    if (!activeTurnId.value) activeTurnId.value = pending[0].turnId
+    if (!turnStates.value[sessionId]) beginTurn(sessionId)
+    if (!turnStates.value[sessionId]?.turnId) setTurnId(sessionId, pending[0].turnId)
   }
 }
 
@@ -398,6 +447,8 @@ async function createSession() {
 async function deleteSession(id: number) {
   if (!isTauri()) return
   await tauriApi.deleteChatSession(id)
+  // 后端会中断该会话的进行中回合；本地同步清掉回合状态，避免删完还残留「思考中」
+  endTurn(id)
   sessions.value = sessions.value.filter((x) => x.id !== id)
   if (activeSessionId.value === id) {
     activeSessionId.value = null
@@ -557,46 +608,50 @@ async function send() {
     return
   }
 
+  // 回合所属会话：期间用户切到其它会话/新建会话时，消息视图的变更全部跳过
+  //（回到本会话时 openSession 会从库里重拉），回合状态按会话各自记录。
+  const turnSessionId = activeSessionId.value
+
   // 追加用户消息 + 创建流式回复占位
   const userMsg: ChatMessage = {
     id: Date.now(),
-    session_id: activeSessionId.value,
+    session_id: turnSessionId,
     role: 'user',
     content,
     created_at: new Date().toISOString(),
   }
   messages.value.push(userMsg)
   input.value = ''
-  sending.value = true
+  beginTurn(turnSessionId)
   streamingContent.value = ''
   streamError.value = ''
   // 新回合：清上一回合的时间线（中间过程块 + 工具卡片）
   turnFlow.value = []
-  activeTurnId.value = ''
   // 用户主动发送：强制定位到最新消息，后续流式输出保持跟随
   scrollToBottom(true)
 
-  // 回合所属会话：期间用户切到其它会话时，消息视图的变更全部跳过
-  //（回到本会话时 openSession 会从库里重拉），只保留 sending 等回合级状态收尾，
-  // 否则旧回合的 TurnDone 会把当前会话的消息列表整个顶掉（0.9.0 修复）
-  const turnSessionId = activeSessionId.value
+  // 本回合的 turn_id：TurnStart/工具事件首次到达时补上；停止后用它过滤迟到增量
+  let thisTurnId = ''
 
   try {
-    await tauriApi.sendAgentMessage(activeSessionId.value, content, permMode.value, (e: ChatStreamEvent) => {
+    await tauriApi.sendAgentMessage(turnSessionId, content, permMode.value, (e: ChatStreamEvent) => {
       const cross = activeSessionId.value !== turnSessionId
+      const stopped = !!thisTurnId && stoppedTurns.has(thisTurnId)
       if (e.type === 'chunk') {
-        if (cross) return
+        if (cross || stopped) return
         streamingContent.value += e.content
         scheduleStreamRender()
         scrollToBottom()
       } else if (e.type === 'turnStart') {
         // 回合开工即拿到 turn_id：停止键立刻亮出（不等首个工具事件）
-        if (!cross) activeTurnId.value = e.turnId
+        thisTurnId = e.turnId
+        setTurnId(turnSessionId, e.turnId)
       } else if (e.type === 'toolCall') {
-        if (cross) return
+        thisTurnId = e.turnId
+        setTurnId(turnSessionId, e.turnId)
+        if (cross || stopped) return
         // 回合边界：把上一段叙述收进可折叠的中间过程块（0.9.0 起保留）
         flushStreamToStep()
-        activeTurnId.value = e.turnId
         pushCard({
           callId: e.callId,
           name: e.name,
@@ -609,7 +664,7 @@ async function send() {
         })
         scrollToBottom()
       } else if (e.type === 'toolResult') {
-        if (cross) return
+        if (cross || stopped) return
         const card = findCard(e.callId)
         if (card) {
           card.status = e.ok ? 'ok' : 'error'
@@ -618,9 +673,10 @@ async function send() {
         }
         scrollToBottom()
       } else if (e.type === 'approvalRequest') {
-        if (cross) return
+        thisTurnId = e.turnId
+        setTurnId(turnSessionId, e.turnId)
+        if (cross || stopped) return
         flushStreamToStep()
-        activeTurnId.value = e.turnId
         pushCard({
           callId: e.callId,
           name: e.name,
@@ -633,6 +689,8 @@ async function send() {
         })
         scrollToBottom()
       } else if (e.type === 'turnDone') {
+        thisTurnId = e.turnId
+        endTurn(turnSessionId)
         refreshCredits()
         if (!cross) {
           cancelStreamRender()
@@ -641,8 +699,6 @@ async function send() {
           messages.value = [...messages.value, e.message]
           streamingContent.value = ''
         }
-        sending.value = false
-        activeTurnId.value = ''
         const idx = sessions.value.findIndex((x) => x.id === e.session.id)
         if (idx >= 0) {
           sessions.value = sessions.value
@@ -652,7 +708,9 @@ async function send() {
           sessions.value.unshift(e.session)
         }
         if (!cross) scrollToBottom(true)
+        stoppedTurns.delete(thisTurnId)
       } else if (e.type === 'done') {
+        endTurn(turnSessionId)
         if (!cross) {
           cancelStreamRender()
           streamHtml.value = ''
@@ -661,7 +719,6 @@ async function send() {
           messages.value = [...messages.value.slice(0, i + 1), e.message]
           streamingContent.value = ''
         }
-        sending.value = false
         // 后端返回的会话含自动生成的标题与累计 token，直接替换本地条目
         const idx = sessions.value.findIndex((x) => x.id === e.session.id)
         if (idx >= 0) {
@@ -672,24 +729,46 @@ async function send() {
           sessions.value.unshift(e.session)
         }
         if (!cross) scrollToBottom(true)
+        stoppedTurns.delete(thisTurnId)
       } else if (e.type === 'error') {
+        const wasStopped = stopped || (!!thisTurnId && stoppedTurns.has(thisTurnId))
+        endTurn(turnSessionId)
         if (!cross) {
           cancelStreamRender()
-          streamError.value = e.message
-          // 已流出的叙述收进中间过程块保留（可展开），不随气泡一起消失
-          flushStreamToStep()
-          if (e.partial) streamingContent.value = e.partial
-          streamHtml.value = renderMd(streamingContent.value)
+          if (wasStopped) {
+            // 用户主动停止：不渲染「出错了」，把已流出的正文保留成一条本地消息
+            const partial = (e.partial || streamingContent.value).trim()
+            if (partial) {
+              messages.value = [
+                ...messages.value,
+                {
+                  id: -Date.now(),
+                  session_id: turnSessionId,
+                  turn_id: thisTurnId || null,
+                  role: 'assistant',
+                  content: partial,
+                  created_at: new Date().toISOString(),
+                },
+              ]
+            }
+            streamingContent.value = ''
+            streamHtml.value = ''
+          } else {
+            streamError.value = e.message
+            // 已流出的叙述收进中间过程块保留（可展开），不随气泡一起消失
+            flushStreamToStep()
+            if (e.partial) streamingContent.value = e.partial
+            streamHtml.value = renderMd(streamingContent.value)
+          }
           scrollToBottom(true)
         }
-        sending.value = false
-        activeTurnId.value = ''
+        stoppedTurns.delete(thisTurnId)
       }
     })
   } catch (err) {
+    endTurn(turnSessionId)
     cancelStreamRender()
     streamError.value = String(err)
-    sending.value = false
   }
 }
 
@@ -1137,10 +1216,13 @@ defineExpose({
           <div v-if="sending" class="msg ai">
             <div class="ava">X</div>
             <div v-if="streamingContent" class="bubble streaming md">
-              <span v-html="streamHtml"></span><span class="cursor"></span>
+              <span v-html="streamHtml"></span><span v-if="!stopping" class="cursor"></span>
             </div>
             <div v-else class="bubble streaming">
-              <span class="dots">思考中<span>.</span><span>.</span><span>.</span></span><span class="cursor"></span>
+              <template v-if="stopping">已停止</template>
+              <template v-else>
+                <span class="dots">思考中<span>.</span><span>.</span><span>.</span></span><span class="cursor"></span>
+              </template>
             </div>
           </div>
 
@@ -1219,9 +1301,13 @@ defineExpose({
             @update:model-value="(v: string) => (permMode = v as typeof permMode)"
           />
         </div>
-        <button v-if="sending && activeTurnId" class="send stop" title="中断本回合（已执行的操作不回滚）" @click="stopTurn">
+        <button v-if="sending && activeTurnId && !stopping" class="send stop" title="立即中断本回合（已执行的操作不回滚）" @click="stopTurn">
           <Square :size="12" />
           停止
+        </button>
+        <button v-else-if="stopping" class="send stop" disabled title="正在中断，马上结束">
+          <Square :size="12" />
+          已停止
         </button>
         <button v-else class="send" :disabled="sending || !input.trim() || !activeSessionId" @click="send">
           <Send :size="13" />

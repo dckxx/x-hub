@@ -37,6 +37,25 @@ impl ToolOutcome {
 pub struct ToolCtx<'a> {
     #[allow(dead_code)] // #t45 的工具实现读取；本增量只有测试假工具
     pub conn: &'a Connection,
+    /// 回合取消判定。长等待类工具（网络请求）应在等待循环里轮询它，
+    /// 让用户点「停止」后不必等请求超时。
+    cancel: Option<&'a dyn Fn() -> bool>,
+}
+
+impl<'a> ToolCtx<'a> {
+    pub fn new(conn: &'a Connection) -> Self {
+        ToolCtx { conn, cancel: None }
+    }
+
+    /// 注入回合取消判定（生产路径由 turn 循环传入）。
+    pub fn with_cancel(mut self, cancel: &'a dyn Fn() -> bool) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.cancel.is_some_and(|f| f())
+    }
 }
 
 /// 内置工具的统一契约（#t45 逐个实现并注册）

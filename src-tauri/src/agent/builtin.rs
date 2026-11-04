@@ -558,7 +558,7 @@ impl AgentTool for GetWeather {
     fn description(&self) -> &'static str { "查当前天气（需要应用内已设置城市且联网开关开启）。仅当用户问天气时调用。" }
     fn level(&self) -> Level { Level::Read }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{}}) }
-    fn execute(&self, _args: &Value, _ctx: ToolCtx) -> ToolOutcome {
+    fn execute(&self, _args: &Value, ctx: ToolCtx) -> ToolOutcome {
         let config = crate::config::load();
         if !config.online_enabled {
             // 失败语义（§5）：返回说明而非错误，避免模型反复重试
@@ -568,7 +568,8 @@ impl AgentTool for GetWeather {
             return ToolOutcome::ok("未配置城市", "应用还没有设置天气城市，无法查天气。请用户在设置里配置城市。");
         }
         // 天气是异步网络请求，而工具执行是同步的：起独立线程 + 自建运行时，
-        // 阻塞等待结果（低频调用，短暂阻塞可接受，且不会 panic 在 tokio 上下文里）
+        // 轮询等待结果（低频调用）。等待期间轮询取消旗标：用户点停止后立刻返回，
+        // 不再干等 10 秒网络超时。
         let (tx, rx) = std::sync::mpsc::channel();
         let (lat, lng, city) = (config.weather_lat, config.weather_lng, config.weather_city.clone());
         std::thread::spawn(move || {
@@ -578,14 +579,31 @@ impl AgentTool for GetWeather {
             };
             let _ = tx.send(res);
         });
-        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
-            Ok(Ok(w)) => ToolOutcome::ok(
-                format!("{} {:.0}°C", w.city, w.temperature),
-                format!("{}：气温 {:.1}°C（体感 {:.1}°C），湿度 {:.0}%，风速 {:.1} km/h（WMO 代码 {}）",
-                    w.city, w.temperature, w.apparent_temperature, w.relative_humidity, w.wind_speed, w.weather_code),
-            ),
-            Ok(Err(e)) => ToolOutcome::err(format!("天气获取失败：{e}"), "天气服务暂时不可用，可稍后重试。"),
-            Err(_) => ToolOutcome::err("天气获取超时", "天气服务 10 秒内没有响应，可稍后重试。"),
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(Ok(w)) => {
+                    return ToolOutcome::ok(
+                        format!("{} {:.0}°C", w.city, w.temperature),
+                        format!("{}：气温 {:.1}°C（体感 {:.1}°C），湿度 {:.0}%，风速 {:.1} km/h（WMO 代码 {}）",
+                            w.city, w.temperature, w.apparent_temperature, w.relative_humidity, w.wind_speed, w.weather_code),
+                    )
+                }
+                Ok(Err(e)) => {
+                    return ToolOutcome::err(format!("天气获取失败：{e}"), "天气服务暂时不可用，可稍后重试。")
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if ctx.cancelled() {
+                        return ToolOutcome::err("天气查询已中断", "用户已停止本回合，天气查询未完成。");
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return ToolOutcome::err("天气获取超时", "天气服务 10 秒内没有响应，可稍后重试。");
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return ToolOutcome::err("天气获取失败", "网络请求线程意外结束，可稍后重试。")
+                }
+            }
         }
     }
 }
@@ -1316,14 +1334,14 @@ impl AgentTool for ExtensionToolCall {
             None => (Level::Read, self.name().to_string()),
         }
     }
-    fn execute(&self, args: &Value, _ctx: ToolCtx) -> ToolOutcome {
-        let Some(ext) = arg_str(args, "ext") else { return ToolOutcome::err("缺少 ext 参数（扩展 id，来自 extension_tool_list）", String::new()) };
-        let Some(tool) = arg_str(args, "tool") else { return ToolOutcome::err("缺少 tool 参数（工具名，来自 extension_tool_list）", String::new()) };
+    fn execute(&self, args: &Value, ctx: ToolCtx) -> ToolOutcome {
+        let Some(ext) = arg_str(args, "ext") else { return ToolOutcome::err("缺少 ext 参数（扩展 id，见 extension_tool_list）", String::new()) };
+        let Some(tool) = arg_str(args, "tool") else { return ToolOutcome::err("缺少 tool 参数（工具名，见 extension_tool_list）", String::new()) };
         let tool_args = args.get("args").cloned().unwrap_or_else(|| json!({}));
         if !tool_args.is_object() {
-            return ToolOutcome::err("args 必须是对象（按目标工具声明的参数传）", String::new());
+            return ToolOutcome::err("args 必须是对象（按目标工具的参数定义传）", String::new());
         }
-        match super::ext_tools::call(ext, tool, &tool_args) {
+        match super::ext_tools::call(ext, tool, &tool_args, &|| ctx.cancelled()) {
             Ok(v) => {
                 let detail = serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string());
                 ToolOutcome::ok(format!("{} 已返回", tool), cap_chars(&detail, MAX_TEXT))
@@ -1440,25 +1458,25 @@ mod tests {
         // interval_minutes 上界：i64::MAX 会溢出
         let out = CreateCountdown.execute(
             &json!({"name":"x","mode":"interval","interval_minutes": i64::MAX}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(!out.ok, "超界 interval_minutes 不应创建成功");
         // duration_minutes 同款
         let out = CreateCountdown.execute(
             &json!({"name":"x","duration_minutes": i64::MAX}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(!out.ok);
         // 合法区间内的仍然成功
         let ok = CreateCountdown.execute(
             &json!({"name":"x","mode":"interval","interval_minutes": 30}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(ok.ok, "{}", ok.summary);
         // 时间戳超出 2000~2100 区间按不可识别拒绝
         let out = CreateCountdown.execute(
             &json!({"name":"y","end_time": i64::MAX}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(!out.ok);
     }
@@ -1470,36 +1488,36 @@ mod tests {
         let conn = crate::db::init_in_memory().unwrap();
         let out = CreateTodo.execute(
             &json!({"title":"测试","repeat":"yearlies"}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(!out.ok, "非法 repeat 模式不应落库");
         // 裸字符串只认无需附加字段的模式
         let ok = CreateTodo.execute(
             &json!({"title":"测试","repeat":"daily"}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(ok.ok, "{}", ok.summary);
         // 对象形式：weekly 带 weekdays、monthly 带 month_day
         let ok = CreateTodo.execute(
             &json!({"title":"测试","repeat":{"mode":"weekly","weekdays":[1,3]}}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(ok.ok, "{}", ok.summary);
         let ok = CreateTodo.execute(
             &json!({"title":"测试","repeat":{"mode":"monthly","month_day":15}}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(ok.ok, "{}", ok.summary);
         // weekly 缺 weekdays：validate 拒绝并给模型明确原因
         let out = CreateTodo.execute(
             &json!({"title":"测试","repeat":"weekly"}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(!out.ok);
         // 越界 weekdays 拒绝
         let out = CreateTodo.execute(
             &json!({"title":"测试","repeat":{"mode":"weekly","weekdays":[9]}}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(!out.ok);
     }
@@ -1511,17 +1529,17 @@ mod tests {
         let conn = crate::db::init_in_memory().unwrap();
         let bad = CreateResource.execute(
             &json!({"name":"x","target":"file:///C:/Windows/notepad.exe","kind":"web"}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(!bad.ok, "web 资源非 http(s) 协议应被拒绝");
         let bad = CreateResource.execute(
             &json!({"name":"x","target":"https://example.com/app","kind":"app"}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(!bad.ok, "app 资源的 target 不能是网址");
         let ok = CreateResource.execute(
             &json!({"name":"x","target":"https://example.com","kind":"web"}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(ok.ok, "{}", ok.summary);
     }
@@ -1534,7 +1552,7 @@ mod tests {
         let n = repo::note::create(&conn, "原标题").unwrap();
         let out = UpdateNote.execute(
             &json!({"note_id": n.id, "title":"改一半的标题","folder":"不存在的文件夹"}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(!out.ok, "文件夹匹配失败应报错");
         let after = repo::note::get(&conn, n.id).unwrap();
@@ -1546,10 +1564,10 @@ mod tests {
     fn get_snippet_returns_content_and_errors_on_missing() {
         let conn = crate::db::init_in_memory().unwrap();
         let s = repo::snippet::create(&conn, "写作润色", "请把下面的文字改写得更简洁：").unwrap();
-        let out = GetSnippet.execute(&json!({ "snippet_id": s.id }), ToolCtx { conn: &conn });
+        let out = GetSnippet.execute(&json!({ "snippet_id": s.id }), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         assert!(out.detail.contains("请把下面的文字改写得更简洁"), "正文要完整返回：{}", out.detail);
-        let miss = GetSnippet.execute(&json!({ "snippet_id": 99999 }), ToolCtx { conn: &conn });
+        let miss = GetSnippet.execute(&json!({ "snippet_id": 99999 }), ToolCtx::new(&conn));
         assert!(!miss.ok);
     }
 
@@ -1557,14 +1575,14 @@ mod tests {
     #[test]
     fn get_setting_whitelists_keys() {
         let conn = crate::db::init_in_memory().unwrap();
-        let ok = GetSetting.execute(&json!({"key":"online_enabled"}), ToolCtx { conn: &conn });
+        let ok = GetSetting.execute(&json!({"key":"online_enabled"}), ToolCtx::new(&conn));
         assert!(ok.ok);
-        let denied = GetSetting.execute(&json!({"key":"chat_models"}), ToolCtx { conn: &conn });
+        let denied = GetSetting.execute(&json!({"key":"chat_models"}), ToolCtx::new(&conn));
         assert!(!denied.ok, "chat_models 不在白名单，不应可读");
-        let denied = GetSetting.execute(&json!({"key":"server_url"}), ToolCtx { conn: &conn });
+        let denied = GetSetting.execute(&json!({"key":"server_url"}), ToolCtx::new(&conn));
         assert!(!denied.ok);
         // 无 key 列出的可用项里也不含敏感键
-        let list = GetSetting.execute(&json!({}), ToolCtx { conn: &conn });
+        let list = GetSetting.execute(&json!({}), ToolCtx::new(&conn));
         assert!(list.ok);
         assert!(!list.detail.contains("chat_models"));
     }
@@ -1573,20 +1591,20 @@ mod tests {
     #[test]
     fn create_subcategory_then_resource() {
         let conn = crate::db::init_in_memory().unwrap();
-        let out = CreateSubcategory.execute(&json!({"kind":"app","name":"开发工具"}), ToolCtx { conn: &conn });
+        let out = CreateSubcategory.execute(&json!({"kind":"app","name":"开发工具"}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         // 幂等：同名再建直接返回已存在
-        let again = CreateSubcategory.execute(&json!({"kind":"app","name":"开发工具"}), ToolCtx { conn: &conn });
+        let again = CreateSubcategory.execute(&json!({"kind":"app","name":"开发工具"}), ToolCtx::new(&conn));
         assert!(again.ok);
         assert!(again.detail.contains("已存在"));
         // 资源能落进新小类
         let res = CreateResource.execute(
             &json!({"name":"VSCode","target":"C:\\code\\Code.exe","kind":"app","category":"开发工具"}),
-            ToolCtx { conn: &conn },
+            ToolCtx::new(&conn),
         );
         assert!(res.ok, "{}", res.summary);
         // 不同 kind 同名不算已存在（app/web/file 小类各自独立）
-        let web = CreateSubcategory.execute(&json!({"kind":"web","name":"开发工具"}), ToolCtx { conn: &conn });
+        let web = CreateSubcategory.execute(&json!({"kind":"web","name":"开发工具"}), ToolCtx::new(&conn));
         assert!(web.ok);
         assert!(!web.detail.contains("已存在"));
     }
@@ -1599,7 +1617,7 @@ mod tests {
         repo::todo::toggle(&conn, done.id).unwrap();
         let pin = repo::todo::create(&conn, "置顶待办", None, None).unwrap();
         repo::todo::set_pinned(&conn, pin.id, true).unwrap();
-        let out = ListTodos.execute(&json!({}), ToolCtx { conn: &conn });
+        let out = ListTodos.execute(&json!({}), ToolCtx::new(&conn));
         assert!(out.ok);
         assert!(out.detail.contains("【置顶】"));
         assert!(out.detail.contains("置顶待办"));
@@ -1612,7 +1630,7 @@ mod tests {
     fn create_todo_with_time_and_repeat() {
         let conn = crate::db::init_in_memory().unwrap();
         let due = Local::now().timestamp_millis() + 3_600_000;
-        let out = CreateTodo.execute(&json!({"title":"写周报","due_at":due,"repeat":"daily","priority":2}), ToolCtx { conn: &conn });
+        let out = CreateTodo.execute(&json!({"title":"写周报","due_at":due,"repeat":"daily","priority":2}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         let todos = repo::todo::list(&conn).unwrap();
         let t = todos.iter().find(|t| t.title == "写周报").unwrap();
@@ -1626,12 +1644,12 @@ mod tests {
         let conn = crate::db::init_in_memory().unwrap();
         repo::note_folder::create(&conn, "工作", None).unwrap();
         repo::note_folder::create(&conn, "生活", None).unwrap();
-        let out = CreateNote.execute(&json!({"title":"t","content":"c","folder":"工作笔记"}), ToolCtx { conn: &conn });
+        let out = CreateNote.execute(&json!({"title":"t","content":"c","folder":"工作笔记"}), ToolCtx::new(&conn));
         assert!(!out.ok);
         assert!(out.detail.contains("候选"), "{}", out.detail);
         assert!(out.detail.contains("工作") && out.detail.contains("生活"));
         // 精确匹配则成功
-        let ok = CreateNote.execute(&json!({"title":"t2","content":"c","folder":"工作"}), ToolCtx { conn: &conn });
+        let ok = CreateNote.execute(&json!({"title":"t2","content":"c","folder":"工作"}), ToolCtx::new(&conn));
         assert!(ok.ok);
         assert_eq!(repo::note::list_meta(&conn).unwrap().len(), 1);
     }
@@ -1640,11 +1658,11 @@ mod tests {
     fn create_note_tags_exact_match_only() {
         let conn = crate::db::init_in_memory().unwrap();
         repo::tag::create(&conn, "重要").unwrap();
-        let bad = CreateNote.execute(&json!({"title":"t","content":"c","tags":["重要啊"]}), ToolCtx { conn: &conn });
+        let bad = CreateNote.execute(&json!({"title":"t","content":"c","tags":["重要啊"]}), ToolCtx::new(&conn));
         assert!(!bad.ok);
         assert!(bad.summary.contains("「重要啊」未找到"));
         assert!(bad.detail.contains("未找到标签「重要啊」"));
-        let good = CreateNote.execute(&json!({"title":"t","content":"c","tags":["重要"]}), ToolCtx { conn: &conn });
+        let good = CreateNote.execute(&json!({"title":"t","content":"c","tags":["重要"]}), ToolCtx::new(&conn));
         assert!(good.ok, "{}", good.summary);
         let note = &repo::note::list_meta(&conn).unwrap()[0];
         assert_eq!(repo::tag::tags_of_note(&conn, note.id).unwrap().len(), 1);
@@ -1654,7 +1672,7 @@ mod tests {
     fn update_todo_done_and_pin() {
         let conn = crate::db::init_in_memory().unwrap();
         let t = repo::todo::create(&conn, "测试", None, None).unwrap();
-        let out = UpdateTodo.execute(&json!({"todo_id":t.id,"done":true,"pinned":true}), ToolCtx { conn: &conn });
+        let out = UpdateTodo.execute(&json!({"todo_id":t.id,"done":true,"pinned":true}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         let t = repo::todo::get(&conn, t.id).unwrap();
         assert!(t.done && t.pinned);
@@ -1664,10 +1682,10 @@ mod tests {
     fn append_and_update_note() {
         let conn = crate::db::init_in_memory().unwrap();
         let n = repo::note::create(&conn, "日记").unwrap();
-        AppendToNote.execute(&json!({"note_id":n.id,"content":"第一段"}), ToolCtx { conn: &conn });
+        AppendToNote.execute(&json!({"note_id":n.id,"content":"第一段"}), ToolCtx::new(&conn));
         let n2 = repo::note::get(&conn, n.id).unwrap();
         assert!(n2.content.contains("第一段"));
-        UpdateNote.execute(&json!({"note_id":n.id,"title":"日记改"}), ToolCtx { conn: &conn });
+        UpdateNote.execute(&json!({"note_id":n.id,"title":"日记改"}), ToolCtx::new(&conn));
         assert_eq!(repo::note::get(&conn, n.id).unwrap().title, "日记改");
     }
 
@@ -1675,7 +1693,7 @@ mod tests {
     fn delete_note_is_soft() {
         let conn = crate::db::init_in_memory().unwrap();
         let n = repo::note::create(&conn, "要删的").unwrap();
-        let out = DeleteNote.execute(&json!({"note_id":n.id}), ToolCtx { conn: &conn });
+        let out = DeleteNote.execute(&json!({"note_id":n.id}), ToolCtx::new(&conn));
         assert!(out.ok);
         assert!(out.detail.contains("回收站"));
         assert!(repo::note::get(&conn, n.id).unwrap().deleted_at.is_some());
@@ -1684,9 +1702,9 @@ mod tests {
     #[test]
     fn sticky_write_and_read() {
         let conn = crate::db::init_in_memory().unwrap();
-        let out = WriteSticky.execute(&json!({"slot":1,"content":"购物清单"}), ToolCtx { conn: &conn });
+        let out = WriteSticky.execute(&json!({"slot":1,"content":"购物清单"}), ToolCtx::new(&conn));
         assert!(out.ok);
-        let read = GetStickies.execute(&json!({}), ToolCtx { conn: &conn });
+        let read = GetStickies.execute(&json!({}), ToolCtx::new(&conn));
         assert!(read.detail.contains("购物清单"));
         assert!(read.detail.contains("（空）"));
     }
@@ -1694,10 +1712,10 @@ mod tests {
     #[test]
     fn snippet_lifecycle() {
         let conn = crate::db::init_in_memory().unwrap();
-        AddSnippet.execute(&json!({"title":"周报模板","content":"本周..."}), ToolCtx { conn: &conn });
-        UpdateSnippet.execute(&json!({"snippet_id":1,"pinned":true}), ToolCtx { conn: &conn });
+        AddSnippet.execute(&json!({"title":"周报模板","content":"本周..."}), ToolCtx::new(&conn));
+        UpdateSnippet.execute(&json!({"snippet_id":1,"pinned":true}), ToolCtx::new(&conn));
         assert!(repo::snippet::get(&conn, 1).unwrap().is_pinned);
-        let del = DeleteSnippet.execute(&json!({"snippet_id":1}), ToolCtx { conn: &conn });
+        let del = DeleteSnippet.execute(&json!({"snippet_id":1}), ToolCtx::new(&conn));
         assert!(del.ok);
         assert!(repo::snippet::get(&conn, 1).is_err());
     }
@@ -1705,16 +1723,16 @@ mod tests {
     #[test]
     fn countdown_create_once_and_interval() {
         let conn = crate::db::init_in_memory().unwrap();
-        let out = CreateCountdown.execute(&json!({"name":"泡面","duration_minutes":3}), ToolCtx { conn: &conn });
+        let out = CreateCountdown.execute(&json!({"name":"泡面","duration_minutes":3}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
-        let out2 = CreateCountdown.execute(&json!({"name":"喝水","mode":"interval","interval_minutes":45}), ToolCtx { conn: &conn });
+        let out2 = CreateCountdown.execute(&json!({"name":"喝水","mode":"interval","interval_minutes":45}), ToolCtx::new(&conn));
         assert!(out2.ok, "{}", out2.summary);
         let list = repo::countdown::list(&conn).unwrap();
         assert_eq!(list.len(), 2);
         assert_eq!(list[1].repeat_mode, "interval");
         assert_eq!(list[1].interval_minutes, Some(45));
         // 参数不齐 → 明确报错
-        let bad = CreateCountdown.execute(&json!({"name":"x"}), ToolCtx { conn: &conn });
+        let bad = CreateCountdown.execute(&json!({"name":"x"}), ToolCtx::new(&conn));
         assert!(!bad.ok);
     }
 
@@ -1722,7 +1740,7 @@ mod tests {
     fn clipboard_write_goes_to_history() {
         let conn = crate::db::init_in_memory().unwrap();
         // 系统剪贴板写不入（测试环境无 GUI 会话也不炸）：set_clipboard 失败则工具报 err
-        let out = SetClipboard.execute(&json!({"text":"hello"}), ToolCtx { conn: &conn });
+        let out = SetClipboard.execute(&json!({"text":"hello"}), ToolCtx::new(&conn));
         let _ = out; // 结果依赖环境，仅验证不 panic
     }
 
@@ -1731,7 +1749,7 @@ mod tests {
         let conn = crate::db::init_in_memory().unwrap();
         repo::todo::create(&conn, "买 xyz", None, None).unwrap();
         repo::note::create(&conn, "xyz 计划").unwrap();
-        let out = GlobalSearch.execute(&json!({"keyword":"xyz"}), ToolCtx { conn: &conn });
+        let out = GlobalSearch.execute(&json!({"keyword":"xyz"}), ToolCtx::new(&conn));
         assert!(out.ok);
         assert!(out.detail.contains("待办"));
         assert!(out.detail.contains("笔记"));
@@ -1740,10 +1758,10 @@ mod tests {
     #[test]
     fn get_setting_roundtrip() {
         let conn = crate::db::init_in_memory().unwrap();
-        let out = GetSetting.execute(&json!({"key":"online_enabled"}), ToolCtx { conn: &conn });
+        let out = GetSetting.execute(&json!({"key":"online_enabled"}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         assert!(out.detail.contains("online_enabled"));
-        let bad = GetSetting.execute(&json!({"key":"no_such_key"}), ToolCtx { conn: &conn });
+        let bad = GetSetting.execute(&json!({"key":"no_such_key"}), ToolCtx::new(&conn));
         assert!(!bad.ok);
         assert!(bad.detail.contains("可用的设置项"));
     }
@@ -1752,17 +1770,17 @@ mod tests {
     fn resource_create_with_subcategory_match() {
         let conn = crate::db::init_in_memory().unwrap();
         repo::subcategory::create(&conn, "app", "开发工具").unwrap();
-        let bad = CreateResource.execute(&json!({"name":"VSCode","target":"C:\\code.exe","kind":"app","category":"开发"}), ToolCtx { conn: &conn });
+        let bad = CreateResource.execute(&json!({"name":"VSCode","target":"C:\\code.exe","kind":"app","category":"开发"}), ToolCtx::new(&conn));
         assert!(!bad.ok);
         assert!(bad.detail.contains("开发工具"));
-        let ok = CreateResource.execute(&json!({"name":"VSCode","target":"C:\\code.exe","kind":"app","category":"开发工具"}), ToolCtx { conn: &conn });
+        let ok = CreateResource.execute(&json!({"name":"VSCode","target":"C:\\code.exe","kind":"app","category":"开发工具"}), ToolCtx::new(&conn));
         assert!(ok.ok, "{}", ok.summary);
     }
 
     #[test]
     fn launch_missing_resource_errors() {
         let conn = crate::db::init_in_memory().unwrap();
-        let out = LaunchResource.execute(&json!({"resource_id":999}), ToolCtx { conn: &conn });
+        let out = LaunchResource.execute(&json!({"resource_id":999}), ToolCtx::new(&conn));
         assert!(!out.ok);
         assert!(out.summary.contains("不存在"));
     }
@@ -1775,30 +1793,30 @@ mod tests {
         let conn = crate::db::init_in_memory().unwrap();
         let n = repo::note::create(&conn, "20261023").unwrap();
         assert_ne!(n.id, 20261023, "前提：库里 id 查不到 20261023，走兜底");
-        let out = GetNote.execute(&json!({"note_id": 20261023}), ToolCtx { conn: &conn });
+        let out = GetNote.execute(&json!({"note_id": 20261023}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         assert!(out.detail.contains("20261023"));
         // 浮点形式的整数 id（偶发供应商把整数序列化成 20261023.0）：按整数值解析，兜底照常命中
-        let out = GetNote.execute(&json!({"note_id": 20261023.0}), ToolCtx { conn: &conn });
+        let out = GetNote.execute(&json!({"note_id": 20261023.0}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         // 直接锁归一化本身：f64 形态整数解析出 i64，且原文不带「.0」（名称兜底键要干净）
         let (raw, id) = arg_id(&json!({"x": 20261023.0}), "x");
         assert_eq!((raw.as_str(), id), ("20261023", Some(20261023)));
         // 追加/更新也按兜底命中，且改的是兜底解析出的真实 id
         // （更新只换正文不改标题，保住「标题=20261023」这个删除兜底的前提）
-        let out = AppendToNote.execute(&json!({"note_id": 20261023, "content": "补充"}), ToolCtx { conn: &conn });
+        let out = AppendToNote.execute(&json!({"note_id": 20261023, "content": "补充"}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
-        let out = UpdateNote.execute(&json!({"note_id": 20261023, "content": "全新正文"}), ToolCtx { conn: &conn });
+        let out = UpdateNote.execute(&json!({"note_id": 20261023, "content": "全新正文"}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         let after = repo::note::get(&conn, n.id).unwrap();
         assert_eq!(after.title, "20261023");
         assert_eq!(after.content, "全新正文");
         // 删除兜底
-        let out = DeleteNote.execute(&json!({"note_id": 20261023}), ToolCtx { conn: &conn });
+        let out = DeleteNote.execute(&json!({"note_id": 20261023}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         assert!(repo::note::get(&conn, n.id).unwrap().deleted_at.is_some());
         // 真不存在的数字：仍明确报错，并提示先搜索
-        let miss = GetNote.execute(&json!({"note_id": 99999}), ToolCtx { conn: &conn });
+        let miss = GetNote.execute(&json!({"note_id": 99999}), ToolCtx::new(&conn));
         assert!(!miss.ok);
         assert!(miss.detail.contains("搜索"), "{}", miss.detail);
     }
@@ -1809,33 +1827,33 @@ mod tests {
         let conn = crate::db::init_in_memory().unwrap();
         // 待办「2026」：更新/删除兜底
         let t = repo::todo::create(&conn, "2026", None, None).unwrap();
-        let out = UpdateTodo.execute(&json!({"todo_id": 2026, "done": true}), ToolCtx { conn: &conn });
+        let out = UpdateTodo.execute(&json!({"todo_id": 2026, "done": true}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         assert!(repo::todo::get(&conn, t.id).unwrap().done);
-        let out = DeleteTodo.execute(&json!({"todo_id": 2026}), ToolCtx { conn: &conn });
+        let out = DeleteTodo.execute(&json!({"todo_id": 2026}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         // 提示词「404」：读/改兜底
         let s = repo::snippet::create(&conn, "404", "页面不存在").unwrap();
-        let out = GetSnippet.execute(&json!({"snippet_id": 404}), ToolCtx { conn: &conn });
+        let out = GetSnippet.execute(&json!({"snippet_id": 404}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         assert!(out.detail.contains("页面不存在"));
-        let out = UpdateSnippet.execute(&json!({"snippet_id": 404, "pinned": true}), ToolCtx { conn: &conn });
+        let out = UpdateSnippet.execute(&json!({"snippet_id": 404, "pinned": true}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         assert!(repo::snippet::get(&conn, s.id).unwrap().is_pinned);
         // 速达资源「8888」：删除兜底（launch 会真拉程序，不在此测）
         let r = repo::resource::create(&conn, ResourceKind::Web, "8888", "https://example.com", None, None, None, None, None, None, None).unwrap();
-        let out = DeleteResource.execute(&json!({"resource_id": 8888}), ToolCtx { conn: &conn });
+        let out = DeleteResource.execute(&json!({"resource_id": 8888}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         assert!(repo::resource::get(&conn, r.id).is_err());
         // 倒计时「60」：暂停兜底（end_at 取未来时刻，pause 语义才完整）
         let end = repo::countdown::now_ms() + 60_000;
         repo::countdown::create(&conn, "60", "once", end, 60_000, None).unwrap();
-        let out = ToggleCountdown.execute(&json!({"countdown_id": 60, "action": "pause"}), ToolCtx { conn: &conn });
+        let out = ToggleCountdown.execute(&json!({"countdown_id": 60, "action": "pause"}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         assert!(repo::countdown::get(&conn, 1).unwrap().paused);
         // 前导零标题：字符串参数按原文匹配，不被 parse 丢零
         let z = repo::note::create(&conn, "007").unwrap();
-        let out = GetNote.execute(&json!({"note_id": "007"}), ToolCtx { conn: &conn });
+        let out = GetNote.execute(&json!({"note_id": "007"}), ToolCtx::new(&conn));
         assert!(out.ok, "{}", out.summary);
         assert!(out.detail.contains("007"));
         assert_eq!(z.id, 1, "id=1 的笔记标题是 007，兜底命中的就是它");
@@ -1847,7 +1865,7 @@ mod tests {
         let conn = crate::db::init_in_memory().unwrap();
         repo::note::create(&conn, "123").unwrap();
         repo::note::create(&conn, "123").unwrap();
-        let out = GetNote.execute(&json!({"note_id": 123}), ToolCtx { conn: &conn });
+        let out = GetNote.execute(&json!({"note_id": 123}), ToolCtx::new(&conn));
         assert!(!out.ok);
         assert!(out.detail.contains("同名") && out.detail.contains("确认"), "{}", out.detail);
     }

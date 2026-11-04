@@ -96,6 +96,11 @@ function commitRename() {
 
 <style scoped>
 .cv-side {
+  /* 固定宽度（原 ChatView 的 260px 口径）：view 态的 .chat-dock 是 flex 容器，
+     不定宽时 flex-basis auto 会跟着最长会话标题撑宽、挤压右侧面板；
+     标题超出由 .cv-item-title 省略，悬停经原生 title 看全文（口径同速记文件夹树） */
+  flex: none;
+  width: 260px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -162,12 +167,19 @@ function commitRename() {
 }
 .cv-item-ops {
   flex: none;
-  display: none;
+  /* 常驻占位 + 透明隐藏：此前 display:none ↔ inline-flex 翻转让行高（按钮 22px >
+     标题行盒 ~19.5px）与标题截断点随 hover 变化，列表项悬停跳动；
+     visibility:hidden 不参与命中测试，悬停不会误触不可见按钮 */
+  visibility: hidden;
+  display: inline-flex;
   gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s;
 }
 .cv-item:hover .cv-item-ops,
 .cv-item.on:hover .cv-item-ops {
-  display: inline-flex;
+  visibility: visible;
+  opacity: 1;
 }
 .cv-op {
   width: 22px;

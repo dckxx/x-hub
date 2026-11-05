@@ -120,12 +120,20 @@ async function syncNow() {
     const r = await tauriApi.syncNow();
     lastSyncAt.value = Date.now();
     localStorage.setItem(LAST_SYNC_KEY, String(lastSyncAt.value));
+    const rejected = r.rejected ?? 0;
     // failed = 拉取时解不开/应用不了的记录数 + 推送被服务端拒绝的条目数。
     // 只报「已是最新」会让静默失败看起来一切正常（比如密钥轮换后永远解不开），必须说出来
     if (r.failed > 0) {
       showToast(
         `同步完成但有 ${r.failed} 条未处理（收到 ${r.applied} 条，推送 ${r.pushed} 条）` +
           '——可能口令与云端数据不匹配，或记录冲突，稍后重试仍失败请联系支持',
+      )
+    } else if (rejected > 0) {
+      // 服务端按条拒收（多半是单条数据超过上限）：其余条目照常同步成功，
+      // 但要让用户知道有几条没上去，而不是看着「同步完成」以为全都好了
+      showToast(
+        `已同步，但有 ${rejected} 条被服务端拒收（多为单条内容过大）` +
+          `——收到 ${r.applied} 条，推送 ${r.pushed} 条`,
       )
     } else {
       showToast(

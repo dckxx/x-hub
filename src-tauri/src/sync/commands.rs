@@ -25,6 +25,17 @@ fn err_str(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// 自动同步节流的 meta 键 / 窗口：聚焦抖动、页面来回切都会触发，别每次都打服务端
+const META_AUTO_SYNC_AT: &str = "auto_sync_at";
+const AUTO_SYNC_MIN_INTERVAL_MS: i64 = 20_000;
+
+/// 是否已开启云同步（有空间绑定 + 钥匙 + 设备 token）。自动路径的先决条件。
+fn sync_ready(state: &State<'_, DbState>) -> bool {
+    let Ok(conn) = lock(state) else { return false };
+    let s = engine::status(&conn);
+    s.space_id.is_some() && s.device_id.is_some() && s.key_ready
+}
+
 /// 设备/会话失效（api 层把 401/403 归一成 `AUTH_REVOKED:`）→ 清本地设备绑定并回到
 /// 「未配对」，让同步面板重新出现「设置口令」入口（否则本机永远 401、界面还显示已开启）。
 /// 只清 device 绑定，保留 space_id 与 record_key：重新开启走 rotate 路径即可，不必重建空间。
@@ -177,9 +188,31 @@ pub async fn sync_begin_pairing() -> Result<String, String> {
 }
 
 /// 轮询配对状态（配对弹窗打开期间 2s 一次）
+///
+/// completed 时顺手触发一轮同步：手机此刻已经能解密了，桌面必须先把数据推上去，
+/// 否则用户在手机上点「立即同步」只会拉到空空间（本期实测的「同步不过来」）。
 #[tauri::command]
-pub async fn sync_poll_pairing(pairing_id: String) -> Result<Value, String> {
+pub async fn sync_poll_pairing(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    pairing_id: String,
+) -> Result<Value, String> {
     let r = pairing::poll(&pairing_id).await?;
+    if r.status == "completed" {
+        // 绕过 20s 节流：这一轮是「手机刚加入」的关键动作，等不得
+        let has_pending = {
+            let conn = lock(&state)?;
+            crate::sync::repo::outbox_list(&conn, 1)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false)
+        };
+        if has_pending {
+            match sync_now(app.clone(), state).await {
+                Ok(v) => log::info!("[云同步] 配对完成，首轮同步: {v}"),
+                Err(e) => log::warn!("[云同步] 配对完成后的首轮同步失败: {e}"),
+            }
+        }
+    }
     Ok(json!({ "status": r.status, "deviceName": r.device_name }))
 }
 
@@ -217,6 +250,13 @@ pub async fn sync_now(app: AppHandle, state: State<'_, DbState>) -> Result<Value
     let mut failed_total = 0usize;
     // 父行还没落库而暂时应用不了的记录：留在内存里，整轮拉完再补一次（不再多发一次 HTTP 猜窗口）
     let mut deferred_changes: Vec<serde_json::Value> = Vec::new();
+    // 当前版本的行解不开 = 钥匙不对（口令错 / 被篡改）。此时游标必须停在这一页之前，
+    // 否则这批行一批过去就再也不重试，界面上却只显示「已是最新」。
+    // 当前钥匙版本：判断「解不开」是口令不对（要停下来重试）还是历史密文（跳过即可）
+    let key_version = {
+        let conn = lock(&state)?;
+        engine::status(&conn).key_version
+    };
     for _page in 0..50 {
         let path = format!("/sync/changes?since={pull_seq}&limit=200");
         let resp = api::device_get(&path, &device_token, &device_id)
@@ -226,25 +266,38 @@ pub async fn sync_now(app: AppHandle, state: State<'_, DbState>) -> Result<Value
         if changes.is_empty() {
             break;
         }
+        let failed_current;
         {
             let conn = lock(&state)?;
-            let (stats, def) = engine::apply_remote_changes(&conn, &record_key, &changes).map_err(err_str)?;
+            let (stats, def) = engine::apply_remote_changes(&conn, &record_key, &changes, key_version).map_err(err_str)?;
             applied_total += stats.applied + stats.tombstoned;
             failed_total += stats.failed;
+            failed_current = stats.failed_current;
             for uid in def {
                 if let Some(c) = changes.iter().find(|c| c["uid"].as_str() == Some(uid.as_str())) {
                     deferred_changes.push(c.clone());
                 }
             }
         }
-        let next_seq = resp["head"].as_i64().unwrap_or(pull_seq);
-        // 游标不前进说明服务端口径与预期不符：宁可停下（下次同步从同一位置重试），
-        // 也不能拿同一个 since 死循环重放同一页
-        if next_seq <= pull_seq {
-            log::warn!("[云同步] 拉取游标未前进（since={pull_seq}, head={next_seq}），本轮停止分页");
+        // 游标用**本页最后一条的 seq**：head 是查完本页之后取的，并发写入时可能更大，
+        // 跳过去等于永久丢行；next_since 在 has_more=false 时回的是请求里的 since，游标不前进。
+        let page_last = changes
+            .iter()
+            .filter_map(|c| c["seq"].as_i64())
+            .max()
+            .unwrap_or(pull_seq);
+        if failed_current > 0 {
+            // 有当前版本的行解不开：停在本页之前，下轮重试同一页
+            log::warn!(
+                "[云同步] 本页有 {failed_current} 条当前版本记录解不开（since={pull_seq}），游标停在此页前重试"
+            );
             break;
         }
-        pull_seq = next_seq;
+        if page_last <= pull_seq {
+            log::warn!("[云同步] 拉取游标未前进（since={pull_seq}, last={page_last}），本轮停止分页");
+            break;
+        }
+        pull_seq = page_last;
         // 首次全量同步可能连续几十页，每页都是串行解密 + 落库并抢 DB 锁：
         // 主动让出一拍，别把界面（同样走 DbState 的命令）整段饿住
         tokio::task::yield_now().await;
@@ -255,7 +308,7 @@ pub async fn sync_now(app: AppHandle, state: State<'_, DbState>) -> Result<Value
     // deferred 重试：父行已在前面的页里落库，用同一批记录补一次（不额外请求）
     if !deferred_changes.is_empty() {
         let conn = lock(&state)?;
-        if let Ok((stats, _)) = engine::apply_remote_changes(&conn, &record_key, &deferred_changes) {
+        if let Ok((stats, _)) = engine::apply_remote_changes(&conn, &record_key, &deferred_changes, key_version) {
             applied_total += stats.applied + stats.tombstoned;
             failed_total += stats.failed;
         }
@@ -263,22 +316,44 @@ pub async fn sync_now(app: AppHandle, state: State<'_, DbState>) -> Result<Value
     { let conn = lock(&state)?; repo::meta_set(&conn, engine::META_PULL_SEQ, &pull_seq.to_string()).map_err(err_str)?; }
 
     // ---- push ----
+    // 分批：条数与字节双预算（见 engine::PUSH_BATCH_*）。批间必须留出服务端的
+    // 每空间 2s 频率窗口，否则第二批立刻 429、整轮同步失败——首次全量推送
+    // 必然 >100 条，这条路径天天走。
     let mut pushed = 0usize;
     let mut push_failed = 0usize;
-    for _batch in 0..20 {
+    let mut rejected_total = 0usize;
+    for _batch_round in 0..50 {
         let batch = {
             let conn = lock(&state)?;
-            engine::build_push_items(&conn, &record_key, 100)?
+            engine::build_push_items(&conn, &record_key, engine::PUSH_BATCH_ITEMS, engine::PUSH_BATCH_BYTES)?
         };
         // 无需上云的条目（从未拿到 uid 就删掉的行）直接清，别占着 outbox 让 pending 常亮
         if !batch.skipped.is_empty() {
             let conn = lock(&state)?;
             engine::clear_consumed(&conn, &batch.skipped).map_err(err_str)?;
         }
-        if batch.items.is_empty() { break; }
-        let resp = api::device_post("/sync/push", &device_token, &device_id, json!({ "items": batch.items }))
-            .await
-            .map_err(|e| auth_error(&state, e))?;
+        if batch.items.is_empty() {
+            break;
+        }
+        // 429 是节奏问题不是数据问题：退避后重试同一批（不重建批次，避免重新加密）
+        let mut resp = None;
+        for attempt in 0..3 {
+            match api::device_post("/sync/push", &device_token, &device_id, json!({ "items": batch.items })).await {
+                Ok(v) => {
+                    resp = Some(v);
+                    break;
+                }
+                Err(e) if e.contains("RATE_LIMITED") => {
+                    tokio::time::sleep(std::time::Duration::from_millis(1_500 * (attempt + 1) as u64)).await;
+                }
+                Err(e) => return Err(auth_error(&state, e)),
+            }
+        }
+        let Some(resp) = resp else {
+            // 一直是 429：本轮放弃（outbox 原样保留，下轮接着推）
+            push_failed += batch.items.len();
+            break;
+        };
         let results = resp["results"].as_array().cloned().unwrap_or_default();
         let mut consumed = Vec::new();
         let mut retry_later = false;
@@ -289,8 +364,20 @@ pub async fn sync_now(app: AppHandle, state: State<'_, DbState>) -> Result<Value
                 Some("ok") => { consumed.push(entry.clone()); pushed += 1; }
                 // equal = 服务端已是同一版本，收敛完成
                 Some("equal") => consumed.push(entry.clone()),
-                // stale / rejected / duplicate：**不能清 outbox**。清了就再也推不上去，
-                // 本地改动等于静默丢失；保留下来等下一轮拉取把服务端版本合并进来再推
+                // rejected = 服务端判定这条数据本身不可接受（非法 uid / 单条超上限等）。
+                // 重试永远不会成功，**必须丢弃**：留着它当队列头会让后面所有条目
+                // 永久推不上去（2026-11 实测：一条 476KB 笔记堵死整台设备）。
+                // 只有 stale 才值得重试——那是本端旧了，重拉后自然收敛。
+                Some("rejected") => {
+                    rejected_total += 1;
+                    consumed.push(entry.clone());
+                    log::warn!(
+                        "[云同步] 服务端拒收，已跳过: entity={} uid={} reason={}",
+                        entry.entity,
+                        entry.uid.as_deref().unwrap_or(""),
+                        r["error"].as_str().unwrap_or("unknown")
+                    );
+                }
                 _ => { retry_later = true; push_failed += 1; }
             }
         }
@@ -299,6 +386,8 @@ pub async fn sync_now(app: AppHandle, state: State<'_, DbState>) -> Result<Value
             engine::clear_consumed(&conn, &consumed).map_err(err_str)?;
         }
         if retry_later || results.len() < batch.consumed.len() { break; }
+        // 还有下一批：等过服务端 2s 的推送频率窗口（首次全量推送可能连续几十批）
+        tokio::time::sleep(std::time::Duration::from_millis(engine::PUSH_MIN_INTERVAL_MS)).await;
     }
 
     // ---- 收敛：push 中出现 stale/equal 后窄拉一轮 ----
@@ -307,7 +396,14 @@ pub async fn sync_now(app: AppHandle, state: State<'_, DbState>) -> Result<Value
     if applied_total > 0 {
         let _ = app.emit("sync-applied", json!({ "applied": applied_total }));
     }
-    Ok(json!({ "applied": applied_total, "pushed": pushed, "failed": failed_total + push_failed }))
+    Ok(json!({
+        "applied": applied_total,
+        "pushed": pushed,
+        "failed": failed_total + push_failed,
+        // 被服务端按条拒收（数据本身不可接受，已跳过）：界面要明确告知，
+        // 否则用户只会看到「同步完成」而某些条目悄悄没上云
+        "rejected": rejected_total,
+    }))
 }
 
 /// 设备列表（数据端点）
@@ -343,6 +439,40 @@ pub async fn sync_disable(state: State<'_, DbState>) -> Result<Value, String> {
         let _ = repo::meta_del(&conn, engine::META_PULL_SEQ);
     }
     Ok(json!({ "ok": true }))
+}
+
+/// 自动同步（窗口聚焦 / 定时器 / 配对完成 / 本地改动后调用）。
+///
+/// 手动「立即同步」是同步**唯一**的触发入口曾是本期最严重的可用性缺陷：配对完成后
+/// 桌面一次都没推过，手机上点「立即同步」自然只能拿到空空间（用户看起来就是
+/// 「配对成功但同步不过来」）。这个命令把协议 §6.4 的档 0 触发点补齐：
+/// 静默、节流、失败不打扰用户（outbox 与游标都持久化，下次触发接着来）。
+///
+/// 返回本轮结果；未开启同步 / 节流窗口内返回 `{skipped: true}`。
+#[tauri::command]
+pub async fn sync_auto(app: AppHandle, state: State<'_, DbState>) -> Result<Value, String> {
+    if !sync_ready(&state) {
+        return Ok(json!({ "skipped": true, "reason": "not_ready" }));
+    }
+    // 节流：同机 20s 内只跑一轮（聚焦/切页可能连续触发好几次）
+    {
+        let conn = lock(&state)?;
+        let last = repo::meta_get(&conn, META_AUTO_SYNC_AT)
+            .map_err(err_str)?
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0);
+        if engine::now_ms() - last < AUTO_SYNC_MIN_INTERVAL_MS {
+            return Ok(json!({ "skipped": true, "reason": "throttled" }));
+        }
+        repo::meta_set(&conn, META_AUTO_SYNC_AT, &engine::now_ms().to_string()).map_err(err_str)?;
+    }
+    match sync_now(app, state).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            log::warn!("[云同步] 自动同步失败: {e}");
+            Err(e)
+        }
+    }
 }
 
 fn device_creds() -> Result<(String, String), String> {

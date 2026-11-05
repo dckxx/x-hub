@@ -23,6 +23,14 @@ pub const META_DEVICE: &str = "device_id";
 pub const META_KEY_VERSION: &str = "key_version";
 pub const META_INITIAL_PUSHED: &str = "initial_pushed";
 
+/// 单批推送的条数 / 字节预算：服务端上限是 200 条、2MB（协议 §7.3），这里各留一半。
+/// **两个都必须遵守**——只限条数时，100 条大笔记仍会超 2MB 被整批 413 退回，
+/// 而退回后队列头不变，下次重试还是同一批，同步就此卡死。
+pub const PUSH_BATCH_ITEMS: usize = 100;
+pub const PUSH_BATCH_BYTES: usize = 1024 * 1024;
+/// 批间等待：服务端每空间 2s 一次的推送频率窗口（协议 §7.3），多留 200ms 抖动余量
+pub const PUSH_MIN_INTERVAL_MS: u64 = 2_200;
+
 // ---------------- 状态 ----------------
 
 #[derive(Debug, serde::Serialize)]
@@ -120,15 +128,21 @@ pub struct PushBatch {
 /// ⚠️ items 与 consumed 必须严格等长：旧实现跳过条目时只跳过 item、仍返回全量 entries，
 /// 调用方按 results 下标取 entries 会**整体错位 → 清掉本该推送的另外一行**（本地改动
 /// 从此不再上云，而被跳过的条目永久滞留在 outbox）。
+///
+/// `max_bytes` 是单批密文总字节预算（按 base64 长度估算）：服务端对批总量有硬上限，
+/// 超了一次 413 整批退回，而 100 条大笔记能轻松超过 2MB。**单条超过预算时照常带上**
+/// ——它必须被单独送一次，否则永远轮不到（也让服务端有机会按条 rejected）。
 pub fn build_push_items(
     conn: &Connection,
     record_key: &[u8; 32],
     limit: usize,
+    max_bytes: usize,
 ) -> Result<PushBatch, String> {
     // 推送前置：给还没有 uid 的行惰性发 ULID（SQLite 触发器造不出 ULID）
     repo::ensure_uids(conn).map_err(|e| e.to_string())?;
     let entries = repo::outbox_list(conn, limit as i64).map_err(|e| e.to_string())?;
     let mut batch = PushBatch::default();
+    let mut bytes = 0usize;
     for e in entries {
         let uid = match (e.op.as_str(), e.uid.as_deref()) {
             ("delete", Some(uid)) => uid.to_string(),
@@ -172,6 +186,14 @@ pub fn build_push_items(
         let mut nonce = [0u8; 24];
         getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
         let ct = seal_record(record_key, &e.entity, &uid, env_updated_at, &payload_json, &nonce)?;
+        let ct_b64 = B64.encode(ct);
+        // 字节预算：本批已非空且再加这条会超 → 停在这里，剩下的留到下一批。
+        // 批内第一条永远放行（单条超预算也必须能送出去，见函数头注释）。
+        let item_bytes = ct_b64.len() + 64;
+        if !batch.items.is_empty() && bytes + item_bytes > max_bytes {
+            break;
+        }
+        bytes += item_bytes;
         batch.items.push(json!({
             "entity": e.entity,
             "uid": uid,
@@ -179,7 +201,7 @@ pub fn build_push_items(
             "deleted_at": deleted_at,
             "key_version": key_version_of(conn),
             "nonce": B64.encode(nonce),
-            "payload_ct": B64.encode(ct),
+            "payload_ct": ct_b64,
         }));
         batch.consumed.push(e);
     }
@@ -209,6 +231,9 @@ pub struct ApplyStats {
     pub tombstoned: usize,
     pub deferred: usize,
     pub failed: usize,
+    /// 其中「当前 key_version 的行解不开」的条数。只有这类失败值得让上层停住游标：
+    /// 旧 key_version 的行是换口令后的历史密文，本来就解不开，跳过即可。
+    pub failed_current: usize,
 }
 
 /// 远端 changes 页 → 本地。deferred 的 uid 由调用方在父行落库后重试。
@@ -216,14 +241,18 @@ pub fn apply_remote_changes(
     conn: &Connection,
     record_key: &[u8; 32],
     changes: &[Value],
+    local_key_version: i64,
 ) -> Result<(ApplyStats, Vec<String>), String> {
     let mut stats = ApplyStats::default();
     let mut deferred = Vec::new();
     for change in changes {
         let entity = change["entity"].as_str().unwrap_or_default().to_string();
         let uid = change["uid"].as_str().unwrap_or_default().to_string();
+        // 缺 key_version 字段时按「当前版本」处理：保守猜测（当成历史版本会被静默丢弃，
+        // 当成当前版本最多是多重试一轮）
+        let is_cur_key = change["key_version"].as_i64().unwrap_or(local_key_version) == local_key_version;
         if entity.is_empty() || uid.is_empty() {
-            stats.failed += 1;
+            count_failed(&mut stats, is_cur_key);
             continue;
         }
         let remote_ms = change["updated_at"].as_i64().unwrap_or(0);
@@ -247,14 +276,14 @@ pub fn apply_remote_changes(
         let nonce = match change["nonce"].as_str().map(|s| B64.decode(s)) {
             Some(Ok(v)) if v.len() == 24 => v,
             _ => {
-                stats.failed += 1;
+                count_failed(&mut stats, is_cur_key);
                 continue;
             }
         };
         let ct = match change["payload_ct"].as_str().map(|s| B64.decode(s)) {
             Some(Ok(v)) => v,
             _ => {
-                stats.failed += 1;
+                count_failed(&mut stats, is_cur_key);
                 continue;
             }
         };
@@ -262,13 +291,14 @@ pub fn apply_remote_changes(
             Ok(text) => match serde_json::from_str(&text) {
                 Ok(v) => v,
                 Err(_) => {
-                    stats.failed += 1;
+                    count_failed(&mut stats, is_cur_key);
                     continue;
                 }
             },
             Err(_) => {
-                // 解密失败：口令不符或 key_version 落后。记失败让上层提示，不中断整页。
-                stats.failed += 1;
+                // 解密失败：口令不符（当前版本）或 key_version 落后（旧版本，属正常）。
+                // 只有当前版本解不开才值得让上层停游标重试。
+                count_failed(&mut stats, is_cur_key);
                 continue;
             }
         };
@@ -285,7 +315,7 @@ pub fn apply_remote_changes(
         }
         let guard = repo::apply_begin(conn);
         if guard.is_err() {
-            stats.failed += 1;
+            count_failed(&mut stats, is_cur_key);
             continue;
         }
         let outcome = if entity == "todo" {
@@ -301,14 +331,21 @@ pub fn apply_remote_changes(
                 deferred.push(uid);
                 stats.deferred += 1;
             }
-            Err(_) => stats.failed += 1,
+            Err(_) => count_failed(&mut stats, is_cur_key),
         }
     }
     Ok((stats, deferred))
 }
 
-fn local_ms_by_uid(conn: &Connection, entity: &str, uid: &str) -> Option<i64> {
-    let table = if entity == "todo" { "todos" } else { "notes" };
+/// 记一次应用失败；当前 key_version 的失败额外计入 failed_current（决定上层是否停游标）
+fn count_failed(stats: &mut ApplyStats, is_current_key: bool) {
+    stats.failed += 1;
+    if is_current_key {
+        stats.failed_current += 1;
+    }
+}
+
+fn local_ms_by_uid(conn: &Connection, entity: &str, uid: &str) -> Option<i64> {    let table = if entity == "todo" { "todos" } else { "notes" };
     let sql = format!("SELECT id FROM {table} WHERE sync_uid = ?1");
     let rowid: Option<i64> = conn.query_row(&sql, params![uid], |r| r.get(0)).ok();
     rowid.map(|id| row_sync_ms(conn, entity, id))
@@ -412,7 +449,7 @@ mod tests {
         assert_eq!(mark_all_dirty_if_first_push(&conn).unwrap(), 0, "meta 标记后不重复");
 
         let key = keys();
-        let batch = build_push_items(&conn, &key, 10).unwrap();
+        let batch = build_push_items(&conn, &key, 10, PUSH_BATCH_BYTES).unwrap();
         assert_eq!(batch.items.len(), 2);
         assert_eq!(batch.consumed.len(), 2, "items 与 consumed 必须逐条对齐");
         assert!(batch.skipped.is_empty());
@@ -454,13 +491,13 @@ mod tests {
 
         // 远端更旧 → 本地保留并重新标脏
         let older = mk("远端旧版", local_ms - 1);
-        let (stats, _) = apply_remote_changes(&conn, &key, &[older]).unwrap();
+        let (stats, _) = apply_remote_changes(&conn, &key, &[older], 1).unwrap();
         assert_eq!(stats.local_newer, 1);
         assert_eq!(repo::outbox_list(&conn, 10).unwrap().len(), 1, "本地较新必须重新标脏");
 
         // 远端更新 → 覆盖本地（guard 下，无 outbox 泄漏）
         let newer = mk("远端新版", local_ms + 5000);
-        let (stats, _) = apply_remote_changes(&conn, &key, &[newer]).unwrap();
+        let (stats, _) = apply_remote_changes(&conn, &key, &[newer], 1).unwrap();
         assert_eq!(stats.applied, 1);
         let title: String = conn.query_row("SELECT title FROM todos WHERE id = ?1", params![t.id], |r| r.get(0)).unwrap();
         assert_eq!(title, "远端新版");
@@ -469,7 +506,7 @@ mod tests {
 
         // 相等 → 收敛跳过
         let same = mk("远端新版", local_ms + 5000);
-        let (stats, _) = apply_remote_changes(&conn, &key, &[same]).unwrap();
+        let (stats, _) = apply_remote_changes(&conn, &key, &[same], 1).unwrap();
         assert_eq!(stats.applied + stats.local_newer, 0, "相等时间戳不再动作");
     }
 
@@ -481,7 +518,7 @@ mod tests {
         let t = crate::repo::todo::list(&conn).unwrap().remove(0);
         conn.execute("DELETE FROM todos WHERE id = ?1", params![t.id]).unwrap();
         let key = keys();
-        let batch = build_push_items(&conn, &key, 10).unwrap();
+        let batch = build_push_items(&conn, &key, 10, PUSH_BATCH_BYTES).unwrap();
         let items = &batch.items;
         let entries = &batch.consumed;
         assert_eq!(items.len(), 1);
@@ -532,7 +569,7 @@ mod tests {
         conn.execute("DELETE FROM todos WHERE id = ?1", params![ghost]).unwrap();
         crate::repo::todo::create(&conn, "会推", None, None).unwrap();
         let key = keys();
-        let batch = build_push_items(&conn, &key, 10).unwrap();
+        let batch = build_push_items(&conn, &key, 10, PUSH_BATCH_BYTES).unwrap();
         assert_eq!(batch.items.len(), 1, "只有一行可推");
         assert_eq!(batch.consumed.len(), 1, "consumed 与 items 等长");
         assert_eq!(batch.skipped.len(), 1, "无 uid 的删除进 skipped");
@@ -540,5 +577,28 @@ mod tests {
         assert!(batch.consumed[0].uid.is_some(), "consumed 指向真正要推的那一行");
         assert_eq!(batch.skipped[0].op, "delete");
         assert!(batch.skipped[0].uid.is_none(), "被跳过的是从未拿到 uid 的删除");
+    }
+
+    #[test]
+    fn byte_budget_splits_batch_and_oversize_row_still_goes_alone() {
+        // 单批必须同时守住条数与字节：100 条大笔记能轻松超服务端批总量 → 整批 413，
+        // 而队列头不变，下次重试还是同一批，同步就此永久卡死（2026-11 实测）。
+        let conn = db::init_in_memory().unwrap();
+        // 一条远超单批预算的大笔记（600KB 正文 → 密文 base64 约 800KB）
+        let big = "x".repeat(600 * 1024);
+        crate::repo::note::create(&conn, &big).unwrap();
+        crate::repo::todo::create(&conn, "小的", None, None).unwrap();
+        let key = keys();
+
+        // 批预算 512KB：大笔记（密文 base64 约 800KB）自己就超了，小待办不能再挤进同一批
+        let b1 = build_push_items(&conn, &key, 100, 512 * 1024).unwrap();
+        assert_eq!(b1.items.len(), 1, "大笔记独占一批，小条目留到下一批");
+        assert_eq!(b1.consumed.len(), 1, "items 与 consumed 对齐");
+        assert_eq!(b1.consumed[0].entity, "note");
+
+        // 即使预算小到装不下任何一条，也不能返回空批（否则这行永远轮不到）
+        let b2 = build_push_items(&conn, &key, 100, 1024).unwrap();
+        assert_eq!(b2.items.len(), 1, "单条超预算也必须单独送一次");
+        assert_eq!(b2.consumed[0].entity, "note");
     }
 }

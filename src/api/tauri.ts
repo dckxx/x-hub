@@ -1290,6 +1290,8 @@ export interface SyncNowResult {
   applied: number
   pushed: number
   failed: number
+  /** 服务端按条拒收、已跳过 outbox 的条目数（数据本身不可接受，重试也不会成功） */
+  rejected?: number
 }
 
 /** sync_poll_pairing：pending / completed / expired / cancelled */
@@ -2059,6 +2061,8 @@ export const tauriApi = {
   /** 轮询配对状态（弹窗打开期间 2s 一次） */
   syncPollPairing: (pairingId: string) =>
     invoke<SyncPairingPoll>('sync_poll_pairing', { pairingId }),
+  /** 自动同步（聚焦/定时/配对完成后由后端自触发；前端一般不用手动调） */
+  syncAuto: () => invoke<SyncNowResult & { skipped?: boolean; reason?: string }>('sync_auto'),
   /** 取消配对会话（关闭二维码 / 过期时） */
   syncPairingCancel: (pairingId: string) => invoke<void>('sync_pairing_cancel', { pairingId }),
   /** 一次完整同步轮（pull → push）；应用过远端数据则后端广播 sync-applied */

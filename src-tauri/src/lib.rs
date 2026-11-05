@@ -773,6 +773,44 @@ pub fn run() {
                 account::verify_session_on_startup(&account_handle).await;
             });
 
+            // 云同步自动推送与定时对账（协议 §6.4 档 0）：
+            // - 本地改动：outbox 触发器已经标脏，但没有任何东西会去推。这里每 10s 看一眼
+            //   outbox（纯本地 SQLite count，不发网络），非空才触发一轮同步。
+            //   这样命令、agent 工具、扩展桥、周期滚动等所有写路径都被覆盖，
+            //   不必在每处埋调用点。
+            // - 远端变更：每 5 分钟强制对一轮（手机上改的东西落到桌面）。
+            // 都走 sync_auto（内部 20s 节流）；未开启同步时是空操作。
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                    let mut since_forced = std::time::Instant::now();
+                    loop {
+                        let has_pending = {
+                            let state = handle.state::<DbState>();
+                            let pending = match state.0.lock() {
+                                Ok(conn) => crate::sync::repo::outbox_list(&conn, 1)
+                                    .map(|v| !v.is_empty())
+                                    .unwrap_or(false),
+                                Err(_) => false,
+                            };
+                            pending
+                        };
+                        let force = since_forced.elapsed() >= std::time::Duration::from_secs(300);
+                        if has_pending || force {
+                            if force {
+                                since_forced = std::time::Instant::now();
+                            }
+                            let state = handle.state::<DbState>();
+                            if let Err(e) = crate::sync::commands::sync_auto(handle.clone(), state).await {
+                                log::warn!("[云同步] 自动同步失败: {e}");
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    }
+                });
+            }
+
             // 平台模型清单启动对账（约定 33 自愈）：客户端快照只在「打开平台额度开关」
             // 那一刻拉过一次，服务端后台加减模型后不会自己更新。延后 8s 静默对账一次
             // （避开启动期争抢），有变化由 sync_platform_models 落盘并广播
@@ -958,6 +996,13 @@ pub fn run() {
                         // 「切回来按 ESC 没反应，得先点一下」（见 webview_focus.rs）
                         tauri::WindowEvent::Focused(true) => {
                             crate::webview_focus::focus_webview(&app_handle, "main");
+                            // 切回窗口顺手对账一次（协议 §6.4 档 0）：节流在命令内部，
+                            // 未开启云同步时是空操作
+                            let h = app_handle.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let state = h.state::<DbState>();
+                                let _ = crate::sync::commands::sync_auto(h.clone(), state).await;
+                            });
                         }
                         _ => {}
                     }
@@ -1055,6 +1100,7 @@ pub fn run() {
             sync::commands::sync_poll_pairing,
             sync::commands::sync_pairing_cancel,
             sync::commands::sync_now,
+            sync::commands::sync_auto,
             sync::commands::sync_device_list,
             sync::commands::sync_revoke_device,
             sync::commands::sync_disable,

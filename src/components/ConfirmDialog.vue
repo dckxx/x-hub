@@ -61,7 +61,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="modal-mask" @click.self="emit('cancel')">
+    <div v-if="visible" class="modal-mask" data-floating-surface @click.self="emit('cancel')">
       <div ref="cardRef" class="modal-card confirm-card" role="dialog" aria-modal="true">
         <h2 class="confirm-title">{{ title }}</h2>
         <p class="confirm-msg">{{ message }}</p>

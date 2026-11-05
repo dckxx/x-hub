@@ -14,6 +14,7 @@ import { isTauri, tauriApi } from '../api/tauri'
 import { applyTheme } from '../composables/themeCore'
 import { useShellThemeConfig } from '../composables/useShellThemeConfig'
 import { useScrollbarHover } from '../composables/useScrollbarHover'
+import { hasFloatingSurface } from '../utils/floatingSurface'
 
 const panelRef = ref<InstanceType<typeof ChatPanel> | null>(null)
 const pinned = ref(false)
@@ -47,6 +48,7 @@ onMounted(async () => {
   // 拖动收尾监听挂 window：按住标题栏移出元素后仍能收到 move/up（见下方拖动注释）
   window.addEventListener('mousemove', onWinMouseMove)
   window.addEventListener('mouseup', onWinMouseUp)
+  window.addEventListener('keydown', onWinKeydown)
   try {
     // 主题的唯一来源是 useShellThemeConfig 对 config 的 watch：refresh 更新 config
     // 即触发 applyTheme/字号/玻璃全套，不再直调 getThemeConfig（避免同一主题应用多遍）
@@ -88,6 +90,7 @@ onBeforeUnmount(() => {
   if (toastTimer) clearTimeout(toastTimer)
   window.removeEventListener('mousemove', onWinMouseMove)
   window.removeEventListener('mouseup', onWinMouseUp)
+  window.removeEventListener('keydown', onWinKeydown)
   unlistenTheme?.()
   unlistenShown?.()
   unlistenHidden?.()
@@ -133,6 +136,15 @@ async function togglePin() {
 async function onClose() {
   if (!isTauri()) return
   await tauriApi.chatWindowClose().catch(() => {})
+}
+
+// ESC = 关闭面板窗口：与会话菜单/下拉/弹窗的 ESC 让行（ChatPanel 自己先收起菜单）。
+// 浮层判定与主窗共用 utils/floatingSurface.ts 一份口径
+function onWinKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return
+  if (hasFloatingSurface()) return
+  e.preventDefault()
+  void onClose()
 }
 
 // 「模型设置」→ 唤出主窗并定位到设置 → AI 助手 → 供应商；section="account" = 账号页（积分入口用）

@@ -109,8 +109,12 @@ test('表格输出为制表符分隔的行', () => {
 })
 
 test('段内选区（纯行内片段）直接行内序列化，硬换行落成换行', () => {
-  const out = blocksToPlainText([t('前半'), { name: 'hard_break', inline: true }, t('后半')])
-  assert.equal(out, '前半\n后半')
+  // Crepe（Milkdown commonmark 预设）里节点名是 hardbreak；hard_break 是 prosemirror 基线
+  // 命名，留作兼容。两个名字都必须落成换行，取不到就是「复制出去两行粘成一串」。
+  for (const name of ['hardbreak', 'hard_break']) {
+    const out = blocksToPlainText([t('前半'), { name, inline: true }, t('后半')])
+    assert.equal(out, '前半\n后半', `${name} 应落成换行`)
+  }
 })
 
 test('空行占位（零宽空格）剥离，空段保留为空行', () => {

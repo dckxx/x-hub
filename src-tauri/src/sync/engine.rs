@@ -37,22 +37,17 @@ pub struct Status {
 }
 
 pub fn status(conn: &Connection) -> Status {
-    let space_id = repo::meta_get(conn, META_SPACE).ok().flatten();
-    let device_id = repo::meta_get(conn, META_DEVICE).ok().flatten();
+    // 空串一律当未设置：sync_disable 早期写过空串，若按 is_some() 判，关闭后仍显示「已开启」，
+    // 而 SyncPanel 只在 !paired 时才渲染口令入口 → 用户再也开不回来
+    let meta = |k: &str| repo::meta_get(conn, k).ok().flatten().filter(|v| !v.trim().is_empty());
+    let space_id = meta(META_SPACE);
+    let device_id = meta(META_DEVICE);
     let key_ready = super::crypto::load_record_key().is_some();
-    let pull_seq: i64 = repo::meta_get(conn, META_PULL_SEQ)
-        .ok()
-        .flatten()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+    let pull_seq: i64 = meta(META_PULL_SEQ).and_then(|v| v.parse().ok()).unwrap_or(0);
     let pending: i64 = conn
         .query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r.get(0))
         .unwrap_or(0);
-    let key_version: i64 = repo::meta_get(conn, META_KEY_VERSION)
-        .ok()
-        .flatten()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1);
+    let key_version: i64 = meta(META_KEY_VERSION).and_then(|v| v.parse().ok()).unwrap_or(1);
     Status { space_id, device_id, key_ready, pull_seq, pending, key_version }
 }
 
@@ -110,24 +105,44 @@ pub fn mark_all_dirty_if_first_push(conn: &Connection) -> rusqlite::Result<usize
 
 // ---------------- 推送批次构建 ----------------
 
+/// 推送批次：`items` 与 `consumed` **逐条对齐**（下标必须一一对应，调用方按 results
+/// 下标回查 outbox 行）；`skipped` 是"无需上云、直接清掉"的条目（从未拿到 uid 就删掉的行）。
+#[derive(Debug, Default)]
+pub struct PushBatch {
+    pub items: Vec<Value>,
+    pub consumed: Vec<OutboxEntry>,
+    pub skipped: Vec<OutboxEntry>,
+}
+
 /// outbox → 加密后的推送条目。delete 条目从 outbox.uid + 墓碑表取证。
-/// 返回 (条目, 消费的 outbox 行)——**先推后清**：只有服务端确认 ok 才清 outbox。
+/// **先推后清**：只有服务端确认才对 `consumed` 做 clear_consumed。
+///
+/// ⚠️ items 与 consumed 必须严格等长：旧实现跳过条目时只跳过 item、仍返回全量 entries，
+/// 调用方按 results 下标取 entries 会**整体错位 → 清掉本该推送的另外一行**（本地改动
+/// 从此不再上云，而被跳过的条目永久滞留在 outbox）。
 pub fn build_push_items(
     conn: &Connection,
     record_key: &[u8; 32],
     limit: usize,
-) -> Result<(Vec<Value>, Vec<OutboxEntry>), String> {
+) -> Result<PushBatch, String> {
     // 推送前置：给还没有 uid 的行惰性发 ULID（SQLite 触发器造不出 ULID）
     repo::ensure_uids(conn).map_err(|e| e.to_string())?;
     let entries = repo::outbox_list(conn, limit as i64).map_err(|e| e.to_string())?;
-    let mut items = Vec::with_capacity(entries.len());
-    for e in &entries {
+    let mut batch = PushBatch::default();
+    for e in entries {
         let uid = match (e.op.as_str(), e.uid.as_deref()) {
             ("delete", Some(uid)) => uid.to_string(),
-            ("delete", None) => continue, // 行在拿到 uid 前就删了 = 从未上云
+            ("delete", None) => {
+                // 行在拿到 uid 前就删了 = 从未上云，没有可推送的内容，直接清
+                batch.skipped.push(e);
+                continue;
+            }
             _ => match uid_of_row(conn, &e.entity, e.rowid) {
                 Some(uid) => uid,
-                None => continue, // 行已不在且无 uid：忽略并清掉
+                None => {
+                    batch.skipped.push(e);
+                    continue;
+                }
             },
         };
         let env_updated_at = match e.op.as_str() {
@@ -135,9 +150,18 @@ pub fn build_push_items(
             _ => row_sync_ms(conn, &e.entity, e.rowid),
         };
         let deleted_at = if e.op == "delete" { Some(env_updated_at) } else { None };
-        // 载荷：upsert 用业务行；delete 用最小占位（服务端不读内容，但解密需要合法密文）
+        // 载荷：upsert 用业务行；delete 用最小占位（服务端不读内容，但解密需要合法密文）。
+        // ⚠️ 占位载荷**必须带 updated_at + deleted_at**：接收侧 apply_todo/apply_note 第一句
+        // 就要 `fields.updated_at`，缺了它远端删除 100% 失败（表现为「删了又复活」）
         let payload_json = if e.op == "delete" {
-            json!({ "v": 1, "kind": e.entity, "uid": uid, "fields": {}, "x": {} }).to_string()
+            json!({
+                "v": 1,
+                "kind": e.entity,
+                "uid": uid,
+                "fields": { "updated_at": env_updated_at, "deleted_at": env_updated_at },
+                "x": {},
+            })
+            .to_string()
         } else if e.entity == "todo" {
             let t = load_todo(conn, e.rowid).ok_or("todo 行消失")?;
             super::map::todo_payload(conn, &t)
@@ -148,7 +172,7 @@ pub fn build_push_items(
         let mut nonce = [0u8; 24];
         getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
         let ct = seal_record(record_key, &e.entity, &uid, env_updated_at, &payload_json, &nonce)?;
-        items.push(json!({
+        batch.items.push(json!({
             "entity": e.entity,
             "uid": uid,
             "updated_at": env_updated_at,
@@ -157,9 +181,11 @@ pub fn build_push_items(
             "nonce": B64.encode(nonce),
             "payload_ct": B64.encode(ct),
         }));
+        batch.consumed.push(e);
     }
-    Ok((items, entries))
+    Ok(batch)
 }
+
 
 /// 服务端确认 ok 的条目才清 outbox；stale/equal 保留（引擎随后重拉收敛）
 pub fn clear_consumed(conn: &Connection, consumed: &[OutboxEntry]) -> rusqlite::Result<()> {
@@ -386,11 +412,12 @@ mod tests {
         assert_eq!(mark_all_dirty_if_first_push(&conn).unwrap(), 0, "meta 标记后不重复");
 
         let key = keys();
-        let (items, entries) = build_push_items(&conn, &key, 10).unwrap();
-        assert_eq!(items.len(), 2);
-        assert_eq!(entries.len(), 2);
+        let batch = build_push_items(&conn, &key, 10).unwrap();
+        assert_eq!(batch.items.len(), 2);
+        assert_eq!(batch.consumed.len(), 2, "items 与 consumed 必须逐条对齐");
+        assert!(batch.skipped.is_empty());
         // 密文能解回来且载荷就是业务内容
-        for item in &items {
+        for item in &batch.items {
             let nonce = B64.decode(item["nonce"].as_str().unwrap()).unwrap();
             let ct = B64.decode(item["payload_ct"].as_str().unwrap()).unwrap();
             let pt = open_record(&key, item["entity"].as_str().unwrap(), item["uid"].as_str().unwrap(), item["updated_at"].as_i64().unwrap(), nonce.as_slice().try_into().unwrap(), &ct).unwrap();
@@ -454,12 +481,64 @@ mod tests {
         let t = crate::repo::todo::list(&conn).unwrap().remove(0);
         conn.execute("DELETE FROM todos WHERE id = ?1", params![t.id]).unwrap();
         let key = keys();
-        let (items, entries) = build_push_items(&conn, &key, 10).unwrap();
+        let batch = build_push_items(&conn, &key, 10).unwrap();
+        let items = &batch.items;
+        let entries = &batch.consumed;
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["deleted_at"].as_i64().unwrap() > 0, true, "delete 条目必须带 deleted_at");
         assert_eq!(entries[0].op, "delete");
-        clear_consumed(&conn, &entries).unwrap();
+        clear_consumed(&conn, entries).unwrap();
         assert_eq!(repo::outbox_list(&conn, 10).unwrap().len(), 0, "确认后清 outbox");
         assert!(repo::tombstone_get(&conn, "todo", &items[0]["uid"].as_str().unwrap()).unwrap().is_some());
+
+        // 删除载荷必须能被对端应用掉：占位载荷缺 updated_at 会让远端删除 100% 失败
+        // （表现为「这台删了、那台又推回来」），2026-11-05 修
+        let nonce = B64.decode(items[0]["nonce"].as_str().unwrap()).unwrap();
+        let ct = B64.decode(items[0]["payload_ct"].as_str().unwrap()).unwrap();
+        let pt = open_record(
+            &key,
+            "todo",
+            items[0]["uid"].as_str().unwrap(),
+            items[0]["updated_at"].as_i64().unwrap(),
+            nonce.as_slice().try_into().unwrap(),
+            &ct,
+        )
+        .unwrap();
+        let payload: Value = serde_json::from_str(&pt).unwrap();
+        assert!(payload["fields"]["updated_at"].as_i64().is_some(), "占位载荷必须带 updated_at");
+        assert!(payload["fields"]["deleted_at"].as_i64().is_some(), "占位载荷必须带 deleted_at");
+
+        // 对端：另一台机器上应用这条删除 → 应被墓碑化而不是报错
+        let peer = db::init_in_memory().unwrap();
+        crate::repo::todo::create(&peer, "会删", None, None).unwrap();
+        repo::ensure_uids(&peer).unwrap();
+        // 两台机器的 uid 不同（各自 ULID），这里直接改写对端行的 uid 对齐
+        peer.execute("UPDATE todos SET sync_uid = ?1", params![items[0]["uid"].as_str().unwrap()]).unwrap();
+        repo::apply_begin(&peer).unwrap();
+        let outcome = super::super::map::apply_todo(&peer, &payload).unwrap();
+        repo::apply_end(&peer).unwrap();
+        assert_eq!(outcome, super::super::map::ApplyOutcome::Tombstoned);
+        let left: i64 = peer.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "远端删除落地");
+    }
+
+    #[test]
+    fn skipped_entries_never_shift_consumed_index() {
+        // 行在拿到 uid 前就删了：没有可推送内容 → 进 skipped，且不占 items 下标，
+        // 后面的条目不能因此错位（旧实现会清掉别人的 outbox）
+        let conn = db::init_in_memory().unwrap();
+        conn.execute("INSERT INTO todos (title) VALUES ('never-synced')", []).unwrap();
+        let ghost = conn.last_insert_rowid();
+        conn.execute("DELETE FROM todos WHERE id = ?1", params![ghost]).unwrap();
+        crate::repo::todo::create(&conn, "会推", None, None).unwrap();
+        let key = keys();
+        let batch = build_push_items(&conn, &key, 10).unwrap();
+        assert_eq!(batch.items.len(), 1, "只有一行可推");
+        assert_eq!(batch.consumed.len(), 1, "consumed 与 items 等长");
+        assert_eq!(batch.skipped.len(), 1, "无 uid 的删除进 skipped");
+        assert_eq!(batch.consumed[0].op, "upsert");
+        assert!(batch.consumed[0].uid.is_some(), "consumed 指向真正要推的那一行");
+        assert_eq!(batch.skipped[0].op, "delete");
+        assert!(batch.skipped[0].uid.is_none(), "被跳过的是从未拿到 uid 的删除");
     }
 }

@@ -35,6 +35,8 @@ pub fn create_or_focus(
         // WS_EX_APPWINDOW 加回来，任务栏随即多出一颗按钮）
         crate::win_taskbar::show(&win);
         let _ = win.set_focus();
+        // 键盘焦点要落进页面（浮窗里的 Esc / 输入框同理，见 webview_focus.rs）
+        crate::webview_focus::focus_webview(app, label);
         return Ok(win);
     }
 

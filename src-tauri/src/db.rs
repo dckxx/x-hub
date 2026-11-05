@@ -879,19 +879,24 @@ fn migrate_sync(conn: &Connection) -> Result<()> {
     // 老数据回填：sync_uid 发 ULID（首次启动一次性；新行由引擎惰性回填）。
     // sync_updated_at 取 updated_at 解析出的 ms，保证首推的 LWW 时间与本地展示一致。
     // 回填必须用 guard 静默执行——它不是"改动"，触发全量推送的初始同步由引擎用 meta 标记显式发起。
-    conn.execute("INSERT INTO sync_guard (on_) VALUES (1)", [])?;
+    //
+    // ⚠️ 整段必须在**同一个事务**里：中途任何一步失败，事务回滚会把 guard 行一起带走。
+    // 旧实现逐句 `?` 且不在事务内，启动过程中出错/被杀就会永久留下 sync_guard 行——
+    // 之后所有脏追踪触发器一律静默，云同步彻底不工作且没有任何报错。
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("INSERT INTO sync_guard (on_) VALUES (1)", [])?;
     let need_uid = |conn: &Connection, table: &str| -> Result<Vec<i64>> {
         let mut stmt = conn.prepare(&format!("SELECT id FROM {table} WHERE sync_uid IS NULL ORDER BY id"))?;
         let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
         rows.collect()
     };
     for table in ["todos", "notes"] {
-        for id in need_uid(conn, table)? {
+        for id in need_uid(&tx, table)? {
             let uid = ulid::Ulid::new().to_string();
-            conn.execute(&format!("UPDATE {table} SET sync_uid = ? WHERE id = ?"), [uid, id.to_string()])?;
+            tx.execute(&format!("UPDATE {table} SET sync_uid = ? WHERE id = ?"), [uid, id.to_string()])?;
         }
         let ts_rows: Vec<(i64, String)> = {
-            let mut stmt = conn.prepare(&format!(
+            let mut stmt = tx.prepare(&format!(
                 "SELECT id, updated_at FROM {table} WHERE sync_updated_at IS NULL ORDER BY id"
             ))?;
             let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
@@ -899,20 +904,21 @@ fn migrate_sync(conn: &Connection) -> Result<()> {
         };
         for (id, updated_at) in ts_rows {
             let ms = parse_local_ts_ms(&updated_at).unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
-            conn.execute(
+            tx.execute(
                 &format!("UPDATE {table} SET sync_updated_at = ? WHERE id = ?"),
                 rusqlite::params![ms, id],
             )?;
         }
     }
-    conn.execute_batch(
+    tx.execute_batch(
         "
         CREATE UNIQUE INDEX IF NOT EXISTS idx_todos_sync_uid ON todos(sync_uid) WHERE sync_uid IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_sync_uid ON notes(sync_uid) WHERE sync_uid IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_sync_outbox_entity ON sync_outbox(entity, rowid_ref);
         ",
     )?;
-    conn.execute("DELETE FROM sync_guard", [])?;
+    tx.execute("DELETE FROM sync_guard", [])?;
+    tx.commit()?;
 
     Ok(())
 }

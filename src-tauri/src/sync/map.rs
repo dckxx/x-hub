@@ -56,18 +56,19 @@ fn ts_ms(text: &str) -> Value {
 // ---------------- Todo ----------------
 
 /// 待办标签快照：桌面 todo_tags/todo_tag_links ↔ [{name,color}]
+/// 读失败（DB 异常）返回空数组：标签是附属信息，不能因此让整条同步记录应用失败
 fn todo_tags_read(conn: &Connection, todo_id: i64) -> Value {
-    let mut stmt = conn
-        .prepare(
-            "SELECT t.name, t.color FROM todo_tags t
-              JOIN todo_tag_links l ON l.tag_id = t.id
-             WHERE l.todo_id = ? ORDER BY t.name",
-        )
-        .expect("todo_tags read");
+    let mut stmt = match conn.prepare(
+        "SELECT t.name, t.color FROM todo_tags t
+           JOIN todo_tag_links l ON l.tag_id = t.id
+          WHERE l.todo_id = ? ORDER BY t.name",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Value::Array(vec![]),
+    };
     let tags: Vec<Value> = stmt
         .query_map(params![todo_id], |r| Ok(json!({ "name": r.get::<_, String>(0)?, "color": r.get::<_, String>(1)? })))
-        .expect("todo_tags map")
-        .collect::<rusqlite::Result<_>>()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
         .unwrap_or_default();
     Value::Array(tags)
 }
@@ -101,6 +102,42 @@ fn todo_tags_write(conn: &Connection, todo_id: i64, tags: &Value) {
         .ok();
     }
 }
+
+/// 笔记标签写入（find-or-create 到 `tags` 表 + `note_tags` 关联）。
+/// 载荷里标签是名字数组（桌面 tags 表没有颜色）；手机端若传对象形态也认。
+/// ⚠️ 只在载荷**带 tags 键**时调用——旧载荷/精简载荷不带这个键，不能当成「标签被清空」。
+fn note_tags_write(conn: &Connection, note_id: i64, tags: &Value) {
+    conn.execute("DELETE FROM note_tags WHERE note_id = ?1", params![note_id]).ok();
+    for t in tags.as_array().unwrap_or(&vec![]) {
+        let name = t
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| t.get("name").and_then(Value::as_str).map(str::to_owned));
+        let Some(name) = name else { continue };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let existing: Option<i64> = conn
+            .query_row("SELECT id FROM tags WHERE name = ?1", params![name], |r| r.get(0))
+            .ok();
+        let tag_id = match existing {
+            Some(id) => id,
+            None => {
+                if conn.execute("INSERT INTO tags (name) VALUES (?1)", params![name]).is_err() {
+                    continue;
+                }
+                conn.last_insert_rowid()
+            }
+        };
+        conn.execute(
+            "INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
+            params![note_id, tag_id],
+        )
+        .ok();
+    }
+}
+
 
 /// 本地待办 → 明文载荷
 pub fn todo_payload(conn: &Connection, t: &Todo) -> String {
@@ -151,10 +188,7 @@ pub fn todo_payload(conn: &Connection, t: &Todo) -> String {
 pub fn apply_todo(conn: &Connection, payload: &Value) -> Result<ApplyOutcome, String> {
     let uid = payload["uid"].as_str().ok_or("载荷缺 uid")?;
     let fields = &payload["fields"];
-    let remote_ms = payload["fields"]["updated_at"]
-        .as_i64()
-        .or_else(|| payload.get("fields").and_then(|f| f.get("updated_at")).and_then(Value::as_i64))
-        .ok_or("载荷缺 updated_at")?;
+    let remote_ms = fields.get("updated_at").and_then(Value::as_i64).ok_or("载荷缺 updated_at")?;
     let deleted_ms = fields.get("deleted_at").and_then(Value::as_i64);
     let updated_text = format_local_ts_ms(remote_ms);
 
@@ -320,13 +354,16 @@ pub fn note_payload(conn: &Connection, n: &Note) -> String {
     let uid = uid.unwrap_or_default();
     let deleted_ms = n.deleted_at.as_deref().and_then(parse_local_ts_ms);
     let tags: Vec<String> = {
-        let mut stmt = conn
-            .prepare("SELECT t.name FROM tags t JOIN note_tags l ON l.tag_id = t.id WHERE l.note_id = ?1 ORDER BY t.name")
-            .expect("note tags read");
-        stmt.query_map(params![n.id], |r| r.get(0))
-            .expect("note tags map")
-            .collect::<rusqlite::Result<_>>()
-            .unwrap_or_default()
+        // 读失败按空标签处理（标签是附属信息，不能因此让整条记录推不出去）
+        match conn.prepare(
+            "SELECT t.name FROM tags t JOIN note_tags l ON l.tag_id = t.id WHERE l.note_id = ?1 ORDER BY t.name",
+        ) {
+            Ok(mut stmt) => stmt
+                .query_map(params![n.id], |r| r.get(0))
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
     };
     let payload = json!({
         "v": 1,
@@ -343,6 +380,9 @@ pub fn note_payload(conn: &Connection, n: &Note) -> String {
             "source_url": n.source_url,
             "icon": n.icon,
             "sort_order": n.sort_order,
+            // 笔记形态（text / sheet）：不带它的话远端一律按 text 落库，
+            // 表格笔记会在对端退化成「正文只有 xhub-sheet: 协议 URL」的文本笔记
+            "kind": n.kind,
         },
         "x": x_get(conn, "note", &uid),
     });
@@ -370,11 +410,17 @@ pub fn apply_note(conn: &Connection, payload: &Value) -> Result<ApplyOutcome, St
     let folder_id = val("folder").as_str().and_then(|p| folder_id_of_path(conn, p));
     let opt_text = |k: &str| val(k).as_str().map(str::to_owned);
     let created_text = ts_text(val("created_at")).unwrap_or_else(|| updated_text.clone());
+    // 形态只认 text / sheet，其余（旧载荷缺字段）按 text
+    let kind = match val("kind").as_str() {
+        Some("sheet") => "sheet",
+        _ => "text",
+    };
 
     if let Some(id) = existing {
         conn.execute(
             "UPDATE notes SET title=?1, content=?2, created_at=?3, updated_at=?4, folder_id=?5,
-               source_url=?6, deleted_at=NULL, icon=?7, sort_order=?8, sync_updated_at=?9 WHERE id=?10",
+               source_url=?6, deleted_at=NULL, icon=?7, sort_order=?8, kind=?9, sync_updated_at=?10
+             WHERE id=?11",
             params![
                 val("title").as_str().unwrap_or(""),
                 val("content").as_str().unwrap_or(""),
@@ -384,11 +430,15 @@ pub fn apply_note(conn: &Connection, payload: &Value) -> Result<ApplyOutcome, St
                 opt_text("source_url").unwrap_or_default(),
                 opt_text("icon"),
                 val("sort_order").as_i64(),
+                kind,
                 remote_ms,
                 id,
             ],
         )
         .map_err(|e| e.to_string())?;
+        if let Some(tags) = fields.get("tags") {
+            note_tags_write(conn, id, tags);
+        }
         if let Some(x) = payload.get("x") { x_put(conn, "note", uid, x); }
         return Ok(ApplyOutcome::Updated);
     }
@@ -396,7 +446,7 @@ pub fn apply_note(conn: &Connection, payload: &Value) -> Result<ApplyOutcome, St
     conn.execute(
         "INSERT INTO notes (title, content, created_at, updated_at, folder_id, source_url, deleted_at,
            icon, sort_order, kind, sync_uid, sync_updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,?8,'text',?9,?10)",
+         VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9,?10,?11)",
         params![
             val("title").as_str().unwrap_or(""),
             val("content").as_str().unwrap_or(""),
@@ -406,14 +456,20 @@ pub fn apply_note(conn: &Connection, payload: &Value) -> Result<ApplyOutcome, St
             opt_text("source_url").unwrap_or_default(),
             opt_text("icon"),
             val("sort_order").as_i64(),
+            kind,
             uid,
             remote_ms,
         ],
     )
     .map_err(|e| e.to_string())?;
+    let new_id = conn.last_insert_rowid();
+    if let Some(tags) = fields.get("tags") {
+        note_tags_write(conn, new_id, tags);
+    }
     if let Some(x) = payload.get("x") { x_put(conn, "note", uid, x); }
     Ok(ApplyOutcome::Inserted)
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -516,5 +572,56 @@ mod tests {
             .query_row("SELECT name FROM note_folders WHERE id = ?1", params![got.folder_id.unwrap()], |r| r.get(0))
             .unwrap();
         assert_eq!(fname, "项目");
+    }
+
+    /// 表格笔记的形态与标签必须随载荷过去：形态丢了会在对端退化成文本笔记（正文只剩协议 URL），
+    /// 标签丢了等于多端标签静默失配（2026-11-05 修）
+    #[test]
+    fn note_payload_keeps_kind_and_tags() {
+        let conn = db::init_in_memory().unwrap();
+        let created = crate::repo::note::create(&conn, "表格").unwrap();
+        conn.execute(
+            "UPDATE notes SET kind = 'sheet', content = 'xhub-sheet:abc', updated_at = ?1 WHERE id = ?2",
+            params!["2030-01-02 03:04:05.000000", created.id],
+        )
+        .unwrap();
+        let tag = crate::repo::tag::create(&conn, "工作").unwrap();
+        crate::repo::tag::set_note_tags(&conn, created.id, &[tag.id]).unwrap();
+        // 必须从库里重新读：note_payload 的形态取自传入的 Note 结构而不是再查一次
+        let note = crate::repo::note::get(&conn, created.id).unwrap();
+
+        let payload: Value = serde_json::from_str(&note_payload(&conn, &note)).unwrap();
+        assert_eq!(payload["fields"]["kind"], "sheet");
+        assert_eq!(payload["fields"]["tags"][0], "工作");
+
+        let fresh = db::init_in_memory().unwrap();
+        repo::apply_begin(&fresh).unwrap();
+        assert_eq!(apply_note(&fresh, &payload).unwrap(), ApplyOutcome::Inserted);
+        repo::apply_end(&fresh).unwrap();
+        let got = crate::repo::note::list(&fresh).unwrap().remove(0);
+        assert_eq!(got.kind, "sheet", "形态必须跟着同步");
+        assert_eq!(got.content, "xhub-sheet:abc");
+        let tags: Vec<String> = {
+            let mut stmt = fresh
+                .prepare("SELECT t.name FROM tags t JOIN note_tags l ON l.tag_id = t.id WHERE l.note_id = ?1")
+                .unwrap();
+            let rows = stmt.query_map(params![got.id], |r| r.get(0)).unwrap();
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        assert_eq!(tags, vec!["工作".to_string()], "标签必须跟着同步");
+
+        // 再应用一次同一条记录（走更新路径）：标签要被"重写"，不能叠加也不能被忽略
+        let mut payload2 = payload.clone();
+        payload2["fields"]["tags"] = json!(["工作", "生活"]);
+        payload2["fields"]["updated_at"] = json!(note_updated_ms(&payload) + 5000);
+        repo::apply_begin(&fresh).unwrap();
+        let _ = apply_note(&fresh, &payload2);
+        repo::apply_end(&fresh).unwrap();
+        let count: i64 = fresh.query_row("SELECT COUNT(*) FROM note_tags", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 2, "更新路径要按载荷重写标签");
+    }
+
+    fn note_updated_ms(payload: &Value) -> i64 {
+        payload["fields"]["updated_at"].as_i64().unwrap()
     }
 }

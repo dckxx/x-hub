@@ -42,7 +42,10 @@ function inlinePlainText(nodes: PlainNode[] | undefined): string {
       out += n.text ?? ''
       continue
     }
-    if (n.name === 'hard_break') {
+    // 节点名以 Milkdown commonmark 预设为准：`hardbreak`（基线 prosemirror 的
+    // `hard_break` 在 Crepe 里不存在），两个都认——取错名字会把换行整段吞掉、
+    // 复制出去两行粘成一串（速记粘贴方向踩过同款坑，见 NoteEditor.insertPastedPlainText）
+    if (n.name === 'hardbreak' || n.name === 'hard_break') {
       out += '\n'
       continue
     }

@@ -13,8 +13,30 @@ fn lock<'a>(state: &'a State<'_, DbState>) -> Result<std::sync::MutexGuard<'a, r
     state.0.lock().map_err(|e| format!("数据库锁不可用: {e}"))
 }
 
+/// 主人操作（账号 token）401：账号登录态失效，清设备绑定没用，提示重新登录
+fn owner_auth_error(e: String) -> String {
+    if e.starts_with("AUTH_REVOKED") {
+        return "NOT_LOGGED_IN: 账号登录已失效，请先在「设置 → 账号」重新登录再开启云同步".to_string();
+    }
+    e
+}
+
 fn err_str(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+
+/// 设备/会话失效（api 层把 401/403 归一成 `AUTH_REVOKED:`）→ 清本地设备绑定并回到
+/// 「未配对」，让同步面板重新出现「设置口令」入口（否则本机永远 401、界面还显示已开启）。
+/// 只清 device 绑定，保留 space_id 与 record_key：重新开启走 rotate 路径即可，不必重建空间。
+fn auth_error(state: &State<'_, DbState>, e: String) -> String {
+    if !e.starts_with("AUTH_REVOKED") {
+        return e;
+    }
+    crypto::clear_device_binding();
+    if let Ok(conn) = lock(state) {
+        let _ = repo::meta_del(&conn, engine::META_DEVICE);
+    }
+    "NOT_PAIRED: 设备授权已失效（可能在其它设备上被移除），请重新开启云同步".to_string()
 }
 
 /// 同步总状态（SyncPanel 首屏）
@@ -49,8 +71,11 @@ pub async fn sync_enable(state: State<'_, DbState>, passphrase: String) -> Resul
     // 锁段 1：是否已有空间绑定（重装 = rotate，首开 = create）
     let (has_space, local_space_id) = {
         let conn = lock(&state)?;
-        let sid = repo::meta_get(&conn, engine::META_SPACE).map_err(err_str)?;
-        (sid.is_some(), sid.filter(|s| !s.is_empty()))
+        // 空串不算有空间（旧版 sync_disable 写过空串）
+        let sid = repo::meta_get(&conn, engine::META_SPACE)
+            .map_err(err_str)?
+            .filter(|s| !s.trim().is_empty());
+        (sid.is_some(), sid)
     };
 
     // 新建空间时盐由本端生成（服务端只存不复算）；此时还没拿到 space_id，
@@ -67,9 +92,9 @@ pub async fn sync_enable(state: State<'_, DbState>, passphrase: String) -> Resul
             "kdf_salt": crypto::hex_encode(salt),
             "kdf_params": kdf_params_json(),
             "recovery_hash": crypto::hex_encode(&random_bytes(32)?),
-        })).await?
+        })).await.map_err(owner_auth_error)?
     } else {
-        api::owner_post("/sync/devices/rotate-desktop", json!({})).await?
+        api::owner_post("/sync/devices/rotate-desktop", json!({})).await.map_err(owner_auth_error)?
     };
 
     let space_id = resp["space_id"]
@@ -180,13 +205,23 @@ pub async fn sync_now(app: AppHandle, state: State<'_, DbState>) -> Result<Value
     let device_token = crypto::load_device_token().ok_or("NOT_PAIRED: 请重新开启云同步")?;
 
     // ---- pull ----
-    let mut pull_seq: i64 = { let conn = lock(&state)?; engine::status(&conn).pull_seq };
+    // 只读游标：别为了一个数字再调 engine::status（那里面会再读一次系统钥匙串）
+    let mut pull_seq: i64 = {
+        let conn = lock(&state)?;
+        repo::meta_get(&conn, engine::META_PULL_SEQ)
+            .map_err(err_str)?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    };
     let mut applied_total = 0usize;
     let mut failed_total = 0usize;
-    let mut deferred: Vec<String> = Vec::new();
+    // 父行还没落库而暂时应用不了的记录：留在内存里，整轮拉完再补一次（不再多发一次 HTTP 猜窗口）
+    let mut deferred_changes: Vec<serde_json::Value> = Vec::new();
     for _page in 0..50 {
         let path = format!("/sync/changes?since={pull_seq}&limit=200");
-        let resp = api::device_get(&path, &device_token, &device_id).await?;
+        let resp = api::device_get(&path, &device_token, &device_id)
+            .await
+            .map_err(|e| auth_error(&state, e))?;
         let changes = resp["changes"].as_array().cloned().unwrap_or_default();
         if changes.is_empty() {
             break;
@@ -196,59 +231,74 @@ pub async fn sync_now(app: AppHandle, state: State<'_, DbState>) -> Result<Value
             let (stats, def) = engine::apply_remote_changes(&conn, &record_key, &changes).map_err(err_str)?;
             applied_total += stats.applied + stats.tombstoned;
             failed_total += stats.failed;
-            deferred = def;
+            for uid in def {
+                if let Some(c) = changes.iter().find(|c| c["uid"].as_str() == Some(uid.as_str())) {
+                    deferred_changes.push(c.clone());
+                }
+            }
         }
-        pull_seq = resp["head"].as_i64().unwrap_or(pull_seq);
+        let next_seq = resp["head"].as_i64().unwrap_or(pull_seq);
+        // 游标不前进说明服务端口径与预期不符：宁可停下（下次同步从同一位置重试），
+        // 也不能拿同一个 since 死循环重放同一页
+        if next_seq <= pull_seq {
+            log::warn!("[云同步] 拉取游标未前进（since={pull_seq}, head={next_seq}），本轮停止分页");
+            break;
+        }
+        pull_seq = next_seq;
+        // 首次全量同步可能连续几十页，每页都是串行解密 + 落库并抢 DB 锁：
+        // 主动让出一拍，别把界面（同样走 DbState 的命令）整段饿住
+        tokio::task::yield_now().await;
         if resp["has_more"].as_bool() != Some(true) {
             break;
         }
     }
-    // deferred 重试：父行已在本页落库，再跑一遍残余
-    if !deferred.is_empty() {
-        let path = format!("/sync/changes?since={}&limit=500", pull_seq.saturating_sub(1000));
-        if let Ok(resp) = api::device_get(&path, &device_token, &device_id).await {
-            let changes = resp["changes"].as_array().cloned().unwrap_or_default();
-            if !changes.is_empty() {
-                let conn = lock(&state)?;
-                if let Ok((stats, _)) = engine::apply_remote_changes(&conn, &record_key, &changes) {
-                    applied_total += stats.applied + stats.tombstoned;
-                }
-            }
+    // deferred 重试：父行已在前面的页里落库，用同一批记录补一次（不额外请求）
+    if !deferred_changes.is_empty() {
+        let conn = lock(&state)?;
+        if let Ok((stats, _)) = engine::apply_remote_changes(&conn, &record_key, &deferred_changes) {
+            applied_total += stats.applied + stats.tombstoned;
+            failed_total += stats.failed;
         }
     }
     { let conn = lock(&state)?; repo::meta_set(&conn, engine::META_PULL_SEQ, &pull_seq.to_string()).map_err(err_str)?; }
 
     // ---- push ----
     let mut pushed = 0usize;
+    let mut push_failed = 0usize;
     for _batch in 0..20 {
-        let (items, entries) = {
+        let batch = {
             let conn = lock(&state)?;
             engine::build_push_items(&conn, &record_key, 100)?
         };
-        if items.is_empty() { break; }
-        let resp = api::device_post("/sync/push", &device_token, &device_id, json!({ "items": items })).await?;
+        // 无需上云的条目（从未拿到 uid 就删掉的行）直接清，别占着 outbox 让 pending 常亮
+        if !batch.skipped.is_empty() {
+            let conn = lock(&state)?;
+            engine::clear_consumed(&conn, &batch.skipped).map_err(err_str)?;
+        }
+        if batch.items.is_empty() { break; }
+        let resp = api::device_post("/sync/push", &device_token, &device_id, json!({ "items": batch.items }))
+            .await
+            .map_err(|e| auth_error(&state, e))?;
         let results = resp["results"].as_array().cloned().unwrap_or_default();
         let mut consumed = Vec::new();
-        let mut stale_uids = Vec::new();
+        let mut retry_later = false;
         for (i, r) in results.iter().enumerate() {
+            // items 与 consumed 逐条对齐（engine::build_push_items 保证），下标可直接回查
+            let Some(entry) = batch.consumed.get(i) else { break };
             match r["status"].as_str() {
-                Some("ok") | Some("equal") => {
-                    if let Some(e) = entries.get(i) { consumed.push(e.clone()); }
-                    if r["status"] == "ok" { pushed += 1; }
-                }
-                _ => {
-                    if let Some(e) = entries.get(i) {
-                        if e.op == "upsert" { stale_uids.push(e.uid.clone().unwrap_or_default()); }
-                        consumed.push(e.clone()); // rejected/duplicate 条目无法推进，丢弃等触发器再标
-                    }
-                }
+                Some("ok") => { consumed.push(entry.clone()); pushed += 1; }
+                // equal = 服务端已是同一版本，收敛完成
+                Some("equal") => consumed.push(entry.clone()),
+                // stale / rejected / duplicate：**不能清 outbox**。清了就再也推不上去，
+                // 本地改动等于静默丢失；保留下来等下一轮拉取把服务端版本合并进来再推
+                _ => { retry_later = true; push_failed += 1; }
             }
         }
         {
             let conn = lock(&state)?;
             engine::clear_consumed(&conn, &consumed).map_err(err_str)?;
         }
-        if results.len() < 100 { break; }
+        if retry_later || results.len() < batch.consumed.len() { break; }
     }
 
     // ---- 收敛：push 中出现 stale/equal 后窄拉一轮 ----
@@ -257,20 +307,24 @@ pub async fn sync_now(app: AppHandle, state: State<'_, DbState>) -> Result<Value
     if applied_total > 0 {
         let _ = app.emit("sync-applied", json!({ "applied": applied_total }));
     }
-    Ok(json!({ "applied": applied_total, "pushed": pushed, "failed": failed_total }))
+    Ok(json!({ "applied": applied_total, "pushed": pushed, "failed": failed_total + push_failed }))
 }
 
 /// 设备列表（数据端点）
 #[tauri::command]
-pub async fn sync_device_list() -> Result<Value, String> {
+pub async fn sync_device_list(state: State<'_, DbState>) -> Result<Value, String> {
     let (device_id, token) = device_creds()?;
-    api::device_get("/sync/devices", &token, &device_id).await
+    api::device_get("/sync/devices", &token, &device_id)
+        .await
+        .map_err(|e| auth_error(&state, e))
 }
 
 /// 撤销某台设备（主人操作）
 #[tauri::command]
 pub async fn sync_revoke_device(device_id: String) -> Result<Value, String> {
-    api::owner_post(&format!("/sync/devices/{device_id}/revoke"), json!({})).await
+    api::owner_post(&format!("/sync/devices/{device_id}/revoke"), json!({}))
+        .await
+        .map_err(owner_auth_error)
 }
 
 /// 关闭本机同步：吊销自己的设备行 + 清本地钥匙（云端密文保留）
@@ -282,9 +336,11 @@ pub async fn sync_disable(state: State<'_, DbState>) -> Result<Value, String> {
     crypto::clear_local_keys();
     {
         let conn = lock(&state)?;
-        let _ = repo::meta_set(&conn, engine::META_SPACE, "");
-        let _ = repo::meta_set(&conn, engine::META_DEVICE, "");
-        let _ = repo::meta_set(&conn, engine::META_PULL_SEQ, "0");
+        // 删键而不是写空串：sync_status 用「是否存在 + 非空」判 paired，写空串会让
+        // 关闭后仍显示已开启，且口令入口（只在 !paired 时渲染）再也出不来
+        let _ = repo::meta_del(&conn, engine::META_SPACE);
+        let _ = repo::meta_del(&conn, engine::META_DEVICE);
+        let _ = repo::meta_del(&conn, engine::META_PULL_SEQ);
     }
     Ok(json!({ "ok": true }))
 }
@@ -306,23 +362,31 @@ fn kdf_params_json() -> String {
     json!({ "N": 32768, "r": 8, "p": 1, "dkLen": 64 }).to_string()
 }
 
-/// 重装场景的端到端校验：拉空间里最新一条记录试解，能解开才说明「服务端盐 + 输入口令」
-/// 确实对得上。空空间（没有任何记录）无从验证，直接放行。
+/// 重装场景的端到端校验：拉空间里的记录逐条试解，**任意一条能解开**就说明
+/// 「服务端盐 + 输入口令」确实对得上。空空间（没有任何记录）无从验证，直接放行。
+///
+/// ⚠️ 不能只看第一条：`since=0` 取到的是**最旧**的记录，密钥轮换/换口令之后旧密文
+/// 本来就解不开，只试第一条会把正确口令误报成 PASSPHRASE_MISMATCH。
 async fn verify_record_key(device_token: &str, device_id: &str, record_key: &[u8; 32]) -> Result<(), String> {
-    let resp = api::device_get("/sync/changes?since=0&limit=1", device_token, device_id).await?;
-    let Some(change) = resp["changes"].as_array().and_then(|a| a.first()) else {
+    let resp = api::device_get("/sync/changes?since=0&limit=20", device_token, device_id).await?;
+    let Some(changes) = resp["changes"].as_array() else {
         return Ok(());
     };
-    let entity = change["entity"].as_str().unwrap_or_default();
-    let uid = change["uid"].as_str().unwrap_or_default();
-    let updated_at = change["updated_at"].as_i64().unwrap_or(0);
-    let nonce: [u8; crypto::NONCE_LEN] = decode_b64(change["nonce"].as_str().unwrap_or_default())?
-        .try_into()
-        .map_err(|_| "记录 nonce 长度不合法".to_string())?;
-    let ct = decode_b64(change["payload_ct"].as_str().unwrap_or_default())?;
-    crypto::open_record(record_key, entity, uid, updated_at, &nonce, &ct)
-        .map(|_| ())
-        .map_err(|_| "PASSPHRASE_MISMATCH: 口令不正确，或该空间的密钥已轮换；请核对口令后重试".to_string())
+    if changes.is_empty() {
+        return Ok(());
+    }
+    for change in changes {
+        let entity = change["entity"].as_str().unwrap_or_default();
+        let uid = change["uid"].as_str().unwrap_or_default();
+        let updated_at = change["updated_at"].as_i64().unwrap_or(0);
+        let Ok(nonce) = decode_b64(change["nonce"].as_str().unwrap_or_default()) else { continue };
+        let Ok(ct) = decode_b64(change["payload_ct"].as_str().unwrap_or_default()) else { continue };
+        let Ok(nonce) = <[u8; crypto::NONCE_LEN]>::try_from(nonce.as_slice()) else { continue };
+        if crypto::open_record(record_key, entity, uid, updated_at, &nonce, &ct).is_ok() {
+            return Ok(());
+        }
+    }
+    Err("PASSPHRASE_MISMATCH: 口令不正确，或该空间的密钥已轮换；请核对口令后重试".into())
 }
 
 fn decode_b64(s: &str) -> Result<Vec<u8>, String> {

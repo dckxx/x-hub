@@ -104,6 +104,7 @@ onBeforeUnmount(() => {
         v-if="visible"
         ref="menuRef"
         class="ctx-menu"
+        data-floating-surface
         :style="{ left: pos.x + 'px', top: pos.y + 'px', minWidth: props.compact ? 'fit-content' : undefined }"
         role="menu"
         @click.stop

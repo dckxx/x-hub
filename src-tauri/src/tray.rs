@@ -114,6 +114,9 @@ pub fn show_window(app: &AppHandle) -> bool {
             let _ = window.show();
             let _ = window.unminimize();
             let _ = window.set_focus();
+            // 窗口成为前台 ≠ 键盘焦点进了 webview：不补这一刀，用户得先点一下窗口
+            // 页面才收得到 keydown（ESC 收托盘、Ctrl+K 之类全哑），见 webview_focus.rs
+            crate::webview_focus::focus_webview(app, "main");
             MAIN_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
             crate::floating_ball::sync_with_main(app);
             true
@@ -171,6 +174,8 @@ pub fn toggle_window(app: &AppHandle) {
             crate::webview_mem::on_shown(app, "main");
             let _ = window.unminimize();
             let _ = window.set_focus();
+            // 与 show_window 同一条口径：焦点要落到 webview 里，键才进得来
+            crate::webview_focus::focus_webview(app, "main");
             MAIN_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
         } else if window.is_focused().unwrap_or(false) {
             log::info!("[快捷键] toggle_window: 隐藏窗口");
@@ -178,6 +183,7 @@ pub fn toggle_window(app: &AppHandle) {
         } else {
             log::info!("[快捷键] toggle_window: 窗口被盖住，提升到前台");
             let _ = window.set_focus();
+            crate::webview_focus::focus_webview(app, "main");
         }
     } else {
         log::warn!("[快捷键] toggle_window: 未找到主窗口");

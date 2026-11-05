@@ -203,6 +203,7 @@ onBeforeUnmount(() => {
         ref="menuRef"
         :id="popupId"
         class="app-select-menu"
+        data-floating-surface
         :class="{ 'open-up': pos.openUp }"
         :style="{ left: pos.x + 'px', top: pos.y + 'px', width: pos.width + 'px' }"
         role="listbox"

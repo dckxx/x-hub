@@ -25,6 +25,12 @@ use tauri::{AppHandle, Emitter, Manager};
 pub const RECORDER_OVERLAY_LABEL: &str = "recorder-overlay";
 /// 录制控制条窗口 label（录制中悬浮的计时 + 停止条）
 pub const RECORDER_CONTROL_LABEL: &str = "recorder-control";
+/// 收尾阶段事件：编码开始（控制条从「停止」切「编码中」，大文件编码耗时不至于看着像卡死）
+const EV_ENCODING: &str = "recorder-encoding";
+/// 编码进度（done/total 帧），控制条据此流动状态
+const EV_ENCODING_PROGRESS: &str = "recorder-encoding-progress";
+/// 收尾失败（控制条与主窗都要收到：前者收窗，后者 toast 报错）
+const EV_ERROR: &str = "recorder-error";
 /// 贴图窗口 label 前缀（pin-shot-0..PIN_WINDOW_COUNT-1，盯住功能）
 pub const PIN_LABEL_PREFIX: &str = "pin-shot-";
 
@@ -278,6 +284,40 @@ pub fn init(app: &AppHandle) {
     }
 }
 
+/// 重挂 DWM「空 blur region」透明合成（2026-11-05 修「一按快捷键整屏都是黑的」）。
+///
+/// tao 只在**建窗时**给透明窗挂一次 `DwmEnableBlurBehindWindow`（空 region =
+/// 整窗不做模糊、完全透明，桌面透出来）。而选区层每次唤起都要经历
+/// 「解锁 resizable → 物理设位/设尺寸 → 锁回」+ ex-style 重建（win_taskbar::show），
+/// 这些窗口操作会把 DWM 的透明状态冲掉：页面本身仍是透明的（遮罩/选框/提示条
+/// 照常渲染），但窗口以**黑底**合成、桌面透不出来——表现为一按快捷键整屏漆黑，
+/// 而截图产物正常（采帧前会先收窗再 BitBlt 真实屏幕）。show 与点击穿透切换
+/// （写入/清除 WS_EX_LAYERED，同样动合成状态）之后各重挂一次即可自愈。
+#[cfg(target_os = "windows")]
+fn reapply_dwm_transparent(win: &tauri::WebviewWindow) {
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmEnableBlurBehindWindow, DWM_BLURBEHIND, DWM_BB_BLURREGION, DWM_BB_ENABLE,
+    };
+    use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject};
+
+    let Ok(h) = win.hwnd() else { return };
+    unsafe {
+        // 空 region（right < left）= 整窗透明，与 tao 建窗时的做法逐字一致
+        let region = CreateRectRgn(0, 0, -1, -1);
+        let bb = DWM_BLURBEHIND {
+            dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION,
+            fEnable: 1,
+            hRgnBlur: region,
+            fTransitionOnMaximized: 0,
+        };
+        let _ = DwmEnableBlurBehindWindow(h.0, &bb);
+        DeleteObject(region);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn reapply_dwm_transparent(_win: &tauri::WebviewWindow) {}
+
 /// 收掉选区层：恢复点击（录制中曾开启穿透）+ 隐藏 + 反注册 Esc 热键 + 内存级别降档。
 /// 同时 emit `recorder-overlay-hidden` 让前端立刻清掉选框/标注状态——窗口复用，
 /// 若等下次 show 时的 shown 事件才清，旧状态会先渲染出来（闪一下上次的框）。
@@ -338,6 +378,27 @@ fn unregister_esc_hotkey(app: &AppHandle) {
                 log::warn!("[截图/录屏] 反注册 Esc 失败: {e}");
             }
         }
+    });
+}
+
+/// 广播录制收尾事件（控制条切状态，主窗出 toast；两窗都订阅，必须用全局 emit）。
+/// 旧实现只 emit_to("main")，控制条永远收不到 done——到限自停时它只能靠自己的
+/// stop() 失败返回，界面停在「停止」态直到编码结束才被强收。
+fn emit_recorder(app: &AppHandle, event: &str, payload: impl Serialize + Clone) {
+    let _ = app.emit(event, payload);
+}
+
+/// 收尾失败：**先广播错误再收控制条**。
+///
+/// 控制条收到 `recorder-error` 会切「保存失败」态并自己在 5s 后收窗；主窗同时弹 toast。
+/// 6s 后这里再兜底收一次（控制条没监听/前端异常时的残留）。顺序不能反：旧实现先
+/// hide_control 再 emit，控制条的失败态永远来不及显示，看起来就是「控制条闪一下没了」。
+fn fail_with_toast(app: &AppHandle, msg: String) {
+    emit_recorder(app, EV_ERROR, msg);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(6));
+        hide_control(&app);
     });
 }
 
@@ -422,6 +483,9 @@ pub fn open_overlay(app: &AppHandle, mode: OverlayMode) -> Result<(), String> {
     crate::webview_mem::on_shown(app, RECORDER_OVERLAY_LABEL);
     crate::win_taskbar::show(&win);
     let _ = win.set_focus();
+    // 唤起链上的设尺寸/ex-style 重建会冲掉 tao 建窗时挂的 DWM 透明——show 之后重挂，
+    // 否则窗口以黑底合成、桌面透不出来（整屏黑，见 reapply_dwm_transparent 注释）
+    reapply_dwm_transparent(&win);
     // 全局注册 Esc 快捷取消（收窗/开录时反注册，见 register_esc_hotkey 注释）
     register_esc_hotkey(app);
     // 窗口自动识别跟随：用户首次交互前，光标切到别的窗口时选框自动跟随
@@ -601,8 +665,11 @@ pub async fn recorder_pin_shot(
 
     crate::webview_mem::on_shown(&app, &label);
     crate::win_taskbar::show(&win);
+    // 贴图窗同样走「解锁→设尺寸→锁回→show」，重挂 DWM 透明防黑底（同选区层）
+    reapply_dwm_transparent(&win);
     // 钉住是用户主动动作：给焦点让贴图能直接收 Esc 关闭（点别处焦点自然让出，不影响对照录入）
     let _ = win.set_focus();
+    crate::webview_focus::focus_webview(&app, &label);
     // 通知组件拉取本 slot 的图（窗口复用、组件只在启动时挂载一次，**必须**靠事件
     // 触发重新拉取——onMounted 里的初次拉取发生在启动时，slot 还是空的）
     let _ = app.emit_to(&label, "pin-shot-shown", ());
@@ -816,6 +883,9 @@ pub async fn recorder_start(
     let _ = app.emit_to(RECORDER_OVERLAY_LABEL, "recorder-started", region);
     if let Some(win) = app.get_webview_window(RECORDER_OVERLAY_LABEL) {
         let _ = win.set_ignore_cursor_events(true);
+        // 点击穿透会写入 WS_EX_TRANSPARENT | WS_EX_LAYERED，同样会动 DWM 合成状态；
+        // 录制态只剩红色边框、页面几乎全透明，不重挂的话 GIF 采到的就是黑底+红框
+        reapply_dwm_transparent(&win);
     }
     std::thread::sleep(Duration::from_millis(120));
     // 录制态 Esc 不再退出选区层（停止走控制条）：反注册全局 Esc，还键于系统
@@ -905,17 +975,25 @@ pub async fn recorder_start(
     Ok(())
 }
 
-/// 停止录制：停止采集线程，两遍编码 GIF，返回结果
+/// 停止录制：停止采集线程，两遍编码 GIF，返回结果。
+///
+/// 收尾分两段：join 采集线程后**先广播 `recorder-encoding`**（控制条立刻从「停止」
+/// 切到「编码中」并可显示进度），再把编码放进 blocking 线程池——大区域/长录制的
+/// 编码可达几十秒，占着 async worker 会把控制条的 IPC 一起堵住，表现为「点完停止
+/// 整个控制条定住、状态不流转」。任何失败路径都必须收控制条 + 广播错误，否则窗口
+/// 会永远停在「停止」态（会话已 take，再点只会报「没有正在进行的录制」）。
 #[tauri::command]
 pub async fn recorder_stop(app: AppHandle) -> Result<RecorderResult, String> {
-    let state = app.state::<RecorderState>();
-    let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
-    let Some(rec) = guard.take() else {
-        return Err("当前没有正在进行的录制".to_string());
+    // 会话 take 出来即释放状态锁（作用域块保证 Drop 发生在 await 之前）：
+    // 到限自停的 finish_from_capture_thread 正在等这把锁，若持锁 join 会互相等死
+    let rec = {
+        let state = app.state::<RecorderState>();
+        let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
+        let Some(rec) = guard.take() else {
+            return Err("当前没有正在进行的录制".to_string());
+        };
+        rec
     };
-    // 会话已 take 出来，状态锁必须**在 join 前释放**：到限自停的 finish_from_capture_thread
-    // 正在等这把锁，若持锁 join 等它退出就是互相等死（join 等线程、线程等锁）
-    drop(guard);
 
     // 结束录制边框：恢复点击并隐藏选区窗口
     hide_overlay(&app);
@@ -930,14 +1008,23 @@ pub async fn recorder_stop(app: AppHandle) -> Result<RecorderResult, String> {
 
     if frames_count == 0 {
         let _ = std::fs::remove_dir_all(&rec.tmp_dir);
-        return Err("未采集到任何帧，请重新录制".to_string());
+        let msg = "未采集到任何帧，请重新录制".to_string();
+        fail_with_toast(&app, msg.clone());
+        return Err(msg);
     }
 
     // 收集数据（状态锁已在 join 前释放；编码耗时可观，不持任何锁）
     let samples = rec.samples.lock().map_err(|e| e.to_string())?.clone();
     let frame_files = rec.frame_files.lock().map_err(|e| e.to_string())?.clone();
     let frame_times = rec.frame_times.lock().map_err(|e| e.to_string())?.clone();
-    let rec_dir = captures_dir()?;
+    let rec_dir = match captures_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&rec.tmp_dir);
+            fail_with_toast(&app, e.clone());
+            return Err(e);
+        }
+    };
     let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
     let mut out_path = rec_dir.join(format!("gif_{stamp}.gif"));
     let mut n = 2;
@@ -946,11 +1033,52 @@ pub async fn recorder_stop(app: AppHandle) -> Result<RecorderResult, String> {
         n += 1;
     }
 
-    // 两遍编码（PNG 逐帧解码，内存占用恒定）；delay 按每帧实际采集间隔写，速度忠实
-    encode_gif(&frame_files, &frame_times, &rec.region, rec.fps, &samples, &out_path)?;
+    // 控制条先切「编码中」，再开始耗时编码
+    emit_recorder(
+        &app,
+        EV_ENCODING,
+        serde_json::json!({ "frames": frames_count }),
+    );
 
+    // 两遍编码（PNG 逐帧解码，内存占用恒定）；delay 按每帧实际采集间隔写，速度忠实。
+    // 放到 blocking 线程池，避免长时间占用 async worker（控制条/其他命令都被拖住）。
+    let encode_region = rec.region;
+    let encode_fps = rec.fps;
+    let encode_out = out_path.clone();
+    let encode_app = app.clone();
+    let tmp_dir = rec.tmp_dir.clone();
+    let encoded = tauri::async_runtime::spawn_blocking(move || {
+        let progress = move |done: usize, total: usize| {
+            let _ = encode_app.emit(
+                EV_ENCODING_PROGRESS,
+                serde_json::json!({ "done": done, "total": total }),
+            );
+        };
+        let on_progress: &dyn Fn(usize, usize) = &progress;
+        encode_gif(
+            &frame_files,
+            &frame_times,
+            &encode_region,
+            encode_fps,
+            &samples,
+            &encode_out,
+            on_progress,
+        )
+    })
+    .await;
+    let encode_result = match encoded {
+        Ok(r) => r,
+        Err(e) => Err(format!("编码线程异常退出: {e}")),
+    };
+
+    if let Err(e) = encode_result {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        log::error!("[GIF 录制] 编码失败: {e}");
+        fail_with_toast(&app, e.clone());
+        return Err(e);
+    }
     let size_bytes = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
-    let _ = std::fs::remove_dir_all(&rec.tmp_dir);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 
     let result = RecorderResult {
         path: out_path.to_string_lossy().into_owned(),
@@ -961,9 +1089,8 @@ pub async fn recorder_stop(app: AppHandle) -> Result<RecorderResult, String> {
         size_bytes,
     };
 
-    // 主窗轻 toast（带「打开文件夹」）承担完成反馈；控制条立即收起——
-    // 已保存态的控制条与 toast 冗余（用户拍板去掉），系统通知同理不再发
-    let _ = app.emit_to("main", "recorder-done", result.clone());
+    // 主窗 toast（带「打开文件夹」）+ 控制条收窗；两边都靠事件同步状态
+    emit_recorder(&app, "recorder-done", result.clone());
     hide_control(&app);
     log::info!(
         "GIF 录制完成: {} 帧, {:?}, {:.1} KB",
@@ -1042,27 +1169,59 @@ fn capture_loop(
     let max_duration = Duration::from_secs(max_seconds as u64);
     let mut last_progress = Instant::now();
 
+    // 写盘线程：PNG 压缩（哪怕 Fast）对 1080p 也要十几到几十 ms，放在采集线程里会直接
+    // 顶掉 20fps 的 50ms 预算，而且耗时随画面复杂度波动 → 帧间隔忽长忽短，成品看着一卡一卡。
+    // 采集只管抓屏（几 ms）并按节拍投递，写盘并行完成。
+    //
+    // 队列深度按**像素量**定而不是写死帧数：4K 区域单帧 RGBA 就 33MB，固定 3 帧的峰值
+    // 内存能到 130MB，而 720p 单帧仅 3.7MB，固定 3 帧又太浅（容易反压采集线程）。
+    // 预算 96MB，夹在 2..=6 帧之间：4K → 2 帧，1080p → 6 帧，720p → 6 帧。
+    const WRITE_QUEUE_BUDGET: usize = 96 * 1024 * 1024;
+    let frame_bytes = (region.width as usize)
+        .saturating_mul(region.height as usize)
+        .saturating_mul(4)
+        .max(1);
+    let write_queue = (WRITE_QUEUE_BUDGET / frame_bytes).clamp(2, 6);
+    struct PendingFrame {
+        rgba: Vec<u8>,
+        /// 该帧采集完成的绝对时刻（相对录制开始 ms），编码时据此还原真实节奏
+        ts_ms: u64,
+    }
+    let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<PendingFrame>(write_queue);
+    let writer_tmp = tmp_dir.clone();
+    let writer_files = Arc::clone(&frame_files);
+    let writer_times = Arc::clone(&frame_times);
+    let writer_frames = Arc::clone(&frames);
+    let (w, h) = (region.width, region.height);
+    let writer = std::thread::spawn(move || {
+        let mut n: u64 = 0;
+        while let Ok(job) = frame_rx.recv() {
+            n += 1;
+            let path = writer_tmp.join(format!("{n:06}.png"));
+            if save_frame_png(&path, &job.rgba, w, h) {
+                if let Ok(mut ff) = writer_files.lock() {
+                    ff.push(path);
+                }
+                if let Ok(mut ft) = writer_times.lock() {
+                    ft.push(job.ts_ms);
+                }
+                writer_frames.fetch_add(1, Ordering::Relaxed);
+            } else {
+                log::warn!("GIF 录制：写帧 PNG 失败");
+            }
+        }
+    });
+
+    let mut timed_out = false;
+    // 下一帧的绝对截止时刻：按累加而不是「本帧耗时后补 sleep」，避免每帧误差累积导致
+    // 实际帧率漂到 17~18fps，也避免慢帧之后立刻补一帧造成节奏抖动。
+    let mut next_at = Instant::now();
     while !stop_flag.load(Ordering::Relaxed) {
         if started.elapsed() >= max_duration {
             log::info!("GIF 录制达到最大时长，自动结束");
-            // 到限收尾**在本线程内直接完成**（take 会话 → 编码 → emit → 收窗），
-            // 不等控制条调 stop——控制条窗口隐藏/失焦时定时器被节流，可能永远不调，
-            // 会话状态 Some 残留，之后每次快捷键都被「正在录制中」拦死（实测踩过）。
-            finish_from_capture_thread(
-                &app,
-                region,
-                fps,
-                started,
-                &tmp_dir,
-                &frame_files,
-                &frame_times,
-                &samples,
-                &frames,
-                &stop_flag,
-            );
-            return;
+            timed_out = true;
+            break;
         }
-        let t0 = Instant::now();
 
         // 采集：Windows 走 GDI BitBlt（几 ms/帧）；非 Windows 走 xcap。失败跳过本帧不中断
         let frame_rgba: Result<Vec<u8>, String> = {
@@ -1093,28 +1252,11 @@ fn capture_loop(
                     }
                 }
 
-                // 帧写 PNG（比裸 RGBA 省 90%+ 磁盘，内存恒定）。
-                // 同时记录该帧的真实时刻：编码时按相邻帧实际间隔写 delay，
-                // 采集再慢播放速度也忠实于录制的操作节奏
-                let n = frames.fetch_add(1, Ordering::Relaxed) + 1;
-                let path = tmp_dir.join(format!("{n:06}.png"));
-                let save_ok = image::RgbaImage::from_raw(region.width, region.height, rgba)
-                    .map(|img| {
-                        img.save_with_format(&path, image::ImageFormat::Png).is_ok()
-                    })
-                    .unwrap_or(false);
-                if save_ok {
-                    if let Ok(mut ff) = frame_files.lock() {
-                        ff.push(path);
-                    }
-                    if let Ok(mut ft) = frame_times.lock() {
-                        // 必须是**从录制开始的绝对毫秒**（started.elapsed），编码时按相邻帧
-                        // 差值算 delay；此前误写成 t0.elapsed（本帧采集耗时，每帧都是相近
-                        // 的几百 ms），相邻差 ≈ 0 恒回退理论帧率，加速修复从未生效
-                        ft.push(started.elapsed().as_millis() as u64);
-                    }
-                } else {
-                    log::warn!("GIF 录制：写帧 PNG 失败");
+                // 时间戳取「抓屏完成」而非「PNG 写完」：写盘耗时不进帧时间，
+                // 否则压缩耗时的波动会被当成真实帧间隔写进 GIF delay。
+                let ts_ms = started.elapsed().as_millis() as u64;
+                if frame_tx.send(PendingFrame { rgba, ts_ms }).is_err() {
+                    break; // 写盘线程异常退出，停止本轮采集
                 }
             }
             Err(e) => log::warn!("GIF 录制：采集帧失败: {e}"),
@@ -1135,13 +1277,47 @@ fn capture_loop(
             );
         }
 
-        // 帧率节拍
-        let elapsed = t0.elapsed();
-        if elapsed < frame_interval {
-            std::thread::sleep(frame_interval - elapsed);
+        // 帧率节拍：睡到本帧截止时刻；已经落后超过一帧则重新对齐，不追帧补拍
+        next_at += frame_interval;
+        let now = Instant::now();
+        if next_at > now {
+            std::thread::sleep(next_at - now);
+        } else if now.duration_since(next_at) > frame_interval {
+            next_at = now;
         }
     }
+    // 关队列并等写盘线程把剩余帧落盘，保证随后编码看到的帧表完整
+    drop(frame_tx);
+    let _ = writer.join();
     log::info!("GIF 录制采集线程结束：{} 帧", frames.load(Ordering::Relaxed));
+
+    // 到限收尾**在本线程内直接完成**（take 会话 → 编码 → emit → 收窗），
+    // 不等控制条调 stop——控制条窗口隐藏/失焦时定时器被节流，可能永远不调，
+    // 会话状态 Some 残留，之后每次快捷键都被「正在录制中」拦死（实测踩过）。
+    if timed_out {
+        finish_from_capture_thread(
+            &app,
+            region,
+            fps,
+            started,
+            &tmp_dir,
+            &frame_files,
+            &frame_times,
+            &samples,
+            &frames,
+            &stop_flag,
+        );
+    }
+}
+
+/// 单帧写 PNG：Fast 压缩 + Sub 滤波。image 默认是最高压缩，1080p 单帧可达几十 ms，
+/// 是录制掉帧的主因之一；Fast 体积约大 30~60%，但编码耗时降到几 ms 级。
+fn save_frame_png(path: &std::path::Path, rgba: &[u8], w: u32, h: u32) -> bool {
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::ImageEncoder;
+    let Ok(file) = std::fs::File::create(path) else { return false };
+    let enc = PngEncoder::new_with_quality(file, CompressionType::Fast, FilterType::Sub);
+    enc.write_image(rgba, w, h, image::ExtendedColorType::Rgba8).is_ok()
 }
 
 /// 到限自停的线程内收尾：take 会话 → 两遍编码 → emit done → 收选区层与控制条。
@@ -1191,7 +1367,7 @@ fn finish_from_capture_thread(
         // 停在点击穿透的录制态、Esc 已反注册，用户无从退出
         let _ = std::fs::remove_dir_all(tmp_dir);
         hide_overlay(app);
-        hide_control(app);
+        fail_with_toast(app, "保存目录不可用，本次录制已丢弃".to_string());
         crate::notify::show_notice(app, "info", "GIF 录制失败", "保存目录不可用，本次录制已丢弃");
         return;
     };
@@ -1202,11 +1378,28 @@ fn finish_from_capture_thread(
         out_path = rec_dir.join(format!("gif_{stamp}-{n}.gif"));
         n += 1;
     }
-    if let Err(e) = encode_gif(&frame_files, &frame_times, &region, fps, &samples, &out_path) {
+    // 控制条切「编码中」（到限自停时用户可能已看到自己的 stop() 报错，靠这条事件纠回）
+    emit_recorder(app, EV_ENCODING, serde_json::json!({ "frames": frames_count }));
+    let progress = |done: usize, total: usize| {
+        let _ = app.emit(
+            EV_ENCODING_PROGRESS,
+            serde_json::json!({ "done": done, "total": total }),
+        );
+    };
+    let on_progress: &dyn Fn(usize, usize) = &progress;
+    if let Err(e) = encode_gif(
+        &frame_files,
+        &frame_times,
+        &region,
+        fps,
+        &samples,
+        &out_path,
+        on_progress,
+    ) {
         log::error!("[GIF 录制] 到限自停编码失败: {e}");
         let _ = std::fs::remove_dir_all(tmp_dir);
         hide_overlay(app);
-        hide_control(app);
+        fail_with_toast(app, e.clone());
         crate::notify::show_notice(app, "info", "GIF 录制失败", &e);
         return;
     }
@@ -1221,8 +1414,8 @@ fn finish_from_capture_thread(
         duration_ms,
         size_bytes,
     };
-    // 主窗轻 toast（带「打开文件夹」）承担完成反馈；控制条立即收起，系统通知不再发
-    let _ = app.emit_to("main", "recorder-done", result.clone());
+    // 主窗轻 toast（带「打开文件夹」）承担完成反馈；控制条也收 done 事件切已保存态再收起
+    emit_recorder(app, "recorder-done", result.clone());
     hide_overlay(app);
     hide_control(app);
     log::info!(
@@ -1243,9 +1436,23 @@ fn delay_cs_for_interval(interval_ms: u64) -> u16 {
     ((interval_ms as f64 / 10.0).round() as u64).clamp(1, 250) as u16
 }
 
+/// 播放用 delay：抓屏抖动的 ±10% 归一到理论帧长，超出才按实际间隔写。
+///
+/// GIF delay 只有 10ms 粒度，20fps（理论 5cs）下抓屏时间在 45~55ms 之间抖动时，
+/// 会写成 4cs/5cs/6cs 交替 —— 肉眼看就是一卡一卡。真正掉帧（间隔明显超过一帧）
+/// 仍按实际值，保证总时长不被压缩成快放。
+fn playback_delay_cs(interval_ms: u64, nominal_ms: u64) -> u16 {
+    let nominal_ms = nominal_ms.max(1);
+    if interval_ms.abs_diff(nominal_ms) * 10 <= nominal_ms {
+        delay_cs_for_interval(nominal_ms)
+    } else {
+        delay_cs_for_interval(interval_ms)
+    }
+}
+
 #[cfg(test)]
 mod delay_tests {
-    use super::delay_cs_for_interval;
+    use super::{delay_cs_for_interval, playback_delay_cs};
 
     #[test]
     fn delay_matches_real_interval() {
@@ -1253,6 +1460,18 @@ mod delay_tests {
         assert_eq!(delay_cs_for_interval(33), 3); // 30fps
         assert_eq!(delay_cs_for_interval(7), 1); // 下限 1
         assert_eq!(delay_cs_for_interval(0), 1);
+    }
+
+    #[test]
+    fn jitter_within_ten_percent_of_frame_is_normalized() {
+        // 20fps 名义 50ms：45~55ms 都写 5cs，避免 4/5/6cs 交替造成的视觉卡顿
+        assert_eq!(playback_delay_cs(45, 50), 5);
+        assert_eq!(playback_delay_cs(50, 50), 5);
+        assert_eq!(playback_delay_cs(55, 50), 5);
+        assert_eq!(playback_delay_cs(44, 50), 4);
+        // 明显掉帧仍按真实间隔，防止快放
+        assert_eq!(playback_delay_cs(90, 50), 9);
+        assert_eq!(playback_delay_cs(20, 50), 2);
     }
 
     #[test]
@@ -1270,6 +1489,8 @@ fn encode_gif(
     fps: u32,
     samples: &[u8],
     out_path: &std::path::Path,
+    // 编码进度回调（已完成帧数、总帧数）：大文件编码耗时长，控制条据此显示进度
+    on_progress: &dyn Fn(usize, usize),
 ) -> Result<(), String> {
     let w = region.width as u16;
     let h = region.height as u16;
@@ -1297,7 +1518,8 @@ fn encode_gif(
 
     // 每帧 delay = 与下一帧的**实际间隔**（时间戳缺项/错位时回退理论帧率，宁快不错乱）。
     // 间隔超 2.5s 拆重复帧铺完（GIF 单帧 delay 上限 2.55s），总时长与录制节奏一致
-    let fallback_cs = delay_cs_for_interval((1000 / fps.max(1)) as u64);
+    let nominal_ms = (1000 / fps.max(1)) as u64;
+    let fallback_cs = delay_cs_for_interval(nominal_ms);
 
     for (i, path) in frame_files.iter().enumerate() {
         let img = image::open(path)
@@ -1328,7 +1550,7 @@ fn encode_gif(
         let this_ms = frame_times.get(i).copied();
         let next_ms = frame_times.get(i + 1).copied();
         let mut delay_cs = match (this_ms, next_ms) {
-            (Some(a), Some(b)) if b > a => delay_cs_for_interval(b - a),
+            (Some(a), Some(b)) if b > a => playback_delay_cs(b - a, nominal_ms),
             _ => fallback_cs,
         };
 
@@ -1343,6 +1565,12 @@ fn encode_gif(
             if delay_cs == 0 {
                 break;
             }
+        }
+
+        // 每 10 帧推进一次进度（总帧数可能上万，逐帧 emit 会淹掉 IPC）
+        let done = i + 1;
+        if done % 10 == 0 || done == frame_files.len() {
+            on_progress(done, frame_files.len());
         }
     }
 
@@ -1801,4 +2029,6 @@ fn show_control_window(app: &AppHandle, region: &RecRegion) {
     // 不抢焦点：录制的是用户正在操作的应用，控制条点按无需焦点
     crate::webview_mem::on_shown(app, RECORDER_CONTROL_LABEL);
     crate::win_taskbar::show(&win);
+    // 控制条也是透明浮窗，show 后重挂 DWM 透明防黑底（同选区层）
+    reapply_dwm_transparent(&win);
 }

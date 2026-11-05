@@ -26,6 +26,7 @@ import { useTitlebarWidget } from '../composables/useTitlebarWidget'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import type { Countdown, ExtensionEntry, Note, RecorderResult, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
+import { hasFloatingSurface } from '../utils/floatingSurface'
 import { FileText, FolderOpen, LayoutDashboard, ListTodo, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import { useTheme } from '../composables/useTheme'
@@ -806,6 +807,11 @@ onMounted(async () => {
       const kb = (r.size_bytes / 1024).toFixed(1)
       showToast(`GIF 已保存（${r.frames} 帧，${kb} KB）`, { label: '打开文件夹', onClick: () => void tauriApi.recorderReveal(r.path) })
     })
+    // GIF 收尾失败（recorder.rs）：主窗 toast 说明原因，别让用户只看到控制条闪一下
+    unlistenRecorderError = await on<string>('recorder-error', (e) => {
+      if (!e.payload) return
+      showToast(`GIF 保存失败：${e.payload}`)
+    })
     // 截图完成（recorder.rs）：轻 toast「已复制」（不落盘，无「打开文件夹」；不用右下角系统通知）
     unlistenShotDone = await on<{ message: string; size_bytes: number; width: number; height: number }>('shot-done', (e) => {
       const p = e.payload
@@ -823,6 +829,8 @@ onMounted(async () => {
   await restoreChatPanel()
   // 点击抽屉外部收起（捕获阶段，覆盖 main-area / 标题栏 / 侧边栏等一切抽屉外区域）
   document.addEventListener('pointerdown', onDocPointerDown, true)
+  // ESC 关闭面板（浏览器预览同样生效；收进托盘只在 Tauri 环境执行）
+  window.addEventListener('keydown', onMainEscape)
 })
 
 let unlistenStickies: (() => void) | null = null
@@ -841,6 +849,7 @@ let unlistenNotesShortcut: (() => void) | null = null
 let unlistenOpenExtSettings: (() => void) | null = null
 let unlistenChatMode: (() => void) | null = null
 let unlistenRecorderDone: (() => void) | null = null
+let unlistenRecorderError: (() => void) | null = null
 let unlistenShotDone: (() => void) | null = null
 
 onUnmounted(() => {
@@ -861,11 +870,13 @@ onUnmounted(() => {
   unlistenOpenExtSettings?.()
   unlistenChatMode?.()
   unlistenRecorderDone?.()
+  unlistenRecorderError?.()
   unlistenShotDone?.()
   window.removeEventListener('suda-open-web-panel', onSudaWebPanelEvent)
   window.removeEventListener('keydown', onSearchKeydown)
   window.removeEventListener('keydown', onChatKeydown)
   document.removeEventListener('pointerdown', onDocPointerDown, true)
+  window.removeEventListener('keydown', onMainEscape)
 })
 
 function hideBootSplash() {
@@ -1065,6 +1076,30 @@ function closeChatDrawer() {
   if (!chatOpen.value) return
   chatOpen.value = false
   persistChatPanelSize()
+}
+
+// ---- ESC 关闭：就近收最上层面板（速达内嵌网页 → AI 对话抽屉），无面板时主窗收进托盘 ----
+// 弹窗/右键菜单/下拉都有自己的 ESC 关闭逻辑，命中它们时直接让行；其余情况
+// ESC 一律收主窗（即使光标在输入框/编辑区，与「打开面板→ESC 收起」的预期一致）。
+// 判定口径收在 utils/floatingSurface.ts 一份：新写的浮层在根元素加
+// `data-floating-surface` 即自动纳入，不要再往这里加 class 名字
+function onMainEscape(e: KeyboardEvent) {
+  if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return
+  if (hasFloatingSurface()) return
+  if (activeView.value === 'suda-web' && sudaWebPanel.value) {
+    e.preventDefault()
+    closeSudaWebPanel()
+    return
+  }
+  if (chatOpen.value) {
+    e.preventDefault()
+    closeChatDrawer()
+    return
+  }
+  if (!isTauri()) return
+  e.preventDefault()
+  // 与标题栏「最小化到托盘」同一条命令：走 Rust 侧显隐状态位，全局快捷键/悬浮球联动不错位
+  void tauriApi.hideToTray().catch(() => {})
 }
 
 // 用 pointerdown 的捕获阶段拿「按下」事件，比 click 更早，避免和抽屉内部按钮的

@@ -110,6 +110,13 @@ pub fn meta_set(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<(
     Ok(())
 }
 
+/// 删除一条 meta（**不要写空串当"已清除"**：`sync_status` 用 `is_some()` 判是否已配对，
+/// 空串会被当成"有空间"，表现为关闭同步后仍显示已开启、且再也回不到设口令的入口）
+pub fn meta_del(conn: &Connection, key: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM sync_meta WHERE k = ?", params![key])?;
+    Ok(())
+}
+
 // ---------------- guard（引擎应用远端数据期间静默触发器） ----------------
 
 /// 显式 begin/end 对（引擎在应用远端记录的事务外套用；end 幂等）。
@@ -173,6 +180,8 @@ mod tests {
 
         meta_set(&conn, "pull_seq", "42").unwrap();
         assert_eq!(meta_get(&conn, "pull_seq").unwrap().as_deref(), Some("42"));
+        meta_del(&conn, "pull_seq").unwrap();
+        assert_eq!(meta_get(&conn, "pull_seq").unwrap(), None, "关闭同步必须删键，不能写空串");
         assert_eq!(meta_get(&conn, "不存在").unwrap(), None);
     }
 }

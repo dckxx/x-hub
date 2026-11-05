@@ -251,6 +251,9 @@ pub fn show_window(app: &AppHandle) {
         let _ = win.show();
     }
     let _ = win.set_focus();
+    // 窗口是前台不等于页面拿到了键盘：不补这一刀，Ctrl+Enter/ESC 都得先点一下
+    // 窗口才生效（见 webview_focus.rs 的取证）
+    crate::webview_focus::focus_webview(app, LABEL);
     // 通知窗内页面：重新拉一次会话/模型（期间主窗可能改过配置或发过消息）
     let _ = app.emit_to(LABEL, "chat-window-shown", ());
 }

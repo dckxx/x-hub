@@ -45,7 +45,6 @@ async fn send(method: reqwest::Method, path: &str, token: &str, device_id: Optio
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        // 401 = 会话/设备失效：交给调用方清本地绑定态（不在这里清，避免误清账号 token）
         let parsed: Option<Value> = serde_json::from_str(&text).ok();
         let code = parsed
             .as_ref()
@@ -57,10 +56,17 @@ async fn send(method: reqwest::Method, path: &str, token: &str, device_id: Optio
             .and_then(|v| v.get("message"))
             .and_then(Value::as_str)
             .unwrap_or("");
+        // 401/403 = 会话或设备失效。错误码前缀固定为 `AUTH_*`，调用方（commands 层）
+        // 据此清掉本地设备绑定、回到「未配对」让用户重新开启——否则设备被撤销后
+        // 本机永远 401，而同步面板还显示「已开启」，用户没有任何自愈路径
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(format!("AUTH_REVOKED: {}", if msg.is_empty() { "登录或设备授权已失效，请重新开启云同步" } else { msg }));
+        }
         return Err(format!("{}: {}", code.to_uppercase(), if msg.is_empty() { format!("服务端返回 {}", status.as_u16()) } else { msg.to_string() }));
     }
     serde_json::from_str(&text).map_err(|e| format!("INTERNAL: 响应解析失败 {e}"))
 }
+
 
 /// 主人操作（建空间 / 配对 / 撤销设备 / 换口令）：平台账号 token
 pub async fn owner_post(path: &str, body: Value) -> Result<Value, String> {

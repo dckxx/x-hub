@@ -47,6 +47,7 @@ mod todo_reminder;
 mod todo_recurrence;
 mod tray;
 pub mod updater;
+mod webview_focus;
 mod webview_mem;
 mod win_taskbar;
 mod xhub_api;
@@ -851,10 +852,14 @@ pub fn run() {
                 // 启动即前台：避免窗口偶尔出现在其他窗口后面；稍等再补一次焦点，
                 // 绕开 Windows 前台锁定的瞬时限制
                 let _ = window.set_focus();
+                crate::webview_focus::focus_webview(app.handle(), "main");
                 let handle = window.clone();
+                let app_handle = app.handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(250));
                     let _ = handle.set_focus();
+                    // 首帧渲染完 webview 子窗才稳定：这时再补一次键盘焦点（同上）
+                    crate::webview_focus::focus_webview(&app_handle, "main");
                 });
             }
 
@@ -947,6 +952,12 @@ pub fn run() {
                             let minimized = win_for_events.is_minimized().unwrap_or(false);
                             crate::floating_ball::set_main_minimized(&app_handle, minimized);
                             schedule_geometry_save(&app_handle);
+                        }
+                        // 从别的应用切回主窗（点任务栏 / Alt+Tab / 点窗口任意处）：把键盘
+                        // 焦点补进 webview。窗口被激活 ≠ 焦点进了页面，缺这一刀就是
+                        // 「切回来按 ESC 没反应，得先点一下」（见 webview_focus.rs）
+                        tauri::WindowEvent::Focused(true) => {
+                            crate::webview_focus::focus_webview(&app_handle, "main");
                         }
                         _ => {}
                     }

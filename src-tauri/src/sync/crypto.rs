@@ -33,14 +33,23 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-pub fn hex_decode(s: &str) -> Vec<u8> {
+/// 严格解码 hex；非法输入返回 None **而不是 panic**——喂进来的是钥匙串里的值，
+/// 被外部改写/截断时不能让命令线程崩掉（下面 load_* 一律按「没有密钥」降级处理）
+pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
     let s = s.trim();
     let bytes = s.as_bytes();
-    assert!(bytes.len() % 2 == 0, "odd hex length");
-    (0..bytes.len() / 2)
-        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).expect("invalid hex"))
-        .collect()
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for i in 0..bytes.len() / 2 {
+        let hi = (bytes[i * 2] as char).to_digit(16)?;
+        let lo = (bytes[i * 2 + 1] as char).to_digit(16)?;
+        out.push((hi * 16 + lo) as u8);
+    }
+    Some(out)
 }
+
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
@@ -132,11 +141,6 @@ pub fn open_record(
     String::from_utf8(pt).map_err(|_| "PAYLOAD_NOT_UTF8".to_string())
 }
 
-#[cfg(test)]
-fn new_ulid() -> String {
-    ulid::Ulid::new().to_string()
-}
-
 // ---------------- 本机密钥存取（系统钥匙串；与账号 token 同级保护） ----------------
 
 const KEYRING_SERVICE: &str = "x-hub-sync";
@@ -168,12 +172,12 @@ pub fn store_keys(record_key: &[u8], recovery_prf: &[u8]) -> Result<(), String> 
 
 pub fn load_record_key() -> Option<[u8; 32]> {
     let hex = keyring_get(KEY_RECORD)?;
-    let v = hex_decode(&hex);
+    let v = hex_decode(&hex)?;
     (v.len() == 32).then(|| v.try_into().unwrap())
 }
 
 pub fn load_recovery_prf() -> Option<Vec<u8>> {
-    keyring_get(KEY_RECOVERY).map(|h| hex_decode(&h))
+    keyring_get(KEY_RECOVERY).and_then(|h| hex_decode(&h)).filter(|v| v.len() == 32)
 }
 
 pub fn store_device_token(token: &str) -> Result<(), String> {
@@ -195,5 +199,82 @@ pub fn load_device_id() -> Option<String> {
 pub fn clear_local_keys() {
     for k in [KEY_RECORD, KEY_RECOVERY, KEY_DEVICE, KEY_DEVICE_ID] {
         keyring_del(k);
+    }
+}
+
+/// 只清设备绑定（设备被服务端撤销 / 会话失效时用）：留 space 绑定与 record_key，
+/// 用户重新输入口令即可走 `sync_enable` 的 rotate 路径自愈，不必重建空间
+pub fn clear_device_binding() {
+    for k in [KEY_DEVICE, KEY_DEVICE_ID] {
+        keyring_del(k);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 跨端锚点：这份向量由小程序端的 noble 生成（x-hub-miniprogram/scripts/gen-sync-vectors.mjs），
+    /// 桌面端必须逐字节复现——KDF 参数、口令归一化（trim + NFC）、HKDF info/salt、AAD 拼法、
+    /// 密文长度任何一处漂移都会让「手机加密、桌面解不开」，而且在真机上才发现。
+    #[test]
+    fn matches_miniprogram_test_vectors() {
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("test_vectors.json")).expect("test_vectors.json");
+        let passphrase = v["input"]["passphrase"].as_str().unwrap();
+        let salt = hex_decode(v["input"]["salt_hex"].as_str().unwrap()).unwrap();
+        let space_id = v["input"]["space_id"].as_str().unwrap();
+        let expect = &v["expect"];
+
+        let master = derive_master(passphrase, &salt);
+        assert_eq!(hex_encode(&master), expect["master_hex"].as_str().unwrap(), "scrypt 派生不一致");
+
+        let record_key = derive_record_key(&master, space_id);
+        assert_eq!(hex_encode(&record_key), expect["record_key_hex"].as_str().unwrap());
+
+        let prf = derive_recovery_prf(&master, space_id);
+        assert_eq!(hex_encode(&prf), expect["recovery_prf_hex"].as_str().unwrap());
+        assert_eq!(sha256_hex(&prf), expect["recovery_hash_hex"].as_str().unwrap());
+
+        let rec = &expect["record"];
+        let entity = rec["entity"].as_str().unwrap();
+        let uid = rec["uid"].as_str().unwrap();
+        let updated_at = rec["updated_at"].as_i64().unwrap();
+        let payload = rec["payload_json"].as_str().unwrap();
+        let nonce: [u8; NONCE_LEN] = hex_decode(rec["nonce_hex"].as_str().unwrap())
+            .unwrap()
+            .as_slice()
+            .try_into()
+            .unwrap();
+        let ct = hex_decode(rec["ct_hex"].as_str().unwrap()).unwrap();
+
+        // AAD 口径
+        assert_eq!(
+            String::from_utf8(record_aad(entity, uid, updated_at)).unwrap(),
+            rec["aad"].as_str().unwrap()
+        );
+        // 明文摘要（载荷序列化口径）
+        assert_eq!(sha256_hex(payload.as_bytes()), rec["payload_sha256_hex"].as_str().unwrap());
+        // 同一个 nonce 必须封出同一串密文（AEAD 是确定性的）
+        let sealed = seal_record(&record_key, entity, uid, updated_at, payload, &nonce).unwrap();
+        assert_eq!(hex_encode(&sealed), hex_encode(&ct), "密文与小程序端不一致");
+        // 反向：能解开手机端产出的密文
+        assert_eq!(open_record(&record_key, entity, uid, updated_at, &nonce, &ct).unwrap(), payload);
+    }
+
+    #[test]
+    fn hex_decode_rejects_garbage_without_panicking() {
+        // 钥匙串里的值被外部改写/截断时不能 panic 崩掉命令线程，只能当「没有密钥」
+        assert_eq!(hex_decode("abc"), None);
+        assert_eq!(hex_decode("zz"), None);
+        assert_eq!(hex_decode(""), Some(Vec::new()));
+        assert_eq!(hex_decode("00FF"), Some(vec![0x00, 0xFF]));
+    }
+
+    #[test]
+    fn passphrase_normalization_trims_and_nfc() {
+        // 全角空格 / 首尾空白不参与派生；NFC 让「é = e + 组合音标」与预组合形态等价
+        assert_eq!(normalize_passphrase("  口令 abc  "), "口令 abc");
+        assert_eq!(normalize_passphrase("e\u{0301}"), "\u{00e9}");
     }
 }

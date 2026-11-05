@@ -16,10 +16,17 @@ const elapsed = ref(0)
 const done = ref<RecorderResult | null>(null)
 const error = ref('')
 const stopping = ref(false)
+// 编码阶段（stop 后到 GIF 落盘完成）：大录制编码可达几十秒，必须让状态可见地流动，
+// 不能把「停止」按钮继续挂在窗口上（用户会以为卡死）
+const encoding = ref(false)
+const encodeDone = ref(0)
+const encodeTotal = ref(0)
 // 本次录制的时长上限（秒）：到达自动触发停止（旧实现只停采集不收尾，计时一直走）
 const maxMs = ref(0)
 /** 已保存态 5 秒无操作自动隐藏（鼠标悬停在控制条上时暂停倒计时） */
 let hideTimer: ReturnType<typeof setTimeout> | null = null
+/** 失败态停留几秒后自动收窗 */
+let errorTimer: ReturnType<typeof setTimeout> | null = null
 const hovering = ref(false)
 let timer: ReturnType<typeof setInterval> | null = null
 let startedAt = Date.now()
@@ -27,6 +34,9 @@ let autoStopped = false
 let unlistenProgress: (() => void) | null = null
 let unlistenStart: (() => void) | null = null
 let unlistenDone: (() => void) | null = null
+let unlistenEncoding: (() => void) | null = null
+let unlistenEncodeProgress: (() => void) | null = null
+let unlistenError: (() => void) | null = null
 
 function fmt(ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -38,13 +48,30 @@ function fmt(ms: number): string {
 async function stop() {
   if (done.value || stopping.value) return
   stopping.value = true
-  // 立即冻结计时，避免编码期间"时间还在跑"
+  // 立即切「编码中」并冻结计时：停止按钮就此消失，编码再久也不会看着像卡在录制态
+  encoding.value = true
+  encodeDone.value = 0
+  encodeTotal.value = 0
+  error.value = ''
+  clearErrorHide()
   stopTimer()
   try {
-    done.value = await tauriApi.recorderStop()
-    scheduleAutoHide()
+    const r = await tauriApi.recorderStop()
+    if (r) {
+      done.value = r
+      encoding.value = false
+      scheduleAutoHide()
+    }
   } catch (e) {
-    error.value = String(e)
+    const msg = String(e)
+    // 到限自停已由采集线程接管收尾：本命令拿不到会话属正常，等 encoding/done 事件
+    if (msg.includes('没有正在进行')) {
+      encoding.value = true
+    } else if (!done.value) {
+      encoding.value = false
+      error.value = msg
+      scheduleErrorHide()
+    }
   } finally {
     stopping.value = false
   }
@@ -70,10 +97,30 @@ function clearAutoHide() {
   }
 }
 
+/** 失败态 5 秒后自动收窗（悬停暂停，同已保存态） */
+function scheduleErrorHide() {
+  clearErrorHide()
+  errorTimer = setTimeout(() => {
+    if (hovering.value) {
+      scheduleErrorHide()
+      return
+    }
+    void hide()
+  }, 5000)
+}
+
+function clearErrorHide() {
+  if (errorTimer) {
+    clearTimeout(errorTimer)
+    errorTimer = null
+  }
+}
+
 async function cancel() {
   if (stopping.value) return
   stopTimer()
   clearAutoHide()
+  clearErrorHide()
   try {
     await tauriApi.recorderCancel()
   } catch {
@@ -120,10 +167,14 @@ onMounted(async () => {
       done.value = null
       error.value = ''
       stopping.value = false
+      encoding.value = false
+      encodeDone.value = 0
+      encodeTotal.value = 0
       elapsed.value = 0
       maxMs.value = Math.max(0, (p.max_seconds || 0) * 1000)
       autoStopped = false
       clearAutoHide()
+      clearErrorHide()
       startTimer()
     })
     unlistenProgress = await listen('recorder-progress', (e) => {
@@ -135,15 +186,46 @@ onMounted(async () => {
         void stop()
       }
     })
+    // 编码开始（stop 命令或采集线程到限自停都会发）：切「编码中」并清掉可能的竞态报错
+    unlistenEncoding = await listen('recorder-encoding', (e) => {
+      const p = e.payload as { frames?: number }
+      if (done.value) return
+      encoding.value = true
+      stopping.value = true
+      encodeDone.value = 0
+      encodeTotal.value = p.frames || 0
+      error.value = ''
+      clearErrorHide()
+      stopTimer()
+    })
+    unlistenEncodeProgress = await listen('recorder-encoding-progress', (e) => {
+      const p = e.payload as { done: number; total: number }
+      encodeDone.value = p.done || 0
+      encodeTotal.value = p.total || 0
+    })
     // 线程内到限自停（recorder.rs finish_from_capture_thread）也会发 recorder-done：
-    // 控制条自己没调 stop，靠这条事件收尾置已保存态（手动 stop 路径收到时值相同，幂等）
+    // 控制条自己没调 stop 也能靠事件收尾置已保存态（手动 stop 路径收到时值相同，幂等）
     unlistenDone = await listen('recorder-done', (e) => {
       const r = e.payload as RecorderResult
       if (!r || done.value) return
       stopTimer()
       autoStopped = true
+      encoding.value = false
+      stopping.value = false
+      error.value = ''
+      clearErrorHide()
       done.value = r
       scheduleAutoHide()
+    })
+    unlistenError = await listen('recorder-error', (e) => {
+      if (done.value) return
+      const p = e.payload as string | { message?: string }
+      const msg = typeof p === 'string' ? p : p?.message || 'GIF 保存失败'
+      stopTimer()
+      encoding.value = false
+      stopping.value = false
+      error.value = msg
+      scheduleErrorHide()
     })
   } catch {
     // 事件监听失败不阻塞手动停止
@@ -153,9 +235,13 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   stopTimer()
   clearAutoHide()
+  clearErrorHide()
   unlistenProgress?.()
   unlistenStart?.()
   unlistenDone?.()
+  unlistenEncoding?.()
+  unlistenEncodeProgress?.()
+  unlistenError?.()
 })
 </script>
 
@@ -165,18 +251,36 @@ onBeforeUnmount(() => {
     @mouseenter="hovering = true"
     @mouseleave="hovering = false"
   >
+    <!-- 编码中：停止按钮立即消失，进度可见（大文件编码可能几十秒） -->
+    <template v-if="!done && encoding">
+      <span class="rc-dot rc-dot-encoding"></span>
+      <span class="rc-time">{{ fmt(elapsed) }}</span>
+      <span class="rc-encoding">
+        编码中…
+        <template v-if="encodeTotal > 0">{{ Math.min(encodeDone, encodeTotal) }}/{{ encodeTotal }}</template>
+      </span>
+    </template>
+
+    <!-- 保存失败：短暂展示原因后自动收窗 -->
+    <template v-else-if="!done && error">
+      <span class="rc-time rc-fail">保存失败</span>
+      <button class="rc-x" type="button" title="关闭" @click="hide">
+        <X :size="14" :stroke-width="2" />
+      </button>
+      <p class="rc-error">{{ error }}</p>
+    </template>
+
     <!-- 进行中：计时 + 停止 -->
-    <template v-if="!done">
+    <template v-else-if="!done">
       <span class="rc-dot"></span>
       <span class="rc-time">{{ fmt(elapsed) }}</span>
       <button class="rc-stop" type="button" :disabled="stopping" @click="stop">
-        <Square v-if="!stopping" :size="12" :fill="'currentColor'" :stroke-width="2" />
-        {{ stopping ? '处理中…' : '停止' }}
+        <Square :size="12" :fill="'currentColor'" :stroke-width="2" />
+        停止
       </button>
       <button class="rc-x" type="button" :disabled="stopping" title="取消并丢弃" @click="cancel">
         <X :size="14" :stroke-width="2" />
       </button>
-      <p v-if="error" class="rc-error">{{ error }}</p>
     </template>
 
     <!-- 完成：结果展示（5 秒无操作自动隐藏） -->
@@ -229,6 +333,26 @@ onBeforeUnmount(() => {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
+}
+.rc-time.rc-fail {
+  color: #ff8b8b;
+  white-space: nowrap;
+}
+.rc-dot-encoding {
+  background: #f5b942;
+  animation: rc-pulse-encoding 1.2s infinite;
+}
+@keyframes rc-pulse-encoding {
+  0% { box-shadow: 0 0 0 0 rgba(245, 185, 66, 0.5); }
+  70% { box-shadow: 0 0 0 6px rgba(245, 185, 66, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(245, 185, 66, 0); }
+}
+.rc-encoding {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #f5b942;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .rc-stop {
   display: inline-flex;

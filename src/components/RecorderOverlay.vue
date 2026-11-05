@@ -265,15 +265,28 @@ function onPointerUp() {
 // 选区矩形样式
 function rectStyle() {
   const { x0, y0, x1, y1 } = drag.value
-  // 录制时外扩 4px：红色录制框**整体画在选区矩形外侧**（border 占 -4~-5.5px），
-  // GIF 只采选区矩形内部的像素，框线永远不会入画；屏幕上照常显示提示录制范围
-  const o = recording.value ? 4 : 0
+  // 录制时外扩 5px：红色录制框**整体画在选区矩形外侧**（border 3px 占 -5~-3px），
+  // GIF 只采选区矩形内部的像素，框线永远不会入画；屏幕上照常显示提示录制范围。
+  // 留 2px 余量是给 DPI 缩放下的亚像素抗锯齿——贴着选区描边时边缘会渗进一两个像素
+  const o = recording.value ? 5 : 0
   const left = Math.min(x0, x1) - o
   const top = Math.min(y0, y1) - o
   const w = Math.abs(x1 - x0) + o * 2
   const h = Math.abs(y1 - y0) + o * 2
   return { left: `${left}px`, top: `${top}px`, width: `${w}px`, height: `${h}px` }
 }
+
+/**
+ * 是否已有真实选区（宽高都 > 0）。
+ *
+ * `drag.active` 在鼠标按下那一刻就为真，此时矩形还是 0×0：若直接拿它当「有选区」
+ * 收掉全屏蒙版，屏幕会先整体变亮、等拖动出矩形再突然压暗回去（一闪）。所以蒙版
+ * 与「有选区」一律以真实宽高判定。
+ */
+const hasRect = computed(() => {
+  const { x0, y0, x1, y1, active } = drag.value
+  return active && Math.abs(x1 - x0) > 0 && Math.abs(y1 - y0) > 0
+})
 
 /** 画笔预览 polyline points：viewBox 0 0 100 100 + preserveAspectRatio=none 拉伸铺满选区，
  *  vector-effect 保线宽恒定不随拉伸变形 */
@@ -518,12 +531,15 @@ onBeforeUnmount(() => {
     @pointerup="onPointerUp"
     @dblclick="onDblClick"
   >
-    <!-- 暗色遮罩 + 光标（录制中隐藏，避免压暗画面被采进 GIF） -->
-    <div v-show="!recording" class="ro-mask"></div>
+    <!-- 无选区时才铺全屏蒙版（录制中隐藏，避免压暗画面被采进 GIF）；有选区
+         （默认窗口预选 / 手动框选）由 .ro-rect 的超大 box-shadow 只压暗选区外，
+         选区内保持真实亮度 = 高亮。判据用 hasRect 而非 drag.active：后者在按下的
+         瞬间就为真，会让蒙版闪一下 -->
+    <div v-show="!recording && !hasRect" class="ro-mask"></div>
 
     <!-- 选区边框（录制中切换为红色录制框 + REC 标识；截图调整态显示把手与画笔层） -->
     <div
-      v-if="drag.active"
+      v-if="hasRect"
       class="ro-rect"
       :class="{ 'ro-rect--rec': recording, 'ro-rect--adjust': adjusting }"
       :style="rectStyle()"
@@ -608,6 +624,14 @@ onBeforeUnmount(() => {
         <div class="ro-handle" data-h="sw"></div>
         <div class="ro-handle" data-h="w"></div>
       </template>
+      <!-- 四角白色 L 角标：未进调整态（跟随预选 / 刚拖完松手）时把选区轮廓钉出来，
+           亮底暗底都抓眼；调整态已有 8 向把手，不再重复画 -->
+      <template v-if="!recording && !adjusting">
+        <span class="ro-corner" data-c="nw"></span>
+        <span class="ro-corner" data-c="ne"></span>
+        <span class="ro-corner" data-c="sw"></span>
+        <span class="ro-corner" data-c="se"></span>
+      </template>
       <div class="ro-size" v-if="sizeText">{{ sizeText }}</div>
       <div v-if="recording" class="ro-rec-chip">
         <span class="ro-rec-dot"></span>
@@ -642,10 +666,10 @@ onBeforeUnmount(() => {
       <button class="ro-tool" type="button" title="重新框选" @click="resetToSelect">
         <X :size="15" :stroke-width="2" aria-hidden="true" />
       </button>
-      <button class="ro-tool ro-pin" type="button" title="钉住：截图钉在屏幕原位置置顶显示，同时复制剪贴板" :disabled="capturing" @click="pinShot">
+      <button class="ro-tool ro-pin" type="button" title="钉住：截图钉在屏幕原位置置顶显示，同时复制剪贴板" :disabled="capturing" @click="pinShot()">
         <Pin :size="15" :stroke-width="2" aria-hidden="true" />
       </button>
-      <button class="ro-tool ro-confirm" type="button" title="确认截图：复制到剪贴板" :disabled="capturing" @click="captureShot">
+      <button class="ro-tool ro-confirm" type="button" title="确认截图：复制到剪贴板" :disabled="capturing" @click="captureShot()">
         <Check :size="15" :stroke-width="2.4" aria-hidden="true" />
       </button>
     </div>
@@ -653,7 +677,7 @@ onBeforeUnmount(() => {
     <!-- 控制面板（录制模式且有选区、未录制时显示，贴选框下方可随框移动）。
          帧率不在此选择：统一用设置默认值（recorder_fps）。
          时长/取消/开始录制成一排横排图标钮；跟随态（未单击）下也显示，开始即用当前跟随框 -->
-    <div v-if="mode === 'record' && drag.active && !recording" class="ro-panel" :style="toolbarStyle">
+    <div v-if="mode === 'record' && hasRect && !recording" class="ro-panel" :style="toolbarStyle">
       <div class="ro-seg">
         <button
           v-for="t in TIME_OPTIONS"
@@ -700,10 +724,54 @@ onBeforeUnmount(() => {
 }
 .ro-rect {
   position: absolute;
-  border: 1.5px solid var(--brand-500, #5b5bf5);
-  background: rgba(91, 91, 245, 0.08);
+  border: 2px solid var(--brand-500, #5b5bf5);
+  background: transparent;
   pointer-events: none;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35) inset;
+  /* 四层叠加，保证亮底（白文档/白网页）与暗底（终端/深色桌面）上都一眼看得见：
+     ① 内侧高光（贴住内容一侧，圈出边界）
+     ② 品牌色主体描边（2px，上面的 border）
+     ③ 外侧白环（1.5px）+ 白环外的深色定界（3px）：亮底靠深色层、暗底靠白环
+     ④ 最外 100vmax 阴影 = 只给选区开洞的蒙版（选区保持真实亮度）
+     旧实现只有 1.5px 细线，用户反馈「框不明显」，见 2026-11-05 反馈 */
+  box-shadow:
+    0 0 0 1.5px rgba(255, 255, 255, 0.95),
+    0 0 0 3px rgba(10, 12, 20, 0.55),
+    0 0 0 100vmax rgba(8, 10, 18, 0.5),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+}
+/* 四角角标：未进调整态时（跟随预选 / 刚拖完松手）用白色 L 形角标把选区钉住。
+   白 + 深色投影的组合在深浅背景上都立得住，比单纯描边更抓眼 */
+.ro-corner {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border: 0 solid #fff;
+  pointer-events: none;
+  filter: drop-shadow(0 0 2px rgba(8, 10, 18, 0.85));
+}
+.ro-corner[data-c='nw'] {
+  top: -2px;
+  left: -2px;
+  border-top-width: 3px;
+  border-left-width: 3px;
+}
+.ro-corner[data-c='ne'] {
+  top: -2px;
+  right: -2px;
+  border-top-width: 3px;
+  border-right-width: 3px;
+}
+.ro-corner[data-c='sw'] {
+  bottom: -2px;
+  left: -2px;
+  border-bottom-width: 3px;
+  border-left-width: 3px;
+}
+.ro-corner[data-c='se'] {
+  bottom: -2px;
+  right: -2px;
+  border-bottom-width: 3px;
+  border-right-width: 3px;
 }
 /* 调整态：去掉底色只留框，画笔层与把手可见 */
 .ro-rect--adjust {
@@ -734,10 +802,28 @@ onBeforeUnmount(() => {
 .ro-handle[data-h='s'] { bottom: -6px; left: 50%; margin-left: -6px; cursor: ns-resize; }
 .ro-handle[data-h='sw'] { bottom: -6px; left: -6px; cursor: nesw-resize; }
 .ro-handle[data-h='w'] { top: 50%; left: -6px; margin-top: -6px; cursor: ew-resize; }
+/* 录制态：红色录制框画在选区外侧（rectStyle 外扩），GIF 采不到；实线 + 白环 +
+   呼吸光晕，跨深/浅背景都能一眼看出「正在录这一块」，旧实现 1.5px 虚线太细 */
 .ro-rect--rec {
-  border: 1.5px dashed #ff5a5a;
+  border: 3px solid #ff4d4d;
   background: transparent;
-  box-shadow: none;
+  box-shadow:
+    0 0 0 1.5px rgba(255, 255, 255, 0.9),
+    0 0 12px 2px rgba(255, 77, 77, 0.5);
+  animation: ro-rec-frame 1.4s ease-in-out infinite;
+}
+@keyframes ro-rec-frame {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1.5px rgba(255, 255, 255, 0.9),
+      0 0 8px 2px rgba(255, 77, 77, 0.35);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1.5px rgba(255, 255, 255, 0.95),
+      0 0 20px 5px rgba(255, 77, 77, 0.7);
+  }
 }
 .ro-rec-chip {
   position: absolute;

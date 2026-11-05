@@ -120,11 +120,20 @@ async function syncNow() {
     const r = await tauriApi.syncNow();
     lastSyncAt.value = Date.now();
     localStorage.setItem(LAST_SYNC_KEY, String(lastSyncAt.value));
-    showToast(
-      r.applied + r.pushed > 0
-        ? `同步完成：收到 ${r.applied} 条，推送 ${r.pushed} 条`
-        : '已是最新',
-    );
+    // failed = 拉取时解不开/应用不了的记录数 + 推送被服务端拒绝的条目数。
+    // 只报「已是最新」会让静默失败看起来一切正常（比如密钥轮换后永远解不开），必须说出来
+    if (r.failed > 0) {
+      showToast(
+        `同步完成但有 ${r.failed} 条未处理（收到 ${r.applied} 条，推送 ${r.pushed} 条）` +
+          '——可能口令与云端数据不匹配，或记录冲突，稍后重试仍失败请联系支持',
+      )
+    } else {
+      showToast(
+        r.applied + r.pushed > 0
+          ? `同步完成：收到 ${r.applied} 条，推送 ${r.pushed} 条`
+          : '已是最新',
+      )
+    }
     await loadStatus();
   } catch (e) {
     showToast(`同步失败：${String(e)}`);

@@ -1,7 +1,7 @@
 //! 扫码配对（docs/sync-protocol.md §3.2）：桌面建会话 → 出码 → 轮询。
 //! HTTP 全部在锁外（commands 层编排），本模块只组请求与解析。
 
-use serde_json::{json, Value};
+use serde_json::json;
 
 use super::api;
 
@@ -36,7 +36,3 @@ pub async fn cancel(pairing_id: &str) -> Result<(), String> {
     let path = format!("/sync/pairing/{pairing_id}");
     api::owner_delete(&path).await.map(|_| ())
 }
-
-/// 占位：无 token 轮询走 owner_get；api::owner_get 现缺——补在 api.rs。
-#[allow(dead_code)]
-fn _unused() -> Value { json!(null) }

@@ -436,23 +436,34 @@ function attachCodePasteListener(root: HTMLElement, view: EditorView): () => voi
 }
 
 /**
- * 把多行纯文本按原排版插入：段内单换行 → hard_break，空行 → 新段落。
- * 单事务提交，一次 Ctrl+Z 可整体撤销。
+ * 把多行纯文本按「一行一段落」插入——结构与手敲回车得到的完全一致，行距也就一致。
+ *
+ * ⚠️ **不要用硬换行（hardbreak）拼段内换行**：Crepe 的段落是
+ * `.milkdown .ProseMirror p { line-height: 1.5; padding: 4px 0 }`（theme/common/reset.css），
+ * 段落之间自带 4+4px 间距；hardbreak 只是行内换行，同一段里堆多行会比手敲的紧一半
+ * （2026-11-05 用户反馈「粘贴的行距和手输的不一致」）。顺带：硬换行节点在 Crepe 里叫
+ * `hardbreak`（不是 prosemirror 基线的 `hard_break`），取错名字还会静默丢掉换行——
+ * 复制方向同款坑见 utils/clipboardPlainText.ts。
+ *
+ * 空行（连续空行合并成一行）落成空段落 = 手敲两次回车留下的空行，落库时由
+ * normalizeEmptyParagraphs 补零宽空格占位。**首尾的空行直接丢弃**：`splitPlainTextLines`
+ * 对 `"\n\na"` 会给出 `[[""], ["a"]]`，首个空 block 已经代表"开头就是空行"，若再按
+ * 「非首块补一个分隔空段落」的规则补一次，就会凭空多出两行空白。单事务提交，
+ * 一次 Ctrl+Z 可整体撤销。
  */
 function insertPastedPlainText(view: EditorView, raw: string) {
   const { schema } = view.state
   const paragraph = schema.nodes.paragraph
-  const hardBreak = schema.nodes.hard_break
   if (!paragraph) return
-  const blocks = splitPlainTextLines(raw)
+  // 丢掉纯空白的 block（开头的空行不需要表达成空段落），剩下的才是真正的段落组
+  const blocks = splitPlainTextLines(raw).filter((lines) => lines.some((line) => line.trim() !== ''))
   if (!blocks.length) return
-  const nodes: ProseNode[] = blocks.map((lines) => {
-    const content: ProseNode[] = []
-    lines.forEach((line, i) => {
-      if (i > 0 && hardBreak) content.push(hardBreak.create())
-      if (line) content.push(schema.text(line))
-    })
-    return paragraph.create(null, content)
+  const nodes: ProseNode[] = []
+  blocks.forEach((lines, bi) => {
+    if (bi > 0) nodes.push(paragraph.create(null))
+    for (const line of lines) {
+      nodes.push(paragraph.create(null, line ? schema.text(line) : undefined))
+    }
   })
   const slice = new Slice(Fragment.fromArray(nodes), 0, 0)
   view.dispatch(view.state.tr.replaceSelection(slice).scrollIntoView())

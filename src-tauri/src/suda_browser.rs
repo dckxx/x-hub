@@ -119,13 +119,39 @@ fn about_blank() -> Url {
 // 启动期预创建（铁律：全工程唯一的 suda 浏览器 webview 创建点）
 // ---------------------------------------------------------------------------
 
-/// lib.rs setup 调用：预创建面板 webview + POOL_SIZE 个池窗口（全部隐藏常驻）
+/// lib.rs setup 调用：预创建主窗内嵌面板 webview。
+/// 独立浏览器池窗口**不预创建**（2026-11 内存优化）：每个池窗口含 chrome+content
+/// 两个 renderer（约 30–60MB），而默认「面板打开」模式根本用不到；首次点
+/// 「在独立窗口打开」时才建（open_in_pool 内 ensure_pool_windows），建好后常驻复用。
 pub fn init(app: &AppHandle) {
     ensure_slots();
     init_panel(app);
+}
+
+/// 确保 POOL_SIZE 个独立窗口都存在（首次打开独立窗口时调用；已存在则跳过）。
+/// 建窗消息由主循环异步执行，这里在调用线程（async 命令线程 / 后台线程）短等，
+/// 别把「消息刚投递、窗口还没建出来」误判为失败。
+fn ensure_pool_windows(app: &AppHandle) -> Result<(), String> {
     for i in 0..POOL_SIZE {
+        if app.get_window(&win_label(i)).is_some() {
+            continue;
+        }
         init_pool_window(app, i);
+        let mut ready = false;
+        for _ in 0..20 {
+            if app.get_window(&win_label(i)).is_some() {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if !ready {
+            return Err(format!(
+                "创建应用内浏览器窗口失败（slot {i}），请重试或改用系统浏览器打开"
+            ));
+        }
     }
+    Ok(())
 }
 
 fn init_panel(app: &AppHandle) {
@@ -406,9 +432,11 @@ pub struct OpenResult {
     pub reused: bool,
 }
 
-/// 打开速达网页资源到独立应用内浏览器（URL 取自数据库：仅 Web 类型 + http/https）
+/// 打开速达网页资源到独立应用内浏览器（URL 取自数据库：仅 Web 类型 + http/https）。
+/// 必须是 async 命令：首次打开时要在运行期建池窗口，若在主线程上同步 build
+/// WebView2 会卡死消息泵；async 命令跑在异步运行时线程，建窗消息投递回主循环执行。
 #[tauri::command]
-pub fn suda_browser_open(
+pub async fn suda_browser_open(
     app: AppHandle,
     state: State<'_, DbState>,
     id: i64,
@@ -426,16 +454,28 @@ pub fn suda_browser_open(
     open_in_pool(&app, &url)
 }
 
-/// 按 URL 打开（面板「转独立窗口」、chrome 页新窗口接管等入口）
+/// 按 URL 打开（面板「转独立窗口」、chrome 页新窗口接管等入口）。
+/// async 理由同 suda_browser_open：首次可能要在运行期建池窗口。
 #[tauri::command]
-pub fn suda_browser_open_url(app: AppHandle, url: String) -> Result<OpenResult, String> {
+pub async fn suda_browser_open_url(app: AppHandle, url: String) -> Result<OpenResult, String> {
     let url = validate_web_url(&url)?;
     open_in_pool(&app, &url)
+}
+
+/// 同步上下文（扩展 API）用：后台线程打开，不阻塞调用线程
+pub(crate) fn spawn_open_url(app: AppHandle, url: String) {
+    std::thread::spawn(move || {
+        if let Err(e) = validate_web_url(&url).and_then(|u| open_in_pool(&app, &u).map(|_| ())) {
+            log::warn!("扩展链接在应用内浏览器打开失败（{url}）: {e}");
+        }
+    });
 }
 
 /// 池选路：① 同地址复用 → ② 最近显示的可见窗口开新 tab → ③ 空闲窗口 → ④ POOL_FULL
 fn open_in_pool(app: &AppHandle, url: &str) -> Result<OpenResult, String> {
     ensure_slots();
+    // 池窗口按需创建（默认面板模式不会走到这里）；首次「在独立窗口打开」多一次建窗
+    ensure_pool_windows(app)?;
 
     // ① 同地址复用（完整 URL 精确匹配起步，ADR 0011 可逆默认）
     let reuse = {

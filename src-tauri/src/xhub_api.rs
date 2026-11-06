@@ -830,7 +830,9 @@ fn runtime_open_external(app: &tauri::AppHandle, _state: &DbState, ext_id: &str,
     if mode == "browser" {
         crate::process::open_external(url.to_string())?;
     } else {
-        crate::suda_browser::suda_browser_open_url(app.clone(), url.to_string())?;
+        // 独立浏览器窗口可能尚未创建（内存优化后按需建）：建窗会阻塞调用线程，
+        // 扩展 API 在同步上下文里不能 await，交给后台线程执行（失败只记日志）
+        crate::suda_browser::spawn_open_url(app.clone(), url.to_string());
     }
     Ok(Value::Null)
 }

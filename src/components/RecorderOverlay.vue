@@ -644,8 +644,7 @@ onBeforeUnmount(() => {
       <Camera v-if="mode === 'shot'" :size="16" :stroke-width="2" aria-hidden="true" />
       <Clapperboard v-else :size="16" :stroke-width="2" aria-hidden="true" />
       <span v-if="mode === 'shot'">单击选中窗口区域，拖拽自由框选，双击确认截图，Esc 取消</span>
-      <span v-else>单击选中窗口区域或拖拽框选，再调整位置开始录制</span>
-      <span class="ro-tip-sub">Esc 取消</span>
+      <span v-else>单击选中窗口区域或拖拽框选，再调整位置开始录制，Esc 取消</span>
     </div>
 
     <!-- 截图调整态工具条（贴选框下方，图标钮）——仅截图模式；录制模式有自己的时长面板 -->
@@ -879,10 +878,6 @@ onBeforeUnmount(() => {
   color: #e8eaf2;
   font-size: 0.8125rem;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
-}
-.ro-tip-sub {
-  color: rgba(232, 234, 242, 0.55);
-  font-size: 0.75rem;
 }
 /* 截图调整态工具条（定位由 toolbarStyle 计算：贴选框下方，放不下翻上方） */
 .ro-toolbar {

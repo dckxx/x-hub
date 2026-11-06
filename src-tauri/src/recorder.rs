@@ -250,38 +250,54 @@ pub fn init(app: &AppHandle) {
             Err(e) => log::warn!("[截图/录屏] 预创建控制条失败: {e}"),
         }
     }
-    // 贴图窗口池（盯住功能）：每张钉屏贴图占一个窗口，预创建隐藏常驻复用
-    for i in 0..PIN_WINDOW_COUNT {
-        let label = format!("{}{}", PIN_LABEL_PREFIX, i);
-        if app.get_webview_window(&label).is_some() {
-            continue;
-        }
-        match tauri::WebviewWindowBuilder::new(
-            app,
-            &label,
-            // 轻量入口 pin.html（P2 续，2026-10-31）：只挂 PinShotWindow，
-            // 不加载完整 SPA（三个贴图窗启动即隐藏常驻，见 src/light/pin.ts）
-            tauri::WebviewUrl::App("pin.html".into()),
-        )
-        .title("贴图")
-        .inner_size(320.0, 240.0) // 占位；每次贴图按选区物理尺寸重设
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .visible(false)
-        .shadow(false)
-        .additional_browser_args(crate::ADDITIONAL_BROWSER_ARGS)
-        .build()
-        {
-            Ok(win) => {
-                crate::lockdown_webview(&win);
-                crate::win_taskbar::apply(&win);
-            }
-            Err(e) => log::warn!("[截图/录屏] 预创建贴图窗口 {label} 失败: {e}"),
-        }
+    // 贴图窗口不预创建：每次钉屏都按需建（ensure_pin_window），隐藏 renderer
+    // 每个约 20–40MB，而多数会话可能一次都不钉。钉屏本身是截图后的主动动作，
+    // 首次建窗多花一两百毫秒无感；建好之后隐藏常驻复用。
+}
+
+/// 按需创建 / 复用贴图窗口（pin-shot-{i}）。
+/// 新建时等 pin.html 完成加载再返回——调用方紧接着 emit `pin-shot-shown`
+/// 触发前端取图，页面监听还没注册就发会丢事件（表现为贴图空白）。
+fn ensure_pin_window(app: &AppHandle, i: usize) -> Result<tauri::WebviewWindow, String> {
+    let label = format!("{}{}", PIN_LABEL_PREFIX, i);
+    if let Some(win) = app.get_webview_window(&label) {
+        return Ok(win);
     }
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let tx = std::sync::Mutex::new(Some(tx));
+    let win = tauri::WebviewWindowBuilder::new(
+        app,
+        &label,
+        // 轻量入口 pin.html（P2 续，2026-10-31）：只挂 PinShotWindow，
+        // 不加载完整 SPA（见 src/light/pin.ts）
+        tauri::WebviewUrl::App("pin.html".into()),
+    )
+    .title("贴图")
+    .inner_size(320.0, 240.0) // 占位；每次贴图按选区物理尺寸重设
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .visible(false)
+    .shadow(false)
+    .additional_browser_args(crate::ADDITIONAL_BROWSER_ARGS)
+    .on_page_load(move |_win, payload| {
+        if payload.event() == tauri::webview::PageLoadEvent::Finished {
+            if let Ok(mut guard) = tx.lock() {
+                if let Some(tx) = guard.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+    })
+    .build()
+    .map_err(|e| format!("创建贴图窗口失败: {e}"))?;
+    crate::lockdown_webview(&win);
+    crate::win_taskbar::apply(&win);
+    // 页面很轻（单图 + 关闭按钮），3s 兜底足够；超时也照常返回，最多丢一次事件
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(3));
+    Ok(win)
 }
 
 /// 重挂 DWM「空 blur region」透明合成（2026-11-05 修「一按快捷键整屏都是黑的」）。
@@ -641,20 +657,29 @@ pub async fn recorder_pin_shot(
     let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
     let path = pins_dir.join(format!("pin_{stamp}_{slot}.png"));
     std::fs::write(&path, &png_bytes).map_err(|e| format!("写入贴图文件失败: {e}"))?;
-    slots[slot] = Some(path.to_string_lossy().into_owned());
 
     // 定位窗口到选区原位置（物理像素；resizable(false) 的 set_size 钳制坑同选区层）
     let label = format!("{}{}", PIN_LABEL_PREFIX, slot);
-    let Some(win) = app.get_webview_window(&label) else {
-        // 窗口池异常：回滚 slot 占用并删除落盘文件
-        if let Some(s) = slots.get_mut(slot) {
-            *s = None;
-        }
-        drop(slots);
-        let _ = std::fs::remove_file(&path);
-        return Err("贴图窗口未就绪，请重启应用".into());
-    };
+    let path_str = path.to_string_lossy().into_owned();
+    slots[slot] = Some(path_str.clone());
+    // 建窗可能耗几百毫秒（页面加载还要等），先放锁，别把 PinState 锁在窗口创建期间
     drop(slots);
+    let win = match ensure_pin_window(&app, slot) {
+        Ok(w) => w,
+        Err(e) => {
+            // 回滚 slot 占用并删除落盘文件
+            let st = app.state::<PinState>();
+            if let Ok(mut slots) = st.slots.lock() {
+                if let Some(s) = slots.get_mut(slot) {
+                    if s.as_deref() == Some(path_str.as_str()) {
+                        *s = None;
+                    }
+                }
+            }
+            let _ = std::fs::remove_file(&path);
+            return Err(e);
+        }
+    };
     let _ = win.set_resizable(true);
     let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
         pinned.x,

@@ -559,6 +559,18 @@ pub fn set_suda_web_open_mode(mode: String) -> Result<String, String> {
     Ok(config.suda_web_open_mode)
 }
 
+/// 云同步「自动同步」开关（默认关闭）：关 = 只在点「立即同步」时同步；
+/// 开 = outbox 非空 / 定时对账 / 聚焦返回自动跑一轮（sync_auto 内部 20s 节流）。
+/// 读写走配置锁 + 专用命令（勿走前端 saveConfig 整份落盘，双写已去）。
+#[tauri::command]
+pub fn set_sync_auto_enabled(enabled: bool) -> Result<bool, String> {
+    let _guard = crate::config::lock();
+    let mut config = crate::config::load();
+    config.sync_auto_enabled = enabled;
+    crate::config::save(&config)?;
+    Ok(config.sync_auto_enabled)
+}
+
 // ---------- 笔记 ----------
 
 #[tauri::command]

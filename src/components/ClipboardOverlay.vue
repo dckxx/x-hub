@@ -165,9 +165,29 @@ onMounted(async () => {
   // 不再 loadInitialData()：这里原先只是为了让 store 有数据可供 addNote/saveNote
   // 之类的方法内部使用，而本窗口只读剪贴板自身数据（loadList/loadInfo 各自拉）。
   // 那份全量数据（资源/笔记/待办/便签/提示词…）是浮层 renderer 活堆的大头。
-  reset()
+  //
+  // 隐藏预创建时不预拉列表：50 条剪贴板条目里的图片缩略图会常驻 renderer 堆
+  // （解码位图低内存档吐不掉）。首次唤起由 clipboard-shown → onShown 拉取；
+  // 若可见性判断拿不到（旧运行时/非 Tauri），按原行为先拉一次，避免空面板。
+  let visible = false
+  try {
+    visible = (await appWindow?.isVisible()) ?? false
+  } catch {
+    visible = false
+  }
+  if (visible) reset()
   appWindow?.onFocusChanged(onFocusChanged)
-  if (isTauri()) await listen('clipboard-shown', onShown)
+  if (isTauri()) {
+    await listen('clipboard-shown', onShown)
+    // 收起时清空列表/图片预览，释放缩略图解码位图（Rust hide_overlay_window 派发）
+    await listen('clipboard-hidden', () => {
+      items.value = []
+      preview.value = null
+      ctx.value = null
+      keyword.value = ''
+      selected.value = 0
+    })
+  }
   document.addEventListener('keydown', onKeydown)
 })
 

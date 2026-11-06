@@ -182,13 +182,16 @@ fn target_status(label: &str, root: &Path, kind: &str) -> SkillTarget {
     if marker.is_file() {
         if let Ok(text) = std::fs::read_to_string(&marker) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                if v.get("hash").and_then(|h| h.as_str()) == Some(bundle_hash()) {
-                    up_to_date = true;
-                }
                 installed_version = v
                     .get("appVersion")
                     .and_then(|s| s.as_str())
                     .map(|s| s.to_string());
+                // 内容一致 + 版本一致才算最新：技能包「随客户端版本走」，内容没变时
+                // 升级客户端也要把标记版本刷新到当前版本，否则设置页会一直停在旧版本
+                // 且没有更新入口（内容哈希相同 → 旧逻辑判为已是最新）。
+                let hash_match = v.get("hash").and_then(|h| h.as_str()) == Some(bundle_hash());
+                let version_match = installed_version.as_deref() == Some(env!("CARGO_PKG_VERSION"));
+                up_to_date = hash_match && version_match;
             }
         }
     }
@@ -411,5 +414,28 @@ mod tests {
         let st = target_status("Test", tmp.path(), "custom");
         assert!(st.installed && st.foreign && !st.up_to_date);
     }
-}
 
+    #[test]
+    fn same_content_older_version_is_updatable() {
+        // 内容没变（哈希一致）但安装版本落后于当前客户端：设置页应显示「可更新」，
+        // 点更新后把标记版本刷新到当前版本（技能包「随客户端版本走」）。
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(SKILL_DIR_NAME);
+        write_bundle(&dir).unwrap();
+        let marker = serde_json::json!({
+            "id": SKILL_ID,
+            "hash": bundle_hash(),
+            "appVersion": "0.0.0",
+        });
+        std::fs::write(
+            dir.join(MARKER_FILE),
+            serde_json::to_vec_pretty(&marker).unwrap(),
+        )
+        .unwrap();
+
+        let st = target_status("Test", tmp.path(), "custom");
+        assert!(st.installed && !st.foreign);
+        assert!(!st.up_to_date, "版本落后也必须可更新");
+        assert_eq!(st.installed_version.as_deref(), Some("0.0.0"));
+    }
+}

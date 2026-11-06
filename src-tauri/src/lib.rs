@@ -65,7 +65,7 @@ mod xhub_api;
 ///   降低 JS 引擎常驻内存；若主窗/编辑器出现 GC 卡顿可放宽到 16–32
 /// - --disk-cache-size=33554432：磁盘缓存上限 32MB
 pub const ADDITIONAL_BROWSER_ARGS: &str =
-    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --js-flags=--scavenger_max_new_space_capacity_mb=8 --disk-cache-size=33554432";
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --js-flags=--scavenger_max_new_space_capacity_mb=8 --disk-cache-size=33554432 --enable-low-end-device-mode";
 
 use commands::DbState;
 use rusqlite::Connection;
@@ -1101,6 +1101,7 @@ pub fn run() {
             sync::commands::sync_pairing_cancel,
             sync::commands::sync_now,
             sync::commands::sync_auto,
+            commands::set_sync_auto_enabled,
             sync::commands::sync_device_list,
             sync::commands::sync_revoke_device,
             sync::commands::sync_disable,

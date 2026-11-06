@@ -2,7 +2,7 @@
  * 内置《使用说明》分章口径单测（直接拿 docs/user-guide.md 跑）：
  *   node --test tests/guideToc.test.mjs
  *
- * 锁三件事：① 15 章全在、按顺序；② 每章至少有一个三级小节；③ 锚点唯一且能对上目录。
+ * 锁三件事：① 16 章全在、按顺序；② 每章至少有一个三级小节；③ 锚点唯一且能对上目录。
  * 文档增删章节时这条会先红，提醒同步面板里的目录（目录是运行时从正文推导的，不会失真）。
  */
 import test from 'node:test'
@@ -23,8 +23,8 @@ test('文档标题与前言被正确识别', () => {
   assert.match(doc.preamble, /阅读约定/)
 })
 
-test('15 个章节按顺序切出，标题不带 Markdown 标记', () => {
-  assert.equal(doc.chapters.length, 15)
+test('16 个章节按顺序切出，标题不带 Markdown 标记', () => {
+  assert.equal(doc.chapters.length, 16)
   assert.deepEqual(
     doc.chapters.map((c) => c.title),
     [
@@ -41,8 +41,9 @@ test('15 个章节按顺序切出，标题不带 Markdown 标记', () => {
       '11. 悬浮球与系统托盘',
       '12. 设置页逐项地图',
       '13. 数据与维护',
-      '14. 应用更新',
-      '15. 常见问题',
+      '14. 云同步（桌面 ↔ 手机）',
+      '15. 应用更新',
+      '16. 常见问题',
     ],
   )
   for (const c of doc.chapters) assert.ok(c.title.length > 0)
@@ -67,7 +68,7 @@ test('章节锚点唯一，且能用于同页跳转', () => {
 test('slugifyHeading 与 GitHub 口径一致', () => {
   assert.equal(slugifyHeading('1. 认识 x-hub'), '1-认识-x-hub')
   assert.equal(slugifyHeading('5.8 一键美化与 AI 深度整理'), '58-一键美化与-ai-深度整理')
-  assert.equal(slugifyHeading('15. 常见问题'), '15-常见问题')
+  assert.equal(slugifyHeading('15. 应用更新'), '15-应用更新')
 })
 
 test('四反引号围栏里的伪标题不会被当成章节', () => {

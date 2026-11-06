@@ -16,7 +16,9 @@ import {
 } from 'lucide-vue-next';
 import { isTauri, tauriApi } from '../../api/tauri';
 import type { SyncDeviceInfo, SyncStatus } from '../../api/tauri';
+import { useStore } from '../../stores/workbench';
 
+const store = useStore();
 const showToast = inject<(msg: string) => void>('showToast', () => {});
 
 const status = ref<SyncStatus | null>(null);
@@ -148,6 +150,15 @@ async function syncNow() {
   } finally {
     syncing.value = false;
   }
+}
+
+// ---- 自动同步开关（默认关）：开 = 本机改动 / 定时 / 聚焦自动同步；关 = 只手动「立即同步」 ----
+const autoSync = computed(() => store.state.config.sync_auto_enabled === true);
+
+async function toggleAutoSync() {
+  const next = !autoSync.value;
+  await store.setSyncAutoEnabled(next);
+  showToast(next ? '已开启自动同步' : '已关闭自动同步，同步请点「立即同步」');
 }
 
 // ---- 配对二维码（TTL 300s，一次性；轮询 2s，完成即收） ----
@@ -354,6 +365,26 @@ onBeforeUnmount(() => {
 
     <!-- 已开启：状态 + 配对 + 设备 -->
     <template v-if="status?.paired">
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-name">自动同步</span>
+          <span class="setting-desc">
+            开启后本机改动与远端变更自动同步（后台节流 20 秒，不打扰使用）；
+            关闭则只在点下方「立即同步」时同步
+          </span>
+        </div>
+        <button
+          class="toggle"
+          role="switch"
+          type="button"
+          :aria-checked="autoSync"
+          :class="{ on: autoSync }"
+          @click="toggleAutoSync"
+        >
+          <span class="toggle-knob"></span>
+        </button>
+      </div>
+
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-name">同步空间</span>

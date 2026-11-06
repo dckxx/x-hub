@@ -16,7 +16,7 @@ use windows_sys::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT
 use windows_sys::Win32::UI::Shell::{DragQueryFileW, DROPFILES, HDROP};
 use windows_sys::Win32::System::Threading::AttachThreadInput;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    keybd_event, RegisterHotKey, SendInput, UnregisterHotKey, INPUT, INPUT_KEYBOARD, KEYBDINPUT,
+    keybd_event, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT,
     KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC, MapVirtualKeyW,
     VK_CONTROL, VK_ESCAPE, VK_INSERT, VK_LMENU, VK_LCONTROL, VK_LSHIFT, VK_LWIN, VK_MENU,
     VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
@@ -27,9 +27,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW,
     RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, SetWindowsHookExW, SetWindowPos,
     ShowWindow, TranslateMessage, UnhookWindowsHookEx, UnregisterClassW, GWL_EXSTYLE,
-    HWND_MESSAGE, HWND_TOPMOST, MSG, MSLLHOOKSTRUCT, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, SW_RESTORE, WH_MOUSE_LL, WNDCLASSW, WS_EX_NOACTIVATE,
-    WM_APP, WM_CLIPBOARDUPDATE, WM_HOTKEY, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_RBUTTONDOWN,
+    HWND_MESSAGE, HWND_TOPMOST, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, SW_RESTORE, WH_KEYBOARD_LL,
+    WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WNDCLASSW, WS_EX_NOACTIVATE,
+    WM_APP, WM_CLIPBOARDUPDATE, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_RBUTTONDOWN,
 };
 
 /// 剪贴板浮窗窗口 label（App.vue 按此路由渲染 ClipboardOverlay）
@@ -65,6 +66,10 @@ static LAST_SELF_SET: Mutex<Option<(u64, std::time::Instant)>> = Mutex::new(None
 
 /// 全局鼠标钩子句柄（浮层可见时启用，点击浮层外部即收起）
 static MOUSE_HOOK: Mutex<Option<isize>> = Mutex::new(None);
+
+/// 全局键盘钩子句柄（浮层可见时启用，Esc 即收起；取代 RegisterHotKey(ESC)——
+/// 全局热键名额会被其它程序占住而注册失败，失败即浮层 Esc 关不掉）
+static KB_HOOK: Mutex<Option<isize>> = Mutex::new(None);
 
 /// 浮层窗口句柄缓存：钩子回调运行在监听线程，禁止跨线程 Tauri 调用，
 /// 显示浮层时写入，钩子回调只读它做矩形判断。
@@ -1168,7 +1173,6 @@ fn is_main_window(app: &AppHandle, prev_hwnd: isize) -> bool {
 /// - 本应用主窗口：隐藏浮层后直接向主窗口 JS 派发内容，由其插回原输入框（WebView2 焦点时序不可靠）
 /// - 外部窗口：隐藏浮层 →（若前台被我们抢占则恢复目标窗口焦点）→ 按目标应用发送粘贴快捷键
 pub fn paste_to_previous_window(app: &AppHandle, content: &str, html: Option<&str>) {
-    unregister_esc_hotkey();
     uninstall_mouse_hook();
     if let Some(win) = app.get_webview_window(CLIPBOARD_WINDOW_LABEL) {
         hide_overlay_window(&win);
@@ -1205,17 +1209,15 @@ pub fn paste_to_previous_window(app: &AppHandle, content: &str, html: Option<&st
 
 // ---- 浮层窗口 ----
 
-/// 剪贴板监听消息窗口句柄（Esc 兜底热键注册到该窗口，由监听线程消息循环分发 WM_HOTKEY）
+/// 剪贴板监听消息窗口句柄（Esc 收起 / 鼠标钩子都由监听线程消息循环统一收口）
 static LISTENER_HWND: Mutex<Option<isize>> = Mutex::new(None);
-/// Esc 兜底关闭热键 ID
-const ESC_HOTKEY_ID: i32 = 0x5C43;
 
 /// 低层鼠标钩子回调：浮层可见时，点击落在浮层窗口矩形之外 → 收起浮层。
 /// 浮层以无激活方式显示、不持有焦点，靠此钩子感知「点击外部」（含点击本应用主窗口）。
 /// 钩子回调运行在安装钩子的线程上，这里只做矩形判断，随后向监听消息窗口
 /// PostMessage 一个自定义消息，由监听线程统一收口处理（避免在钩子回调里直接做窗口操作）。
 const WM_XHUB_CLIPBOARD_DISMISS: u32 = WM_APP + 0x5C01;
-/// 监听线程专用消息：安装/卸载低层鼠标钩子（钩子必须由拥有消息循环的线程安装）
+/// 监听线程专用消息：安装/卸载低层钩子（鼠标 + 键盘；钩子必须由拥有消息循环的线程安装）
 const WM_XHUB_INSTALL_MOUSE_HOOK: u32 = WM_APP + 0x5C02;
 const WM_XHUB_UNINSTALL_MOUSE_HOOK: u32 = WM_APP + 0x5C03;
 
@@ -1256,7 +1258,7 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: usize, lparam: isiz
     CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
 }
 
-/// 请求监听线程安装低层鼠标钩子（浮层可见时启用，隐藏时关闭）。
+/// 请求监听线程安装低层钩子（鼠标 + 键盘；浮层可见时启用，隐藏时关闭）。
 /// 钩子必须由监听线程（拥有 GetMessageW 消息循环）安装，才能由该线程驱动回调，
 /// 避免挂在全局快捷键线程上导致回调阻塞拖死 Esc 链路。
 fn install_mouse_hook() {
@@ -1269,7 +1271,7 @@ fn install_mouse_hook() {
     }
 }
 
-/// 请求监听线程卸载低层鼠标钩子（浮层隐藏时调用）
+/// 请求监听线程卸载低层钩子（浮层隐藏时调用）
 fn uninstall_mouse_hook() {
     let hwnd = match *LISTENER_HWND.lock().unwrap_or_else(|e| e.into_inner()) {
         Some(h) => h,
@@ -1280,61 +1282,99 @@ fn uninstall_mouse_hook() {
     }
 }
 
-/// 监听线程实际安装低层鼠标钩子（由消息循环调用，保证钩子挂在本线程）
+/// 监听线程实际安装低层鼠标 + 键盘钩子（由消息循环调用，保证钩子挂在本线程）。
+/// 键盘钩子接管了原 RegisterHotKey(ESC) 的职责：全局热键名额会被其它程序占住而
+/// 注册失败（实测机器恒失败），失败即浮层 Esc 关不掉；LL 键盘钩子不占热键名额、
+/// 命中 Esc 时同样消费按键（不穿透给前台应用，见 keyboard_hook_proc 注释）。
 fn install_mouse_hook_impl() {
-    let Ok(mut guard) = MOUSE_HOOK.lock() else {
-        return;
-    };
-    if guard.is_some() {
-        return;
+    {
+        let Ok(mut guard) = MOUSE_HOOK.lock() else {
+            return;
+        };
+        if guard.is_none() {
+            let hmod = unsafe { GetModuleHandleW(std::ptr::null()) };
+            let hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), hmod, 0) };
+            if hook.is_null() {
+                log::warn!("剪贴板浮层：注册低层鼠标钩子失败");
+            } else {
+                *guard = Some(hook as isize);
+                log::info!("剪贴板浮层：低层鼠标钩子已启用（监听线程）");
+            }
+        }
     }
-    let hmod = unsafe { GetModuleHandleW(std::ptr::null()) };
-    let hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), hmod, 0) };
-    if hook.is_null() {
-        log::warn!("剪贴板浮层：注册低层鼠标钩子失败");
-        return;
-    }
-    *guard = Some(hook as isize);
-    log::info!("剪贴板浮层：低层鼠标钩子已启用（监听线程）");
-}
-
-/// 监听线程实际卸载低层鼠标钩子（由消息循环调用）
-fn uninstall_mouse_hook_impl() {
-    let Ok(mut guard) = MOUSE_HOOK.lock() else {
-        return;
-    };
-    if let Some(hook) = guard.take() {
-        unsafe {
-            UnhookWindowsHookEx(hook as *mut core::ffi::c_void);
+    {
+        let Ok(mut guard) = KB_HOOK.lock() else {
+            return;
+        };
+        if guard.is_none() {
+            let hmod = unsafe { GetModuleHandleW(std::ptr::null()) };
+            let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), hmod, 0) };
+            if hook.is_null() {
+                log::warn!("剪贴板浮层：注册低层键盘钩子失败（Esc 收起不可用）");
+            } else {
+                *guard = Some(hook as isize);
+                log::info!("剪贴板浮层：低层键盘钩子已启用（Esc 收起）");
+            }
         }
     }
 }
 
-/// 注册「浮层可见期间的 Esc 兜底关闭」全局热键：
-/// 浮层以无激活方式显示时自身收不到键盘事件，靠 RegisterHotKey 拦截 Esc，
-/// 由剪贴板监听线程把 WM_HOTKEY 转成关闭动作（隐藏后自动注销，避免吞掉全局 Esc）。
-fn register_esc_hotkey() {
-    let hwnd = match *LISTENER_HWND.lock().unwrap_or_else(|e| e.into_inner()) {
-        Some(h) => h,
-        None => return,
-    };
-    let ok = unsafe {
-        RegisterHotKey(hwnd as *mut core::ffi::c_void, ESC_HOTKEY_ID, 0, VK_ESCAPE as u32) != 0
-    };
-    if !ok {
-        log::warn!("剪贴板浮层：注册 Esc 兜底热键失败（可能被其他程序占用）");
+/// 监听线程实际卸载低层鼠标 + 键盘钩子（由消息循环调用）
+fn uninstall_mouse_hook_impl() {
+    if let Ok(mut guard) = MOUSE_HOOK.lock() {
+        if let Some(hook) = guard.take() {
+            unsafe {
+                UnhookWindowsHookEx(hook as *mut core::ffi::c_void);
+            }
+        }
+    }
+    if let Ok(mut guard) = KB_HOOK.lock() {
+        if let Some(hook) = guard.take() {
+            unsafe {
+                UnhookWindowsHookEx(hook as *mut core::ffi::c_void);
+            }
+        }
     }
 }
 
-/// 注销 Esc 兜底热键（浮层隐藏时调用）
-fn unregister_esc_hotkey() {
-    let hwnd = match *LISTENER_HWND.lock().unwrap_or_else(|e| e.into_inner()) {
-        Some(h) => h,
-        None => return,
-    };
-    unsafe {
-        UnregisterHotKey(hwnd as *mut core::ffi::c_void, ESC_HOTKEY_ID);
+/// 低层键盘钩子回调：浮层可见期间按下 Esc → 投递收起并**吞掉按键**。
+/// 浮层以无激活方式显示时自身收不到键盘事件；钩子只做 VK 判断并 PostMessage
+/// （禁止任何 Tauri 调用，否则会阻塞该线程消息循环）。**必须返回 1 吃掉 Esc**、
+/// 不许穿透给前台应用：热键语义就是消费按键（原 RegisterHotKey 方案同款），
+/// 穿透会把 Esc 送进前台窗口——微信等应用收到 Esc 会关掉自己的窗口（实测）。
+/// keydown 与 keyup 一并吞掉（只吞 keydown 会给前台留下孤儿 keyup，键状态不一致）。
+/// 钩子只在浮层可见期间安装（隐藏即卸载），浮层关掉后 Esc 行为完全不受影响。
+unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: usize, lparam: isize) -> isize {
+    if code >= 0 && (wparam == WM_KEYDOWN as usize || wparam == WM_KEYUP as usize) {
+        let hit_esc = {
+            let st = lparam as *const KBDLLHOOKSTRUCT;
+            !st.is_null() && (*st).vkCode == VK_ESCAPE as u32
+        };
+        if hit_esc {
+            let dismiss = {
+                let guard = OVERLAY_HWND.lock().unwrap_or_else(|e| e.into_inner());
+                match *guard {
+                    Some(hwnd) if IsWindowVisible(hwnd as *mut core::ffi::c_void) != 0 => {
+                        LISTENER_HWND.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+                    }
+                    _ => false,
+                }
+            };
+            if dismiss {
+                if let Some(hwnd) = *LISTENER_HWND.lock().unwrap_or_else(|e| e.into_inner()) {
+                    let _ = PostMessageW(
+                        hwnd as *mut core::ffi::c_void,
+                        WM_XHUB_CLIPBOARD_DISMISS,
+                        0,
+                        0,
+                    );
+                }
+                // 吞掉本次 Esc：前台应用不得收到（微信按 Esc 会关窗，实测踩过）
+                return 1;
+            }
+        }
     }
+    CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
 }
 
 /// 浮层窗口原生可见性：`WebviewWindow::is_visible()` 在 Windows 上对 WebView2 子窗口
@@ -1445,7 +1485,6 @@ fn show_ready_overlay(win: &tauri::WebviewWindow, app: &AppHandle) {
             .set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(px, py)));
     }
     show_overlay_no_activate(win);
-    register_esc_hotkey();
     install_mouse_hook();
     let _ = app.emit_to(CLIPBOARD_WINDOW_LABEL, "clipboard-shown", ());
 }
@@ -1519,19 +1558,23 @@ fn hide_overlay_window(win: &tauri::WebviewWindow) {
             unsafe {
                 ShowWindow(hwnd.0, SW_HIDE);
             }
-            return;
+        } else {
+            let _ = win.hide();
         }
-        let _ = win.hide();
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = win.hide();
     }
+    // 通知页面清空列表与图片预览：剪贴板缩略图（img 解码位图）在隐藏后仍占用
+    // renderer 堆，低内存档吐不掉活数据；下次唤起由 clipboard-shown 重新拉取
+    let _ = win
+        .app_handle()
+        .emit_to(CLIPBOARD_WINDOW_LABEL, "clipboard-hidden", ());
 }
 
 /// 收起浮层：隐藏后若前台仍在本应用（浮层/主窗口），把焦点还给唤起前的窗口
 pub fn hide_overlay(app: &AppHandle) {
-    unregister_esc_hotkey();
     uninstall_mouse_hook();
     let Some(win) = app.get_webview_window(CLIPBOARD_WINDOW_LABEL) else {
         return;
@@ -1744,8 +1787,8 @@ fn handle_clipboard_update(app: &AppHandle) {
 /// 剪贴板一变化即收到 WM_CLIPBOARDUPDATE，实时且无轮询开销。
 pub fn start_monitor(app: AppHandle) {
     // 剪贴板内容读取 + 入库放到独立 worker 线程：去抖沉降后只处理最新状态。
-    // 监听线程的消息循环必须保持空闲，才能及时处理 Esc 热键、外部点击收起
-    // 与鼠标钩子装卸消息；若在循环里同步读剪贴板，一旦复制方短暂占用剪贴板
+    // 监听线程的消息循环必须保持空闲，才能及时处理 Esc/外部点击收起
+    // 与钩子装卸消息；若在循环里同步读剪贴板，一旦复制方短暂占用剪贴板
     // （重试 + sysinfo 查询），整条消息队列都会被拖住，导致浮层关不掉。
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     let worker_app = app.clone();
@@ -1811,22 +1854,13 @@ pub fn start_monitor(app: AppHandle) {
             while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) != 0 {
                 if msg.message == WM_CLIPBOARDUPDATE {
                     let _ = tx.send(());
-                } else if msg.message == WM_HOTKEY && msg.wParam as i32 == ESC_HOTKEY_ID {
-                    // Esc 兜底关闭：浮层以无激活方式显示时自身收不到键盘事件，
-                    // 热键把 Esc 转发到这里，若浮层仍可见则收起
-                    if app
-                        .get_webview_window(CLIPBOARD_WINDOW_LABEL)
-                        .map(|w| w.is_visible().unwrap_or(false))
-                        .unwrap_or(false)
-                    {
-                        hide_overlay(&app);
-                    }
                 } else if msg.message == WM_XHUB_INSTALL_MOUSE_HOOK {
                     install_mouse_hook_impl();
                 } else if msg.message == WM_XHUB_UNINSTALL_MOUSE_HOOK {
                     uninstall_mouse_hook_impl();
                 } else if msg.message == WM_XHUB_CLIPBOARD_DISMISS {
-                    // 低层鼠标钩子：点击落在浮层窗口矩形之外 → 收起
+                    // 低层鼠标/键盘钩子：点击落在浮层窗口矩形之外、或浮层可见时按下
+                    // Esc（按键由钩子吞掉，不进前台应用）→ 收起浮层
                     hide_overlay(&app);
                 } else {
                     TranslateMessage(&msg);

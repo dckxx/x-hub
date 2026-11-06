@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "x-hub",
   "mainBinaryName": "x-hub",
-  "version": "0.9.8",
+  "version": "0.9.9",
   "identifier": "x-hub",
   "build": {
     "frontendDist": "../dist",
@@ -24,7 +24,7 @@
         "visible": false,
         "decorations": false,
         "shadow": false,
-        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --js-flags=--scavenger_max_new_space_capacity_mb=8 --disk-cache-size=33554432"
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --js-flags=--scavenger_max_new_space_capacity_mb=8 --disk-cache-size=33554432 --enable-low-end-device-mode"
       }
     ],
     "security": {
@@ -41,7 +41,9 @@
         "base-uri": "'self'",
         "form-action": "'none'"
       },
-      "dangerousDisableAssetCspModification": ["style-src"],
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ],
       "assetProtocol": {
         "enable": true,
         "scope": []

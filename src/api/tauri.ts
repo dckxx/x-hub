@@ -305,6 +305,8 @@ export interface AppConfig {
   clock_quote: string // 时钟卡片语录（可配置，空串回退默认）
   notice_duration_ms: number // 右下角通知弹窗驻留时长（毫秒，1000–60000）
   online_enabled: boolean // 联网功能总开关（默认开）
+  /** 云同步「自动同步」开关（默认关）：开 = outbox 非空 / 定时 / 聚焦自动同步；关 = 只手动「立即同步」 */
+  sync_auto_enabled: boolean
   /** AI 助手默认权限档：readonly（仅可查看）/ ask（每次都问，默认）/ full（完全权限）。
    *  对话框快捷切换未手动调整时以此初始化；后端命令缺省回落同款安全默认 ask */
   agent_permission_mode: string
@@ -2061,8 +2063,10 @@ export const tauriApi = {
   /** 轮询配对状态（弹窗打开期间 2s 一次） */
   syncPollPairing: (pairingId: string) =>
     invoke<SyncPairingPoll>('sync_poll_pairing', { pairingId }),
-  /** 自动同步（聚焦/定时/配对完成后由后端自触发；前端一般不用手动调） */
+  /** 自动同步（聚焦/定时/配对完成后由后端自触发；受「自动同步」开关门控，前端一般不用手动调） */
   syncAuto: () => invoke<SyncNowResult & { skipped?: boolean; reason?: string }>('sync_auto'),
+  /** 云同步「自动同步」开关：开 = 后台触发点自动同步；关 = 只手动「立即同步」 */
+  setSyncAutoEnabled: (enabled: boolean) => invoke<boolean>('set_sync_auto_enabled', { enabled }),
   /** 取消配对会话（关闭二维码 / 过期时） */
   syncPairingCancel: (pairingId: string) => invoke<void>('sync_pairing_cancel', { pairingId }),
   /** 一次完整同步轮（pull → push）；应用过远端数据则后端广播 sync-applied */

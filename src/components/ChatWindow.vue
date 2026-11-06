@@ -84,6 +84,15 @@ onMounted(async () => {
   unlistenHidden = await listen('chat-window-hidden', () => {
     panelRef.value?.unload()
   })
+  // 启动预创建时窗口是隐藏的，ChatPanel 挂载仍会拉会话/消息（长会话几十 MB）。
+  // 此时立刻卸载，首次唤起由 chat-window-shown → refresh() 重拉，行为不变。
+  let visible = false
+  try {
+    visible = (await appWindow?.isVisible()) ?? false
+  } catch {
+    visible = false
+  }
+  if (!visible) panelRef.value?.unload()
 })
 
 onBeforeUnmount(() => {

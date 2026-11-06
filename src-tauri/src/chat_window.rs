@@ -147,12 +147,12 @@ fn initial_center(app: &AppHandle, width: f64, height: f64) -> Option<(i32, i32)
     ))
 }
 
-/// 建窗（一律隐藏常驻，唤起/收起由 show_window/hide_window 做显隐；启动 init 唯一调用点）
+/// 建窗（先隐藏，唤起/收起由 show_window/hide_window 做显隐；首次唤起时按需调用）
 fn build(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     let cfg = config::load();
     let mut builder =
         // 轻量入口 chat.html（P2 续，2026-10-31）：只挂 ChatWindow，
-        // 不加载完整 SPA（本窗无条件预创建隐藏常驻，见 src/light/chat.ts）
+        // 不加载完整 SPA（本窗首次唤起时创建，见 src/light/chat.ts）
         tauri::WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("chat.html".into()))
             .title("AI 对话")
             .inner_size(
@@ -208,30 +208,48 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
     });
 }
 
-/// 启动期预创建：**无条件**建窗 + 隐藏常驻（同悬浮球/剪贴板/通知窗口径）。
-/// 不做「按配置惰性建窗、开启时运行期补建」——运行期现场 build WebView2 会挂死主线程
-/// （v0.5.4 实测事故，见模块头注释）。未开启形态多付一份隐藏 renderer 内存 = 铁律
-/// 已接受的既定代价。
-pub fn init(app: &AppHandle) {
+/// 启动只同步模式位，**不预创建窗口**（2026-11 内存优化）：对话窗隐藏 renderer
+/// 实测 100MB+（JS 堆只有几 MB，全是 Chromium 每 renderer 基线），而多数会话
+/// 不打开独立对话窗。首次唤起时 show_window 现场建窗（用户主动点击，多 100–300ms），
+/// 建好后隐藏常驻复用。悬浮球已改为停用态不预创建，历史上「与悬浮球操作交错」
+/// 的建窗挂死条件已不存在。
+pub fn init(_app: &AppHandle) {
     MODE.store(config::load().chat_window_mode, Ordering::Relaxed);
-    if app.get_webview_window(LABEL).is_some() {
-        return;
-    }
-    match build(app) {
-        Ok(_) => log::info!("对话独立窗口已预创建（隐藏常驻）"),
-        Err(e) => log::warn!("对话独立窗口预创建失败: {e}"),
-    }
 }
 
-/// 显示（或聚焦）独立对话窗：常驻窗口只做 show + focus。
-/// **不做运行时 build 兜底**（约定 41 / notify.rs 同口径）：预创建失败时只记日志、
-/// 等下次启动 init 重试——运行期现场建 WebView2 窗口会与悬浮球等窗口操作交错挂死整窗。
+/// 防止连点重复建窗
+static BUILDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 显示（或聚焦）独立对话窗：窗口不存在则先按需创建，再 show + focus。
+///
+/// ⚠️ 首次建窗必须丢到**后台线程**：Tauri 的建窗消息在「主线程」上会直接在当前
+/// 调用栈里执行 WebView2 controller 创建，和 IPC/菜单回调嵌套时会把消息泵卡死
+/// （v0.5.4 实测事故）。后台线程调用会走 send_user_message 投递到主事件循环、
+/// 等主线程空闲时创建，这才是运行期建窗的安全姿势。
 pub fn show_window(app: &AppHandle) {
-    let Some(win) = app.get_webview_window(LABEL) else {
-        log::warn!("对话独立窗口不存在（预创建失败？），跳过本次唤起");
+    if let Some(win) = app.get_webview_window(LABEL) {
+        present(app, &win);
         return;
-    };
-    // 建窗已提前到启动期（主窗可能隐藏/未就绪，拿不到「主窗中央」落点）：
+    }
+    if BUILDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let result = build(&handle);
+        BUILDING.store(false, Ordering::SeqCst);
+        match result {
+            Ok(win) => {
+                log::info!("对话独立窗口已按需创建");
+                present(&handle, &win);
+            }
+            Err(e) => log::warn!("对话独立窗口按需创建失败: {e}"),
+        }
+    });
+}
+
+/// 已建好窗口后的显示逻辑（按需创建线程与常规唤起共用）
+fn present(app: &AppHandle, win: &WebviewWindow) {
     // 尚无位置记忆时在首次唤起（主窗必然可见）补一次落位，Moved 事件会随之持久化
     {
         let cfg = config::load();
@@ -247,7 +265,7 @@ pub fn show_window(app: &AppHandle) {
     }
     // 先恢复内存级别再显示（webview_mem：Low 态缓存已吐，首帧前回 Normal）
     crate::webview_mem::on_shown(app, LABEL);
-    if !native_visible(&win) {
+    if !native_visible(win) {
         let _ = win.show();
     }
     let _ = win.set_focus();
@@ -297,15 +315,12 @@ pub fn is_visible(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-/// 模式切换落地：只改内存镜像 + 显隐。窗口由启动 init 常驻，**这里绝不 build**
-/// （约定 41：v0.5.4 在此现场建窗挂死整 app 的事故实录见模块头）。
-/// 开启 → 无事（等入口按 mode_enabled 唤起）；关闭 → 隐藏常驻（不 destroy）。
+/// 模式切换落地：只改内存镜像 + 显隐，**这里不 build**。
+/// 开启 → 无事（等入口按 mode_enabled 唤起，show_window 负责按需建窗）；
+/// 关闭 → 隐藏常驻（不 destroy，下次开启直接复用）。
 pub fn apply_mode(app: &AppHandle, enabled: bool) {
     MODE.store(enabled, Ordering::Relaxed);
     if enabled {
-        if app.get_webview_window(LABEL).is_none() {
-            log::warn!("对话独立窗口不存在（启动期建窗失败），本次开启无法恢复，重启后可用");
-        }
         return;
     }
     hide_window(app);

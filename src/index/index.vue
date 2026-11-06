@@ -27,6 +27,7 @@ import { convertFileSrc } from '@tauri-apps/api/core'
 import type { Countdown, ExtensionEntry, Note, RecorderResult, Resource, Todo } from '../api/tauri'
 import { playChime } from '../utils/chime'
 import { hasFloatingSurface } from '../utils/floatingSurface'
+import { isTargetMissingError } from '../utils/launchError'
 import { FileText, FolderOpen, LayoutDashboard, ListTodo, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import { useTheme } from '../composables/useTheme'
@@ -1128,6 +1129,10 @@ async function onOpenResource(r: Resource) {
   try {
     await store.launchResource(r.id)
   } catch (e) {
+    if (isTargetMissingError(e)) {
+      showToast(`找不到「${r.name}」对应的应用（可能已卸载或移动），可在速达页删除该条目`)
+      return
+    }
     showToast(`无法启动「${r.name}」：${String(e)}`)
   }
 }

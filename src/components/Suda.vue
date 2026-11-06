@@ -31,6 +31,7 @@ import { useAdaptivePolling } from '../composables/useAdaptivePolling'
 import { useSudaDrag } from '../composables/useSudaDrag'
 import { useSudaZoneDrag } from '../composables/useSudaZoneDrag'
 import { isHttpWebTarget } from '../utils/web'
+import { isTargetMissingError } from '../utils/launchError'
 import { buildSubcategoryTree, categoryMatchesPath, subcatLeaf } from '../utils/subcategoryTree'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -1035,6 +1036,14 @@ async function onOpen(r: Resource) {
   try {
     await store.launchResource(r.id)
   } catch (e) {
+    // 应用已卸载/移动：给一条能直接清理的出口，而不是只留一句看不清的路径报错
+    if (isTargetMissingError(e)) {
+      showToast(`找不到「${r.name}」对应的应用（可能已卸载或移动），可以删除这个条目`, {
+        label: '删除',
+        onClick: () => void onDeleteResource(r),
+      })
+      return
+    }
     showToast(`无法打开「${r.name}」：${String(e)}`)
   }
 }

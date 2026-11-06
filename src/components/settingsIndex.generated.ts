@@ -79,6 +79,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   { section: 'shortcut', title: 'GIF 录制呼出快捷键' },
   { section: 'skills', title: '检测到的助手目录' },
   { section: 'sync', title: '云同步' },
+  { section: 'sync', title: '自动同步' },
   { section: 'sync', title: '同步空间' },
   { section: 'sync', title: '手机配对' },
   { section: 'sync', title: '同步设备' },
@@ -166,6 +167,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   { section: 'guide', title: '12.7 账号' },
   { section: 'guide', title: '12.8 数据与关于' },
   { section: 'guide', title: '13. 数据与维护' },
-  { section: 'guide', title: '14. 应用更新' },
-  { section: 'guide', title: '15. 常见问题' },
+  { section: 'guide', title: '14. 云同步（桌面 ↔ 手机）' },
+  { section: 'guide', title: '15. 应用更新' },
+  { section: 'guide', title: '16. 常见问题' },
 ]

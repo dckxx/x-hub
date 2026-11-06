@@ -49,6 +49,13 @@ pub(crate) fn split_shell_aumid(target: &str) -> Option<(&str, &str)> {
         .split_once('!')
 }
 
+/// 目标是否「像本地文件路径」（含路径分隔符）。用于区分磁盘上的程序路径与
+/// 交给 cmd / PATH 解析的裸命令名（如 `notepad`）。
+fn looks_like_file_path(path: &str) -> bool {
+    let p = path.trim();
+    !p.is_empty() && (p.contains('\\') || p.contains('/'))
+}
+
 pub fn launch_program(path: &str, args: Option<&str>) -> Result<(), String> {
     // MSIX/Store 打包应用（issue #20/#32）：shell:AppsFolder\<AUMID> 不是磁盘文件，
     // 走 cmd /C 会「假成功」——cmd 报「不是内部或外部命令」但进程本身 spawn 成功，
@@ -61,6 +68,15 @@ pub fn launch_program(path: &str, args: Option<&str>) -> Result<(), String> {
             log::debug!("打包应用忽略启动参数: {path}");
         }
         return shell_execute_app(path.trim());
+    }
+    // 路径型目标先查存在性：走 cmd /C 时「文件不存在」只会出现在 cmd 自己的
+    // stderr，父进程 spawn 照样成功 → 前端拿到 Ok、界面毫无反应（应用卸载后
+    // 点速达图标即如此）。这里明确报 TARGET_NOT_FOUND，供前端提示「可删除」。
+    if looks_like_file_path(path) && !std::path::Path::new(path.trim()).is_file() {
+        return Err(format!(
+            "TARGET_NOT_FOUND: 找不到对应程序「{}」（可能已卸载或移动）",
+            path.trim()
+        ));
     }
     let target = std::path::Path::new(path);
     let mut cmd = if target.is_file() {
@@ -129,6 +145,13 @@ fn shell_execute_app(target: &str) -> Result<(), String> {
         Ok(())
     } else {
         let err = unsafe { GetLastError() };
+        // ERROR_FILE_NOT_FOUND：AUMID 已不存在（应用卸载）。与路径型目标同一口径，
+        // 让前端能提示「可以删除」，而不是只弹一句错误码。
+        if err == 2 {
+            return Err(format!(
+                "TARGET_NOT_FOUND: 找不到对应应用「{target}」（可能已卸载或移动）"
+            ));
+        }
         Err(format!(
             "启动打包应用失败「{target}」: 错误码 {err}（应用可能已卸载或名称有误）"
         ))
@@ -485,17 +508,22 @@ mod tests {
 
     #[test]
     fn launch_nonexistent_program_returns_error() {
-        // Windows 上经 cmd /C 启动不存在路径时 cmd 进程本身可成功 spawn，
-        // 因此只对非 Windows 平台断言失败；Windows 断言不 panic 即可。
-        #[cfg(not(target_os = "windows"))]
-        {
-            let result = launch_program("/nonexistent/path/xyz", None);
-            assert!(result.is_err());
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let _ = launch_program("/nonexistent/path/xyz", None);
-        }
+        // 路径型目标（含分隔符）先查存在性：不能再落到 cmd /C 的「假成功」，
+        // 否则应用卸载后点速达图标毫无反应（本次修复的直接原因）。
+        let err = launch_program("/nonexistent/path/xyz", None).unwrap_err();
+        assert!(err.starts_with("TARGET_NOT_FOUND:"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn looks_like_file_path_distinguishes_bare_commands() {
+        assert!(looks_like_file_path(r"C:\Program Files\App\app.exe"));
+        assert!(looks_like_file_path("C:/Tools/app.exe"));
+        assert!(looks_like_file_path(r"\\nas\share\app.exe"));
+        assert!(looks_like_file_path(r".\app.exe"));
+        // 裸命令名交给 cmd / PATH，不当作磁盘路径
+        assert!(!looks_like_file_path("notepad"));
+        assert!(!looks_like_file_path("notepad.exe"));
+        assert!(!looks_like_file_path("  "));
     }
 
     #[test]

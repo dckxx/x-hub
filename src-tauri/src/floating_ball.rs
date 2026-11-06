@@ -611,18 +611,18 @@ pub fn init(app: &AppHandle) {
     #[cfg(target_os = "windows")]
     {
         use std::sync::atomic::Ordering;
-        if let Err(e) = ensure_window(app) {
-            log::warn!("悬浮球窗口创建失败: {}", e);
-            return;
-        }
         let cfg = config::load();
         AUTO_HIDE.store(cfg.floating_ball_auto_hide, Ordering::Relaxed);
         start_edge_watch(app);
         if !cfg.floating_ball_enabled {
-            // 停用状态：窗口隐藏常驻，设置启用时直接 show 即可
-            if let Some(win) = app.get_webview_window(LABEL) {
-                let _ = win.hide();
-            }
+            // 停用态**不预创建**窗口：一个隐藏 renderer 也要 20–40MB，而多数用户
+            // 从不开启悬浮球。启用走 apply_enabled → ensure_window（原有兜底路径，
+            // 只在用户点「启用」时建一次），停用后窗口隐藏常驻复用。
+            log::info!("悬浮球未启用：跳过窗口预创建（启用时再建）");
+            return;
+        }
+        if let Err(e) = ensure_window(app) {
+            log::warn!("悬浮球窗口创建失败: {}", e);
             return;
         }
         sync_with_main(app);
@@ -874,17 +874,29 @@ fn apply_geometry(win: &tauri::WebviewWindow, expanded: bool, scale_override: Op
 }
 
 /// 设置变更后的应用：启用则确保窗口存在并联动显隐；停用只隐藏、不销毁窗口。
-/// 窗口由启动 init 预创建后常驻——运行时 destroy/rebuild WebView2 与悬浮球窗口
-/// 操作交错会卡死整窗（见 init 注释），与 clipboard 浮层「预创建隐藏常驻」同款约束
+/// 停用态启动不预创建（省一个隐藏 renderer），所以「启用」可能是首次建窗：
+/// 该命令在主线程执行，同步 build WebView2 会卡死消息泵——必须丢后台线程，
+/// 由 send_user_message 投递给空闲的主循环执行（同 chat_window::show_window）。
 #[cfg(target_os = "windows")]
 fn apply_enabled(app: &AppHandle, enabled: bool) {
     if enabled {
-        // 正常路径窗口启动时已预创建；此处 ensure 仅兜底极少见的缺失场景
-        if let Err(e) = ensure_window(app) {
-            log::warn!("悬浮球窗口创建失败: {}", e);
+        if app.get_webview_window(LABEL).is_some() {
+            sync_with_main(app);
             return;
         }
-        sync_with_main(app);
+        let handle = app.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = ensure_window(&handle) {
+                log::warn!("悬浮球窗口创建失败: {}", e);
+                return;
+            }
+            // 建窗期间用户可能又关掉了开关：以落盘配置为准，避免建完又弹出来
+            if crate::config::load().floating_ball_enabled {
+                sync_with_main(&handle);
+            } else if let Some(win) = handle.get_webview_window(LABEL) {
+                let _ = win.hide();
+            }
+        });
     } else if let Some(win) = app.get_webview_window(LABEL) {
         let _ = win.hide();
         log::info!("悬浮球已停用（窗口隐藏常驻）");

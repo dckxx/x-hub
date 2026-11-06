@@ -12,6 +12,7 @@ import {
   sudaCustomConfigured,
   sudaCustomItems,
 } from '../utils/sudaCustom'
+import { isTargetMissingError } from '../utils/launchError'
 import type { Resource } from '../api/tauri'
 
 /**
@@ -51,8 +52,38 @@ function itemStyle(r: Resource) {
   }
 }
 
-function onOpen(r: Resource) {
-  store.launchResource(r.id).catch((e) => showToast(`无法打开「${r.name}」：${String(e)}`))
+async function onOpen(r: Resource) {
+  try {
+    await store.launchResource(r.id)
+  } catch (e) {
+    if (isTargetMissingError(e)) {
+      showToast(`找不到「${r.name}」对应的应用（可能已卸载或移动），可以删除这个条目`, {
+        label: '删除',
+        onClick: () => void onDelete(r),
+      })
+      return
+    }
+    showToast(`无法打开「${r.name}」：${String(e)}`)
+  }
+}
+
+async function onDelete(r: Resource) {
+  await store.removeResource(r.id)
+  showToast(`已删除「${r.name}」`, {
+    label: '撤销',
+    onClick: async () => {
+      await store.addResource({
+        kind: r.kind,
+        name: r.name,
+        target: r.target,
+        category: r.category,
+        icon: r.icon,
+        args: r.args,
+        zoneId: store.state.zones.some((z) => z.id === r.zone_id) ? r.zone_id : null,
+      })
+      showToast('已恢复')
+    },
+  })
 }
 </script>
 

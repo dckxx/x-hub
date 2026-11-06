@@ -2,9 +2,10 @@
 //! 用 WebView2 自带的 `ICoreWebView2_16::PrintToPdf`（Edge 打印管线）把渲染好的
 //! HTML 直出矢量 PDF——文字可选中、可搜索，Obsidian（Electron printToPDF）同款效果。
 //!
-//! 约定 41 铁律：承载渲染的 webview **启动期预创建、隐藏常驻**（label `export-render`，
-//! 挂轻量 export.html，不加载主 SPA），运行期只做 navigate / show / hide / COM 调用，
-//! 绝不现场 build/destroy。
+//! 窗口策略（2026-11 内存优化）：**首次导出时才创建**（label `export-render`，
+//! 挂轻量 export.html），此后隐藏常驻复用，运行期只做 navigate / show / hide / COM。
+//! 不做启动预创建——一个隐藏 renderer 也要 20–30MB，而 PDF 导出是低频操作，
+//! 导出本身是秒级流程，多一次建窗延迟无感。
 //!
 //! 页面加载检测不用脚本（隐藏态 WebView2 可能不跑脚本，见 notify.rs 教训）：
 //! 纯静态 HTML 零脚本，靠 builder 的 `on_page_load(Finished)` 原生回调 + 通道等待。
@@ -28,13 +29,19 @@ pub struct PageLoadWait(Mutex<Option<mpsc::Sender<()>>>);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
 const PRINT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 启动期预创建隐藏常驻窗口（约定 41；见模块注释）
+/// 启动只登记页面加载等待状态；窗口在首次导出时按需创建（见模块注释）
 pub fn init(app: &tauri::AppHandle) {
-    if app.get_webview_window(WINDOW_LABEL).is_some() {
-        return;
+    if app.try_state::<PageLoadWait>().is_none() {
+        app.manage(PageLoadWait::default());
     }
-    app.manage(PageLoadWait::default());
-    let builder = WebviewWindowBuilder::new(
+}
+
+/// 复用或按需创建导出渲染窗（隐藏，页面加载回调负责放行等待通道）
+fn ensure_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+        return Ok(win);
+    }
+    let win = WebviewWindowBuilder::new(
         app,
         WINDOW_LABEL,
         WebviewUrl::App("export.html".into()),
@@ -45,32 +52,26 @@ pub fn init(app: &tauri::AppHandle) {
     .decorations(false)
     .skip_taskbar(true)
     .visible(false)
-    .additional_browser_args(crate::ADDITIONAL_BROWSER_ARGS);
-
-    let built = builder
-        .on_page_load(|win, payload| {
-            if payload.event() == tauri::webview::PageLoadEvent::Finished {
-                if let Some(state) = win.app_handle().try_state::<PageLoadWait>() {
-                    if let Some(tx) = state.0.lock().ok().and_then(|mut g| g.take()) {
-                        let _ = tx.send(());
-                    }
+    .additional_browser_args(crate::ADDITIONAL_BROWSER_ARGS)
+    .on_page_load(|win, payload| {
+        if payload.event() == tauri::webview::PageLoadEvent::Finished {
+            if let Some(state) = win.app_handle().try_state::<PageLoadWait>() {
+                if let Some(tx) = state.0.lock().ok().and_then(|mut g| g.take()) {
+                    let _ = tx.send(());
                 }
             }
-        })
-        .build();
-    if let Err(e) = built {
-        log::warn!("导出渲染窗预创建失败（本次会话 PDF 导出不可用）: {e}");
-        return;
-    }
-    log::info!("导出渲染窗已预创建（隐藏常驻）");
+        }
+    })
+    .build()
+    .map_err(|e| format!("创建导出渲染窗失败: {e}"))?;
+    log::info!("导出渲染窗已按需创建");
+    Ok(win)
 }
 
 /// 把渲染好的 HTML 直出为 PDF（静默、矢量文字）。
 /// 从命令线程调用：navigate / with_webview 内部自行派发到主线程。
 pub fn render_pdf(app: &tauri::AppHandle, html: &str, out: &Path) -> Result<(), String> {
-    let win = app
-        .get_webview_window(WINDOW_LABEL)
-        .ok_or_else(|| "导出渲染窗不可用（应用启动中，稍后再试）".to_string())?;
+    let win = ensure_window(app)?;
     // 回落路径可能把窗口留成可见：每次正式导出先归位隐藏
     let _ = win.hide();
     // 渲染/打印前恢复 Normal 内存档（隐藏常驻被 webview_mem 压在 Low，见 webview_mem.rs）
@@ -130,9 +131,7 @@ pub fn render_pdf(app: &tauri::AppHandle, html: &str, out: &Path) -> Result<(), 
 /// WebView2 Runtime 过旧时的回落：临时文件渲染 + 显示窗口 + 系统打印对话框
 /// （用户在对话框里选「另存为 PDF」）。窗口留在可见态供预览，下次静默导出会归位。
 pub fn render_pdf_via_dialog(app: &tauri::AppHandle, html: &str) -> Result<(), String> {
-    let win = app
-        .get_webview_window(WINDOW_LABEL)
-        .ok_or_else(|| "导出渲染窗不可用".to_string())?;
+    let win = ensure_window(app)?;
     crate::webview_mem::on_shown(app, WINDOW_LABEL);
     let temp = temp_html_path();
     std::fs::write(&temp, html).map_err(|e| format!("写入临时渲染文件失败: {e}"))?;

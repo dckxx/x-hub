@@ -128,6 +128,10 @@ pub struct AppConfig {
     /// 联网功能总开关（默认开启）：有网显示在线内容、无网自动隐藏；关闭后完全不发起网络请求
     #[serde(default = "default_true")]
     pub online_enabled: bool,
+    /// 云同步「自动同步」开关（默认关闭）：开启后 outbox 非空 / 定时对账 / 聚焦返回
+    /// 自动跑一轮同步（内部 20s 节流）；关闭则只在用户点「立即同步」时同步
+    #[serde(default)]
+    pub sync_auto_enabled: bool,
     /// Agent 权限三档（#t47）：readonly / ask / full；对话框可临时切换，这里是持久默认档
     #[serde(default = "default_agent_permission_mode")]
     pub agent_permission_mode: String,
@@ -584,6 +588,7 @@ impl Default for AppConfig {
             clock_quote: String::new(),
             notice_duration_ms: default_notice_duration_ms(),
             online_enabled: true,
+            sync_auto_enabled: false,
             agent_permission_mode: default_agent_permission_mode(),
             agent_about_me: String::new(),
             agent_prompt_on_dangerous: false,

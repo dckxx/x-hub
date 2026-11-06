@@ -332,11 +332,19 @@ pub async fn sync_now(app: AppHandle, state: State<'_, DbState>) -> Result<Value
             let conn = lock(&state)?;
             engine::clear_consumed(&conn, &batch.skipped).map_err(err_str)?;
         }
+        // 本地预检出的超限条目：清 outbox + 计入 rejected（SyncPanel 的
+        // 「N 条被服务端拒收」提示随之带到界面），明细日志在 engine 里已打
+        if !batch.oversize.is_empty() {
+            rejected_total += batch.oversize.len();
+            let conn = lock(&state)?;
+            engine::clear_consumed(&conn, &batch.oversize).map_err(err_str)?;
+        }
         if batch.items.is_empty() {
             break;
         }
         // 429 是节奏问题不是数据问题：退避后重试同一批（不重建批次，避免重新加密）
         let mut resp = None;
+        let mut too_large = false;
         for attempt in 0..3 {
             match api::device_post("/sync/push", &device_token, &device_id, json!({ "items": batch.items })).await {
                 Ok(v) => {
@@ -346,8 +354,31 @@ pub async fn sync_now(app: AppHandle, state: State<'_, DbState>) -> Result<Value
                 Err(e) if e.contains("RATE_LIMITED") => {
                     tokio::time::sleep(std::time::Duration::from_millis(1_500 * (attempt + 1) as u64)).await;
                 }
+                Err(e) if e.contains("TOO_LARGE") => {
+                    too_large = true;
+                    break;
+                }
                 Err(e) => return Err(auth_error(&state, e)),
             }
+        }
+        if too_large {
+            // 整批因「含超限条目」被服务端退回（部署的服务端可能比本地预检默认值旧/小）：
+            // 把预检阈值收紧到「本批最大单条密文以下」——重建批次时超限条目直接走本地
+            // 预检（清 outbox + 明细日志），其余条目照常成批推，不再反复撞 413。
+            // 阈值是运行时自适应的：每轮 413 都会继续收紧，几轮内收敛。
+            let max_ct = batch
+                .items
+                .iter()
+                .map(|it| it["payload_ct"].as_str().map(|s| s.len() * 3 / 4).unwrap_or(0))
+                .max()
+                .unwrap_or(0);
+            engine::shrink_record_limit(max_ct.saturating_sub(1));
+            log::warn!(
+                "[云同步] 批内含超限条目（批 {} 条），单条预检阈值收紧到 {} B",
+                batch.consumed.len(),
+                engine::record_limit()
+            );
+            continue;
         }
         let Some(resp) = resp else {
             // 一直是 429：本轮放弃（outbox 原样保留，下轮接着推）
@@ -453,6 +484,12 @@ pub async fn sync_disable(state: State<'_, DbState>) -> Result<Value, String> {
 pub async fn sync_auto(app: AppHandle, state: State<'_, DbState>) -> Result<Value, String> {
     if !sync_ready(&state) {
         return Ok(json!({ "skipped": true, "reason": "not_ready" }));
+    }
+    // 自动同步开关（设置 → 数据与关于 → 云同步）：关 = 所有触发点（outbox 轮询 /
+    // 定时对账 / 聚焦返回）全部空转，只有用户点「立即同步」（sync_now）才同步。
+    // 放在节流之前：开关关闭时不该消耗节流时间戳，开了开关能立刻跑第一轮。
+    if !crate::config::load().sync_auto_enabled {
+        return Ok(json!({ "skipped": true, "reason": "disabled" }));
     }
     // 节流：同机 20s 内只跑一轮（聚焦/切页可能连续触发好几次）
     {

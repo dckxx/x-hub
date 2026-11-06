@@ -6,23 +6,29 @@
 // 渲染进浏览器窗口（实测踩过）。单 webview 窗口两类 label 恒等，统一用 webview label 无副作用。
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { listen } from '@tauri-apps/api/event'
-import { onBeforeUnmount, onMounted } from 'vue'
+import { defineAsyncComponent, onBeforeUnmount, onMounted } from 'vue'
 import Index from './index/index.vue'
 import DetachedStickyWindow from './components/DetachedStickyWindow.vue'
 import CountdownFloat from './components/CountdownFloat.vue'
-import ClipboardOverlay from './components/ClipboardOverlay.vue'
 import ExtensionWindow from './components/ExtensionWindow.vue'
 import PromptFloat from './components/PromptFloat.vue'
 import TodoFloat from './components/TodoFloat.vue'
-import FloatingBallWindow from './components/FloatingBallWindow.vue'
-import ChatWindow from './components/ChatWindow.vue'
-import NoticeOverlay from './components/NoticeOverlay.vue'
-import RecorderOverlay from './components/RecorderOverlay.vue'
-import RecorderControl from './components/RecorderControl.vue'
-import PinShotWindow from './components/PinShotWindow.vue'
-import BrowserChrome from './components/BrowserChrome.vue'
 import UpdateCheckDialog from './components/UpdateCheckDialog.vue'
 import WindowResizeEdges from './components/WindowResizeEdges.vue'
+
+// 内存优化（2026-11）：这些窗口各自有独立轻量入口（clipboard.html / chat.html /
+// pin.html / recorder.html / notice.html / ball.html / chrome.html），index.html
+// 里的同名分支只是兜底。此前静态 import 会把它们的 JS/CSS 拉进 index.html 的
+// 静态依赖图——主窗、便签、倒计时、扩展窗每个 renderer 都要白白解析执行一遍。
+// 改为异步组件：分支永不命中就不加载，命中时才拉 chunk（兜底行为不变）。
+const ClipboardOverlay = defineAsyncComponent(() => import('./components/ClipboardOverlay.vue'))
+const FloatingBallWindow = defineAsyncComponent(() => import('./components/FloatingBallWindow.vue'))
+const ChatWindow = defineAsyncComponent(() => import('./components/ChatWindow.vue'))
+const NoticeOverlay = defineAsyncComponent(() => import('./components/NoticeOverlay.vue'))
+const RecorderOverlay = defineAsyncComponent(() => import('./components/RecorderOverlay.vue'))
+const RecorderControl = defineAsyncComponent(() => import('./components/RecorderControl.vue'))
+const PinShotWindow = defineAsyncComponent(() => import('./components/PinShotWindow.vue'))
+const BrowserChrome = defineAsyncComponent(() => import('./components/BrowserChrome.vue'))
 import { isTauri } from './api/tauri'
 import { useScrollbarHover } from './composables/useScrollbarHover'
 

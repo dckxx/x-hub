@@ -708,6 +708,13 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 云同步「自动同步」开关：专属命令锁内落盘（不走 saveConfig 整体写，双写已去） */
+  async function setSyncAutoEnabled(enabled: boolean) {
+    state.config.sync_auto_enabled = enabled
+    if (!isTauri()) return
+    await tauriApi.setSyncAutoEnabled(enabled)
+  }
+
   /** 显式以独立应用内浏览器窗口打开网页资源（右键菜单，绕过默认打开方式） */
   async function openResourceInWindow(id: number) {
     await tauriApi.sudaBrowserOpen(id)
@@ -2235,6 +2242,7 @@ export function useStore() {
     reorderResourcesZoned,
     setSudaWebOpenMode,
     setNoteAiModel,
+    setSyncAutoEnabled,
     openResourceInWindow,
     openWebPanel,
     sudaCustomConfigOf,

@@ -30,6 +30,27 @@ pub const PUSH_BATCH_ITEMS: usize = 100;
 pub const PUSH_BATCH_BYTES: usize = 1024 * 1024;
 /// 批间等待：服务端每空间 2s 一次的推送频率窗口（协议 §7.3），多留 200ms 抖动余量
 pub const PUSH_MIN_INTERVAL_MS: u64 = 2_200;
+/// 服务端单条记录的密文上限（字节）= SYNC_MAX_RECORD_BYTES 默认 2MiB（协议 §7.3）。
+/// 客户端按此默认值做**本地预检**：超限条目不再发送、直接清 outbox（与服务端按条
+/// rejected 同语义——这条数据重试永远不会成功），避免它堵住队列头把同步卡死。
+/// 上限是**运行时自适应**的：部署的服务端可能比默认值旧/小（实测旧版 256KB 且整批
+/// 413），push 收到整批 `RECORD_TOO_LARGE` 时 commands 层调 shrink_record_limit
+/// 收紧阈值，重建批次后超限条目直接走本地预检，不再反复撞 413。
+pub const MAX_RECORD_CT_BYTES: usize = 2 * 1024 * 1024;
+/// 预检阈值的运行时值（初始 = 服务端默认上限；收到整批 TOO_LARGE 时向下收紧）
+static RECORD_LIMIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(MAX_RECORD_CT_BYTES);
+
+/// 当前生效的单条密文预检阈值
+pub fn record_limit() -> usize {
+    RECORD_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 收紧单条预检阈值（push 收到整批 TOO_LARGE 时调用）。下限 64KB 防误伤：
+/// 即使异常响应也不该把预检收到正常数据都发不出去的程度。
+pub fn shrink_record_limit(below: usize) {
+    let v = below.max(64 * 1024);
+    RECORD_LIMIT.store(v, std::sync::atomic::Ordering::Relaxed);
+}
 
 // ---------------- 状态 ----------------
 
@@ -120,6 +141,9 @@ pub struct PushBatch {
     pub items: Vec<Value>,
     pub consumed: Vec<OutboxEntry>,
     pub skipped: Vec<OutboxEntry>,
+    /// 本地预检出的超限条目（密文 > MAX_RECORD_CT_BYTES）：调用方清 outbox、
+    /// 计入 rejected 上报到界面；明细日志在 build_push_items 内已打。
+    pub oversize: Vec<OutboxEntry>,
 }
 
 /// outbox → 加密后的推送条目。delete 条目从 outbox.uid + 墓碑表取证。
@@ -186,6 +210,26 @@ pub fn build_push_items(
         let mut nonce = [0u8; 24];
         getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
         let ct = seal_record(record_key, &e.entity, &uid, env_updated_at, &payload_json, &nonce)?;
+        // 单条密文超过服务端上限（运行时阈值，初始 2MiB、整批 413 后自适应收紧）：
+        // 本地直接跳过并清 outbox。这条数据重试永远不会成功（服务端按条 rejected /
+        // 旧版整批 413 都一样），留着它只会堵住队列头把整台设备的同步卡死
+        // （2026-11 实测）。日志带实体 / uid / 标题 / 密文与明文大小 / 上限，
+        // 排查时不用再猜是哪条、有多大。
+        let limit = record_limit();
+        if e.op != "delete" && ct.len() > limit {
+            let title = row_title(conn, &e.entity, e.rowid);
+            log::warn!(
+                "[云同步] 单条超限不上云: {} uid={} 「{}」 密文 {} B / 明文约 {} B（上限 {} B）——该条已跳过，可拆分内容后重试",
+                e.entity,
+                uid,
+                title,
+                ct.len(),
+                payload_json.len(),
+                limit
+            );
+            batch.oversize.push(e);
+            continue;
+        }
         let ct_b64 = B64.encode(ct);
         // 字节预算：本批已非空且再加这条会超 → 停在这里，剩下的留到下一批。
         // 批内第一条永远放行（单条超预算也必须能送出去，见函数头注释）。
@@ -215,6 +259,17 @@ pub fn clear_consumed(conn: &Connection, consumed: &[OutboxEntry]) -> rusqlite::
         repo::outbox_clear(conn, &e.entity, e.rowid)?;
     }
     Ok(())
+}
+
+/// 行标题（日志可读性）：notes / todos 都有 title 列；查失败返回空串
+fn row_title(conn: &Connection, entity: &str, rowid: i64) -> String {
+    let table = if entity == "todo" { "todos" } else { "notes" };
+    conn.query_row(
+        &format!("SELECT title FROM {table} WHERE id = ?1"),
+        params![rowid],
+        |r| r.get::<_, String>(0),
+    )
+    .unwrap_or_default()
 }
 
 fn key_version_of(conn: &Connection) -> i64 {
@@ -600,5 +655,55 @@ mod tests {
         let b2 = build_push_items(&conn, &key, 100, 1024).unwrap();
         assert_eq!(b2.items.len(), 1, "单条超预算也必须单独送一次");
         assert_eq!(b2.consumed[0].entity, "note");
+    }
+
+    #[test]
+    fn record_over_server_limit_is_prechecked_out_with_details() {
+        // 单条密文超服务端上限（2MiB）：本地预检直接跳过 + 清 outbox（oversize 列表），
+        // 不入 items/consumed——发送只会被拒，留着它就堵住队列头（2026-11 实测卡死）。
+        // 小条目不受影响，照常进批。
+        let conn = db::init_in_memory().unwrap();
+        let big = "x".repeat(MAX_RECORD_CT_BYTES + 1024 * 1024);
+        crate::repo::note::create(&conn, "超大笔记占位标题").unwrap();
+        crate::repo::note::update(&conn, 1, "超大笔记占位标题", &format!("这是一条超限笔记的正文前缀{big}")).unwrap();
+        crate::repo::note::create(&conn, "正常小笔记").unwrap();
+        let key = keys();
+
+        let batch = build_push_items(&conn, &key, 100, PUSH_BATCH_BYTES).unwrap();
+        assert_eq!(batch.items.len(), 1, "只有小笔记进批");
+        assert_eq!(batch.consumed.len(), 1);
+        assert_eq!(batch.consumed[0].entity, "note");
+        assert_eq!(batch.oversize.len(), 1, "超限条目进 oversize 待清");
+        assert_eq!(batch.oversize[0].entity, "note");
+
+        // 清掉超限条目 + 推送完成的正常条目后不再复现（outbox 已空）
+        clear_consumed(&conn, &batch.oversize).unwrap();
+        clear_consumed(&conn, &batch.consumed).unwrap();
+        let again = build_push_items(&conn, &key, 100, PUSH_BATCH_BYTES).unwrap();
+        assert!(again.items.is_empty());
+        assert!(again.oversize.is_empty());
+    }
+
+    #[test]
+    fn shrink_record_limit_adapts_to_older_server() {
+        // 部署的服务端可能比默认上限旧/小（实测旧版 256KB 且整批 413）：
+        // commands 层收到整批 TOO_LARGE 后调 shrink_record_limit 收紧阈值，
+        // 重建批次时超限条目直接走本地预检，不再反复撞 413。
+        shrink_record_limit(64 * 1024);
+        let conn = db::init_in_memory().unwrap();
+        let medium = "y".repeat(300 * 1024); // 300KB：默认 2MiB 下合法，64KB 阈值下超限
+        crate::repo::note::create(&conn, "中型笔记").unwrap();
+        crate::repo::note::update(&conn, 1, "中型笔记", &medium).unwrap();
+        let key = keys();
+
+        let batch = build_push_items(&conn, &key, 100, PUSH_BATCH_BYTES).unwrap();
+        assert_eq!(batch.items.len(), 0, "收紧后超限条目不再进批");
+        assert_eq!(batch.oversize.len(), 1);
+        // 下限钳制：收得再狠也不能低于 64KB
+        shrink_record_limit(16);
+        assert_eq!(record_limit(), 64 * 1024);
+        // 还原默认（其他测试用默认阈值）
+        shrink_record_limit(MAX_RECORD_CT_BYTES);
+        assert_eq!(record_limit(), MAX_RECORD_CT_BYTES);
     }
 }

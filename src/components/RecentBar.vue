@@ -4,6 +4,7 @@ import { Flame, Globe } from 'lucide-vue-next'
 import { useStore } from '../stores/workbench'
 import type { Resource } from '../api/tauri'
 import { iconSrc, accentOf, useResourceIcon } from '../composables/useResourceIcon'
+import { isTargetMissingError } from '../utils/launchError'
 
 // 标题可由工作台自定义布局覆盖：title = 自定义文案，hideTitle = 关闭标题行
 defineProps<{ title?: string; hideTitle?: boolean }>()
@@ -70,6 +71,10 @@ async function onOpen(r: Resource) {
   try {
     await store.launchResource(r.id)
   } catch (e) {
+    if (isTargetMissingError(e)) {
+      showToast(`找不到「${r.name}」对应的应用（可能已卸载或移动），可在速达页删除该条目`)
+      return
+    }
     showToast(`无法启动「${r.name}」：${String(e)}`)
   }
 }

@@ -146,6 +146,7 @@ const state = reactive<StoreState>({
     theme_mode: 'light',
     theme_preset: 'indigo',
     accent_color: null,
+    sync_auto_enabled: false,
     wallpaper_path: '',
     wallpaper_blur: true,
     wallpaper_veil: 0.3,

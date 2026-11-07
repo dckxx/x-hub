@@ -871,6 +871,24 @@ export function useStore() {
     return f
   }
 
+  const DIARY_FOLDER_NAME = '日记'
+
+  /** 标题缺省 = 入库时刻的「年月日 时:分:秒」（工作台日记卡口径） */
+  function formatDiaryTitle(d: Date): string {
+    const p = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  }
+
+  /** 存入速记「日记」文件夹：树根按名查找、缺失即建（普通文件夹，改删自由）。
+   *  工作台日记卡与待办视图「加日记」共用这一份，勿再各写一套查找逻辑 */
+  async function saveDiaryEntry(content: string, title?: string) {
+    let folder = state.noteFolders.find(
+      (f) => f.parent_id == null && f.name === DIARY_FOLDER_NAME,
+    )
+    if (!folder) folder = await createNoteFolder(DIARY_FOLDER_NAME, null)
+    return addNote(title ?? formatDiaryTitle(new Date()), folder.id, content)
+  }
+
   async function renameNoteFolder(id: number, name: string) {
     if (isTauri()) await tauriApi.renameNoteFolder(id, name)
     const f = state.noteFolders.find((x) => x.id === id)
@@ -2261,6 +2279,7 @@ export function useStore() {
     refreshNotes,
     refreshNoteTagRows,
     createNoteFolder,
+    saveDiaryEntry,
     renameNoteFolder,
     deleteNoteFolder,
     refreshNoteFolders,

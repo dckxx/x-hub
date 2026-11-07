@@ -1641,6 +1641,10 @@ export const tauriApi = {
   setNoteTags: (noteId: number, tagIds: number[]) =>
     invoke<void>('set_note_tags', { noteId, tagIds }),
   listNoteTags: () => invoke<NoteTagRow[]>('list_note_tags'),
+  /** 待办视图一键导出：Rust 侧弹保存对话框（绕过插件 ACL，dev/prod 行为一致），None = 用户取消 */
+  pickSavePath: (defaultName: string) => invoke<string | null>('pick_save_path', { defaultName }),
+  /** 待办视图一键导出：内容前端按当前筛选组装好，这里只写盘到保存对话框选定的路径 */
+  exportTodos: (path: string, content: string) => invoke<void>('export_todos', { path, content }),
   backupData: (targetDir: string) => invoke<string>('backup_data', { targetDir }),
   restoreData: (source: string) => invoke<void>('restore_data', { source }),
   getDataPath: () => invoke<DataPathInfo>('get_data_path'),

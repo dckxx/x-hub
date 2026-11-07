@@ -308,7 +308,11 @@ mod tests {
 
     /// P3 守卫：Rust 常量与 tauri.conf.json 主窗的 additionalBrowserArgs 必须逐字
     /// 一致——两处都是真相源，不一致时 WebView2 按参数差分裂 environment，
-    /// 多出一整棵浏览器进程树（内存不降反暴增）。
+    /// 多出一整棵浏览器进程树（内存不降反暴增）。实测另一形态（2026-11-07）：
+    /// 主窗先起浏览器进程后，参数不一致的后续环境创建**全部失败**
+    /// （0x8007139F ERROR_INVALID_STATE），且 tauri-runtime-wry 吞掉错误、
+    /// build() 照常返回 Ok——预创建日志全绿、窗口全是无 WebView2 的空壳。
+    /// 当日事故：主窗单侧摘 --enable-low-end-device-mode 触发。
     #[test]
     fn additional_browser_args_match_tauri_conf() {
         let conf: serde_json::Value =

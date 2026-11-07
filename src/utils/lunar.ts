@@ -1,8 +1,15 @@
 /**
- * 农历（阴历）转换工具：公历日期 → 农历年月日 + 干支/生肖。
+ * 农历（阴历）转换工具：公历日期 → 农历年月日 + 干支/生肖 + 节气 + 传统节日。
  * 采用经典数据表算法（1900–2100），lunarInfo[y-1900] 位编码当年闰月与大小月。
- * 仅用于展示「今日阴阳历」等形态，无外部依赖。
+ * 节气来自 scripts/gen-solar-terms.mjs 生成的同范围数据表（solarTermData.ts）。
+ * 仅用于展示「今日阴阳历」与日历格标签等形态，无外部依赖。
  */
+import {
+  SOLAR_TERM_DAYS,
+  SOLAR_TERM_MONTHS,
+  SOLAR_TERM_NAMES,
+  SOLAR_TERM_YEAR0,
+} from './solarTermData.ts'
 
 // 1900–2100 共 201 项。每项含义：
 //   bit 15..4  某月是否大月(30天)
@@ -143,4 +150,88 @@ export function toLunar(date: Date): LunarDate | null {
     zodiac: ZODIAC[(year - 4) % 12],
     short: `${MONTH_NAMES[month - 1]}月${DAY_NAMES[day - 1].replace(/^初/, '')}`,
   }
+}
+
+/**
+ * 日历格用短标签（月历惯例）：农历每月初一显月名（「七月」/「闰七月」），其余显日名（「初二…三十」）。
+ * 1900–2100 之外返回 null（toLunar 同口径），调用方 v-if 守卫。
+ */
+export function lunarCellLabel(date: Date): string | null {
+  const l = toLunar(date)
+  if (!l) return null
+  return l.day === 1 ? l.monthName : l.dayName
+}
+
+// ---- 节气（表见 solarTermData.ts，公历 1900–2100）----
+
+/** 当天恰逢节气日返回节气名（「立春」「冬至」…），否则 null。1900–2100 之外一律 null。 */
+export function solarTermOf(date: Date): string | null {
+  const y = date.getFullYear()
+  const offset = y - SOLAR_TERM_YEAR0
+  const totalYears = SOLAR_TERM_DAYS.length / 24 / 2
+  if (offset < 0 || offset >= totalYears) return null
+  const m = date.getMonth() + 1
+  const d = date.getDate()
+  for (let i = 0; i < 24; i++) {
+    if (SOLAR_TERM_MONTHS[i] !== m) continue
+    const start = (offset * 24 + i) * 2
+    if (Number(SOLAR_TERM_DAYS.slice(start, start + 2)) === d) return SOLAR_TERM_NAMES[i]
+  }
+  return null
+}
+
+// ---- 传统节日（农历节日 + 固定公历节日；法定放假安排是逐年行政数据，不在此表）----
+
+const LUNAR_FESTIVALS: Record<string, string> = {
+  '1-1': '春节',
+  '1-15': '元宵',
+  '2-2': '龙抬头',
+  '5-5': '端午',
+  '7-7': '七夕',
+  '8-15': '中秋',
+  '9-9': '重阳',
+  '12-8': '腊八',
+}
+const SOLAR_FESTIVALS: Record<string, string> = {
+  '1-1': '元旦',
+  '3-8': '妇女节',
+  '3-12': '植树节',
+  '5-1': '劳动节',
+  '6-1': '儿童节',
+  '9-10': '教师节',
+  '10-1': '国庆节',
+}
+
+/** 当天恰逢传统节日返回节日名，否则 null。闰月不重复过节（闰五月的初五不是端午）。 */
+export function festivalOf(date: Date): string | null {
+  const solarHit = SOLAR_FESTIVALS[`${date.getMonth() + 1}-${date.getDate()}`] ?? null
+  const l = toLunar(date)
+  let lunarHit: string | null = null
+  if (l) {
+    // 除夕 = 农历年最后一天（腊月大三十、小廿九）：「次日恰为正月初一」直接判定，不依赖大小月；
+    // 放在 isLeap 早退之前——极罕见的闰腊月最后一天同样是除夕
+    if (l.month === 12) {
+      const next = toLunar(new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1))
+      if (next && next.month === 1 && next.day === 1) lunarHit = '除夕'
+    }
+    if (!lunarHit && !l.isLeap) lunarHit = LUNAR_FESTIVALS[`${l.month}-${l.day}`] ?? null
+  }
+  // 同日撞车（如 2020-10-01 国庆×中秋）农历节日胜出：公历节日人人皆知，农历错过日历就没了
+  return lunarHit ?? solarHit
+}
+
+/**
+ * 日历格标签，优先级：节日 > 节气 > 初一显月名 > 农历日名。
+ * 单坑位格子不可能同显两条，撞车时按此序取舍；全不命中返回 null（1900–2100 之外）。
+ */
+export function calendarCellLabel(date: Date): string | null {
+  return festivalOf(date) ?? solarTermOf(date) ?? lunarCellLabel(date)
+}
+
+/** 日历「当天明细」头部标签：节日 > 节气 > 完整农历（「九月廿九」）——头部有完整公历日期，节名可独立成立 */
+export function calendarDayLabel(date: Date): string | null {
+  const head = festivalOf(date) ?? solarTermOf(date)
+  if (head) return head
+  const l = toLunar(date)
+  return l ? `${l.monthName}${l.dayName}` : null
 }

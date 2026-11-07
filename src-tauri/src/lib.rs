@@ -64,8 +64,13 @@ mod xhub_api;
 /// - --js-flags=--scavenger_max_new_space_capacity_mb=8：压 V8 新生代堆上限，
 ///   降低 JS 引擎常驻内存；若主窗/编辑器出现 GC 卡顿可放宽到 16–32
 /// - --disk-cache-size=33554432：磁盘缓存上限 32MB
+/// ⚠️ 勿再追加 --enable-low-end-device-mode（v0.9.9 曾加、2026-11-07 摘除）：
+///   低端模式合成立即可见面板上出现网格状伪影；且该参数属环境级，两处参数
+///   （本常量 ↔ tauri.conf.json 主窗）不一致会导致后续 webview 创建全部失败
+///   （WebView2 0x8007139F），守卫测试 webview_mem::tests::
+///   additional_browser_args_match_tauri_conf 锁两处逐字一致。
 pub const ADDITIONAL_BROWSER_ARGS: &str =
-    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --js-flags=--scavenger_max_new_space_capacity_mb=8 --disk-cache-size=33554432 --enable-low-end-device-mode";
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --js-flags=--scavenger_max_new_space_capacity_mb=8 --disk-cache-size=33554432";
 
 use commands::DbState;
 use rusqlite::Connection;
@@ -1259,6 +1264,8 @@ pub fn run() {
             commands::set_note_tags,
             commands::list_note_tags,
             commands::backup_data,
+            commands::pick_save_path,
+            commands::export_todos,
             commands::restore_data,
             commands::get_data_path,
             commands::change_data_dir,

@@ -10,16 +10,9 @@ const showToast = inject<(msg: string, action?: { label: string; onClick: () => 
   'showToast',
 )
 
-const DIARY_FOLDER_NAME = '日记'
 const draft = ref('')
 const saving = ref(false)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
-
-/** 标题 = 入库时刻的「年月日 时:分:秒」 */
-function formatDiaryTitle(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-}
 
 /** 单行起、随内容长高；+2 补 border-box 上下边框，避免差 2px 出滚动条 */
 function autosize() {
@@ -38,18 +31,14 @@ function onKeydown(e: KeyboardEvent) {
   void saveDiary()
 }
 
-/** 存入速记「日记」文件夹：树根按名查找、缺失即建（普通文件夹，改删自由）；
+/** 存入速记「日记」文件夹（查找/建夹/标题口径统一在 store.saveDiaryEntry）；
  *  成功 = 立马清空输入框；失败 = 保留原文 + 报错 toast */
 async function saveDiary() {
   const content = draft.value
   if (saving.value || !content.trim()) return
   saving.value = true
   try {
-    let folder = store.state.noteFolders.find(
-      (f) => f.parent_id == null && f.name === DIARY_FOLDER_NAME,
-    )
-    if (!folder) folder = await store.createNoteFolder(DIARY_FOLDER_NAME, null)
-    await store.addNote(formatDiaryTitle(new Date()), folder.id, content)
+    await store.saveDiaryEntry(content)
     draft.value = ''
     nextTick(autosize)
   } catch (e) {

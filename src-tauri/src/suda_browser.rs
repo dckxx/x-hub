@@ -49,6 +49,18 @@ const WIN_PREFIX: &str = "suda-web";
 const DEFAULT_CHROME_HEIGHT: f64 = 48.0;
 const DEFAULT_WIN_W: f64 = 1024.0;
 const DEFAULT_WIN_H: f64 = 720.0;
+/// 面板预创建占位尺寸（逻辑 px）。隐藏态停泊在客户区外，尺寸本身无意义，仅留个非零形状
+const PANEL_PLACEHOLDER_W: f64 = 200.0;
+const PANEL_PLACEHOLDER_H: f64 = 120.0;
+/// 面板隐藏态的界外停泊位（逻辑 px，负坐标 = 父窗客户区左上角之外）。
+/// 子 webview 被父窗客户区裁剪：界外即不可见、也不参与命中测试。停泊是 hide() 的硬兜底——
+/// 预创建后的 hide() 在部分 WebView2 运行时上会静默失效（2026-11 实测：面板以 (0,0) 200×120
+/// 占位矩形悬在主窗左上角，透明 about:blank 不显形，但 HWND 树吞掉该区域全部鼠标事件，
+/// 侧栏「工作台/待办」两个按钮恰好被整个盖住点不到）；而 tauri 的 WebviewBuilder 又没暴露
+/// visible(false) 构造项，创建瞬间必是可见的。所以隐藏态一律停泊界外，可见性开关只作锦上添花；
+/// 显示路径 set_bounds 先行（suda_panel_show / suda_panel_bounds），不受停泊影响
+const PANEL_PARK_X: f64 = -1200.0;
+const PANEL_PARK_Y: f64 = -800.0;
 
 struct SlotState {
     tabs: Vec<String>,
@@ -180,11 +192,15 @@ fn init_panel(app: &AppHandle) {
         });
     match main.add_child(
         builder,
-        LogicalPosition::new(0.0, 0.0),
-        LogicalSize::new(200.0, 120.0),
+        // 预创建落点直接给界外停泊位：不再以 (0,0) 200×120 悬在主窗左上角（hide 一失效就盖住侧栏）
+        LogicalPosition::new(PANEL_PARK_X, PANEL_PARK_Y),
+        LogicalSize::new(PANEL_PLACEHOLDER_W, PANEL_PLACEHOLDER_H),
     ) {
         Ok(wv) => {
-            let _ = wv.hide();
+            park_panel(&wv);
+            if let Err(e) = wv.hide() {
+                log::warn!("速达网页面板预创建 hide 失败（已由界外停泊兜底）: {e}");
+            }
             log::info!("速达网页面板 webview 预创建完成");
         }
         Err(e) => log::warn!("速达网页面板 webview 预创建失败: {e}"),
@@ -751,6 +767,18 @@ fn set_panel_bounds(wv: &Webview, x: f64, y: f64, w: f64, h: f64) -> Result<(), 
     .map_err(err_str)
 }
 
+/// 面板隐藏态界外停泊：挪出父窗客户区（负坐标），即使 hide() 失效也吃不到鼠标输入
+/// （PANEL_PARK_* 常量注释有完整事故记录）。失败只落日志：停泊是兜底，不该打断 hide 主流程
+fn park_panel(wv: &Webview) {
+    let rect = tauri::Rect {
+        position: tauri::Position::Logical(LogicalPosition::new(PANEL_PARK_X, PANEL_PARK_Y)),
+        size: tauri::Size::Logical(LogicalSize::new(PANEL_PLACEHOLDER_W, PANEL_PLACEHOLDER_H)),
+    };
+    if let Err(e) = wv.set_bounds(rect) {
+        log::warn!("速达网页面板界外停泊失败: {e}");
+    }
+}
+
 /// 打开速达网页资源到内嵌面板（URL 取自数据库：仅 Web 类型 + http/https）
 #[tauri::command]
 pub fn suda_panel_show(
@@ -789,9 +817,15 @@ pub fn suda_panel_bounds(app: AppHandle, x: f64, y: f64, w: f64, h: f64) -> Resu
 #[tauri::command]
 pub fn suda_panel_hide(app: AppHandle) -> Result<(), String> {
     let wv = panel_webview(&app)?;
-    wv.hide().map_err(err_str)?;
-    // 复位到空白页卸掉已访问页面（同 hide_slot：下次打开必然重新 navigate）
-    wv.navigate(about_blank()).map_err(err_str)
+    if let Err(e) = wv.hide() {
+        // 不作失败返回：界外停泊（下方）已保证吃不到输入，面板不可见才是用户可感知的契约
+        log::warn!("速达网页面板 hide 失败（已由界外停泊兜底）: {e}");
+    }
+    // 停泊先行：navigate 失败（WebView2 崩溃等异常态）提前返回时，「不可见」契约也已成立；
+    // 再复位到空白页卸掉已访问页面（同 hide_slot：下次打开必然重新 navigate）
+    park_panel(&wv);
+    wv.navigate(about_blank()).map_err(err_str)?;
+    Ok(())
 }
 
 /// 面板地址栏导航（无资源 id，不写最近使用）

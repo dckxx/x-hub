@@ -503,16 +503,28 @@ function toggleSubAdd() {
   }
 }
 
-function commitSub() {
+/**
+ * 提交子待办。keepOpen = 回车连录：提交后输入框留在原地（清空 + 聚焦）等待下一条，
+ * 空回车 = 结束录入收起输入框；失焦路径（onSubBlur）不带 keepOpen，提交后照旧收起。
+ */
+function commitSub(keepOpen = false) {
   const title = subText.value.trim()
   if (title) void store.createTodo(title, props.todo.id)
-  addingSub.value = false
   subText.value = ''
+  if (!keepOpen || !title) {
+    addingSub.value = false
+    return
+  }
+  nextTick(() => {
+    const el = subInputRef.value
+    el?.focus()
+    el?.scrollIntoView({ block: 'nearest' })
+  })
 }
 
 function onSubKeydown(e: KeyboardEvent) {
   if (e.isComposing) return
-  if (e.key === 'Enter') commitSub()
+  if (e.key === 'Enter') commitSub(true)
 }
 
 /** 失焦即提交（有内容）或收起（空），点取消按钮用 mousedown.prevent 跳过 blur */

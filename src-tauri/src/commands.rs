@@ -2539,6 +2539,31 @@ pub struct PathInfo {
     pub is_dir: bool,
 }
 
+// ---------- 待办导出 ----------
+
+/// 待办视图「一键导出」：保存对话框走 Rust 侧（自定义命令不经过插件能力 ACL，
+/// dev 的 localhost 页面与生产页行为一致；前端曾用 plugin-dialog 的 save() 在 dev
+/// 环境被 ACL 拒绝、静默无反馈，表现为「点了没反应」）。返回 None = 用户取消。
+#[tauri::command]
+pub async fn pick_save_path(
+    app: tauri::AppHandle,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    let picked = tauri_plugin_dialog::DialogExt::dialog(&app)
+        .file()
+        .set_file_name(default_name)
+        .add_filter("Markdown", &["md"])
+        .blocking_save_file();
+    Ok(picked.map(|p| p.to_string()))
+}
+
+/// 待办视图「一键导出」：Markdown 内容由前端按当前筛选（范围/标签/完成态）组装好，
+/// 这里只负责把文本写到用户经保存对话框选定的路径（与 note_io「前端传 bodies」同分工）。
+#[tauri::command]
+pub fn export_todos(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content.as_bytes()).map_err(|e| format!("写入文件失败: {}", e))
+}
+
 // ---------- 数据备份 / 恢复 ----------
 
 /// 备份数据到指定目录：把在线备份的数据库（SQLite backup API）与图标目录

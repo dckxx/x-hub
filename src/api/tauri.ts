@@ -307,6 +307,8 @@ export interface AppConfig {
   online_enabled: boolean // 联网功能总开关（默认开）
   /** 云同步「自动同步」开关（默认关）：开 = outbox 非空 / 定时 / 聚焦自动同步；关 = 只手动「立即同步」 */
   sync_auto_enabled: boolean
+  /** 桌面层模式（仅 Windows）**启动默认值**：开启后下次启动自动把主窗挂到 Windows 桌面层 */
+  desktop_shell_mode_enabled: boolean
   /** AI 助手默认权限档：readonly（仅可查看）/ ask（每次都问，默认）/ full（完全权限）。
    *  对话框快捷切换未手动调整时以此初始化；后端命令缺省回落同款安全默认 ask */
   agent_permission_mode: string
@@ -453,6 +455,14 @@ export interface AppConfig {
 
 export interface AppInfo {
   version: string
+}
+
+/** 桌面层模式状态（Rust desktop_shell::is_supported / is_active） */
+export interface DesktopShellStatus {
+  /** 当前平台是否支持（仅 Windows；不支持时标题栏不渲染入口） */
+  supported: boolean
+  /** 运行期是否真的挂在桌面层上（不落盘，每次启动恒为 false） */
+  active: boolean
 }
 
 /** AI 对话独立窗口状态（Rust chat_window::chat_window_get_state） */
@@ -1651,6 +1661,10 @@ export const tauriApi = {
   changeDataDir: (newDir: string) => invoke<void>('change_data_dir', { newDir }),
   restartApp: () => invoke<void>('restart_app'),
   saveConfig: (config: AppConfig) => invoke<AppConfig>('save_config', { config }),
+  getDesktopShellStatus: () => invoke<DesktopShellStatus>('get_desktop_shell_status'),
+  setDesktopShellMode: (enabled: boolean) =>
+    invoke<DesktopShellStatus>('set_desktop_shell_mode', { enabled }),
+  desktopShellShow: () => invoke<void>('desktop_shell_show'),
   setWindowAlwaysOnTop: (value: boolean) =>
     invoke<void>('set_window_always_on_top', { value }),
   setAlwaysOnTopConfig: (value: boolean) =>

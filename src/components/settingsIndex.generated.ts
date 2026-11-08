@@ -65,6 +65,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   { section: 'mem', title: '隐藏窗口时降低内存占用' },
   { section: 'general', title: '开机自动启动' },
   { section: 'general', title: '通知驻留时长' },
+  { section: 'general', title: '桌面层模式' },
   { section: 'ball', title: '桌面悬浮球' },
   { section: 'ball', title: '悬浮球贴边自动隐藏' },
   { section: 'ball', title: '与主窗口同时显示' },

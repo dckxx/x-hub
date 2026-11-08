@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Copy, MessageSquare, Minus, Music2, Pause, Pin, PinOff, Play, Search, SkipBack, SkipForward, Square, X, Clapperboard } from 'lucide-vue-next'
+import { Copy, MessageSquare, Minus, Monitor, Music2, Pause, Pin, PinOff, Play, Search, SkipBack, SkipForward, Square, X, Clapperboard } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import { useTitlebarWidget } from '../composables/useTitlebarWidget'
@@ -80,6 +80,45 @@ function toggleAlwaysOnTop() {
 
 const appWindow = isTauri() ? getCurrentWindow() : null
 
+// ---- 桌面模式（desktop_shell.rs，仅 Windows）----
+// 标题栏按钮 = **本次会话**的切换（后端纯运行期状态、不落盘）
+const desktopShellSupported = ref(isTauri())
+const desktopShellActive = ref(false)
+const desktopShellBusy = ref(false)
+
+async function refreshDesktopShell() {
+  if (!isTauri()) return
+  try {
+    const st = await tauriApi.getDesktopShellStatus()
+    desktopShellSupported.value = st.supported
+    desktopShellActive.value = st.active
+  } catch {
+    desktopShellSupported.value = false
+  }
+}
+
+async function toggleDesktopShell() {
+  if (!isTauri() || desktopShellBusy.value) return
+  desktopShellBusy.value = true
+  try {
+    const st = await tauriApi.setDesktopShellMode(!desktopShellActive.value)
+    desktopShellActive.value = st.active
+    // 退出后可能补回了进入前的最大化态（桌面模式下三钮是隐藏的，这里同步图标/状态）
+    await refreshMaximized()
+    // 切换会大幅改变窗口形态（铺满桌面 / 恢复原尺寸）且三钮显隐，给一句明确反馈
+    showToast(
+      st.active
+        ? '已进入桌面模式'
+        : '已退出桌面模式，恢复为普通窗口',
+    )
+  } catch (e) {
+    showToast(`切换桌面模式失败：${String(e)}`)
+    await refreshDesktopShell()
+  } finally {
+    desktopShellBusy.value = false
+  }
+}
+
 // ---- 窗口拖动：data-tauri-drag-region 只对 mousedown 的精确目标生效，
 // 点击标题栏内的子元素（svg/span）时不触发；改用 startDragging 统一处理
 // ---- 双击空白处最大化/还原：第一次按下即进入原生拖动循环，浏览器收不到
@@ -90,6 +129,8 @@ let lastTitlePress: { t: number; x: number; y: number } | null = null
 
 function onDragStart(e: MouseEvent) {
   if (!appWindow || e.button !== 0) return
+  // 桌面模式下窗口被纠偏线程钉在工作区，拖动会被立刻拉回（观感是抖动）→ 直接不拖
+  if (desktopShellActive.value) return
   const target = e.target as HTMLElement
   // 小部件是扩展的交互面（按钮/文字），整块不参与窗口拖动与双击最大化
   if (target.closest('button') || target.closest('.tb-widget')) {
@@ -121,7 +162,20 @@ async function refreshMaximized() {
   isMaximized.value = await appWindow.isMaximized()
 }
 
+// ---- 右位小部件偏移：按钮区宽度会随「桌面模式隐藏三钮」变化，写死偏移必然错位 ----
+const controlsRef = ref<HTMLElement | null>(null)
+const controlsWidth = ref(0)
+let controlsObserver: ResizeObserver | null = null
+
 onMounted(async () => {
+  if (controlsRef.value) {
+    controlsObserver = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0
+      if (w > 0) controlsWidth.value = w
+    })
+    controlsObserver.observe(controlsRef.value)
+  }
+  await refreshDesktopShell()
   if (!appWindow) return
   await refreshMaximized()
   unlistenResize = await appWindow.onResized(() => refreshMaximized())
@@ -129,6 +183,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   unlistenResize?.()
+  controlsObserver?.disconnect()
 })
 
 function minimize() {
@@ -176,6 +231,7 @@ function close() {
       :key="w.extId"
       class="tb-widget"
       :class="[`tb-${w.widget.kind}`, `tb-pos-${w.pos}`, { 'tb-bordered': store.state.config.titlebar_widget_border !== false, 'tb-solo': placedWidgets.length === 1 }]"
+      :style="w.pos === 'right' && controlsWidth ? { right: `${controlsWidth + 8}px` } : undefined"
     >
       <template v-if="w.widget.kind === 'media'">
         <img
@@ -245,7 +301,7 @@ function close() {
         </template>
       </template>
     </div>
-    <div class="window-controls">
+    <div ref="controlsRef" class="window-controls">
       <button class="tool-btn" :title="`全局搜索 (${store.state.config.search_shortcut || 'Ctrl+K'}，可在设置中自定义)`" @click="$emit('search')">
         <Search :size="15" :stroke-width="1.8" />
       </button>
@@ -256,26 +312,40 @@ function close() {
         <Clapperboard :size="15" :stroke-width="1.8" />
       </button>
       <div class="tool-divider"></div>
+      <!-- 桌面模式（仅 Windows）：本次会话的切换；设置里的开关只管「下次启动」 -->
       <button
-        class="win-btn top-btn"
-        :class="{ active: alwaysOnTop }"
-        :title="alwaysOnTop ? '取消窗口置顶' : '窗口置顶'"
-        @click="toggleAlwaysOnTop"
+        v-if="desktopShellSupported"
+        class="win-btn shell-btn"
+        :class="{ active: desktopShellActive }"
+        :disabled="desktopShellBusy"
+        :title="desktopShellActive ? '退出桌面模式' : '桌面模式（挂到 Windows 桌面层）'"
+        @click="toggleDesktopShell"
       >
-        <Pin v-if="!alwaysOnTop" :size="14" :stroke-width="1.8" />
-        <PinOff v-else :size="14" :stroke-width="1.8" />
+        <Monitor :size="14" :stroke-width="1.8" />
       </button>
-      <button class="win-btn minimize" title="最小化" @click="minimize">
-        <Minus :size="15" :stroke-width="1.8" />
-      </button>
-      <button
-        class="win-btn maximize"
-        :title="isMaximized ? '还原' : '最大化'"
-        @click="toggleMaximize"
-      >
-        <Square v-if="!isMaximized" :size="14" :stroke-width="1.8" />
-        <Copy v-else :size="14" :stroke-width="1.8" />
-      </button>
+      <!-- 桌面模式下窗口是 Progman 子窗：置顶/最小化/最大化都无意义 → 隐藏 -->
+      <template v-if="!desktopShellActive">
+        <button
+          class="win-btn top-btn"
+          :class="{ active: alwaysOnTop }"
+          :title="alwaysOnTop ? '取消窗口置顶' : '窗口置顶'"
+          @click="toggleAlwaysOnTop"
+        >
+          <Pin v-if="!alwaysOnTop" :size="14" :stroke-width="1.8" />
+          <PinOff v-else :size="14" :stroke-width="1.8" />
+        </button>
+        <button class="win-btn minimize" title="最小化" @click="minimize">
+          <Minus :size="15" :stroke-width="1.8" />
+        </button>
+        <button
+          class="win-btn maximize"
+          :title="isMaximized ? '还原' : '最大化'"
+          @click="toggleMaximize"
+        >
+          <Square v-if="!isMaximized" :size="14" :stroke-width="1.8" />
+          <Copy v-else :size="14" :stroke-width="1.8" />
+        </button>
+      </template>
       <button class="win-btn close" title="关闭（最小化至托盘）" @click="close">
         <X :size="15" :stroke-width="1.8" />
       </button>
@@ -327,7 +397,7 @@ function close() {
   max-width: clamp(120px, calc(100vw - 560px), 520px);
 }
 /* 左位：紧挨 X-Hub 标题（18px 内边距 + ~48px 文字）右侧；
-   右位：窗口按钮区（38×2 + 分隔线 9 + 46×4 = 269px）左侧，各留 8px 间隙。
+   右位：窗口按钮区（38×3 + 分隔线 9 + 46×5）左侧，各留 8px 间隙。
    多部件同显时侧位收窄给中间让空间（媒体内容约 330px 起，塞不下由文字段省略号兜底） */
 .tb-pos-left {
   left: 82px;
@@ -335,7 +405,7 @@ function close() {
   max-width: clamp(120px, 24vw, 340px);
 }
 .tb-pos-right {
-  right: 277px;
+  right: 361px;
   transform: translateY(-50%);
   max-width: clamp(96px, 14vw, 200px);
 }
@@ -506,6 +576,15 @@ function close() {
 .win-btn.top-btn.active:hover {
   background: var(--brand-50);
   color: var(--brand-500);
+}
+.win-btn.shell-btn.active,
+.win-btn.shell-btn.active:hover {
+  background: var(--brand-50);
+  color: var(--brand-500);
+}
+.win-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .win-btn.close:hover {
   background: var(--window-close);

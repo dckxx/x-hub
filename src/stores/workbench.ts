@@ -147,6 +147,7 @@ const state = reactive<StoreState>({
     theme_preset: 'indigo',
     accent_color: null,
     sync_auto_enabled: false,
+    desktop_shell_mode_enabled: false,
     wallpaper_path: '',
     wallpaper_blur: true,
     wallpaper_veil: 0.3,
@@ -1978,6 +1979,21 @@ export function useStore() {
     }
   }
 
+  // ---- 桌面层模式（desktop_shell.rs）：设置里的开关只写「启动默认模式」 ----
+  /** 保存「启动时自动进入桌面层模式」的默认值：**只落盘，不挂靠/还原窗口**
+   *  （当前会话的切换用标题栏「桌面模式」按钮，见 `TitleBar.vue`） */
+  async function setDesktopShellModeDefault(enabled: boolean) {
+    const prev = state.config.desktop_shell_mode_enabled
+    state.config.desktop_shell_mode_enabled = enabled
+    if (!isTauri()) return
+    try {
+      await tauriApi.saveConfig(state.config)
+    } catch (e) {
+      state.config.desktop_shell_mode_enabled = prev
+      throw e
+    }
+  }
+
   // ---- 桌面悬浮球（ADR 0004）：开关/贴边隐藏/同显/按钮统一经 floating_ball_save_settings 落盘，
   // 不走 saveConfig（后端对悬浮球字段做磁盘合并保护，见 commands::save_config） ----
   async function setFloatingBallEnabled(value: boolean) {
@@ -2382,6 +2398,7 @@ export function useStore() {
     setExtensionAgentGrant,
     setExtensionRowClick,
     setRunAtStartup,
+    setDesktopShellModeDefault,
     setFloatingBallEnabled,
     setFloatingBallAutoHide,
     setFloatingBallWithMain,

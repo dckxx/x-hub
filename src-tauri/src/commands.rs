@@ -2052,6 +2052,58 @@ pub fn get_theme_config() -> ThemeConfig {
     }
 }
 
+/// 桌面层模式状态（标题栏按钮据此渲染 / 纠正按钮态）
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopShellStatus {
+    /// 当前平台是否支持（仅 Windows）
+    pub supported: bool,
+    /// 运行期是否真的挂在桌面层上（不落盘；启动默认模式生效时也为 true）
+    pub active: bool,
+}
+
+#[tauri::command]
+pub fn get_desktop_shell_status() -> DesktopShellStatus {
+    DesktopShellStatus {
+        supported: crate::desktop_shell::is_supported(),
+        active: crate::desktop_shell::is_active(),
+    }
+}
+
+/// 桌面层模式切换：纯运行期动作，不写配置（设置里的开关只管「下次启动」）。
+///
+/// 挂靠/还原失败时窗口保持原状，前端按返回的 `active` 纠正按钮态并提示错误。
+#[tauri::command]
+pub fn set_desktop_shell_mode(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<DesktopShellStatus, String> {
+    crate::desktop_shell::set_enabled(&app, enabled)?;
+    let active = crate::desktop_shell::is_active();
+    log::info!("[桌面层] 切换完成: requested={enabled} active={active}");
+    Ok(DesktopShellStatus {
+        supported: crate::desktop_shell::is_supported(),
+        active,
+    })
+}
+
+/// 主窗首帧就绪后的显示入口（前端 `main.ts` 调用）：
+/// 桌面模式（启动默认模式生效中）走无激活显示（不抢焦点），普通模式等同 `window.show()`。
+#[tauri::command]
+pub fn desktop_shell_show(app: tauri::AppHandle) -> Result<(), String> {
+    if crate::desktop_shell::is_active() {
+        crate::desktop_shell::show_main(&app);
+        return Ok(());
+    }
+    match crate::main_window(&app) {
+        Some(win) => {
+            let _ = win.show();
+            Ok(())
+        }
+        None => Err("未找到主窗口".to_string()),
+    }
+}
+
 #[tauri::command]
 pub fn save_config(config: AppConfig) -> Result<AppConfig, String> {
     let _guard = crate::config::lock();

@@ -109,6 +109,13 @@ pub fn popup_context_menu(app: &AppHandle) -> tauri::Result<()> {
 pub fn show_window(app: &AppHandle) -> bool {
     match crate::main_window(app) {
         Some(window) => {
+            // 桌面层模式：窗口是 Progman 的子窗，永远在普通窗口之下。托盘/快捷键只负责「让它出现」。
+            if crate::desktop_shell::is_active() {
+                crate::desktop_shell::show_main(app);
+                MAIN_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
+                crate::floating_ball::sync_with_main(app);
+                return true;
+            }
             // 先恢复内存级别再显示（webview_mem：Low 态 renderer 缓存已吐，首帧前回 Normal）
             crate::webview_mem::on_shown(app, "main");
             let _ = window.show();
@@ -166,6 +173,17 @@ pub fn toggle_main_window(app: &AppHandle) {
 /// - 窗口可见但被其他窗口盖住（未聚焦）→ 提升到前台，不隐藏
 pub fn toggle_window(app: &AppHandle) {
     if let Some(window) = crate::main_window(app) {
+        // 桌面层模式纯显隐开关。
+        if crate::desktop_shell::is_active() {
+            if MAIN_WINDOW_VISIBLE.load(Ordering::SeqCst) {
+                log::info!("[快捷键] toggle_window（桌面层）：隐藏窗口");
+                hide_window(app);
+            } else {
+                log::info!("[快捷键] toggle_window（桌面层）：显示窗口");
+                show_window(app);
+            }
+            return;
+        }
         if !MAIN_WINDOW_VISIBLE.load(Ordering::SeqCst) {
             log::info!("[快捷键] toggle_window: 显示窗口");
             show_window(app);

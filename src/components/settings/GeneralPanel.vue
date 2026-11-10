@@ -6,7 +6,7 @@
 import { computed, inject, onMounted, ref } from 'vue';
 import { Keyboard } from 'lucide-vue-next';
 import { isTauri, tauriApi } from '../../api/tauri';
-import type { AutostartStatus } from '../../api/tauri';
+import type { AutostartStatus, DesktopShellStatus } from '../../api/tauri';
 import { useStore } from '../../stores/workbench';
 import { normalizeShortcutDisplay, useShortcutRecorder } from '../../composables/useShortcutRecorder';
 import { FLOATING_BALL_BUTTONS, FLOATING_BALL_MAX_BUTTONS } from '../../composables/floatingBallButtons';
@@ -290,6 +290,36 @@ async function onToggleAutostart() {
   }
 }
 
+// ---- 桌面层模式（desktop_shell.rs，仅 Windows）----
+// 设置里的开关 = **启动默认模式**：只落盘（saveConfig），下次启动生效，不切换当前会话。
+const desktopShellBusy = ref(false)
+const desktopShellStatus = ref<DesktopShellStatus | null>(null)
+const desktopShellSupported = computed(() => desktopShellStatus.value?.supported ?? true)
+
+async function refreshDesktopShellStatus() {
+  if (!isTauri()) return
+  try {
+    desktopShellStatus.value = await tauriApi.getDesktopShellStatus()
+  } catch {
+    // 旧后端没有该命令：按不支持处理，开关置灰而不是报错
+    desktopShellStatus.value = { supported: false, active: false }
+  }
+}
+
+async function onToggleDesktopShell() {
+  if (desktopShellBusy.value) return
+  const next = !store.state.config.desktop_shell_mode_enabled
+  desktopShellBusy.value = true
+  try {
+    await store.setDesktopShellModeDefault(next)
+    showToast(next ? '已保存：下次启动自动进入桌面层模式' : '已保存：下次启动为普通窗口')
+  } catch (e) {
+    showToast(`保存失败：${String(e)}`)
+  } finally {
+    desktopShellBusy.value = false
+  }
+}
+
 onMounted(async () => {
 
   if (!isTauri()) return
@@ -313,6 +343,8 @@ onMounted(async () => {
   noticeSeconds.value = Math.round((store.state.config.notice_duration_ms ?? 5000) / 1000)
 
   void refreshAutostartStatus()
+
+  void refreshDesktopShellStatus()
 
 })
 </script>
@@ -362,6 +394,29 @@ onMounted(async () => {
               />
               <span class="num-unit">秒</span>
             </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">桌面层模式</span>
+              <span class="setting-desc">
+                开启后X-HUB启动默认进入全屏桌面模式、置于桌面上。临时切换请用标题栏的「桌面模式」按钮随时切换。
+              </span>
+              <span v-if="!desktopShellSupported" class="setting-desc">
+                当前平台不支持桌面层模式，仅 Windows 可用
+              </span>
+            </div>
+            <button
+              class="toggle"
+              role="switch"
+              type="button"
+              :aria-checked="store.state.config.desktop_shell_mode_enabled"
+              :class="{ on: store.state.config.desktop_shell_mode_enabled }"
+              :disabled="desktopShellBusy || !desktopShellSupported"
+              @click="onToggleDesktopShell"
+            >
+              <span class="toggle-knob"></span>
+            </button>
           </div>
         </section>
 

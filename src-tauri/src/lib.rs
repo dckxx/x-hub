@@ -13,6 +13,7 @@ mod credentials;
 mod countdown_ticker;
 mod countdown_window;
 mod db;
+mod desktop_shell;
 mod extension;
 mod ext_protocol;
 mod export_render;
@@ -495,6 +496,11 @@ fn restore_window_state(app: &tauri::App) {
 /// 保存窗口位置与尺寸到配置（物理坐标落盘，语义见函数内注释）
 pub(crate) fn persist_window_state(app: &tauri::AppHandle) {
     if let Some(window) = main_window(app) {
+        // 桌面层模式：窗口铺满工作区，几何不是用户意图——写盘会把进入前的常规
+        // 位置/尺寸覆盖成全屏值，关闭桌面层后就恢复不回去了
+        if crate::desktop_shell::is_active() {
+            return;
+        }
         if window.is_minimized().unwrap_or(false) {
             return;
         }
@@ -844,6 +850,12 @@ pub fn run() {
 
             restore_window_state(app);
 
+            // 桌面层模式（Windows）**启动默认模式**：设置里开着才挂靠（Progman 子窗 +
+            // 工具窗 + 全屏工作区）。必须放在 restore_window_state 之后——先恢复常规几何
+            // 再铺满工作区；失败只落日志退回普通窗口，不阻断启动。
+            // 当前会话的切换走标题栏「桌面模式」按钮（不落盘）。
+            desktop_shell::init(app.handle());
+
             // 自启动静默模式（--autostart-hidden）：主窗不显示、直接驻留托盘。
             // 必须经 tray::hide_window 更新自维护的显隐状态位，否则 MAIN_WINDOW_VISIBLE
             // 保持默认 true，全局快捷键 toggle_window 会误判「窗口可见」，只 set_focus
@@ -893,17 +905,22 @@ pub fn run() {
                     let _ = webview.set_background_color(Some(bg));
                 }
                 // 启动即前台：避免窗口偶尔出现在其他窗口后面；稍等再补一次焦点，
-                // 绕开 Windows 前台锁定的瞬时限制
-                let _ = window.set_focus();
-                crate::webview_focus::focus_webview(app.handle(), "main");
-                let handle = window.clone();
-                let app_handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(250));
-                    let _ = handle.set_focus();
-                    // 首帧渲染完 webview 子窗才稳定：这时再补一次键盘焦点（同上）
-                    crate::webview_focus::focus_webview(&app_handle, "main");
-                });
+                // 绕开 Windows 前台锁定的瞬时限制。
+                // ⚠️ 桌面模式（启动默认模式生效中）下**不抢焦点**：窗口是桌面层的一部分，
+                // 显示由 main.ts 经 `desktop_shell_show` 走无激活显示，焦点留在用户
+                // 正在用的程序里（点它一下才会激活）。
+                if !crate::desktop_shell::is_active() {
+                    let _ = window.set_focus();
+                    crate::webview_focus::focus_webview(app.handle(), "main");
+                    let handle = window.clone();
+                    let app_handle = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                        let _ = handle.set_focus();
+                        // 首帧渲染完 webview 子窗才稳定：这时再补一次键盘焦点（同上）
+                        crate::webview_focus::focus_webview(&app_handle, "main");
+                    });
+                }
             }
 
             // 恢复上次已脱离的浮窗便签（位置/置顶/内容均持久化）
@@ -1205,6 +1222,9 @@ pub fn run() {
             commands::toggle_float_pin,
             commands::search_all,
             commands::save_config,
+            commands::get_desktop_shell_status,
+            commands::set_desktop_shell_mode,
+            commands::desktop_shell_show,
             commands::set_window_always_on_top,
             commands::set_always_on_top_config,
             commands::get_global_shortcut,

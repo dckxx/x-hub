@@ -369,6 +369,9 @@ pub struct AppConfig {
     /// 开机自启动（登录 Windows 时自动驻留托盘）
     #[serde(default)]
     pub run_at_startup: bool,
+    /// 桌面层模式（仅 Windows）**启动默认值**：开启后下次启动自动把主窗挂到 Windows桌面层
+    #[serde(default)]
+    pub desktop_shell_mode_enabled: bool,
     /// ⚠️ **已废弃、不再被读取**（v0.6.1）：升级清单地址的唯一真相源是内置常量
     /// [`update_manifest_url`]（同样走平台服务端接口，见 `market_endpoint` 字段注释）。
     /// 字段保留只为兼容旧 `app.json`，读到即被 [`migrate_legacy_endpoints`] 归一并落盘。
@@ -589,6 +592,7 @@ impl Default for AppConfig {
             notice_duration_ms: default_notice_duration_ms(),
             online_enabled: true,
             sync_auto_enabled: false,
+            desktop_shell_mode_enabled: false,
             agent_permission_mode: default_agent_permission_mode(),
             agent_about_me: String::new(),
             agent_prompt_on_dangerous: false,

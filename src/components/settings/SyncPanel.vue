@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 云同步面板（docs/sync-protocol.md §8.4）：开关 / 同步口令 / 配对二维码 / 设备列表 / 立即同步。
 //
-// 挂在「数据与关于」大类的 DataPanel 里（id=sv-sec-sync，设置搜索索引构建期自动收录）。
+// 挂在「数据」大类的 DataPanel 里（id=sv-sec-sync，设置搜索索引构建期自动收录）。
 // 身份与密钥分开：二维码只含一次性配对凭据；口令只在本机 scrypt 派生，永不传输——
 // 所以开启 = 设口令（sync_enable），配对 = 出码等手机扫码（begin/poll/cancel），两件事互不阻塞。
 import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue';
@@ -237,13 +237,23 @@ async function stopPairingUi() {
 
 // ---- 设备列表 ----
 const devices = ref<SyncDeviceInfo[]>([]);
+// 服务端随列表下发的生效上限（后台可按账号调整；旧服务端没有该字段 = null，文案回落静态）
+const syncLimits = ref<{ desktop: number; mini: number } | null>(null);
 const revokingId = ref('');
 let revokeTimer: ReturnType<typeof setTimeout> | null = null;
+
+const deviceUsage = computed(() => {
+  const d = devices.value.filter((x) => x.kind === 'desktop').length;
+  const m = devices.value.filter((x) => x.kind === 'mini').length;
+  return { desktop: d, mini: m };
+});
 
 async function loadDevices() {
   if (!isTauri()) return;
   try {
-    devices.value = (await tauriApi.syncDeviceList()).devices;
+    const r = await tauriApi.syncDeviceList();
+    devices.value = r.devices;
+    syncLimits.value = r.limits ?? null;
   } catch {
     // 未开启/网络失败时静默（首屏 status 已有报错通道）
   }
@@ -430,7 +440,11 @@ onBeforeUnmount(() => {
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-name">同步设备</span>
-          <span class="setting-desc">免费额度 1 桌面 + 1 手机；撤销后该设备需重新扫码，且没有口令就读不到内容</span>
+          <span class="setting-desc">
+            <template v-if="syncLimits">电脑 {{ deviceUsage.desktop }}/{{ syncLimits.desktop }} · 手机 {{ deviceUsage.mini }}/{{ syncLimits.mini }}；</template>
+            <template v-else>免费额度 1 桌面 + 1 手机；</template>
+            撤销后该设备需重新扫码，且没有口令就读不到内容
+          </span>
         </div>
       </div>
       <div v-if="devices.length" class="sync-devices">

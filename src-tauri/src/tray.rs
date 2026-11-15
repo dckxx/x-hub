@@ -159,11 +159,35 @@ pub fn toggle_main_window(app: &AppHandle) {
     }
 }
 
+/// 主窗此刻是否已在**前台**（可被快捷键收起）。
+///
+/// 不能用 `Window::is_focused()`：v0.9.8 起 show_window / toggle_window 会把键盘焦点
+/// 用 `SetFocus` 送进 WebView2 宿主**子窗**（webview_focus.rs），Windows 随即给顶层窗
+/// 发 WM_KILLFOCUS，tao 便把 `is_focused` 置为 false（window_state.rs::has_active_focus
+/// = is_active && is_focused）。于是「快捷键再按一次收起」退化成「提升到前台」——
+/// 表现就是用户说的『以前能收起，现在按了没反应』。
+/// 判定改看 GetForegroundWindow：前台窗口永远是顶层窗，焦点在哪个子窗都不受影响。
+#[cfg(target_os = "windows")]
+fn is_main_window_foreground(window: &tauri::Window<tauri::Wry>) -> bool {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    match window.hwnd() {
+        Ok(hwnd) => unsafe { GetForegroundWindow() == hwnd.0 as HWND },
+        // 拿不到句柄时退回旧判定，至少不把「能收起」彻底堵死
+        Err(_) => window.is_focused().unwrap_or(false),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_main_window_foreground(window: &tauri::Window<tauri::Wry>) -> bool {
+    window.is_focused().unwrap_or(false)
+}
+
 /// 切换主窗口显隐（全局快捷键 / 托盘左键共用）：
 /// - 自维护状态为隐藏（已隐藏至托盘）→ 显示并聚焦
 /// - 窗口最小化 → 取消最小化并聚焦
-/// - 窗口可见且已聚焦 → 隐藏
-/// - 窗口可见但被其他窗口盖住（未聚焦）→ 提升到前台，不隐藏
+/// - 窗口可见且已在前台 → 隐藏（焦点在 webview 子窗里也算，见 is_main_window_foreground）
+/// - 窗口可见但被其他窗口盖住（不在前台）→ 提升到前台，不隐藏
 pub fn toggle_window(app: &AppHandle) {
     if let Some(window) = crate::main_window(app) {
         if !MAIN_WINDOW_VISIBLE.load(Ordering::SeqCst) {
@@ -177,7 +201,7 @@ pub fn toggle_window(app: &AppHandle) {
             // 与 show_window 同一条口径：焦点要落到 webview 里，键才进得来
             crate::webview_focus::focus_webview(app, "main");
             MAIN_WINDOW_VISIBLE.store(true, Ordering::SeqCst);
-        } else if window.is_focused().unwrap_or(false) {
+        } else if is_main_window_foreground(&window) {
             log::info!("[快捷键] toggle_window: 隐藏窗口");
             hide_window(app);
         } else {

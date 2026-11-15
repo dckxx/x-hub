@@ -5,7 +5,7 @@
 // 于是先出现一段空白再显示内容。现在外壳 + 当前大类按需加载，切大类才取对应面板。
 // 样式统一在 ./settings/shared.css（规则带 .settings-view 前缀，避免外移后污染其它视图）。
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
-import { Bot, ChevronRight, CircleHelp, Database, LayoutGrid, Palette, Puzzle, Search, Settings, Sparkles, User, X } from 'lucide-vue-next';
+import { Bot, ChevronRight, CircleHelp, Database, Info, LayoutGrid, Palette, Puzzle, Search, Settings, Sparkles, User, X } from 'lucide-vue-next';
 import { SETTINGS_INDEX } from './settingsIndex.generated';
 import PanelLoading from './settings/PanelLoading.vue';
 
@@ -43,11 +43,12 @@ const SECTIONS = [
   { id: 'extensions', label: '扩展' },
   { id: 'skills', label: 'Skills' },
   { id: 'data', label: '数据' },
-  // 云同步（2026-11-02）：手机扫码配对 + E2EE，挂「数据与关于」大类（docs/sync-protocol.md §8.4）
+  // 云同步（2026-11-02）：手机扫码配对 + E2EE，挂「数据」大类（docs/sync-protocol.md §8.4）
   { id: 'sync', label: '云同步' },
-  { id: 'about', label: '关于' },
   // 使用说明（2026-10-24）：正文是仓库 docs/user-guide.md，面板内联渲染（见 GuidePanel.vue）
   { id: 'guide', label: '使用说明' },
+  // 关于（2026-11-15 自「数据与关于」拆出独立成大类）：版本 / 开源声明 / 检查更新（见 AboutPanel.vue）
+  { id: 'about', label: '关于' },
 ] as const
 
 type SectionId = (typeof SECTIONS)[number]['id']
@@ -61,9 +62,11 @@ const GROUPS = [
   { id: 'features', label: '功能', icon: Sparkles },
   { id: 'extensions', label: '扩展', icon: Puzzle },
   { id: 'account', label: '账号', icon: User },
-  { id: 'data', label: '数据与关于', icon: Database },
+  { id: 'data', label: '数据', icon: Database },
   // 使用说明独立成大类（2026-10-24）：面板内联 docs/user-guide.md，解决「功能多、路径难记」
   { id: 'guide', label: '使用说明', icon: CircleHelp },
+  // 「关于」独立成大类（2026-11-15 自「数据与关于」拆出），排在左栏最下
+  { id: 'about', label: '关于', icon: Info },
 ] as const
 
 type GroupId = (typeof GROUPS)[number]['id']
@@ -90,8 +93,8 @@ const SECTION_GROUP: Record<SectionId, GroupId> = {
   account: 'account',
   data: 'data',
   sync: 'data',
-  about: 'data',
   guide: 'guide',
+  about: 'about',
 }
 
 const SECTION_LABEL: Record<string, string> = Object.fromEntries(SECTIONS.map((s) => [s.id, s.label]))
@@ -107,6 +110,11 @@ const contentRef = ref<HTMLElement | null>(null)
  */
 function sectionsOf(id: GroupId): readonly SectionId[] {
   return SECTIONS.filter((s) => SECTION_GROUP[s.id] === id).map((s) => s.id)
+}
+
+/** 该大类是否显示子项行：只挂一个分区（必与自身同名，如 外观/账号/使用说明/关于）时就是「没有子项」，点了即达，不再缩进重复一行 */
+function hasKids(id: GroupId): boolean {
+  return sectionsOf(id).length > 1
 }
 
 // ---- 设置项搜索 ----
@@ -238,6 +246,7 @@ const PANEL_LOADERS = {
   account: () => import('./settings/AccountPanel.vue'),
   data: () => import('./settings/DataPanel.vue'),
   guide: () => import('./settings/GuidePanel.vue'),
+  about: () => import('./settings/AboutPanel.vue'),
 } as const
 
 /** 面板加载占位：delay 0 —— 宁可闪一下占位，也不要出现空白（见 index.vue 的同类说明） */
@@ -258,6 +267,7 @@ const PANELS: Record<GroupId, ReturnType<typeof defineAsyncComponent>> = {
   account: withPanelPlaceholder(PANEL_LOADERS.account),
   data: withPanelPlaceholder(PANEL_LOADERS.data),
   guide: withPanelPlaceholder(PANEL_LOADERS.guide),
+  about: withPanelPlaceholder(PANEL_LOADERS.about),
 }
 
 /** 鼠标移到大类就先把它那份代码取下来：点下去时通常已在内存里，切大类不再等 */
@@ -331,15 +341,21 @@ onMounted(() => {
               type="button"
               class="sv-nav-item sv-nav-group"
               :class="{ active: activeGroup === g.id }"
-              :aria-expanded="activeGroup === g.id"
+              :aria-expanded="hasKids(g.id) ? activeGroup === g.id : undefined"
               @click="selectGroup(g.id)"
               @mouseenter="preloadPanel(g.id)"
             >
               <component :is="g.icon" :size="14" :stroke-width="2" />
               <span>{{ g.label }}</span>
-              <ChevronRight class="sv-nav-caret" :size="13" :stroke-width="2.5" aria-hidden="true" />
+              <ChevronRight
+                v-if="hasKids(g.id)"
+                class="sv-nav-caret"
+                :size="13"
+                :stroke-width="2.5"
+                aria-hidden="true"
+              />
             </button>
-            <div v-if="activeGroup === g.id" class="sv-nav-kids">
+            <div v-if="activeGroup === g.id && hasKids(g.id)" class="sv-nav-kids">
               <button
                 v-for="sid in sectionsOf(g.id)"
                 :key="sid"

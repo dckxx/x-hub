@@ -152,6 +152,7 @@ const state = reactive<StoreState>({
     wallpaper_veil: 0.3,
     wallpaper_immersive: false,
     glass_opacity: 1,
+    workbench_rounded: true,
     sidebar_toggle: false,
     window: {
       width: 1400,
@@ -1584,6 +1585,13 @@ export function useStore() {
     await tauriApi.saveConfig(state.config)
   }
 
+  /** 工作台外框圆角（设置 → 外观）：主窗四角 12px 圆角 / 直角 */
+  async function setWorkbenchRounded(value: boolean) {
+    state.config.workbench_rounded = value
+    if (!isTauri()) return
+    await tauriApi.saveConfig(state.config)
+  }
+
   /** 标题栏小部件边框（扩展推上标题栏的小部件，默认带玻璃底座；关掉内容直接浮在标题栏上） */
   async function setTitlebarWidgetBorder(value: boolean) {
     state.config.titlebar_widget_border = value
@@ -2337,6 +2345,7 @@ export function useStore() {
     setWallpaperVeil,
     setWallpaperImmersive,
     setGlassOpacity,
+    setWorkbenchRounded,
     setTitlebarWidgetBorder,
     setTitlebarWidgetSlot,
     setTitlebarWidgetSlotsBulk,

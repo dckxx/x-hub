@@ -6,6 +6,9 @@ export interface ContextMenuItem {
   danger?: boolean
   /** 在该项上方渲染一条分隔线（用于分组，如「用 XX 浏览器打开」组） */
   dividerBefore?: boolean
+  /** 可选前置图标（20px 圆）：有 src 渲染图片（按图片原样显示，不加托底），
+      无 src 画中性软底圆——与侧栏扩展图标同一口径 */
+  icon?: { src?: string }
   onClick: () => void
 }
 
@@ -120,7 +123,10 @@ onBeforeUnmount(() => {
             @click="onItemClick(item)"
             @mouseenter="activeIndex = i"
           >
-            {{ item.label }}
+            <span v-if="item.icon" class="ctx-item-icon" :class="{ 'has-img': !!item.icon.src }">
+              <img v-if="item.icon.src" :src="item.icon.src" alt="" draggable="false" />
+            </span>
+            <span class="ctx-item-label">{{ item.label }}</span>
           </button>
         </template>
       </div>
@@ -140,7 +146,9 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border-soft);
 }
 .ctx-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   text-align: left;
   border: none;
@@ -152,6 +160,35 @@ onBeforeUnmount(() => {
   color: var(--text-2);
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
+}
+.ctx-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 前置图标：20px 圆，托底口径照抄侧栏扩展图标（有图不加托底按原图显示，无图中性软底） */
+.ctx-item-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--bg-card-soft);
+  box-shadow: inset 0 0 0 1px var(--border-soft);
+  overflow: hidden;
+}
+.ctx-item-icon.has-img {
+  background: transparent;
+  box-shadow: none;
+}
+.ctx-item-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 .ctx-item:hover {
   background: var(--brand-50);

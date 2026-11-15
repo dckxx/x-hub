@@ -2088,6 +2088,37 @@ pub fn set_window_always_on_top(webview: tauri::Webview, value: bool) -> Result<
     Ok(())
 }
 
+/// 工作台外框圆角的底色：圆角要透出桌面，页面侧只负责 #app 的圆角裁剪，
+/// 窗口侧绝不能有任何 GDI 底色填充——tao 的 WM_ERASEBKGND 用 CreateSolidBrush(RGB) 填充、
+/// 丢弃 alpha，`Color(0,0,0,0)` 并不是透明而是不透明黑，填充像素会透过 webview 的透明区
+/// （#app 圆角外）显示为四角黑/白残块。因此圆角态窗口侧 `set_background_color(None)`
+/// （完全不填充，DWM 表面保持零初始化全透明——与各透明浮窗同口径），webview 侧才设
+/// alpha=0 真透明（WebView2 认 alpha；runtime 会把 None 折算成不透明白，必须显式传值）。
+/// 关闭圆角时两侧回主题底色（保留启动防闪白的行为）。
+/// 启动时 lib.rs 按 config.workbench_rounded 直接选底色；运行期切换由前端（themeCore）调用。
+/// 注：窗口表面已积累的填充像素无法就地清除，会话内「直角 → 圆角」切换后四角残留
+/// 主题色属预期，重启窗口即全新表面。
+#[tauri::command]
+pub fn apply_workbench_background(app: tauri::AppHandle, rounded: bool) -> Result<(), String> {
+    let Some(window) = crate::main_window(&app) else {
+        return Ok(());
+    };
+    let bg = if rounded {
+        None
+    } else if crate::config::load().theme_mode == "dark" {
+        Some(tauri::window::Color(18, 19, 27, 255))
+    } else {
+        Some(tauri::window::Color(236, 239, 246, 255))
+    };
+    window.set_background_color(bg).map_err(|e| e.to_string())?;
+    if let Some(webview) = app.get_webview("main") {
+        webview
+            .set_background_color(bg.or(Some(tauri::window::Color(0, 0, 0, 0))))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn set_always_on_top_config(value: bool) -> Result<(), String> {
     let _guard = crate::config::lock();

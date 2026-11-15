@@ -28,7 +28,7 @@ import type { Countdown, ExtensionEntry, Note, RecorderResult, Resource, Todo } 
 import { playChime } from '../utils/chime'
 import { hasFloatingSurface } from '../utils/floatingSurface'
 import { isTargetMissingError } from '../utils/launchError'
-import { FileText, FolderOpen, LayoutDashboard, ListTodo, MessageSquare, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { FileText, FolderOpen, LayoutDashboard, ListTodo, MessageSquare, MoreHorizontal, Puzzle, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import { useTheme } from '../composables/useTheme'
 import { broadcastThemeToFrames } from '../composables/themeTokens'
@@ -474,6 +474,112 @@ const sidebarCollapsed = ref(true)
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value
 }
+
+// ---- 收起态扩展组的 hover 名称气泡（方案 B，预览 docs/mockups/sidebar-pinned-ext-options.html）----
+// 扩展组改为内部滚动（overflow-y:auto）后，::after 气泡会被滚动容器裁掉（历史坑），
+// 本组禁用 CSS 气泡、改 JS fixed 浮层：贴图标行右缘垂直居中；300ms 延迟防快速扫过闪烁，
+// 滚轮滚动（@scroll）/切收起态/移出图标即隐藏
+const sbTip = ref<{ text: string; x: number; y: number } | null>(null)
+let sbTipTimer: number | undefined
+
+function showSbTip(name: string, e: MouseEvent) {
+  if (!sidebarCollapsed.value) return
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  if (sbTipTimer !== undefined) window.clearTimeout(sbTipTimer)
+  sbTipTimer = window.setTimeout(() => {
+    sbTipTimer = undefined
+    sbTip.value = { text: name, x: r.right + 12, y: r.top + r.height / 2 }
+  }, 300)
+}
+
+function hideSbTip() {
+  if (sbTipTimer !== undefined) {
+    window.clearTimeout(sbTipTimer)
+    sbTipTimer = undefined
+  }
+  sbTip.value = null
+}
+
+watch(sidebarCollapsed, hideSbTip)
+onUnmounted(hideSbTip)
+
+// ---- ⋯更多：全部固定扩展的名称索引菜单（A+B 混合，仅收起态）----
+// 滚动条负责「逐个翻」，菜单负责「按名直达」。左键打开：必须 stopPropagation——
+// ContextMenu 的 globalClose 挂在 window click 上，冒泡过去会当场关掉刚开的菜单；
+// 同时先撤其它两个菜单实例，避免「⋯ 点开时旧菜单还挂着」的双菜单态
+const sbExtListMenu = ref<{ x: number; y: number } | null>(null)
+
+/** 收起态细条里「已露出」的扩展 id：顶边落在首屏可视高度内的都算已展示
+ *  （半截露出的也算——它确实在细条里可见），⋯菜单只列完全被裁掉的，不与细条重复 */
+function stripVisibleExtIds(): Set<string> {
+  const list = extListEl.value
+  const ids = new Set<string>()
+  if (!list || !sidebarCollapsed.value) return ids
+  const listTop = list.getBoundingClientRect().top
+  const limit = list.clientHeight
+  list.querySelectorAll<HTMLButtonElement>(':scope > .sidebar-nav-item').forEach((el) => {
+    // rect 差值 + scrollTop = 项在内容流里的顶部偏移（与滚动位置无关的「首屏」口径）
+    const top = el.getBoundingClientRect().top - listTop + list.scrollTop
+    const id = el.dataset.extId
+    if (top < limit && id !== undefined) ids.add(id)
+  })
+  return ids
+}
+
+const sbExtListMenuItems = computed<ContextMenuItem[]>(() => {
+  if (!sbExtListMenu.value) return []
+  const shown = stripVisibleExtIds()
+  return sidebarExtensions.value
+    .filter((ext) => !shown.has(ext.id))
+    .map((ext) => ({
+      label: ext.name,
+      icon: { src: ext.icon ? iconSrc(ext.icon) : undefined },
+      onClick: () => openSidebarExtension(ext),
+    }))
+})
+
+function openSbExtListMenu(e: MouseEvent) {
+  e.stopPropagation()
+  hideSbTip()
+  sidebarExtMenu.value = null
+  dashboardContextMenu.value.visible = false
+  sbExtListMenu.value = { x: e.clientX, y: e.clientY }
+}
+
+// ---- ⋯按钮的显隐口径（用户约定）：图标列放得下（无溢出）就不显示三点；放不下才显示，
+// 且图标列保持被裁的原样（露出放得下的部分），不展开全部。用 ResizeObserver 实测列表
+// scrollHeight vs clientHeight；⚠️ 判定「高度够不够」要把 ⋯ 按钮自身占的 40px+6px 让出去
+// 再算——否则按钮挤出来的溢出会让自己常驻（自证循环）。46 = 按钮高 40 + 间距 6（均 CSS 常量）
+const extListEl = ref<HTMLElement | null>(null)
+const collapsedExtOverflow = ref(false)
+let extListRO: ResizeObserver | null = null
+
+function measureExtOverflow() {
+  const el = extListEl.value
+  if (!el || !sidebarCollapsed.value) {
+    collapsedExtOverflow.value = false
+    return
+  }
+  const allowance = collapsedExtOverflow.value ? 46 : 0
+  collapsedExtOverflow.value = el.scrollHeight > el.clientHeight + allowance
+}
+
+watch(extListEl, (el, prev) => {
+  if (!extListRO) extListRO = new ResizeObserver(measureExtOverflow)
+  if (prev) extListRO.unobserve(prev)
+  if (el) extListRO.observe(el)
+  void nextTick(measureExtOverflow)
+})
+// 扩展数量增减 / 收起切换都会改 scrollHeight 或可用高度：DOM 更新完再实测
+watch(
+  () => sidebarExtensions.value.length,
+  () => void nextTick(measureExtOverflow),
+)
+watch(sidebarCollapsed, () => void nextTick(measureExtOverflow))
+onUnmounted(() => {
+  extListRO?.disconnect()
+  extListRO = null
+})
 
 function openPromptManage() {
   promptManageVisible.value = true
@@ -1212,36 +1318,57 @@ provide('showToast', showToast)
           </button>
         </nav>
 
-        <!-- 固定到侧栏的扩展：点击即在主区打开（view 形态） -->
+        <!-- 固定到侧栏的扩展：点击即在主区打开（view 形态）。方案 B+A：两态都内部滚动，
+             收起态末尾另有「⋯更多」名称索引菜单（滚动逐个翻 / 菜单按名直达，见 openSbExtListMenu） -->
         <div v-if="sidebarExtensions.length" class="sidebar-ext">
           <p class="sidebar-ext-label">扩展</p>
+          <!-- 滚动收敛到内层：外层要装（收起态的）⋯更多按钮，收起态它必须常显不被滚走 -->
+          <div ref="extListEl" class="sidebar-ext-list" @scroll="hideSbTip">
+            <button
+              v-for="ext in sidebarExtensions"
+              :key="ext.id"
+              class="sidebar-nav-item"
+              :data-ext-id="ext.id"
+              :class="{ active: activeView === 'extension' && openedExtension?.id === ext.id }"
+              :aria-current="activeView === 'extension' && openedExtension?.id === ext.id ? 'page' : undefined"
+              :data-tip="ext.name"
+              type="button"
+              @click="openSidebarExtension(ext); hideSbTip()"
+              @mouseenter="showSbTip(ext.name, $event)"
+              @mouseleave="hideSbTip"
+              @contextmenu="onSidebarExtContextMenu(ext, $event)"
+            >
+              <span class="sidebar-nav-icon" :class="{ 'has-img': !!ext.icon }" aria-hidden="true">
+                <img
+                  v-if="ext.icon"
+                  class="sidebar-ext-img"
+                  :src="iconSrc(ext.icon)"
+                  :alt="ext.name"
+                  draggable="false"
+                />
+                <Puzzle v-else :size="15" :stroke-width="2" />
+              </span>
+              <span>{{ ext.name }}</span>
+              <!-- 常驻标识绿点：贴图标正下方（状态灯，读在跑实例而非配置——
+                   结束本次常驻后熄灭，下次打开再亮）。用 <i> 不用 <span>——收起态与窄屏的
+                   隐藏文字规则按 span 选择器收网，span 绿点会被一并隐藏；图标容器在收起态
+                   overflow:hidden 会裁掉出圆的下半截，所以挂在导航项上而非图标内 -->
+              <i v-if="keepAliveMounted.includes(ext.id)" class="sidebar-ext-ka-dot" title="常驻后台运行中" aria-hidden="true"></i>
+            </button>
+          </div>
+          <!-- ⋯更多：全部固定扩展的名称索引菜单。仅收起态且图标列实测溢出时才出现
+               （高度够不显示三点，见 measureExtOverflow）；气泡与本组一致走 JS 浮层 -->
           <button
-            v-for="ext in sidebarExtensions"
-            :key="ext.id"
-            class="sidebar-nav-item"
-            :class="{ active: activeView === 'extension' && openedExtension?.id === ext.id }"
-            :aria-current="activeView === 'extension' && openedExtension?.id === ext.id ? 'page' : undefined"
-            :data-tip="ext.name"
+            v-if="sidebarCollapsed && collapsedExtOverflow"
+            class="sidebar-ext-more"
             type="button"
-            @click="openSidebarExtension(ext)"
-            @contextmenu="onSidebarExtContextMenu(ext, $event)"
+            data-tip="固定扩展"
+            aria-label="全部固定扩展"
+            @click="openSbExtListMenu($event)"
+            @mouseenter="showSbTip('固定扩展', $event)"
+            @mouseleave="hideSbTip"
           >
-            <span class="sidebar-nav-icon" :class="{ 'has-img': !!ext.icon }" aria-hidden="true">
-              <img
-                v-if="ext.icon"
-                class="sidebar-ext-img"
-                :src="iconSrc(ext.icon)"
-                :alt="ext.name"
-                draggable="false"
-              />
-              <Puzzle v-else :size="15" :stroke-width="2" />
-            </span>
-            <span>{{ ext.name }}</span>
-            <!-- 常驻标识绿点：贴图标正下方（状态灯，读在跑实例而非配置——
-                 结束本次常驻后熄灭，下次打开再亮）。用 <i> 不用 <span>——收起态与窄屏的
-                 隐藏文字规则按 span 选择器收网，span 绿点会被一并隐藏；图标容器在收起态
-                 overflow:hidden 会裁掉出圆的下半截，所以挂在导航项上而非图标内 -->
-            <i v-if="keepAliveMounted.includes(ext.id)" class="sidebar-ext-ka-dot" title="常驻后台运行中" aria-hidden="true"></i>
+            <MoreHorizontal :size="15" :stroke-width="2" aria-hidden="true" />
           </button>
         </div>
 
@@ -1287,6 +1414,9 @@ provide('showToast', showToast)
         </button>
         </div>
       </aside>
+
+      <!-- 收起态扩展组 hover 名称气泡：fixed 定位浮层（扩展组是滚动容器，::after 会被裁，见 showSbTip） -->
+      <div v-if="sbTip" class="sb-ext-tip" :style="{ left: sbTip.x + 'px', top: sbTip.y + 'px' }">{{ sbTip.text }}</div>
 
       <div class="main-area">
         <main class="workspace" aria-label="主工作区">
@@ -1494,6 +1624,14 @@ provide('showToast', showToast)
       compact
       @close="sidebarExtMenu = null"
     />
+    <!-- ⋯更多菜单：全部固定扩展的名称索引（收起态左键打开，A+B 混合，见 openSbExtListMenu） -->
+    <ContextMenu
+      :visible="sbExtListMenu !== null"
+      :x="sbExtListMenu?.x ?? 0"
+      :y="sbExtListMenu?.y ?? 0"
+      :items="sbExtListMenuItems"
+      @close="sbExtListMenu = null"
+    />
     <PromptManageDialog
       :visible="promptManageVisible"
       @close="promptManageVisible = false"
@@ -1609,6 +1747,8 @@ html[data-wallpaper='1'] .title-bar [data-tip]::after {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  /* 方案 B：主导航不参与挤压——扩展组是唯一弹性区（overflow 由 .sidebar-ext 负责） */
+  flex-shrink: 0;
 }
 .sidebar-nav-item {
   position: relative;
@@ -1664,14 +1804,46 @@ html[data-wallpaper='1'] .title-bar [data-tip]::after {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  /* 方案 B：底部入口（扩展中心/设置/收起）同样锁死不压缩，绝不被挤出可视区 */
+  flex-shrink: 0;
 }
-/* 固定到侧栏的扩展组：独立区块，与主导航视觉一致，可滚动 */
+/* 固定到侧栏的扩展组：独立区块，与主导航视觉一致；滚动收敛到内层 .sidebar-ext-list，
+   外层只负责 标签 + 列表 + （收起态）⋯更多 的纵向排布 */
 .sidebar-ext {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
   min-height: 0;
+}
+.sidebar-ext-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: 0;
+  /* 唯一弹性滚动区：空间不足时收缩出滚动条，不挤占主导航/底栏（两态同此规则） */
+  flex: 0 1 auto;
   overflow-y: auto;
+}
+/* 收起态 ⋯更多：全部固定扩展的名称索引菜单入口（滚动逐个翻之外的一跳直达），
+   40×40 圆与收起态导航项同几何；fixed 菜单/浮层都不在滚动容器里，不会被裁 */
+.sidebar-ext-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-height: 40px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 150ms ease-out, color 150ms ease-out;
+}
+.sidebar-ext-more:hover {
+  background: color-mix(in srgb, var(--brand-500) 8%, transparent);
+  color: var(--brand-500);
 }
 .sidebar-ext-label {
   margin: 0;
@@ -1718,10 +1890,23 @@ html[data-wallpaper='1'] .title-bar [data-tip]::after {
 .sidebar.collapsed .sidebar-ext {
   align-items: center;
   gap: 6px;
-  /* 收起态需让 hover 名称气泡溢出扩展组显示：overflow-y:auto 会把右侧 ::after 气泡裁掉
-     （导航项无滚动容器所以正常，扩展组此前因此不显示名称） */
-  overflow: visible;
+  /* 方案 B+A：列表内层滚动 + ⋯更多常显；外层不滚，浮层/菜单（均 fixed）不受影响 */
 }
+.sidebar.collapsed .sidebar-ext-list {
+  align-items: center;
+  gap: 6px;
+  overflow-y: auto;
+}
+/* 滚动容器会裁掉 ::after 气泡（历史坑）：本组禁用，hover 走 JS 浮层（.sb-ext-tip） */
+.sidebar.collapsed .sidebar-ext [data-tip]::after { display: none; }
+/* 收起态细条不显示滚动条：56px 侧栏扣掉内边距只剩 ~40px，经典滚动条占布局宽度，
+   会把 40px 圆图标挤出视口甚至诱发横向滚动条。滚轮仍可滚（overflow-y:auto 保留），
+   可发现性与按名直达交给「⋯更多」菜单 */
+.sidebar.collapsed .sidebar-ext-list {
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+.sidebar.collapsed .sidebar-ext-list::-webkit-scrollbar { display: none; }
 .sidebar.collapsed .sidebar-ext-label {
   display: none;
 }
@@ -1800,6 +1985,25 @@ html[data-wallpaper='1'] .title-bar [data-tip]::after {
 .sidebar.collapsed [data-tip]:hover::after {
   opacity: 1;
   transition-delay: 0.3s;
+}
+/* 收起态扩展组的名称气泡走 JS 浮层（.sb-ext-tip，见 showSbTip）：扩展组方案 B 后是
+   滚动容器，::after 会被裁剪，故禁用本组 CSS 气泡、由浮层给出同观感气泡 */
+.sb-ext-tip {
+  position: fixed;
+  z-index: 60;
+  transform: translateY(-50%);
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--text-1);
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  pointer-events: none;
 }
 
 /* 主工作区：抽屉悬浮在内容上方，不再挤压左侧内容 */

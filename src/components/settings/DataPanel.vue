@@ -1,8 +1,9 @@
 <script setup lang="ts">
-// 数据与关于大类（存储路径 / 备份恢复 / 速记维护 / 关于）
+// 数据大类（存储路径 / 备份恢复 / 速记维护；云同步分区在 SyncPanel.vue）
 //
 // 从 SettingsView.vue 拆出（见该文件顶部说明）：设置页按大类按需加载，
 // 首次打开只需外壳 + 当前大类的代码，切大类时才加载对应面板。
+// 「关于」分区 2026-11-15 迁出为独立大类（AboutPanel.vue，排在左栏最下）。
 import { computed, inject, onMounted, ref } from 'vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Download, Eraser, FolderCog, FolderOutput, Lock, Upload } from 'lucide-vue-next';
@@ -10,7 +11,6 @@ import { isTauri, tauriApi } from '../../api/tauri';
 import type { DataPathInfo, NoteImageGcReport } from '../../api/tauri';
 import { useStore } from '../../stores/workbench';
 import AppSelect from '../AppSelect.vue';
-import AboutSection from '../AboutSection.vue';
 // 云同步分区（sv-sec-sync）：E2EE 开关 / 口令 / 配对二维码 / 设备管理（docs/sync-protocol.md §8.4）
 import SyncPanel from './SyncPanel.vue';
 
@@ -384,11 +384,6 @@ onMounted(() => {
             </div>
           </Transition>
         </Teleport>
-
-        <section id="sv-sec-about" class="sv-sec" aria-label="关于">
-          <h3 class="sv-sec-title">关于</h3>
-          <AboutSection />
-        </section>
 </template>
 
 <style scoped>

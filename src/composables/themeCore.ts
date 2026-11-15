@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { emitTo } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { isTauri } from '../api/tauri'
@@ -100,6 +101,28 @@ export function applyFontScale(s: FontScale) {
 export function applyGlassOpacity(v: number) {
   const clamped = Math.min(1, Math.max(0.4, v))
   document.documentElement.style.setProperty('--glass-dim', String(clamped))
+}
+
+/**
+ * 工作台外框圆角标记：CSS 只看 html[data-workbench-rounded='1'] 给 #app 上 12px 圆角。
+ * 主窗口本身是透明窗（tauri.conf transparent），body 不再铺底色，底色/壁纸都在 #app
+ * 这一层画，圆角外即透出桌面——与卡片同款圆角，不再是「里面圆、外面方」。
+ * 最大化/全屏时由 TitleBar 打 html[data-workbench-max='1']，CSS 里把圆角归零
+ * （不然屏幕四角会漏出桌面）。
+ */
+export function applyWorkbenchRounded(on: boolean) {
+  // 只对主窗生效：轻量壳窗口（浮窗/对话窗/剪贴板）也共用 useTheme，不能被外框圆角影响
+  if (!isMainWindow()) return
+  const el = document.documentElement
+  if (on) {
+    el.dataset.workbenchRounded = '1'
+  } else {
+    delete el.dataset.workbenchRounded
+  }
+  // 窗口与 WebView 两侧底色跟着切：圆角要透明才透得出桌面，直角回主题底色
+  if (isTauri()) {
+    invoke('apply_workbench_background', { rounded: on }).catch(() => {})
+  }
 }
 
 /** 沉浸模式标记：CSS 侧据此对 .card 启用 backdrop-filter 局部取景模糊（ADR 0003 受控例外） */

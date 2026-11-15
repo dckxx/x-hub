@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
-import { Check, CheckCheck, ChevronLeft, ChevronRight, Download, ListTodo, Plus, X } from 'lucide-vue-next'
+import { Check, CheckCheck, ChevronLeft, ChevronRight, Download, ListTodo, Plus, Trash2, X } from 'lucide-vue-next'
 import { isTauri, tauriApi } from '../api/tauri'
 import { useStore } from '../stores/workbench'
 import type { Todo, TodoOccurrence, TodoTag } from '../api/tauri'
@@ -406,8 +406,12 @@ function onRowConfirm() {
 // ---- 删除（父条目级联删子）+ 撤销恢复，由 TodoRow 经 provide 调用 ----
 // 与 TodoCard 同一套语义（同一份 useTodoRestore）：删除是不可逆操作，给一条可撤销提示兜住误点。
 const restoreTodo = useTodoRestore()
+/** 在途删除：明细行的删除按钮快速双击会连发两次 click，防重复提交 */
+const removingIds = new Set<number>()
 
 async function removeTodo(t: Todo) {
+  if (removingIds.has(t.id) || !store.state.todos.some((x) => x.id === t.id)) return
+  removingIds.add(t.id)
   const kids = store.state.todos.filter((x) => x.parent_id === t.id)
   // 标签关联是 ON DELETE CASCADE，删除后查不回来 → 删前先抓快照
   const tagIds = store.todoTagIds(t.id)
@@ -416,6 +420,8 @@ async function removeTodo(t: Todo) {
   } catch {
     showToast('删除失败，请重试')
     return
+  } finally {
+    removingIds.delete(t.id)
   }
   showToast(
     kids.length ? `已删除「${t.title}」及 ${kids.length} 条子待办` : `已删除「${t.title}」`,
@@ -1125,6 +1131,16 @@ function onVirtualDown(e: PointerEvent) {
                   <span class="tv-dv-title">{{ t.title }}</span>
                   <span class="tv-dv-time">{{ t.due_at ? fmtHM(t.due_at) : '' }}</span>
                 </button>
+                <!-- 悬浮删除：与左列表 TodoRow 同一套删除语义（级联删子 + toast 撤销），无二次确认 -->
+                <button
+                  type="button"
+                  class="tv-dv-del"
+                  :title="kidsOf.get(t.id)?.length ? '删除（级联删除子待办）' : '删除'"
+                  :aria-label="kidsOf.get(t.id)?.length ? `删除「${t.title}」及其子待办` : `删除「${t.title}」`"
+                  @click="removeTodo(t)"
+                >
+                  <Trash2 :size="12" :stroke-width="2" />
+                </button>
               </div>
             </template>
             <template v-if="selectedDayParts.done.length">
@@ -1154,6 +1170,15 @@ function onVirtualDown(e: PointerEvent) {
                 >
                   <span class="tv-dv-title">{{ t.title }}</span>
                   <span class="tv-dv-time">{{ doneRowTime(t) }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="tv-dv-del"
+                  :title="kidsOf.get(t.id)?.length ? '删除（级联删除子待办）' : '删除'"
+                  :aria-label="kidsOf.get(t.id)?.length ? `删除「${t.title}」及其子待办` : `删除「${t.title}」`"
+                  @click="removeTodo(t)"
+                >
+                  <Trash2 :size="12" :stroke-width="2" />
                 </button>
               </div>
             </template>
@@ -1880,6 +1905,34 @@ function onVirtualDown(e: PointerEvent) {
   flex-shrink: 0;
   font-size: 0.68rem;
   color: var(--text-4);
+}
+/* 悬浮删除钮（当天明细行）：hover/键盘聚焦所在行时展宽浮现（width 0→22px 过渡），
+   右侧时间戳平滑让位不跳动；图标与 hover 红底语义跟左列表 .todo-del 同款 */
+.tv-dv-del {
+  flex-shrink: 0;
+  width: 0;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
+  opacity: 0;
+  transition: width 0.15s ease, opacity 0.15s ease, background 0.18s, color 0.18s;
+}
+.tv-dayview-row:hover .tv-dv-del,
+.tv-dayview-row:focus-within .tv-dv-del {
+  width: 22px;
+  opacity: 1;
+}
+.tv-dv-del:hover {
+  background: var(--c-red-soft);
+  color: var(--c-red-ink);
 }
 /* 当天明细的分段标题：未完成 / 已完成各占一段，完成时间不与截止时间混排 */
 .tv-dv-sub {

@@ -100,6 +100,10 @@ pub struct AppConfig {
     /// 卡片玻璃透明度（0.4–1.0，1.0 = 默认不透明观感）
     #[serde(default = "one")]
     pub glass_opacity: f64,
+    /// 工作台外框圆角（默认开启）：主窗口四角与卡片一致的 12px 圆角；
+    /// 关闭 = 直角（窗口本身不透明化）。前端写 saveConfig，Rust 只存不解释
+    #[serde(default = "default_true")]
+    pub workbench_rounded: bool,
     /// 侧边栏展开/收缩功能开关（默认关闭）
     pub sidebar_toggle: bool,
     pub window: WindowState,
@@ -577,6 +581,7 @@ impl Default for AppConfig {
             wallpaper_veil: default_wallpaper_veil(),
             wallpaper_immersive: false,
             glass_opacity: 1.0,
+            workbench_rounded: true,
             sidebar_toggle: false,
             window: WindowState::default(),
             global_shortcut: crate::shortcut::DEFAULT_TOGGLE_SHORTCUT.to_string(),

@@ -31,6 +31,7 @@ const PinShotWindow = defineAsyncComponent(() => import('./components/PinShotWin
 const BrowserChrome = defineAsyncComponent(() => import('./components/BrowserChrome.vue'))
 import { isTauri } from './api/tauri'
 import { useScrollbarHover } from './composables/useScrollbarHover'
+import { useDialogDrag } from './composables/useDialogDrag'
 
 const label = isTauri() ? getCurrentWebview().label : ''
 const isMainWindow = label === 'main'
@@ -52,6 +53,9 @@ const isPinShotWindow = label.startsWith('pin-shot-')
 // 外站页面，不会加载本 SPA，但万一误加载也渲染空白兜底（绝不能落到 Index 整窗 UI）
 const isSudaBrowserChrome = /^suda-web-\d+-chrome$/.test(label)
 const isSudaBrowserContent = /^suda-web-\d+-content$/.test(label)
+// 主窗标记：CSS 据此把页面底色画到 #app（而不是 body），才可能裁出圆角外框
+// （窗口 transparent，圆角外透出桌面）。见 themeCore.applyWorkbenchRounded
+if (isTauri() && isMainWindow) document.documentElement.dataset.mainWindow = '1'
 
 // 任务管理器身份：Win11 任务管理器的 WebView2 列表按「页面标题」命名各 renderer，
 // 这些窗口共用 index.html 时全部显示「个人效率工作台」分不清谁是谁——按 label
@@ -123,6 +127,8 @@ function insertTextAtCaret(el: HTMLElement, text: string) {
 
 // ---- 滚动条 hover 显隐：抽到 composable，轻量壳窗口（chat.html / clipboard.html）也复用 ----
 useScrollbarHover()
+// ---- 弹窗拖动：所有 .modal-card 都能按住非控件区域拖走（各窗口通用） ----
+useDialogDrag()
 
 onMounted(async () => {
   if (!isTauri() || !isMainWindow) return

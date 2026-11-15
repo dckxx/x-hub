@@ -118,7 +118,11 @@ let unlistenResize: (() => void) | null = null
 
 async function refreshMaximized() {
   if (!appWindow) return
-  isMaximized.value = await appWindow.isMaximized()
+  const [max, full] = await Promise.all([appWindow.isMaximized(), appWindow.isFullscreen()])
+  isMaximized.value = max
+  // 最大化/全屏铺满整屏时不保留外框圆角，否则屏幕四角会漏出桌面（见 themeCore）
+  if (max || full) document.documentElement.dataset.workbenchMax = '1'
+  else delete document.documentElement.dataset.workbenchMax
 }
 
 onMounted(async () => {

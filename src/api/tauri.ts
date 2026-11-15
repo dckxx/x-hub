@@ -291,6 +291,8 @@ export interface AppConfig {
   wallpaper_immersive: boolean
   /** 卡片玻璃透明度（0.4–1.0，默认 1.0 = 不透明） */
   glass_opacity: number
+  /** 工作台外框圆角（默认开启）：主窗四角 12px 圆角；关闭即直角 */
+  workbench_rounded: boolean
   sidebar_toggle: boolean // 侧边栏展开/收缩功能开关（默认关闭）
   window: WindowState
   global_shortcut: string
@@ -2075,8 +2077,8 @@ export const tauriApi = {
   syncPairingCancel: (pairingId: string) => invoke<void>('sync_pairing_cancel', { pairingId }),
   /** 一次完整同步轮（pull → push）；应用过远端数据则后端广播 sync-applied */
   syncNow: () => invoke<SyncNowResult>('sync_now'),
-  /** 设备列表（本空间的活跃设备） */
-  syncDeviceList: () => invoke<{ devices: SyncDeviceInfo[] }>('sync_device_list'),
+  /** 设备列表（本空间的活跃设备）；limits = 生效的绑定上限（后台可按账号调整，旧服务端无此字段） */
+  syncDeviceList: () => invoke<{ devices: SyncDeviceInfo[]; limits?: { desktop: number; mini: number } }>('sync_device_list'),
   /** 撤销某台设备（主人操作，撤销后该设备需重新扫码） */
   syncRevokeDevice: (deviceId: string) => invoke<unknown>('sync_revoke_device', { deviceId }),
   /** 关闭本机同步：吊销自己的设备行 + 清本地钥匙（云端密文保留） */

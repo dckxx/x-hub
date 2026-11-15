@@ -9,13 +9,14 @@ import {
   applyGlassOpacity,
   applyImmersive,
   applyTheme,
+  applyWorkbenchRounded,
   initSystemTheme,
   systemDarkMode,
 } from './themeCore'
 
 // 纯函数与系统偏好单例都在 themeCore；这里 re-export 保持既有 import 路径不变
 // （ChatWindow / light/chrome.ts 等直接 import { applyTheme } from './useTheme'）。
-export { applyFontScale, applyGlassOpacity, applyImmersive, applyTheme, systemDarkMode }
+export { applyFontScale, applyGlassOpacity, applyImmersive, applyTheme, applyWorkbenchRounded, systemDarkMode }
 
 /** 组件挂载时调用一次即完成主题应用与实时跟随（主窗 / 走完整 SPA 的窗口用） */
 export function useTheme() {
@@ -53,6 +54,11 @@ export function useTheme() {
       // 沉浸模式/壁纸在场改变扩展令牌的壁纸状态与表面 alpha，同步广播
       requestAnimationFrame(() => broadcastThemeToFrames())
     },
+    { immediate: true },
+  )
+  watch(
+    () => store.state.config.workbench_rounded !== false,
+    (on) => applyWorkbenchRounded(on),
     { immediate: true },
   )
   watch(

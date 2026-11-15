@@ -879,18 +879,27 @@ pub fn run() {
                     Some(tauri::Theme::Dark)
                 );
             }
-            let bg = if dark {
-                tauri::window::Color(18, 19, 27, 255) // --bg-page 暗色 #12131b
+            // 工作台圆角开启时窗口侧绝不铺底色：tao 的 WM_ERASEBKGND 用 CreateSolidBrush(RGB)
+            // 填充、丢弃 alpha，Color(0,0,0,0) 是「不透明黑」而非透明——填充像素会透过
+            // webview 的透明区（#app 圆角外）显示为四角黑/白残块。None = 完全不填充，
+            // DWM 表面保持零初始化的全透明（与各透明浮窗同口径），页面底色/壁纸由 #app 自己画；
+            // 关闭圆角才用主题色兜启动空白（见 apply_workbench_background）
+            let bg = if config.workbench_rounded {
+                None
+            } else if dark {
+                Some(tauri::window::Color(18, 19, 27, 255)) // --bg-page 暗色 #12131b
             } else {
-                tauri::window::Color(236, 239, 246, 255) // --bg-page 亮色 #eceff6
+                Some(tauri::window::Color(236, 239, 246, 255)) // --bg-page 亮色 #eceff6
             };
             if let Some(window) = main_window(app.handle()) {
-                let _ = window.set_background_color(Some(bg));
+                let _ = window.set_background_color(bg);
                 // WebviewWindow::set_background_color 原本同时铺窗口与 webview 两侧底色，
                 // Window 版只铺窗口侧，这里补 webview 侧保持原行为（get_webview 按
-                // label 查 webview 表，多 webview 窗口不受影响）
+                // label 查 webview 表，多 webview 窗口不受影响）。webview 侧 None 会被
+                // runtime 折算成不透明白，圆角态必须显式传 alpha=0 真透明
                 if let Some(webview) = app.get_webview("main") {
-                    let _ = webview.set_background_color(Some(bg));
+                    let _ = webview
+                        .set_background_color(bg.or(Some(tauri::window::Color(0, 0, 0, 0))));
                 }
                 // 启动即前台：避免窗口偶尔出现在其他窗口后面；稍等再补一次焦点，
                 // 绕开 Windows 前台锁定的瞬时限制
@@ -1207,6 +1216,7 @@ pub fn run() {
             commands::save_config,
             commands::set_window_always_on_top,
             commands::set_always_on_top_config,
+            commands::apply_workbench_background,
             commands::get_global_shortcut,
             commands::set_global_shortcut,
             commands::set_search_shortcut,

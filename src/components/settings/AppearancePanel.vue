@@ -69,6 +69,11 @@ function onToggleSidebar() {
   void store.setSidebarToggle(!store.state.config.sidebar_toggle)
 }
 
+/** 工作台外框圆角（默认开）：与卡片同款 12px，关掉即直角 */
+function onToggleWorkbenchRounded() {
+  void store.setWorkbenchRounded(store.state.config.workbench_rounded === false)
+}
+
 function onToggleTitlebarWidgetBorder() {
   void store.setTitlebarWidgetBorder(!store.state.config.titlebar_widget_border)
 }
@@ -188,6 +193,23 @@ function onAccentInput(e: Event) {
               :aria-checked="store.state.config.sidebar_toggle"
               :class="{ on: store.state.config.sidebar_toggle }"
               @click="onToggleSidebar"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">工作台圆角</span>
+              <span class="setting-desc">主窗口四角与卡片同款圆角（默认开启）；关闭后外框为直角。最大化/全屏时自动收成直角</span>
+            </div>
+            <button
+              class="toggle"
+              role="switch"
+              type="button"
+              :aria-checked="store.state.config.workbench_rounded !== false"
+              :class="{ on: store.state.config.workbench_rounded !== false }"
+              @click="onToggleWorkbenchRounded"
             >
               <span class="toggle-knob"></span>
             </button>

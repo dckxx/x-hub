@@ -840,6 +840,21 @@ body {
   user-select: none;
   cursor: default;
 }
+/* 主窗口外框圆角（设置 → 外观「工作台圆角」）：主窗 transparent，body 不再铺底色，
+   页面底色/壁纸统一画在 #app 上，圆角外即透出桌面（不再是「里面卡片圆、外面方」）。
+   最大化/全屏由 TitleBar 打 html[data-workbench-max='1']，圆角归零，避免屏幕四角漏桌面。 */
+html[data-main-window] body { background: transparent; }
+html[data-main-window] #app { background: var(--app-bg, var(--bg-page-surface)); overflow: hidden; }
+html[data-main-window][data-workbench-rounded='1'] #app { border-radius: 12px; }
+html[data-main-window][data-workbench-max='1'] #app { border-radius: 0; }
+/* 启动欢迎页（#boot-splash 在 #app 外，见 index.html）同样收圆角，否则首屏会先方后圆。
+   注意 border-radius 不裁子元素，#boot-splash 的 ::before 渐变必须靠这里的圆角 + 自身
+   overflow 收边（见下条 overflow 声明） */
+html[data-main-window][data-workbench-rounded='1'] #boot-splash { border-radius: 12px; overflow: hidden; }
+html[data-main-window][data-workbench-max='1'] #boot-splash { border-radius: 0; }
+/* 壁纸层是 position:fixed，包含块是视口，不会被 #app 的 overflow:hidden 裁剪——
+   圆角态必须同步收圆角，否则壁纸以直角盖住透明外框的四角（层自身已有 overflow:hidden） */
+html[data-main-window][data-workbench-rounded='1'] .wallpaper-layer { border-radius: 12px; }
 h1, h2, h3, p { text-wrap: pretty; }
 button, input, textarea { font: inherit; }
 input, textarea { user-select: text; }
@@ -1211,6 +1226,9 @@ html[data-wallpaper-clear='1'] .suda-kind.file {
 @keyframes mask-in { from { opacity: 0; } to { opacity: 1; } }
 .modal-card { width: 400px; max-width: calc(100vw - 48px); background: var(--bg-card-solid); border: 1px solid var(--border-soft); border-radius: var(--radius-xl); box-shadow: var(--shadow-dock); padding: 24px; animation: card-in .2s cubic-bezier(.16, 1, .3, 1); }
 @keyframes card-in { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+/* 弹窗拖动中（useDialogDrag）：抓取光标 + 禁掉滚动/选中，避免拖到输入框边缘时闪 caret */
+.modal-card.dialog-dragging { cursor: grabbing; user-select: none; transition: none; }
+.modal-card.dialog-dragging * { cursor: grabbing !important; }
 .field-label { display: block; font-size: 0.75rem; font-weight: 600; color: var(--text-3); margin-bottom: 6px; }
 .field-input { width: 100%; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: var(--input-bg); color: var(--text-1); font-size: 0.8125rem; font-family: inherit; padding: 9px 12px; outline: none; transition: border-color .18s, box-shadow .18s, background .18s; }
 .field-input:focus { border-color: var(--brand-500); box-shadow: var(--shadow-focus); background: color-mix(in srgb, var(--input-bg) 88%, #fff); }

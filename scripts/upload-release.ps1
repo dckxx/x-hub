@@ -110,10 +110,12 @@ if ($LASTEXITCODE -ne 0) { Write-Error "update.json 上传失败。" }
 Write-Host "      update.json OK" -ForegroundColor Green
 
 Write-Host "[3/4] 上传 win-x64/** 包体 ..."
+# 只传发布 zip：win-x64 下若残留解压出来的便携版目录（含 data/app.db、剪贴板图片、日志），
+# 用 win-x64/** 会把整棵目录递归传到公网桶（v0.9.10 曾因此误传过本机数据）。
 if ($useHeader) {
-  rclone copy $DistDir $dest --include "win-x64/**" --header-upload $immutableHeader -P
+  rclone copy $DistDir $dest --include "win-x64/*.zip" --header-upload $immutableHeader -P
 } else {
-  rclone copy $DistDir $dest --include "win-x64/**" -P
+  rclone copy $DistDir $dest --include "win-x64/*.zip" -P
 }
 if ($LASTEXITCODE -ne 0) { Write-Error "包体上传失败。" }
 Write-Host "      packages OK" -ForegroundColor Green

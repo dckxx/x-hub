@@ -855,6 +855,10 @@ html[data-main-window][data-workbench-max='1'] #boot-splash { border-radius: 0; 
 /* 壁纸层是 position:fixed，包含块是视口，不会被 #app 的 overflow:hidden 裁剪——
    圆角态必须同步收圆角，否则壁纸以直角盖住透明外框的四角（层自身已有 overflow:hidden） */
 html[data-main-window][data-workbench-rounded='1'] .wallpaper-layer { border-radius: 12px; }
+/* 有壁纸时 #app 必须透明：壁纸层是 z-index:-1 的负相位图层，绘制顺序在「流内块级背景」之前，
+   底色搬到 #app 后会被整块渐变盖住（壁纸态文字又翻白墨，观感即整屏白）。#app 透明后壁纸层
+   自身就是整块不透明底图，圆角/直角都由 .wallpaper-layer 自己收边（同上一条） */
+html[data-main-window][data-wallpaper='1'] #app { background: transparent; }
 h1, h2, h3, p { text-wrap: pretty; }
 button, input, textarea { font: inherit; }
 input, textarea { user-select: text; }

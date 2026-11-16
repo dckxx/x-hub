@@ -49,8 +49,14 @@ if (isTauri() && getCurrentWindow().label === 'main') {
     if (hiddenLaunched) {
       void win.hide()
     } else {
-      void win.show()
-      void win.setFocus()
+      // 桌面层模式（desktop_shell.rs）：窗口是桌面子窗，走 SW_SHOWNA 无激活显示
+      const shell = await tauriApi.getDesktopShellStatus().catch(() => null)
+      if (shell?.active) {
+        await tauriApi.desktopShellShow().catch(() => {})
+      } else {
+        void win.show()
+        void win.setFocus()
+      }
     }
   })()
 }

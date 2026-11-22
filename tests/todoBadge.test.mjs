@@ -6,7 +6,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { doneMetaLabel, dueBadge, fmtDueFull, nextRepeatLabel } from '../src/utils/todoSchedule.ts'
+import { doneMetaLabel, dueBadge, fmtDueFull, inDoneHorizon, inHorizon, nextRepeatLabel } from '../src/utils/todoSchedule.ts'
 
 const at = (y, m, d, h = 12, min = 0) => new Date(y, m - 1, d, h, min).getTime()
 /** 后端 completed_at 的存储形态：本地时刻 → 无时区后缀的 UTC 字符串 */
@@ -102,4 +102,67 @@ test('周期滚动文案：今天/明天直接说，其余给月日（跨年补�
   assert.equal(nextRepeatLabel({ due_at: at(2026, 10, 25, 9, 30) }, now), '10月25日')
   assert.equal(nextRepeatLabel({ due_at: at(2027, 1, 3, 9, 30) }, now), '2027年1月3日')
   assert.equal(nextRepeatLabel({ due_at: null }, now), '下一轮')
+})
+
+test('未完成范围筛选：时间锚 = 截止，没截止按创建时间；置顶/逾期仍任何范围常显', () => {
+  const today = new Date(2026, 10, 18, 12) // 2026-11-18 周三，本周一 = 11-16
+  const createdAt = (y, m, d, h = 9, min = 5) => serverStr(new Date(y, m - 1, d, h, min))
+
+  // 有截止：按截止落档
+  const dueToday = { due_at: at(2026, 11, 18, 18), created_at: createdAt(2026, 10, 1) }
+  const dueFriday = { due_at: at(2026, 11, 20), created_at: createdAt(2026, 10, 1) }
+  const dueNextMonday = { due_at: at(2026, 11, 23), created_at: createdAt(2026, 10, 1) }
+  assert.equal(inHorizon(dueToday, 'today', today), true)
+  assert.equal(inHorizon(dueFriday, 'today', today), false)
+  assert.equal(inHorizon(dueFriday, 'week', today), true)
+  assert.equal(inHorizon(dueNextMonday, 'week', today), false)
+
+  // 没截止：按创建时间落档——新建待办（创建于今天）任何档都能看见，不会「保存后消失」
+  const freshNoDue = { due_at: null, created_at: createdAt(2026, 11, 18, 8) }
+  assert.equal(inHorizon(freshNoDue, 'today', today), true)
+  assert.equal(inHorizon(freshNoDue, 'week', today), true)
+  // 无截止且创建于两周前：不属于今天/本周，只在同月档与「全部」出现
+  const oldNoDue = { due_at: null, created_at: createdAt(2026, 11, 4) }
+  assert.equal(inHorizon(oldNoDue, 'today', today), false)
+  assert.equal(inHorizon(oldNoDue, 'week', today), false)
+  assert.equal(inHorizon(oldNoDue, 'month', today), true)
+
+  // 常显保障不回退：逾期（有截止且已过）与置顶在任何范围都可见
+  const overdue = { due_at: at(2026, 11, 10), created_at: createdAt(2026, 10, 1) }
+  assert.equal(inHorizon(overdue, 'today', today), true)
+  assert.equal(inHorizon(overdue, 'week', today), true)
+  const pinnedFuture = { due_at: at(2026, 12, 20), created_at: createdAt(2026, 10, 1), pinned: true }
+  assert.equal(inHorizon(pinnedFuture, 'today', today), true)
+  assert.equal(inHorizon(pinnedFuture, 'week', today), true)
+})
+
+test('已完成范围筛选：同一时间锚（截止??创建），无置顶/逾期常显，两时间都缺只在「全部」', () => {
+  const today = new Date(2026, 10, 18, 12) // 2026-11-18 周三，本周一 = 11-16
+  const createdAt = (y, m, d, h = 9, min = 5) => serverStr(new Date(y, m - 1, d, h, min))
+
+  // 有截止：锚在原计划的档——逾期很久才完成的不会灌进今天/本周
+  const doneDueToday = { due_at: at(2026, 11, 18, 18), created_at: createdAt(2026, 10, 1) }
+  const doneDueLastWeek = { due_at: at(2026, 11, 13), created_at: createdAt(2026, 10, 1) }
+  assert.equal(inDoneHorizon(doneDueToday, 'today', today), true)
+  assert.equal(inDoneHorizon(doneDueToday, 'week', today), true)
+  assert.equal(inDoneHorizon(doneDueLastWeek, 'today', today), false)
+  assert.equal(inDoneHorizon(doneDueLastWeek, 'week', today), false)
+  assert.equal(inDoneHorizon(doneDueLastWeek, 'month', today), true)
+
+  // 没截止：按创建时间落档
+  const doneNoDueFresh = { due_at: null, created_at: createdAt(2026, 11, 16, 8) }
+  assert.equal(inDoneHorizon(doneNoDueFresh, 'week', today), true)
+  const doneNoDueOld = { due_at: null, created_at: createdAt(2026, 10, 20) }
+  assert.equal(inDoneHorizon(doneNoDueOld, 'week', today), false)
+  assert.equal(inDoneHorizon(doneNoDueOld, 'all', today), true)
+
+  // 已完成不做置顶/逾期常显：逾期条目与置顶条目都严格按锚点落档
+  const doneOverdue = { due_at: at(2026, 11, 10), created_at: createdAt(2026, 10, 1), pinned: true }
+  assert.equal(inDoneHorizon(doneOverdue, 'today', today), false)
+  assert.equal(inDoneHorizon(doneOverdue, 'week', today), false)
+
+  // created_at 缺失（旧数据极端情况）只在「全部」可见
+  const noTime = { due_at: null, created_at: '' }
+  assert.equal(inDoneHorizon(noTime, 'today', today), false)
+  assert.equal(inDoneHorizon(noTime, 'all', today), true)
 })

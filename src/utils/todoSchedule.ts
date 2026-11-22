@@ -256,10 +256,14 @@ export const VIEW_GROUP_META: ReadonlyArray<{ label: string }> = [
   { label: '无日期' },
 ]
 
+/** 自然周开始（周一 00:00） */
+export function startOfWeek(d: Date): Date {
+  return addDays(startOfDay(d), -((d.getDay() + 6) % 7))
+}
+
 /** 自然周结束（周日 23:59:59.999） */
 function endOfWeek(d: Date): Date {
-  const monday = addDays(startOfDay(d), -((d.getDay() + 6) % 7))
-  return addDays(monday, 7)
+  return addDays(startOfWeek(d), 7)
 }
 
 export function viewGroupOf(
@@ -282,8 +286,28 @@ export function viewGroupOf(
 /** 时间范围视图（horizon）筛选：今天 / 本周 / 本月 / 全部 */
 export type Horizon = 'today' | 'week' | 'month' | 'all'
 
+/**
+ * 范围筛选的时间锚：有截止按截止时间，没截止按创建时间（列表未完成/已完成与导出
+ * 统一用这一份口径）。返回毫秒时间戳；两个时间都解析不了（理论极限）返回 null。
+ */
+export function scopeAnchorOf(t: { due_at: number | null; created_at: string }): number | null {
+  if (t.due_at != null) return t.due_at
+  return parseServerDate(t.created_at)?.getTime() ?? null
+}
+
+/** 锚点是否落在范围档内（纯区间判定，不含任何常显例外） */
+function anchorInHorizon(anchor: number, horizon: Horizon, today: Date): boolean {
+  const d = startOfDay(new Date(anchor))
+  const today0 = startOfDay(today)
+  if (horizon === 'today') return d.getTime() === today0.getTime()
+  if (horizon === 'week') {
+    return d.getTime() >= startOfWeek(today).getTime() && d.getTime() < endOfWeek(today).getTime()
+  }
+  return d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear()
+}
+
 export function inHorizon(
-  t: { due_at: number | null; pinned?: boolean },
+  t: { due_at: number | null; created_at: string; pinned?: boolean },
   horizon: Horizon,
   today: Date,
 ): boolean {
@@ -291,17 +315,33 @@ export function inHorizon(
   // 置顶条目与日期无关（固定排在列表最顶部「置顶」区），任何时间范围下都必须可见：
   // 否则「置顶 + 未来日期」的条目在「今天/本周」视图里会整条消失，与置顶语义冲突。
   if (t.pinned) return true
-  // 无截止日期的条目不属于任何时间范围，但必须**始终可见**：
-  // 待办视图里新建待办默认不设截止，若这里返回 false，新条目保存后会立刻从列表消失
-  // （只有切到「全部」才看得见），用户会以为没建成功。
-  if (t.due_at == null) return true
-  const d = startOfDay(new Date(t.due_at))
-  const today0 = startOfDay(today)
-  // 逾期条目不属于任何范围，但必须始终可见（否则会「消失」）
-  if (d.getTime() < today0.getTime()) return true
-  if (horizon === 'today') return d.getTime() === today0.getTime()
-  if (horizon === 'week') return d.getTime() < endOfWeek(today).getTime()
-  return d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear()
+  // 逾期条目不属于任何范围，但必须始终可见（否则会「消失」）——这是「待办还得做」的
+  // 工作面保障，只对有截止的条目生效；无截止的改按创建时间落档（scopeAnchorOf）。
+  if (t.due_at != null && startOfDay(new Date(t.due_at)).getTime() < startOfDay(today).getTime()) {
+    return true
+  }
+  const anchor = scopeAnchorOf(t)
+  // created_at 都解析失败（理论极限）按常显兜底，绝不静默吞条目——
+  // 新建待办默认不设截止，锚点=创建时刻，今天/本周/本月天然命中，不会「保存后消失」
+  if (anchor == null) return true
+  return anchorInHorizon(anchor, horizon, today)
+}
+
+/**
+ * 已完成视图（showDone）的范围筛选：与未完成用**同一个时间锚**（有截止按截止，
+ * 没截止按创建，scopeAnchorOf），但不做置顶/逾期常显——已完成是历史记录，
+ * 严格按计划时间落档，「逾期很久才完成」的条目锚在它原计划的档里，
+ * 不会灌进今天/本周污染各档统计。两个时间都缺失（旧数据极端情况）只在「全部」可见。
+ */
+export function inDoneHorizon(
+  t: { due_at: number | null; created_at: string },
+  horizon: Horizon,
+  today: Date,
+): boolean {
+  if (horizon === 'all') return true
+  const anchor = scopeAnchorOf(t)
+  if (anchor == null) return false
+  return anchorInHorizon(anchor, horizon, today)
 }
 
 const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'] as const

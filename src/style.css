@@ -15,6 +15,11 @@
   --bg-sidebar: rgba(255, 255, 255, 0.62);
   --bg-card: rgba(255, 255, 255, 0.74);
   --bg-card-solid: rgba(255, 255, 255, 0.88);
+  /* 浮窗专用不透明面板底（搜索浮窗等透明小窗）：这类小窗背后是桌面而非应用底色/壁纸，
+     主窗的半透明卡片令牌（暗色 --bg-card-solid 仅 20% 白）落上去几乎没有对比。 */
+  --bg-float-panel: #ffffff;
+  /* 浮窗内的输入药丸底：比面板深一档，替代边框做层次 */
+  --bg-float-input: #f2f3f7;
   --bg-card-soft: rgba(255, 255, 255, 0.55);
   --input-bg: rgba(255, 255, 255, 0.86);
   --bg-chat-panel: rgba(255, 255, 255, 0.97);
@@ -126,6 +131,9 @@
   --bg-sidebar: rgba(255, 255, 255, 0.08);
   --bg-card: rgba(255, 255, 255, 0.12);
   --bg-card-solid: rgba(255, 255, 255, 0.2);
+  /* 同上：暗色面板比 --input-bg 浅一档，输入药丸再深一档，靠底色分层不靠描边 */
+  --bg-float-panel: #24252f;
+  --bg-float-input: #1a1b24;
   --bg-card-soft: rgba(255, 255, 255, 0.1);
   --input-bg: #1d1e29;
   --bg-chat-panel: rgba(28, 29, 41, 0.97);
@@ -764,6 +772,17 @@ html[data-clipboard-window] body {
 }
 html[data-clipboard-window] #app {
   padding: 0;
+}
+/* 全局搜索浮窗：窗口透明无边框，body 透明，只显示搜索卡片本体
+   （卡片自带落影，窗口四周留白给阴影，别让 #app 撑出底色） */
+html[data-search-window] body {
+  background: transparent !important;
+}
+html[data-search-window] #app {
+  padding: 0;
+  background: transparent !important;
+  height: 100vh;
+  overflow: hidden;
 }
 /* 截图 / GIF 录屏选区覆盖层：body 透明，全屏显示拖拽遮罩（recorder.rs 两窗） */
 html[data-recorder-overlay] body {

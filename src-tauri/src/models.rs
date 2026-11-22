@@ -175,6 +175,10 @@ pub struct SearchResult {
     pub resources: Vec<Resource>,
     pub notes: Vec<Note>,
     pub todos: Vec<Todo>,
+    /// 提示词（全局搜索扩展域：命中后一键复制）
+    pub snippets: Vec<Snippet>,
+    /// 剪贴板历史（全局搜索扩展域：命中后写回系统剪贴板）
+    pub clipboard: Vec<ClipboardItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

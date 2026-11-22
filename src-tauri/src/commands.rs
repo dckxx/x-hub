@@ -233,6 +233,12 @@ pub fn open_url_with_browser(
 
 #[tauri::command]
 pub fn launch_resource(state: State<'_, DbState>, id: i64) -> Result<(), String> {
+    launch_resource_inner(&state, id)
+}
+
+/// `launch_resource` 的内核（抽出供搜索浮窗复用，保证两条路径行为逐字一致：
+/// 含「程序已在运行则调度到前台」与 `resource::touch` 最近使用打点）。
+pub fn launch_resource_inner(state: &State<'_, DbState>, id: i64) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let res = resource::get(&conn, id).map_err(err_str)?;
     match res.kind {
@@ -1985,17 +1991,24 @@ pub fn search_all(state: State<'_, DbState>, keyword: String) -> Result<SearchRe
     let resources = resource::search(&conn, &keyword).map_err(err_str)?;
     let notes = note::search(&conn, &keyword).map_err(err_str)?;
     let todos = todo::search(&conn, &keyword).map_err(err_str)?;
+    let snippets = snippet::search(&conn, &keyword).map_err(err_str)?;
+    // 剪贴板历史复用浮层的 list 检索（content/html/来源 LIKE，置顶优先），上限 10 条
+    let clipboard_items = clipboard::list(&conn, Some(&keyword), 10, 0).map_err(err_str)?;
     log::debug!(
-        "全局搜索「{}」: 资源 {} 条, 笔记 {} 条, 待办 {} 条",
+        "全局搜索「{}」: 资源 {} 条, 笔记 {} 条, 待办 {} 条, 提示词 {} 条, 剪贴板 {} 条",
         keyword,
         resources.len(),
         notes.len(),
-        todos.len()
+        todos.len(),
+        snippets.len(),
+        clipboard_items.len()
     );
     Ok(SearchResult {
         resources,
         notes,
         todos,
+        snippets,
+        clipboard: clipboard_items,
     })
 }
 

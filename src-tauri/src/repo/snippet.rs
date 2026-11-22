@@ -13,6 +13,20 @@ pub fn list(conn: &Connection) -> Result<Vec<Snippet>> {
     rows.collect()
 }
 
+/// 全局搜索：标题 / 正文 LIKE，排序口径与 list 一致（置顶优先），上限 10 条
+pub fn search(conn: &Connection, keyword: &str) -> Result<Vec<Snippet>> {
+    let pattern = format!("%{}%", keyword);
+    let mut stmt = conn.prepare(
+        "SELECT id, title, content, is_pinned, copy_count, last_copied_at, created_at, updated_at
+         FROM snippets
+         WHERE title LIKE ?1 OR content LIKE ?1
+         ORDER BY is_pinned DESC, copy_count DESC, last_copied_at DESC, id DESC
+         LIMIT 10",
+    )?;
+    let rows = stmt.query_map(params![pattern], row_to_snippet)?;
+    rows.collect()
+}
+
 pub fn get(conn: &Connection, id: i64) -> Result<Snippet> {
     conn.query_row(
         "SELECT id, title, content, is_pinned, copy_count, last_copied_at, created_at, updated_at

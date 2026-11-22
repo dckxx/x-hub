@@ -102,6 +102,12 @@ fn resident_targets() -> Vec<(String, Vec<String>)> {
             crate::clipboard::CLIPBOARD_WINDOW_LABEL.to_string(),
             vec![crate::clipboard::CLIPBOARD_WINDOW_LABEL.to_string()],
         ),
+        // 搜索浮窗：首次按热键时按需建，建好后隐藏常驻复用（绝不销毁）——正是贴图池
+        // 那条理由（按需窗的 on_hidden 快路径只在收起时触发，长期隐藏仍要靠本表纠偏）
+        (
+            crate::search_window::LABEL.to_string(),
+            vec![crate::search_window::LABEL.to_string()],
+        ),
         (
             crate::notify::NOTICE_LABEL.to_string(),
             vec![crate::notify::NOTICE_LABEL.to_string()],

@@ -34,6 +34,7 @@ mod publisher;
 mod recorder;
 mod repo;
 mod runtime;
+mod search_window;
 mod secret;
 mod service;
 mod shortcut;
@@ -1060,10 +1061,13 @@ pub fn run() {
                 crate::recorder::hide_overlay(&app_handle);
             });
 
-            // 搜索快捷键事件：唤起主窗（对话框由主窗前端收到同名事件后打开）
+            // 搜索快捷键事件：唤起**搜索浮窗**（label `search`），不碰主窗——
+            // 这是「按 Ctrl+K 只弹搜索框、不弹软件」的根本一刀。搜索 UI 原是主窗里
+            // 的遮罩弹窗，结构上必须先亮主窗才显示得出来；迁进独立窗后主窗可以一直
+            // 藏着。结果路由在 search_window.rs（程序/文件/独立窗网页照样不亮主窗）。
             let app_handle = app.handle().clone();
             app.listen("search-shortcut", move |_| {
-                crate::tray::show_window(&app_handle);
+                crate::search_window::toggle(&app_handle);
             });
 
             // 速记快捷键事件：唤起主窗（切速记视图 + 聚焦新建由主窗前端收到同名事件后做）
@@ -1213,6 +1217,14 @@ pub fn run() {
             commands::toggle_todo_float,
             commands::toggle_float_pin,
             commands::search_all,
+            search_window::search_window_toggle,
+            search_window::search_window_hide,
+            search_window::search_window_is_visible,
+            search_window::search_open_resource,
+            search_window::search_open_note,
+            search_window::search_open_todo,
+            search_window::search_open_settings,
+            search_window::search_open_extension,
             commands::save_config,
             commands::set_window_always_on_top,
             commands::set_always_on_top_config,

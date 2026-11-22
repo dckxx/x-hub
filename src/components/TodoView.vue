@@ -20,6 +20,7 @@ import {
   dueBadge,
   fmtDueFull,
   fmtHM,
+  inDoneHorizon,
   inHorizon,
   isoKey,
   nextRepeatLabel,
@@ -94,12 +95,22 @@ function hasTag(t: Todo): boolean {
   return hasAnyTag(t.id)
 }
 
-/** 每个标签挂着的未完成待办数：chip 上直接给计数，让「点标签 = 查待办」这件事
- *  一眼可见（此前 chips 太像纯展示徽标，过滤能力没有被发现） */
+/** 当前形态下的范围命中：未完成与已完成用**同一个时间锚**（有截止按截止，没截止按
+ *  创建时间，见 todoSchedule.scopeAnchorOf），差别只在未完成多了置顶/逾期常显保障。
+ *  与标签筛选（hasTag，OR 语义）叠加。 */
+function inScope(t: Todo): boolean {
+  return showDone.value
+    ? inDoneHorizon(t, horizon.value, today.value)
+    : inHorizon(t, horizon.value, today.value)
+}
+
+/** 每个标签挂着的待办数（跟随当前形态与范围：chip 计数 = 点它会筛出多少条）：
+ *  chip 上直接给计数，让「点标签 = 查待办」这件事一眼可见 */
 const tagCounts = computed(() => {
   const map = new Map<number, number>()
   for (const t of topTodos.value) {
-    if (t.done) continue
+    if (showDone.value ? !t.done : t.done) continue
+    if (!inScope(t)) continue
     for (const id of store.todoTagIds(t.id)) map.set(id, (map.get(id) ?? 0) + 1)
   }
   return map
@@ -110,24 +121,26 @@ const topTodos = computed(() =>
 )
 
 const visible = computed(() =>
-  topTodos.value.filter((t) => (showDone.value ? t.done : !t.done) && hasTag(t) && (showDone.value || inHorizon(t, horizon.value, today.value))),
+  topTodos.value.filter((t) => (showDone.value ? t.done : !t.done) && hasTag(t) && inScope(t)),
 )
 
 /** 各范围档的命中数（与 visible 同一过滤基底，只换范围档）。范围切换只影响「未来日期」
- *  的条目——置顶/逾期/无截止在任何范围下都常显（inHorizon 的既定口径），待办多是这几类时
- *  列表肉眼无变化，容易被当成「切了没反应」；按钮上直接给计数，让筛选生效看得见 */
+ *  的条目——置顶/逾期在任何范围下都常显（inHorizon 的既定口径），待办多是这几类时
+ *  列表肉眼无变化，容易被当成「切了没反应」；按钮上直接给计数，让筛选生效看得见。
+ *  已完成形态换 inDoneHorizon（同一时间锚、无常显例外），各档计数同样分档变化 */
 const horizonCounts = computed(() => {
   const map = new Map<Horizon, number>()
   for (const h of HORIZONS) {
     map.set(
       h.key,
-      topTodos.value.filter((t) => (showDone.value ? t.done : !t.done) && hasTag(t) && (showDone.value || inHorizon(t, h.key, today.value))).length,
+      topTodos.value.filter((t) => (showDone.value ? t.done : !t.done) && hasTag(t) && (showDone.value ? inDoneHorizon(t, h.key, today.value) : inHorizon(t, h.key, today.value))).length,
     )
   }
   return map
 })
 
-/** 分组：置顶 → 逾期 → 今天 → 本周 → 本月 → 以后 → 无日期（组内按手动排序/创建时间） */
+/** 分组：置顶 → 逾期 → 今天 → 本周 → 本月 → 以后 → 无日期（按截止日，无截止进「无日期」；
+ *  未完成/已完成同一套分组，组内按手动排序/创建时间） */
 const groups = computed(() => {
   const buckets: Todo[][] = VIEW_GROUP_META.map(() => [])
   for (const t of visible.value) buckets[viewGroupOf(t, today.value)].push(t)
@@ -602,7 +615,9 @@ function toExportItem(t: Todo): TodoExportItem {
   }
 }
 
-/** 导出为 Markdown：按视图分组（置顶/逾期/今天/本周…）组装 → 保存对话框选路径 → 落盘 */
+/** 导出为 Markdown：按视图分组（置顶/逾期/今天/本周…）组装 → 保存对话框选路径 → 落盘。
+ *  内容跟随当前「范围 + 标签 + 未完成/已完成」筛选，与列表同一份时间锚
+ *  （有截止按截止，没截止按创建），已完成数据同样按这个口径落范围档 */
 async function exportTodos() {
   if (!isTauri() || exporting.value || !visible.value.length) return
   const scopeLabel = HORIZONS.find((h) => h.key === horizon.value)?.label ?? '全部'
@@ -922,7 +937,7 @@ function onVirtualDown(e: PointerEvent) {
         <!-- data-todo-list：子待办拖到本容器内的空白处 = 升为顶级（TodoRow 升挂落点判定范围） -->
         <div ref="bodyRef" class="tv-scroll" data-todo-list>
           <p v-if="!groups.length" class="tv-empty">
-            {{ tagFilter.length ? '没有符合所选标签的待办' : '这个范围里没有待办' }}
+            {{ tagFilter.length ? '没有符合所选标签的待办' : showDone ? '这个范围里没有已完成的待办' : '这个范围里没有待办' }}
           </p>
           <div v-for="g in groups" :key="g.label" class="tv-group" :data-group="g.label">
             <div

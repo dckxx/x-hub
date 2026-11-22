@@ -5,8 +5,16 @@
 // 于是先出现一段空白再显示内容。现在外壳 + 当前大类按需加载，切大类才取对应面板。
 // 样式统一在 ./settings/shared.css（规则带 .settings-view 前缀，避免外移后污染其它视图）。
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
-import { Bot, ChevronRight, CircleHelp, Database, Info, LayoutGrid, Palette, Puzzle, Search, Settings, Sparkles, User, X } from 'lucide-vue-next';
+import { ChevronRight, Search, X } from 'lucide-vue-next';
 import { SETTINGS_INDEX } from './settingsIndex.generated';
+import {
+  GROUPS,
+  SECTIONS,
+  SECTION_GROUP,
+  SECTION_LABEL,
+  type GroupId,
+  type SectionId,
+} from '../utils/settingsSections';
 import PanelLoading from './settings/PanelLoading.vue';
 
 const props = defineProps<{ initialSection?: string }>()
@@ -18,87 +26,10 @@ const emit = defineEmits<{
 }>()
 
 // ---- 两级分类导航 ----
-// 左栏只列 5 个大类，当前大类的子项在它下方缩进展开；右侧**只挂载当前大类**的分区。
+// 左栏列 10 个大类，当前大类的子项在它下方缩进展开；右侧**只挂载当前大类**的分区。
 // 为什么不再「全量渲染 + 滚动锚点」：12 个分区一次性挂载（模板近 2000 行）会让点开设置时
-// 先空白一段再出现内容。分区归属集中在 SECTION_GROUP 一张表里，模板中每个 section 只写自己的 id。
-const SECTIONS = [
-  { id: 'general', label: '常规' },
-  { id: 'ball', label: '悬浮球' },
-  { id: 'assistant', label: '助手' },
-  { id: 'ai', label: '面板' },
-  { id: 'credit', label: '额度' },
-  { id: 'providers', label: '供应商' },
-  { id: 'suda', label: '速达' },
-  { id: 'notes', label: '速记' },
-  { id: 'appearance', label: '外观' },
-  { id: 'workbench', label: '工作台' },
-  { id: 'shortcut', label: '快捷键' },
-  { id: 'clipboard', label: '剪贴板' },
-  // GIF 录制（2026-10-31）：截图/GIF 录屏功能设置分区（默认帧率/保存目录）。
-  // ⚠️ 左栏子项由 SECTIONS + SECTION_GROUP 自动派生，面板 section 的 id 必须与这里一致
-  { id: 'gif', label: 'GIF 录制' },
-  { id: 'online', label: '联网' },
-  { id: 'mem', label: '性能' },
-  { id: 'account', label: '账号' },
-  { id: 'extensions', label: '扩展' },
-  { id: 'skills', label: 'Skills' },
-  { id: 'data', label: '数据' },
-  // 云同步（2026-11-02）：手机扫码配对 + E2EE，挂「数据」大类（docs/sync-protocol.md §8.4）
-  { id: 'sync', label: '云同步' },
-  // 使用说明（2026-10-24）：正文是仓库 docs/user-guide.md，面板内联渲染（见 GuidePanel.vue）
-  { id: 'guide', label: '使用说明' },
-  // 关于（2026-11-15 自「数据与关于」拆出独立成大类）：版本 / 开源声明 / 检查更新（见 AboutPanel.vue）
-  { id: 'about', label: '关于' },
-] as const
-
-type SectionId = (typeof SECTIONS)[number]['id']
-
-const GROUPS = [
-  { id: 'general', label: '常规', icon: Settings },
-  { id: 'appearance', label: '外观', icon: Palette },
-  { id: 'workbench', label: '工作台', icon: LayoutGrid },
-  // AI 助手独立成大类（2026-10-16 自「功能」拉出），排在工作台下面
-  { id: 'ai', label: 'AI 助手', icon: Bot },
-  { id: 'features', label: '功能', icon: Sparkles },
-  { id: 'extensions', label: '扩展', icon: Puzzle },
-  { id: 'account', label: '账号', icon: User },
-  { id: 'data', label: '数据', icon: Database },
-  // 使用说明独立成大类（2026-10-24）：面板内联 docs/user-guide.md，解决「功能多、路径难记」
-  { id: 'guide', label: '使用说明', icon: CircleHelp },
-  // 「关于」独立成大类（2026-11-15 自「数据与关于」拆出），排在左栏最下
-  { id: 'about', label: '关于', icon: Info },
-] as const
-
-type GroupId = (typeof GROUPS)[number]['id']
-
-/** 分区 → 大类（Record 的键类型是 SectionId，漏一个分区编译期就报错） */
-const SECTION_GROUP: Record<SectionId, GroupId> = {
-  general: 'general',
-  ball: 'general',
-  shortcut: 'general',
-  appearance: 'appearance',
-  workbench: 'workbench',
-  assistant: 'ai',
-  ai: 'ai',
-  credit: 'ai',
-  providers: 'ai',
-  suda: 'features',
-  notes: 'features',
-  clipboard: 'features',
-  online: 'features',
-  mem: 'features',
-  gif: 'features',
-  extensions: 'extensions',
-  skills: 'extensions',
-  account: 'account',
-  data: 'data',
-  sync: 'data',
-  guide: 'guide',
-  about: 'about',
-}
-
-const SECTION_LABEL: Record<string, string> = Object.fromEntries(SECTIONS.map((s) => [s.id, s.label]))
-
+// 先空白一段再出现内容。分区元数据（SECTIONS/GROUPS/SECTION_GROUP/各 label）已抽到
+// utils/settingsSections.ts 单一数据源 —— GlobalSearch 的「设置」检索结果共用同一份。
 const activeGroup = ref<GroupId>('general')
 const activeSection = ref<SectionId>('general')
 const contentRef = ref<HTMLElement | null>(null)

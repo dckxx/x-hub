@@ -181,8 +181,13 @@ function iconFor(kind: string) {
   gap: 10px;
   padding: 12px 12px 12px 14px;
   border-radius: 14px;
-  background: var(--bg-card-solid);
-  border: 1px solid var(--border-soft);
+  /* 通知窗是透明小窗，背后是桌面而非应用底色/壁纸蒙版：--bg-card-solid 暗色只有 20% 白，
+     落在桌面壁纸上几乎隐形（实测「背景透明看不清」）。改用浮窗专用不透明面板底
+     （口径同 GlobalSearch 透明小窗分支）；白描边在浅色桌面上呈粉笔框，一并去掉，
+     卡片层次靠阴影 + 左侧强调条。玻璃透明度/沉浸模式是主窗壁纸语境参数，通知窗不读，
+     任何主题下都保持这层实底 */
+  background: var(--bg-float-panel);
+  border: none;
   box-shadow: var(--shadow-card);
   cursor: pointer;
   position: relative;

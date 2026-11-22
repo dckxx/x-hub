@@ -1155,12 +1155,18 @@ pub async fn floating_ball_expand(app: AppHandle, expanded: bool) {
     let _ = (app, expanded);
 }
 
-/// 环形菜单/双击动作分发：view:*/act:search/act:note 作用于主窗口（先显示再派发事件）；
-/// act:clipboard 直呼剪贴板浮层（不弹主窗）；act:main 双击切换主窗口（开着则收起）
+/// 环形菜单/双击动作分发：view:*/act:note 作用于主窗口（先显示再派发事件）；
+/// act:clipboard 直呼剪贴板浮层、act:search 直呼搜索浮窗（两者都不弹主窗）；
+/// act:main 双击切换主窗口（开着则收起）
 #[tauri::command]
 pub fn floating_ball_trigger(app: AppHandle, id: String) {
     if id == "act:clipboard" {
         crate::clipboard::toggle_overlay(&app);
+        return;
+    }
+    // 全局搜索：独立浮窗，与快捷键同一条路径（主窗可以一直藏着）
+    if id == "act:search" {
+        crate::search_window::toggle(&app);
         return;
     }
     if id == "act:main" {

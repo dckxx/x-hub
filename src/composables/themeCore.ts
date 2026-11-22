@@ -67,6 +67,12 @@ export function applyTheme(opts: { mode: string; preset: string; accent: string 
       preset: opts.preset,
       accent: opts.accent,
     }).catch(() => {})
+    // 搜索浮窗（按需建窗，未创建时静默失败——下次唤起自己拉 get_ui_config）
+    emitTo('search', 'search-theme', {
+      mode: opts.mode,
+      preset: opts.preset,
+      accent: opts.accent,
+    }).catch(() => {})
   }
 }
 

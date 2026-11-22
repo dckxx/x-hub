@@ -487,6 +487,15 @@ pub(crate) fn spawn_open_url(app: AppHandle, url: String) {
     });
 }
 
+/// 按 URL 在独立应用内浏览器窗口打开（`suda_browser_open_url` 命令的内核）。
+///
+/// 供其它后端模块复用（搜索浮窗的资源路由要「不亮主窗地打开网页」）；URL 照旧
+/// 经 `validate_web_url` 校验，与命令路径同一道闸。
+pub(crate) fn open_in_pool_value(app: &AppHandle, url: &str) -> Result<OpenResult, String> {
+    let url = validate_web_url(url)?;
+    open_in_pool(app, &url)
+}
+
 /// 池选路：① 同地址复用 → ② 最近显示的可见窗口开新 tab → ③ 空闲窗口 → ④ POOL_FULL
 fn open_in_pool(app: &AppHandle, url: &str) -> Result<OpenResult, String> {
     ensure_slots();

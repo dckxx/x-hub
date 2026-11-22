@@ -1012,6 +1012,10 @@ export interface SearchResult {
   resources: Resource[]
   notes: Note[]
   todos: Todo[]
+  /** 提示词（命中后一键复制） */
+  snippets: Snippet[]
+  /** 剪贴板历史（命中后写回系统剪贴板） */
+  clipboard: ClipboardItem[]
 }
 
 export interface NoteTagRow {
@@ -1521,6 +1525,20 @@ export const tauriApi = {
     }),
   importNotesCancel: () => invoke<void>('import_notes_cancel'),
   searchAll: (keyword: string) => invoke<SearchResult>('search_all', { keyword }),
+  // ---- 全局搜索浮窗（label `search`：热键直达、不唤起主窗）----
+  searchWindowToggle: () => invoke<void>('search_window_toggle'),
+  searchWindowHide: () => invoke<void>('search_window_hide'),
+  /** 浮窗当前可见性（页面就绪后拉取，补建窗瞬间推丢的 shown 事件） */
+  searchWindowIsVisible: () => invoke<boolean>('search_window_is_visible'),
+  /** 打开一条搜索结果资源：程序/文件/独立窗网页就地启动（主窗不出现）；
+   *  软件内面板模式网页由后端亮主窗并派发 open-suda-web-panel */
+  searchOpenResource: (id: number) => invoke<void>('search_open_resource', { id }),
+  searchOpenNote: (id: number) => invoke<void>('search_open_note', { id }),
+  searchOpenTodo: (id: number) => invoke<void>('search_open_todo', { id }),
+  /** 打开一条设置项搜索结果：后端亮主窗并派发 open-search-settings（主窗切到对应设置分区） */
+  searchOpenSettings: (section: string) => invoke<void>('search_open_settings', { section }),
+  /** 打开一条扩展搜索结果：后端亮主窗并派发 open-search-extension（主窗按打开方式分流） */
+  searchOpenExtension: (id: string) => invoke<void>('search_open_extension', { id }),
   listTodos: () => invoke<Todo[]>('list_todos'),
   createTodo: (title: string, parentId?: number | null, createdAt?: string) =>
     invoke<Todo>('create_todo', {

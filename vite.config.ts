@@ -91,6 +91,7 @@ export default defineConfig({
         pin: 'pin.html',
         recorder: 'recorder.html',
         clipboard: 'clipboard.html',
+        search: 'search.html',
         chat: 'chat.html',
       },
       output: {

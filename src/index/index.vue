@@ -858,8 +858,9 @@ onMounted(async () => {
         showToast(title ? `待办提醒：「${title}」` : '待办提醒时间到')
       }
     })
-    // 桌面悬浮球动作（ADR 0004）：切视图 / 全局搜索 / 新建速记
-    // （Rust trigger 已先显示主窗口；剪贴板 act:clipboard 在 Rust 直呼浮层，不经这里）
+    // 桌面悬浮球动作（ADR 0004）：切视图 / 新建速记
+    // （Rust trigger 已先显示主窗口；剪贴板 act:clipboard、全局搜索 act:search 都在
+    //   Rust 侧直呼各自浮层，不经这里——所以本监听收不到那两个 id）
     unlistenBallAction = await on<string>('floating-ball-action', (e) => {
       const id = e.payload ?? ''
       if (id.startsWith('view:')) {
@@ -872,8 +873,6 @@ onMounted(async () => {
         } else {
           activeView.value = v as ViewId
         }
-      } else if (id === 'act:search') {
-        searchVisible.value = true
       } else if (id === 'act:note') {
         void onCreateNote()
       }
@@ -883,10 +882,32 @@ onMounted(async () => {
       if (e.payload === 'account') onOpenAccountSettings()
       else onOpenChatSettings()
     })
-    // 搜索快捷键（全局注册，Rust 分发）：主窗前端负责打开/关闭搜索弹窗
-    unlistenSearchShortcut = await on('search-shortcut', () => {
-      searchVisible.value = !searchVisible.value
+    // 搜索快捷键（全局注册，Rust 分发）**不在主窗监听**：Rust 侧直接唤起独立的
+    // 搜索浮窗（search_window::toggle），主窗可以一直藏着。若这里也监听同名事件
+    // 去 toggle 内嵌弹窗，会与浮窗双触发、两次 toggle 相互抵消（表现「按了没反应」）。
+    // 主窗只负责接收浮窗转发过来的「打开某个结果」请求（见下方 open-search-*）。
+    unlistenSearchOpenNote = await on<number>('open-search-note', (e) => {
+      if (typeof e.payload === 'number') void revealSearchNote(e.payload)
     })
+    unlistenSearchOpenTodo = await on<number>('open-search-todo', (e) => {
+      if (typeof e.payload === 'number') onOpenTodoPayload(e.payload)
+    })
+    // 浮窗选中的是设置项结果：亮主窗（后端已做）后切到对应设置分区
+    unlistenSearchOpenSettings = await on<string>('open-search-settings', (e) => {
+      if (typeof e.payload === 'string') onOpenSettings(e.payload)
+    })
+    // 浮窗选中的是扩展结果：亮主窗（后端已做）后按该扩展的打开方式打开
+    unlistenSearchOpenExtension = await on<string>('open-search-extension', (e) => {
+      if (typeof e.payload === 'string') onOpenSearchExtension(e.payload)
+    })
+    // 浮窗选中的是「软件内面板」网页资源：面板是主窗的子 webview，只能主窗接手
+    unlistenSearchOpenWebPanel = await on<{ id: number; url: string; name: string }>(
+      'open-suda-web-panel',
+      (e) => {
+        const d = e.payload
+        if (d && typeof d.id === 'number') openSudaWebPanel(d)
+      },
+    )
     // AI 对话快捷键（全局注册，Rust 分发）：与抽屉/独立窗口形态分流共用 toggleChat
     unlistenChatShortcut = await on('chat-shortcut', () => {
       toggleChat()
@@ -950,7 +971,11 @@ let unlistenTodoTagsChanged: (() => void) | null = null
 let unlistenTodoRemind: (() => void) | null = null
 let unlistenBallAction: (() => void) | null = null
 let unlistenOpenChatSettings: (() => void) | null = null
-let unlistenSearchShortcut: (() => void) | null = null
+let unlistenSearchOpenNote: (() => void) | null = null
+let unlistenSearchOpenTodo: (() => void) | null = null
+let unlistenSearchOpenSettings: (() => void) | null = null
+let unlistenSearchOpenExtension: (() => void) | null = null
+let unlistenSearchOpenWebPanel: (() => void) | null = null
 let unlistenChatShortcut: (() => void) | null = null
 let unlistenNotesShortcut: (() => void) | null = null
 let unlistenOpenExtSettings: (() => void) | null = null
@@ -971,7 +996,11 @@ onUnmounted(() => {
   unlistenTodoRemind?.()
   unlistenBallAction?.()
   unlistenOpenChatSettings?.()
-  unlistenSearchShortcut?.()
+  unlistenSearchOpenNote?.()
+  unlistenSearchOpenTodo?.()
+  unlistenSearchOpenSettings?.()
+  unlistenSearchOpenExtension?.()
+  unlistenSearchOpenWebPanel?.()
   unlistenChatShortcut?.()
   unlistenNotesShortcut?.()
   unlistenOpenExtSettings?.()
@@ -1018,6 +1047,8 @@ async function onCreateNote() {
 }
 
 // ---- 全局搜索 / 设置 ----
+// 真桌面里搜索走**独立浮窗**（search 窗，热键直达、不弹主窗）；这里的 searchVisible
+// 只服务浏览器预览（没有全局热键，退化成主窗内遮罩弹窗）与「打开结果后的清理」。
 const searchVisible = ref(false)
 const promptManageVisible = ref(false)
 // 正在配置内容的工作台「自定义速达」槽位 id（suda1..suda4；null = 弹窗关闭）
@@ -1030,10 +1061,52 @@ function onOpenTodo(t: Todo) {
   activeView.value = 'dashboard'
 }
 
+/** 浮窗转发过来的「打开待办」：载荷只有 id，语义与 onOpenTodo 相同 */
+function onOpenTodoPayload(id: number) {
+  searchVisible.value = false
+  highlightTodoId.value = id
+  activeView.value = 'dashboard'
+}
+
+/** 浮窗 / 内嵌搜索的「打开设置项」结果：深链到设置对应分区（口径同 onOpenChatSettings） */
+function onOpenSettings(section: string) {
+  searchVisible.value = false
+  settingsSection.value = section
+  activeView.value = 'settings'
+}
+
+/** 浮窗 / 内嵌搜索的「打开扩展」结果：按该扩展的打开方式打开（口径同扩展中心行 ▶） */
+function onOpenSearchExtension(id: string) {
+  searchVisible.value = false
+  const ext = installedExtensions.value.find((e) => e.id === id)
+  if (ext) {
+    onOpenExtension(ext)
+    return
+  }
+  // 列表里找不到（理论不会，扩展列表启动即加载）：退到扩展中心兜底
+  activeView.value = 'extensions'
+}
+
+/** 浮窗转发过来的「打开笔记」：切速记视图后选中该笔记 */
+async function revealSearchNote(id: number) {
+  searchVisible.value = false
+  const view = await waitSpeednoteReady()
+  view?.openNote(id)
+}
+
+/** 三个搜索入口的统一切口：真桌面弹独立浮窗，浏览器预览退回主窗内弹窗 */
+function toggleSearch() {
+  if (isTauri()) {
+    void tauriApi.searchWindowToggle().catch(() => {})
+    return
+  }
+  searchVisible.value = !searchVisible.value
+}
+
 function onSearchKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault()
-    searchVisible.value = !searchVisible.value
+    toggleSearch()
   }
 }
 
@@ -1244,9 +1317,7 @@ async function onOpenResource(r: Resource) {
 }
 
 async function onOpenNote(n: Note) {
-  searchVisible.value = false
-  const view = await waitSpeednoteReady()
-  view?.openNote(n.id)
+  await revealSearchNote(n.id)
 }
 
 // ---- 轻提示 ----
@@ -1290,7 +1361,7 @@ provide('showToast', showToast)
     </div>
     <TitleBar
       :titlebar-defaults="titlebarDefaults"
-      @search="searchVisible = true"
+      @search="toggleSearch"
       @chat="toggleChat"
     />
 
@@ -1610,10 +1681,13 @@ provide('showToast', showToast)
 
     <GlobalSearch
       :visible="searchVisible"
+      :extensions="installedExtensions"
       @close="searchVisible = false"
       @open-resource="onOpenResource"
       @open-note="onOpenNote"
       @open-todo="onOpenTodo"
+      @open-settings="onOpenSettings"
+      @open-extension="onOpenSearchExtension"
     />
     <!-- 侧栏固定扩展右键菜单：常驻实例的 重载 / 关闭（紧凑宽度，贴两字项内容） -->
     <ContextMenu

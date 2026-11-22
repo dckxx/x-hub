@@ -19,12 +19,12 @@ function h(level, ...children) {
   return { name: 'heading', textblock: true, attrs: { level }, children }
 }
 
-test('多段落以空行分隔，输出无任何 Markdown 转义符', () => {
+test('多段落逐行输出（一行一段落），输出无任何 Markdown 转义符', () => {
   const out = blocksToPlainText([
     p(t('第一段：5 * 3 与 [括号] 原样')),
     p(t('第二段，联系 a@b.com')),
   ])
-  assert.equal(out, '第一段：5 * 3 与 [括号] 原样\n\n第二段，联系 a@b.com')
+  assert.equal(out, '第一段：5 * 3 与 [括号] 原样\n第二段，联系 a@b.com')
 })
 
 test('链接只留可见文字，邮箱不出现尖括号或 mailto', () => {
@@ -90,7 +90,7 @@ test('代码块按字面多行输出，不拆转义', () => {
     { name: 'code_block', code: true, text: 'const a = 1\nconst b = "x\\*y"' },
     p(t('后文')),
   ])
-  assert.equal(out, 'const a = 1\nconst b = "x\\*y"\n\n后文')
+  assert.equal(out, 'const a = 1\nconst b = "x\\*y"\n后文')
 })
 
 test('表格输出为制表符分隔的行', () => {
@@ -117,10 +117,20 @@ test('段内选区（纯行内片段）直接行内序列化，硬换行落成�
   }
 })
 
-test('空行占位（零宽空格）剥离，空段保留为空行', () => {
+test('空行占位（零宽空格）剥离，空段保留为一行空白（不多不少）', () => {
   const out = blocksToPlainText([p(t('上')), p(t(ZWSP)), p(t('下'))])
-  assert.equal(out, '上\n\n\n\n下')
+  assert.equal(out, '上\n\n下')
   assert.ok(!out.includes(ZWSP))
+})
+
+test('手敲回车得到的多行文字复制后行数不变，行间不插空行（粘贴成的「一行一段落」同款结构）', () => {
+  const out = blocksToPlainText([p(t('第一行汉字')), p(t('第二行汉字')), p(t('第三行汉字'))])
+  assert.equal(out, '第一行汉字\n第二行汉字\n第三行汉字')
+  // 纯字母同一口径：语言不是分流条件，结构与换行数一一对应
+  assert.equal(
+    blocksToPlainText([p(t('alpha')), p(t('beta'))]),
+    'alpha\nbeta',
+  )
 })
 
 test('引用块退化为内部内容，分隔线与无说明图片各占一个空行分组', () => {
@@ -129,7 +139,7 @@ test('引用块退化为内部内容，分隔线与无说明图片各占一个�
     { name: 'hr' },
     { name: 'image-block', attrs: { caption: '' } },
   ])
-  assert.equal(out, '引用行\n\n\n\n')
+  assert.equal(out, '引用行\n\n')
 })
 
 test('图片块带说明时保留说明文字', () => {

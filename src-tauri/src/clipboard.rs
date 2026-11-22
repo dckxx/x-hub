@@ -1066,7 +1066,8 @@ fn release_modifier_keys() {
 }
 
 /// 强行把目标窗口带到前台并聚焦（AttachThreadInput 绕开前台锁定 + 还原最小化窗口）。
-fn force_focus_window(hwnd: *mut core::ffi::c_void) {
+/// `pub(crate)`：搜索浮窗收起后归还焦点也走这一份（不另抄一套前台锁定绕过）。
+pub(crate) fn force_focus_window(hwnd: *mut core::ffi::c_void) {
     unsafe {
         if hwnd.is_null() || IsWindowVisible(hwnd) == 0 {
             return;

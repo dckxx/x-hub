@@ -22,14 +22,23 @@ import {
  * iframe）；独立壳窗口用本函数，只管自己的根元素。主窗的运行时推送（chat-theme /
  * clipboard-theme 等事件）由各组件自行 listen 后调 `applyTheme`，不走这里。
  */
-export function useShellThemeConfig() {
+export function useShellThemeConfig(options?: {
+  /**
+   * 跳过玻璃透明度与沉浸模式（搜索浮窗用）：这两个是主窗壁纸语境的参数——
+   * 透明小窗背后是桌面而不是壁纸，半透明底在桌面上没有对比（暗色 20% 白几乎隐形），
+   * 卡片本体改用 --bg-float-panel 不透明面板底，让位给可读性。三轴主题与字号照常跟随。
+   */
+  skipGlass?: boolean
+}) {
   const config = ref<AppConfig | null>(null)
 
   function applyAll(cfg: AppConfig) {
     applyTheme({ mode: cfg.theme_mode, preset: cfg.theme_preset, accent: cfg.accent_color })
-    applyGlassOpacity(cfg.glass_opacity)
-    // 沉浸模式仅在存在壁纸时生效（口径同 useTheme）
-    applyImmersive(cfg.wallpaper_immersive && !!cfg.wallpaper_path)
+    if (options?.skipGlass !== true) {
+      applyGlassOpacity(cfg.glass_opacity)
+      // 沉浸模式仅在存在壁纸时生效（口径同 useTheme）；与玻璃透明度同属壁纸语境
+      applyImmersive(cfg.wallpaper_immersive && !!cfg.wallpaper_path)
+    }
     applyFontScale({
       global: cfg.font_scale,
       sticky: cfg.font_sticky,

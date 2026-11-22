@@ -6,7 +6,7 @@ import type { Fragment, Node as ProseNode, ResolvedPos, Slice } from '@milkdown/
  * 背景：Crepe 内置 milkdown 的 clipboard 插件，把 ProseMirror 的 clipboardTextSerializer
  * 覆盖成「选区序列化成 Markdown」——选区里只要含链接、多个段落等非纯文本节点，粘贴出去
  * 的就是 Markdown 源码：`\*`、`\[` 转义符、邮箱变 `[a@b.com](mailto:a@b.com)` 或 `<a@b.com>`。
- * 这里改按「屏幕上看到的样子」产纯文本：段落间空行、列表逐行带符号、代码块原样、链接只留
+ * 这里改按「屏幕上看到的样子」产纯文本：一行一段落逐行输出（空段落就是空行）、列表逐行带符号、代码块原样、链接只留
  * 可见文字、空行占位（零宽空格）剥掉。text/html 不受影响（仍走 ProseMirror 默认的 DOM
  * 序列化），粘贴到支持富文本的目标（Word / 富文本框）时加粗、链接等样式照旧保留。
  *
@@ -172,7 +172,11 @@ export function blocksToPlainText(blocks: PlainNode[]): string {
     const lines = blockLines(b, '')
     groups.push(lines.join('\n'))
   }
-  return stripInvisible(groups.join('\n\n'))
+  // 块与块之间用单换行，不用空行：速记里「敲一次回车」就是一个段落，一行就是屏幕上的一行
+  // （段落间距只是 4px 内边距，不是空行）。若按「段落间空行」序列化，多行文字复制到记事本 /
+  // 聊天框后每行下面都会多出一个空行（用户反馈 0.9.12 的多行汉字复制后行行空行）。
+  // 真正的空行由空段落表达：groups 里的空串被单换行连接后恰好就是那一行空白，行数与所见一致。
+  return stripInvisible(groups.join('\n'))
 }
 
 /** 零宽空格是空行占位符（见 NoteEditor normalizeEmptyParagraphs），复制出去必须剥离 */

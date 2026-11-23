@@ -3186,31 +3186,29 @@ fn extract_app_icon_with_source(target: &str, icon_source: Option<&str>) -> Opti
     if let Some(dir) = output_path.parent() {
         std::fs::create_dir_all(dir).ok()?;
     }
-    let bmp_source: &str = {
+    // 打包应用的位图来源需要现查（字符串由本函数持有，故先落成 owned 再借出）
+    let resolved_source: Option<String> = {
         #[cfg(target_os = "windows")]
         {
-            let resolved;
-            if let Some(s) = icon_source {
-                s
-            } else if process::is_shell_app_target(target) {
-                resolved = match resolve_packaged_icon_source(target) {
-                    Some(s) => s,
-                    None => return old_cache_fallback(&output_path, target),
-                };
-                &resolved
+            if icon_source.is_some() || !process::is_shell_app_target(target) {
+                None
             } else {
-                target
+                match resolve_packaged_icon_source(target) {
+                    Some(s) => Some(s),
+                    None => return old_cache_fallback(&output_path, target),
+                }
             }
         }
         #[cfg(not(target_os = "windows"))]
         {
             // 非 Windows 无 shell:AppsFolder 打包应用语义，位图来源即 target 本身
-            if let Some(s) = icon_source {
-                s
-            } else {
-                target
-            }
+            None
         }
+    };
+    let bmp_source: &str = match (icon_source, resolved_source.as_deref()) {
+        (Some(s), _) => s,
+        (None, Some(s)) => s,
+        (None, None) => target,
     };
     match crate::app_icon::extract_icon_png(bmp_source) {
         Some(png) => {

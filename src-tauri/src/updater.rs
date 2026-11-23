@@ -252,9 +252,18 @@ fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     crate::market::version_cmp(a, b)
 }
 
-/// 解析平台条目：取 `windows-x86_64`；便携版优先 portableUrl。
+/// 解析平台条目：按目标平台取键（mac 移植版绝不消费 windows 工件；官方清单
+/// 无对应平台条目时按「无更新」处理）；便携版优先 portableUrl。
 fn platform_entry(manifest: &UpdateManifest) -> Option<(PlatformEntry, bool)> {
-    let entry = manifest.platforms.get("windows-x86_64")?;
+    #[cfg(target_os = "windows")]
+    let key = "windows-x86_64";
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let key = "darwin-aarch64";
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    let key = "darwin-x86_64";
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let key = "";
+    let entry = manifest.platforms.get(key)?;
     let portable = crate::paths::is_portable();
     let available = if portable {
         !entry.portable_url.is_empty()
@@ -342,7 +351,7 @@ pub async fn check_for_update(
     let (entry, portable) = match platform_entry(&manifest) {
         Some(p) => p,
         None => {
-            log::warn!("更新源无当前平台条目（windows-x86_64）");
+            log::warn!("更新源无当前平台条目（mac 移植版不消费其它平台工件）");
             return Ok(UpdateInfo::none(&current));
         }
     };
@@ -487,7 +496,7 @@ pub async fn download_update(
         ));
     }
     let (entry, portable) = platform_entry(&manifest).ok_or_else(|| {
-        format!("更新源无当前平台条目（windows-x86_64，版本 v{version}）")
+        format!("更新源无当前平台条目（mac 移植版不消费其它平台工件，目标 v{version}）")
     })?;
     let (url, sha256) = if portable {
         (entry.portable_url.clone(), entry.portable_sha256.clone())

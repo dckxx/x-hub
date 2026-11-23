@@ -16,6 +16,7 @@ import { SETTINGS_INDEX, type SettingsIndexEntry } from './settingsIndex.generat
 import { GROUP_LABEL, SECTION_GROUP, SECTION_LABEL, type SectionId } from '../utils/settingsSections'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { markdownPlainText } from '../utils/markdown'
+import { IS_MAC } from '../utils/platform'
 
 const props = defineProps<{
   visible: boolean
@@ -47,7 +48,7 @@ const emit = defineEmits<{
 // （src/light/search.ts），拖进全量 store 就等于白做内存优化（约定 41）。
 // 检索直调命令，快捷键文案由宿主经 shortcutLabel 传入。
 /** 弹窗内展示当前生效的呼出快捷键 */
-const searchShortcutLabel = computed(() => props.shortcutLabel || 'Ctrl+K')
+const searchShortcutLabel = computed(() => props.shortcutLabel || (IS_MAC ? 'Cmd+K' : 'Ctrl+K'))
 
 const keyword = ref('')
 const results = ref<{

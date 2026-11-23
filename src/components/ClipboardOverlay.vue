@@ -9,6 +9,7 @@ import { isTauri, tauriApi, type ClipboardInfo, type ClipboardItem } from '../ap
 import { useShellThemeConfig } from '../composables/useShellThemeConfig'
 import { useScrollbarHover } from '../composables/useScrollbarHover'
 import { parseTimestamp } from '../utils/time'
+import { IS_MAC } from '../utils/platform'
 
 // 轻量壳窗口（clipboard.html）：不加载全量 store。
 // 主题自举：原 useTheme 对本窗口真正起作用的只有 config 的主题三轴/玻璃/沉浸/字号，
@@ -24,7 +25,7 @@ const keyword = ref('')
 const items = ref<ClipboardItem[]>([])
 const selected = ref(0)
 const loading = ref(false)
-const info = ref<ClipboardInfo>({ paused: false, max_items: 500, ttl_days: 7, total: 0, shortcut: 'Ctrl+`' })
+const info = ref<ClipboardInfo>({ paused: false, max_items: 500, ttl_days: 7, total: 0, shortcut: IS_MAC ? 'Cmd+Option+V' : 'Ctrl+`' })
 const listRef = ref<HTMLElement | null>(null)
 const toasts = ref<{ id: number; text: string }[]>([])
 

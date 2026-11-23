@@ -86,14 +86,102 @@ fn dpapi_unprotect(cipher: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+/// 非 Windows：AES-256-GCM，密文布局 `nonce(12) || ciphertext+tag`。
+/// ENTROPY 作 AAD：密文与本应用用途绑定（对应 DPAPI 的「应用熵」）。
 #[cfg(not(target_os = "windows"))]
-fn dpapi_protect(_plain: &[u8]) -> Result<Vec<u8>, String> {
-    Err("备注加密仅支持 Windows".into())
+fn dpapi_protect(plain: &[u8]) -> Result<Vec<u8>, String> {
+    use aes_gcm::aead::generic_array::GenericArray;
+    use aes_gcm::aead::{Aead, Payload};
+    let cipher = load_or_create_key()?;
+    let mut nonce = [0u8; 12];
+    getrandom::fill(&mut nonce).map_err(|e| format!("备注加密随机数生成失败: {e}"))?;
+    let body = cipher
+        .encrypt(
+            GenericArray::from_slice(&nonce),
+            Payload { msg: plain, aad: ENTROPY },
+        )
+        .map_err(|e| format!("备注加密失败: {e}"))?;
+    let mut blob = nonce.to_vec();
+    blob.extend_from_slice(&body);
+    Ok(blob)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn dpapi_unprotect(_cipher: &[u8]) -> Option<Vec<u8>> {
-    None
+fn dpapi_unprotect(cipher_blob: &[u8]) -> Option<Vec<u8>> {
+    use aes_gcm::aead::generic_array::GenericArray;
+    use aes_gcm::aead::{Aead, Payload};
+    // 布局不完整（跨机残值/损坏）直接按解不开处理
+    if cipher_blob.len() <= 12 {
+        return None;
+    }
+    let (nonce, body) = cipher_blob.split_at(12);
+    let cipher = load_or_create_key().ok()?;
+    cipher
+        .decrypt(
+            GenericArray::from_slice(nonce),
+            Payload { msg: body, aad: ENTROPY },
+        )
+        .ok()
+}
+
+/// 非 Windows 的对称密钥：`<config_dir>/x-hub-security/remark.v1.key`（0600）。
+/// 位置固定在数据目录之外（数据根可整体搬迁/备份，密钥留在本机本用户）。
+/// 首次使用生成，并发首写用 create_new 原子竞选，输者回读；长度异常的损坏
+/// 文件重建密钥（旧密文本就解不开，按无备注处理），不阻断功能。
+#[cfg(not(target_os = "windows"))]
+fn load_or_create_key() -> Result<aes_gcm::Aes256Gcm, String> {
+    use aes_gcm::aead::KeyInit;
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    const KEY_LEN: usize = 32;
+    let dir = dirs::config_dir()
+        .ok_or_else(|| "无法定位用户配置目录".to_string())?
+        .join("x-hub-security");
+    let key_path = dir.join("remark.v1.key");
+    let materialize = |bytes: &[u8]| -> Result<aes_gcm::Aes256Gcm, String> {
+        aes_gcm::Aes256Gcm::new_from_slice(bytes).map_err(|e| format!("备注密钥无效: {e}"))
+    };
+
+    if let Ok(existing) = std::fs::read(&key_path) {
+        if existing.len() == KEY_LEN {
+            return materialize(&existing);
+        }
+        log::warn!(
+            "备注密钥文件长度异常（{} 字节），将重建；旧密文按无备注处理",
+            existing.len()
+        );
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("备注密钥目录创建失败: {e}"))?;
+    let mut fresh = [0u8; KEY_LEN];
+    getrandom::fill(&mut fresh).map_err(|e| format!("备注密钥生成失败: {e}"))?;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&key_path)
+    {
+        Ok(mut f) => {
+            f.write_all(&fresh).map_err(|e| format!("备注密钥写入失败: {e}"))?;
+            materialize(&fresh)
+        }
+        // 并发竞态输者：回读赢者写下的密钥；若仍是坏文件（极端竞态）以 truncate 覆盖
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = std::fs::read(&key_path)
+                .map_err(|e| format!("备注密钥读取失败: {e}"))?;
+            if existing.len() == KEY_LEN {
+                return materialize(&existing);
+            }
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&key_path)
+                .map_err(|e| format!("备注密钥重建失败: {e}"))?;
+            f.write_all(&fresh).map_err(|e| format!("备注密钥写入失败: {e}"))?;
+            materialize(&fresh)
+        }
+        Err(e) => Err(format!("备注密钥创建失败: {e}")),
+    }
 }
 
 #[cfg(test)]

@@ -15,6 +15,8 @@ import type { ExtensionEntry, Note, Resource, Todo } from '../api/tauri'
 import { isTauri, tauriApi } from '../api/tauri'
 import GlobalSearch from './GlobalSearch.vue'
 import { applyTheme } from '../composables/themeCore'
+import { normalizeShortcutDisplay } from '../composables/useShortcutRecorder'
+import { IS_MAC } from '../utils/platform'
 import { useShellThemeConfig } from '../composables/useShellThemeConfig'
 import { useScrollbarHover } from '../composables/useScrollbarHover'
 
@@ -32,7 +34,7 @@ const active = ref(false)
  *  否则窗口 present 在 get_ui_config 往返前、卡片按默认亮色令牌闪一下再变色） */
 const themeReady = ref(false)
 /** 卡片右下角的呼出快捷键文案（跟随设置 → 快捷键的自定义配置） */
-const shortcutLabel = ref('Ctrl+K')
+const shortcutLabel = ref(IS_MAC ? 'Cmd+K' : 'Ctrl+K')
 /** 已安装扩展列表（扩展检索的数据源）：每次唤起重拉一次，装卸扩展后搜得到 */
 const extensions = ref<ExtensionEntry[]>([])
 
@@ -43,7 +45,7 @@ let unlistenHidden: (() => void) | null = null
 async function refreshShortcutLabel() {
   try {
     const cfg = await tauriApi.getUiConfig()
-    shortcutLabel.value = cfg.search_shortcut || 'Ctrl+K'
+    shortcutLabel.value = normalizeShortcutDisplay(cfg.search_shortcut || (IS_MAC ? 'CommandOrControl+K' : 'Ctrl+K'))
   } catch {
     // 忽略：命令未就绪时保留默认文案，不影响检索
   }

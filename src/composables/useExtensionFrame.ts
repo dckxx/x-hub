@@ -308,7 +308,6 @@ export function useExtensionFrame(
         const url = variant
           ? `${entryUrl}?xhub-variant=${encodeURIComponent(variant)}`
           : entryUrl
-        frameRef.value.src = url
         registerExtensionFrame(frameRef.value, getExtId(), expectedOrigin)
         // 看门狗：入口 HTML 已返回但 iframe 在超时内没有任何桥消息（桥脚本未运行）
         // → 判定白屏，落日志并给出友好提示，而不是永远停在空白页
@@ -320,6 +319,16 @@ export function useExtensionFrame(
           onError?.(error.value)
           void tauriApi.logClientError({ message: '扩展 iframe 白屏', detail })
         }, EXT_LOAD_TIMEOUT_MS)
+        // ⚠️ WebKit 竞态修复（macOS）：load() 开头先设过 src='about:blank' 销毁旧页；
+        // 若第二次（真实入口）与第一次落在同一导航周期内提交，WKWebView 会**丢弃**
+        // 第二次导航，iframe 停在 about:blank → 8 秒后看门狗判白屏（实测 0ms 间隔必丢、
+        // ≥10ms 稳定；WebView2/Chromium 无此行为）。readExtensionEntry 是本地 IO、
+        // 常在竞态窗口内返回，故把真实入口的设置错开到下一个宏任务（30ms）。
+        window.setTimeout(() => {
+          if (generation === loadGeneration && !disposed && frameRef.value) {
+            frameRef.value.src = url
+          }
+        }, 30)
       }
     } catch (e) {
       if (disposed || generation !== loadGeneration) return

@@ -319,6 +319,8 @@ mod tests {
     /// （0x8007139F ERROR_INVALID_STATE），且 tauri-runtime-wry 吞掉错误、
     /// build() 照常返回 Ok——预创建日志全绿、窗口全是无 WebView2 的空壳。
     /// 当日事故：主窗单侧摘 --enable-low-end-device-mode 触发。
+    /// macOS 主窗配置不包含该 WebView2 专属字段，守卫只在 Windows 生效。
+    #[cfg(target_os = "windows")]
     #[test]
     fn additional_browser_args_match_tauri_conf() {
         let conf: serde_json::Value =

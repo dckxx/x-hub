@@ -144,6 +144,26 @@ async fn handle(
     req: Request<Incoming>,
 ) -> Result<Response<BoxBody<Bytes, Infallible>>, Infallible> {
     use tauri::Manager;
+    // 命名空间：`/svc/…` = service 后端反向代理；其余 `/<extId>/<rel>` = 扩展内容。
+    // 扩展内容仅 macOS 实际走这条通道——WKWebView 不派发「自定义协议主窗里另一个
+    // 自定义协议 iframe」的子帧请求（见 ext_protocol::origin 注释），Windows 继续用
+    // xhub-ext: 协议。无需代理令牌：内容本身是公开 Web 资产，安全靠 serve 侧校验
+    // （Host 必须匹配扩展身份 + canonicalize 防越界 + 敏感文件拦截，顺带挡住 DNS
+    // 重绑定——外部域名的 Host 过不了身份比对）。
+    if !req.uri().path().starts_with("/svc/") {
+        let host = req
+            .headers()
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let referer = req
+            .headers()
+            .get("referer")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let raw_path = req.uri().path().trim_start_matches('/');
+        return Ok(ext_content_response(app, host, raw_path, referer.as_deref()));
+    }
     let Some((ext_id, rest)) = app.state::<ProxyState>().authorize(&req) else {
         return Ok(error_response(StatusCode::FORBIDDEN, "访问扩展服务需要有效凭据与匹配的来源"));
     };
@@ -151,6 +171,53 @@ async fn handle(
     let mut response = forward(app, req, ext_id, rest).await?;
     add_cors(&mut response, &origin);
     Ok(response)
+}
+
+/// 扩展内容响应：成功带与自定义协议入口一致的安全响应头
+/// （Content-Security-Policy 按扩展动态生成），失败按状态码回空 body。
+fn ext_content_response(
+    app: &tauri::AppHandle,
+    host: &str,
+    rest: &str,
+    referer: Option<&str>,
+) -> Response<BoxBody<Bytes, Infallible>> {
+    // 每个内容请求都记一笔：诊断「iframe 是否真的把请求发到了服务器」的关键证据
+    // （白屏排查时：有请求日志 = webview→服务器链路通，问题在渲染/桥；无请求日志
+    //  = webview 根本没发请求，问题在 ATS/DNS/webview 配置）。
+    let outcome = crate::ext_protocol::serve_http(app, host, rest, referer);
+    match &outcome {
+        Ok((mime, _, _)) => log::info!("[扩展内容] GET /{rest} host={host} -> 200 {mime}"),
+        Err(status) => log::warn!("[扩展内容] GET /{rest} host={host} -> {status}"),
+    }
+    match outcome {
+        Ok((mime, bytes, csp)) => {
+            let mut resp = Response::new(BoxBody::new(Full::new(Bytes::from(bytes))));
+            *resp.status_mut() = StatusCode::OK;
+            let h = resp.headers_mut();
+            let _ = h.insert("Content-Type", mime.parse().unwrap());
+            let _ = h.insert("Cache-Control", "no-store".parse().unwrap());
+            let _ = h.insert("Content-Security-Policy", csp.parse().unwrap());
+            let _ = h.insert("X-Content-Type-Options", "nosniff".parse().unwrap());
+            let _ = h.insert("Referrer-Policy", "same-origin".parse().unwrap());
+            let _ = h.insert("Origin-Agent-Cluster", "?1".parse().unwrap());
+            let _ = h.insert(
+                "Permissions-Policy",
+                "camera=(), microphone=(), geolocation=(), document-domain=()"
+                    .parse()
+                    .unwrap(),
+            );
+            resp
+        }
+        Err(status) => {
+            let mut resp =
+                Response::new(BoxBody::new(Full::new(Bytes::new())));
+            *resp.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::NOT_FOUND);
+            let _ = resp
+                .headers_mut()
+                .insert("Cache-Control", "no-store".parse().unwrap());
+            resp
+        }
+    }
 }
 
 async fn forward(app: &tauri::AppHandle, req: Request<Incoming>, ext_id: String, rest: String)

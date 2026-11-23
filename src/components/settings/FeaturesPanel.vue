@@ -13,6 +13,7 @@ import AppSelect from '../AppSelect.vue';
 import SudaSubcategoryManager from './SudaSubcategoryManager.vue';
 import { useStore } from '../../stores/workbench';
 import { reportClientError } from '../../utils/error-report';
+import { IS_MAC } from '../../utils/platform';
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
@@ -299,7 +300,8 @@ onMounted(() => {
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">网页默认打开方式</span>
-              <span class="setting-desc">点击网页条目时的打开位置：内嵌面板在主窗口右侧视图打开（轻量、单页），独立浏览器窗口支持多标签与同地址复用，系统默认浏览器交由 Windows 按系统设置打开；右键菜单可临时换其它方式</span>
+              <span v-if="IS_MAC" class="setting-desc">点击网页条目时的打开位置：内嵌面板在主窗口右侧视图打开（轻量、单页），独立浏览器窗口支持多标签与同地址复用，系统默认浏览器交由系统按默认浏览器打开；右键菜单可临时换其它方式</span>
+              <span v-else class="setting-desc">点击网页条目时的打开位置：内嵌面板在主窗口右侧视图打开（轻量、单页），独立浏览器窗口支持多标签与同地址复用，系统默认浏览器交由 Windows 按系统设置打开；右键菜单可临时换其它方式</span>
             </div>
             <AppSelect
               :model-value="sudaWebOpenMode"
@@ -408,11 +410,13 @@ onMounted(() => {
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">粘贴方式</span>
-              <span class="setting-desc">自动模式下：终端/命令行（不支持 Ctrl+V）用 Ctrl+Shift+V，其他应用用 Ctrl+V</span>
+              <span v-if="IS_MAC" class="setting-desc">macOS 端点击记录项即把内容写入系统剪贴板并收起浮层，随后在目标窗口按 Cmd+V 粘贴；此选项仅 Windows 生效（自动模拟按键注入）</span>
+              <span v-else class="setting-desc">自动模式下：终端/命令行（不支持 Ctrl+V）用 Ctrl+Shift+V，其他应用用 Ctrl+V</span>
             </div>
             <AppSelect
               :model-value="pasteMethod"
               :options="PASTE_METHOD_OPTIONS"
+              :disabled="IS_MAC"
               aria-label="粘贴方式"
               @update:model-value="onPasteMethodChange"
             />
@@ -549,7 +553,8 @@ onMounted(() => {
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">隐藏窗口时降低内存占用</span>
-              <span class="setting-desc">对话窗、剪贴板、通知、速达浏览器等隐藏窗口常驻后台，开启后它们隐藏时把渲染进程内存尽量交还给系统、显示前自动恢复（脚本与消息照常运行）；关闭后窗口隐藏也保持全量内存</span>
+              <span v-if="IS_MAC" class="setting-desc">仅 Windows 生效：WebView2 渲染进程可主动设为低内存级别；macOS 的 WKWebView 由系统自动管理内存，无需此设置</span>
+              <span v-else class="setting-desc">对话窗、剪贴板、通知、速达浏览器等隐藏窗口常驻后台，开启后它们隐藏时把渲染进程内存尽量交还给系统、显示前自动恢复（脚本与消息照常运行）；关闭后窗口隐藏也保持全量内存</span>
             </div>
             <button
               class="toggle"
@@ -557,6 +562,7 @@ onMounted(() => {
               type="button"
               :aria-checked="store.state.config.webview_mem_low_on_hide"
               :class="{ on: store.state.config.webview_mem_low_on_hide }"
+              :disabled="IS_MAC"
               @click="onToggleWebviewMem"
             >
               <span class="toggle-knob"></span>

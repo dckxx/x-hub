@@ -6,13 +6,24 @@
 import { computed, inject, onMounted, ref } from 'vue';
 import { Keyboard } from 'lucide-vue-next';
 import { isTauri, tauriApi } from '../../api/tauri';
-import type { AutostartStatus } from '../../api/tauri';
 import { useStore } from '../../stores/workbench';
 import { normalizeShortcutDisplay, useShortcutRecorder } from '../../composables/useShortcutRecorder';
 import { FLOATING_BALL_BUTTONS, FLOATING_BALL_MAX_BUTTONS } from '../../composables/floatingBallButtons';
+import { IS_MAC } from '../../utils/platform';
 
 const showToast = inject<(msg: string) => void>('showToast', () => {})
 const store = useStore()
+
+// 平台习惯的快捷键写法（占位/兜底展示用；存储值始终是 CommandOrControl+… 规范串）
+const SC = {
+  main: IS_MAC ? 'Cmd+Shift+Space' : 'Ctrl+Shift+Space',
+  clip: IS_MAC ? 'Cmd+Option+V' : 'Ctrl+`',
+  search: IS_MAC ? 'Cmd+K' : 'Ctrl+K',
+  chat: IS_MAC ? 'Cmd+Shift+K' : 'Ctrl+Shift+K',
+  notes: IS_MAC ? 'Cmd+Shift+N' : 'Ctrl+Shift+N',
+  shot: IS_MAC ? 'Cmd+Shift+A' : 'Ctrl+Shift+A',
+  recorder: IS_MAC ? 'Cmd+Shift+G' : 'Ctrl+Shift+G',
+} as const
 
 // ---- 桌面悬浮球（ADR 0004）：启用 / 贴边自动隐藏 / 与主窗同显 / 静止转动 / 环形按钮增删排序 ----
 const ballButtons = computed(() => store.state.config.floating_ball_buttons ?? [])
@@ -62,7 +73,7 @@ const {
   onBlur: onShortcutBlur,
   onKeydown: onShortcutKeydown,
 } = useShortcutRecorder({
-  initial: normalizeShortcutDisplay(store.state.config.global_shortcut),
+  initial: normalizeShortcutDisplay(store.state.config.global_shortcut || SC.main),
   label: '全局快捷键',
   save: (v) => store.setGlobalShortcut(v),
   showToast,
@@ -79,7 +90,7 @@ const {
   onBlur: onClipShortcutBlur,
   onKeydown: onClipShortcutKeydown,
 } = useShortcutRecorder({
-  initial: normalizeShortcutDisplay(store.state.config.clipboard_shortcut ?? 'Ctrl+`'),
+  initial: normalizeShortcutDisplay(store.state.config.clipboard_shortcut || SC.clip),
   label: '剪贴板快捷键',
   save: (v) => store.setClipboardShortcut(v),
   showToast,
@@ -95,7 +106,7 @@ const {
   onBlur: onSearchShortcutBlur,
   onKeydown: onSearchShortcutKeydown,
 } = useShortcutRecorder({
-  initial: normalizeShortcutDisplay(store.state.config.search_shortcut ?? 'Ctrl+K'),
+  initial: normalizeShortcutDisplay(store.state.config.search_shortcut || SC.search),
   label: '搜索快捷键',
   save: (v) => store.setSearchShortcut(v),
   showToast,
@@ -111,7 +122,7 @@ const {
   onBlur: onChatShortcutBlur,
   onKeydown: onChatShortcutKeydown,
 } = useShortcutRecorder({
-  initial: normalizeShortcutDisplay(store.state.config.chat_shortcut ?? 'Ctrl+Shift+K'),
+  initial: normalizeShortcutDisplay(store.state.config.chat_shortcut || SC.chat),
   label: 'AI 对话快捷键',
   save: (v) => store.setChatShortcut(v),
   showToast,
@@ -127,7 +138,7 @@ const {
   onBlur: onNotesShortcutBlur,
   onKeydown: onNotesShortcutKeydown,
 } = useShortcutRecorder({
-  initial: normalizeShortcutDisplay(store.state.config.notes_shortcut ?? 'Ctrl+Shift+N'),
+  initial: normalizeShortcutDisplay(store.state.config.notes_shortcut || SC.notes),
   label: '速记快捷键',
   save: (v) => store.setNotesShortcut(v),
   showToast,
@@ -143,7 +154,7 @@ const {
   onBlur: onShotShortcutBlur,
   onKeydown: onShotShortcutKeydown,
 } = useShortcutRecorder({
-  initial: normalizeShortcutDisplay(store.state.config.shot_shortcut ?? 'Ctrl+Shift+A'),
+  initial: normalizeShortcutDisplay(store.state.config.shot_shortcut || SC.shot),
   label: '截图快捷键',
   save: (v) => store.setShotShortcut(v),
   showToast,
@@ -159,7 +170,7 @@ const {
   onBlur: onRecorderShortcutBlur,
   onKeydown: onRecorderShortcutKeydown,
 } = useShortcutRecorder({
-  initial: normalizeShortcutDisplay(store.state.config.recorder_shortcut ?? 'Ctrl+Shift+G'),
+  initial: normalizeShortcutDisplay(store.state.config.recorder_shortcut || SC.recorder),
   label: 'GIF 录制快捷键',
   save: (v) => store.setRecorderShortcut(v),
   showToast,
@@ -235,60 +246,9 @@ function commitNoticeDuration() {
     })
 }
 
-// ---- 开机自启动 ----
-const autostartBusy = ref(false)
-// 系统真实状态探测：区分「用户开了开关」与「登录时是否真的会拉起」
-const autostartStatus = ref<AutostartStatus | null>(null)
-// 意图为开、但实际不会生效 → 判定失效，提示修复
-const autostartFailed = computed(
-  () => !!autostartStatus.value && autostartStatus.value.configured && !autostartStatus.value.enabled,
-)
-const autostartFailReason = computed(() => {
-  const s = autostartStatus.value
-  if (!s) return ''
-  if (s.os_disabled) return '已被系统或安全软件在「启动项」中禁用'
-  if (!s.registered) return '注册信息丢失或程序路径已变更'
-  return '当前不会开机自启'
-})
-
-async function refreshAutostartStatus() {
-  if (!isTauri()) return
-  try {
-    autostartStatus.value = await tauriApi.getRunAtStartup()
-  } catch {
-    // 探测失败不影响开关本身，保持上次值
-  }
-}
-
-// 一键修复：重新按当前 exe 写入 Run 键并清掉系统的「禁用启动项」标记
-async function repairAutostart() {
-  if (autostartBusy.value) return
-  autostartBusy.value = true
-  try {
-    await store.setRunAtStartup(true)
-    await refreshAutostartStatus()
-    showToast(autostartFailed.value ? '修复未完全生效，请检查安全软件启动项设置' : '开机自启动已修复')
-  } catch (e) {
-    showToast(`修复失败：${String(e)}`)
-  } finally {
-    autostartBusy.value = false
-  }
-}
-
-async function onToggleAutostart() {
-  if (autostartBusy.value) return
-  autostartBusy.value = true
-  const next = !store.state.config.run_at_startup
-  try {
-    await store.setRunAtStartup(next)
-    await refreshAutostartStatus()
-    showToast(next ? '已开启开机自启动' : '已关闭开机自启动')
-  } catch (e) {
-    showToast(`设置失败：${String(e)}`)
-  } finally {
-    autostartBusy.value = false
-  }
-}
+// ---- 开机自启动已按用户要求移除（2026-10-31，macOS 移植版） ----
+// 原「注册表 Run 键 / LaunchAgent」方案与设置开关整体下线；后端启动时统一清理
+// 历史残留（见 lib.rs），防止出现「无 UI 可关」的僵尸自启动。
 
 onMounted(async () => {
 
@@ -296,23 +256,21 @@ onMounted(async () => {
 
   shortcut.value = normalizeShortcutDisplay(await tauriApi.getGlobalShortcut())
 
-  clipShortcut.value = normalizeShortcutDisplay(store.state.config.clipboard_shortcut ?? 'Ctrl+`')
+  clipShortcut.value = normalizeShortcutDisplay(store.state.config.clipboard_shortcut || SC.clip)
 
   clipSavedShortcut.value = clipShortcut.value
 
-  searchShortcut.value = normalizeShortcutDisplay(store.state.config.search_shortcut ?? 'Ctrl+K')
+  searchShortcut.value = normalizeShortcutDisplay(store.state.config.search_shortcut || SC.search)
 
-  chatShortcut.value = normalizeShortcutDisplay(store.state.config.chat_shortcut ?? 'Ctrl+Shift+K')
+  chatShortcut.value = normalizeShortcutDisplay(store.state.config.chat_shortcut || SC.chat)
 
-  notesShortcut.value = normalizeShortcutDisplay(store.state.config.notes_shortcut ?? 'Ctrl+Shift+N')
+  notesShortcut.value = normalizeShortcutDisplay(store.state.config.notes_shortcut || SC.notes)
 
-  shotShortcut.value = normalizeShortcutDisplay(store.state.config.shot_shortcut ?? 'Ctrl+Shift+A')
+  shotShortcut.value = normalizeShortcutDisplay(store.state.config.shot_shortcut || SC.shot)
 
-  recorderShortcut.value = normalizeShortcutDisplay(store.state.config.recorder_shortcut ?? 'Ctrl+Shift+G')
+  recorderShortcut.value = normalizeShortcutDisplay(store.state.config.recorder_shortcut || SC.recorder)
 
   noticeSeconds.value = Math.round((store.state.config.notice_duration_ms ?? 5000) / 1000)
-
-  void refreshAutostartStatus()
 
 })
 </script>
@@ -320,30 +278,6 @@ onMounted(async () => {
 <template>
         <section id="sv-sec-general" class="sv-sec" aria-label="常规">
           <h3 class="sv-sec-title">常规</h3>
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-name">开机自动启动</span>
-              <span class="setting-desc">登录 Windows 后自动在后台运行并驻留托盘（不弹出主窗口，点托盘图标可随时唤出）</span>
-              <span v-if="autostartFailed" class="autostart-warn">
-                ⚠ 开机自启动已失效：{{ autostartFailReason }}
-                <button type="button" class="autostart-repair" :disabled="autostartBusy" @click="repairAutostart">
-                  重新启用
-                </button>
-              </span>
-            </div>
-            <button
-              class="toggle"
-              role="switch"
-              type="button"
-              :aria-checked="store.state.config.run_at_startup"
-              :class="{ on: store.state.config.run_at_startup }"
-              :disabled="autostartBusy"
-              @click="onToggleAutostart"
-            >
-              <span class="toggle-knob"></span>
-            </button>
-          </div>
-
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">通知驻留时长</span>
@@ -487,7 +421,7 @@ onMounted(async () => {
                   type="text"
                   spellcheck="false"
                   :readonly="shortcutListening"
-                  placeholder="Ctrl+Shift+Space"
+                  :placeholder="SC.main"
                   @keydown="onShortcutKeydown"
                   @keydown.enter="commitShortcut"
                   @blur="onShortcutBlur"
@@ -527,7 +461,7 @@ onMounted(async () => {
                   type="text"
                   spellcheck="false"
                   :readonly="clipListening"
-                  placeholder="Ctrl+`"
+                  :placeholder="SC.clip"
                   @keydown="onClipShortcutKeydown"
                   @keydown.enter="commitClipShortcut"
                   @blur="onClipShortcutBlur"
@@ -567,7 +501,7 @@ onMounted(async () => {
                   type="text"
                   spellcheck="false"
                   :readonly="searchListening"
-                  placeholder="Ctrl+K"
+                  :placeholder="SC.search"
                   @keydown="onSearchShortcutKeydown"
                   @keydown.enter="commitSearchShortcut"
                   @blur="onSearchShortcutBlur"
@@ -607,7 +541,7 @@ onMounted(async () => {
                   type="text"
                   spellcheck="false"
                   :readonly="chatListening"
-                  placeholder="Ctrl+Shift+K"
+                  :placeholder="SC.chat"
                   @keydown="onChatShortcutKeydown"
                   @keydown.enter="commitChatShortcut"
                   @blur="onChatShortcutBlur"
@@ -647,7 +581,7 @@ onMounted(async () => {
                   type="text"
                   spellcheck="false"
                   :readonly="notesListening"
-                  placeholder="Ctrl+Shift+N"
+                  :placeholder="SC.notes"
                   @keydown="onNotesShortcutKeydown"
                   @keydown.enter="commitNotesShortcut"
                   @blur="onNotesShortcutBlur"
@@ -687,7 +621,7 @@ onMounted(async () => {
                   type="text"
                   spellcheck="false"
                   :readonly="shotListening"
-                  placeholder="Ctrl+Shift+A"
+                  :placeholder="SC.shot"
                   @keydown="onShotShortcutKeydown"
                   @keydown.enter="commitShotShortcut"
                   @blur="onShotShortcutBlur"
@@ -727,7 +661,7 @@ onMounted(async () => {
                   type="text"
                   spellcheck="false"
                   :readonly="recorderListening"
-                  placeholder="Ctrl+Shift+G"
+                  :placeholder="SC.recorder"
                   @keydown="onRecorderShortcutKeydown"
                   @keydown.enter="commitRecorderShortcut"
                   @blur="onRecorderShortcutBlur"

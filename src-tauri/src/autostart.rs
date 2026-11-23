@@ -135,7 +135,17 @@ pub fn probe() -> (bool, bool) {
     (run_path_matches_current(), is_os_disabled())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+pub fn probe() -> (bool, bool) {
+    let plist = mac::agent_plist();
+    if !plist.exists() {
+        return (false, false);
+    }
+    // macOS 的 LaunchAgent 由 launchd 直接管理，不存在「被第三方禁用」的等价语义。
+    (mac::plist_points_to_current(&plist), false)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn probe() -> (bool, bool) {
     (false, false)
 }
@@ -158,7 +168,12 @@ pub fn ensure_registered() -> Result<bool, String> {
     Ok(false)
 }
 
-#[cfg(not(target_os = "windows"))]
+// 开机自启动功能已按用户要求移除（2026-10-31，macOS 移植版）：
+// - Windows 的 ensure_registered 自愈保留（其余平台构建用）；
+// - macOS 的自愈已删（启动时统一走 apply(false) 清残留，见 lib.rs）；
+// - get/set_run_at_startup 命令保留（无 UI 调用，留作后续恢复入口）。
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn ensure_registered() -> Result<bool, String> {
     Ok(false)
 }
@@ -236,11 +251,114 @@ pub fn apply(enabled: bool) -> Result<(), String> {
         }
         Ok(())
     }
-    // 非 Windows 平台：自启动仅支持当前平台时返回错误提示
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        let plist = mac::agent_plist();
+        if enabled {
+            mac::write_agent(&plist)?;
+            log::info!("[自启动] 已写入 LaunchAgent: {}", plist.display());
+        } else if plist.exists() {
+            mac::remove_agent(&plist);
+            log::info!("[自启动] 已移除 LaunchAgent: {}", plist.display());
+        }
+        Ok(())
+    }
+    // 其余平台：自启动仅支持当前平台时返回错误提示
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = enabled;
         Err("当前平台不支持开机自启动".into())
+    }
+}
+
+// ---------- macOS LaunchAgent 实现 ----------
+
+/// macOS 开机自启动：在 `~/Library/LaunchAgents/com.xhub.app.plist` 写一个 RunAt
+/// Load 的 LaunchAgent，登录后由 launchd 拉起本应用（带 `--autostart-hidden` 驻留
+/// 托盘，不打扰用户）。关闭自启动即删除该 plist。
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::path::{Path, PathBuf};
+
+    /// LaunchAgent 的 Label（须与 plist 文件基名一致）。
+    pub const LABEL: &str = "com.xhub.app";
+    /// plist 文件名
+    const AGENT_FILE: &str = "com.xhub.app.plist";
+
+    /// `~/Library/LaunchAgents`（用户级自启动标准位置）
+    fn launch_agents_dir() -> PathBuf {
+        dirs::home_dir()
+            .map(|h| h.join("Library").join("LaunchAgents"))
+            .unwrap_or_default()
+    }
+
+    /// 自启动 plist 完整路径
+    pub fn agent_plist() -> PathBuf {
+        launch_agents_dir().join(AGENT_FILE)
+    }
+
+    /// 当前可执行文件（.app 包内 `Contents/MacOS/<bin>`）的绝对路径
+    fn current_binary() -> String {
+        std::env::current_exe()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
+    /// 生成 LaunchAgent plist 内容。ProgramArguments 直接指向二进制 + 隐藏参数，
+    /// 登录后由 launchd 按用户会话拉起，无需再套 `open`。
+    fn plist_xml(binary: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{binary}</string>
+        <string>--autostart-hidden</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+"#,
+            label = LABEL,
+            binary = binary
+        )
+    }
+
+    /// 判定 plist 里登记的二进制是否为当前 exe（程序被移动/换目录后据此自愈重写）。
+    /// 与 Windows `run_path_matches_current` 同义，直接查关键片段避免 XML 解析脆弱。
+    pub fn plist_points_to_current(plist: &Path) -> bool {
+        let Ok(content) = std::fs::read_to_string(plist) else {
+            return false;
+        };
+        let cur = current_binary();
+        !cur.is_empty() && content.contains(&cur)
+    }
+
+    /// 原子写 LaunchAgent（临时文件 + rename）。
+    pub fn write_agent(plist: &Path) -> Result<(), String> {
+        let binary = current_binary();
+        if binary.is_empty() {
+            return Err("无法定位当前可执行文件路径".into());
+        }
+        if let Some(parent) = plist.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let tmp = plist.with_extension("plist.tmp");
+        std::fs::write(&tmp, plist_xml(&binary)).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, plist).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            e.to_string()
+        })
+    }
+
+    /// 删除 LaunchAgent plist
+    pub fn remove_agent(plist: &Path) {
+        let _ = std::fs::remove_file(plist);
     }
 }
 

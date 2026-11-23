@@ -92,13 +92,35 @@ pub fn base_url() -> &'static str {
     }
 }
 
+/// macOS 扩展内容 HTTP 服务端口（由 `lib.rs` 在 proxy 服务器启动后回填；0 = 未启动）。
+///
+/// **为什么 macOS 需要它**：WKWebView 有一个实测限制——主窗是自定义协议
+/// （`tauri://localhost`）时，页面里指向**另一个**自定义协议（`xhub-ext://…`）的
+/// iframe 子帧请求**不会派发给 WKURLSchemeHandler**，iframe 永远空白（8 秒后前端
+/// 看门狗判白屏）。Windows 无此问题：WebView2 把自定义协议映射成 `http://…localhost`，
+/// 主窗与扩展 iframe 都是普通 http。因此 macOS 上扩展内容改由本地 HTTP 服务器承载
+/// （复用 proxy.rs 的 127.0.0.1 动态端口服务器，路由 `/xext/`），入口 URL 形如
+/// `http://e-<hash>.localhost:<port>/<扩展 id>/<相对路径>`——`*.localhost` 在 macOS
+/// 由 mDNSResponder 解析到 127.0.0.1，每扩展仍持有独立 origin，隔离模型不变。
+static EXT_HTTP_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+/// 登记 macOS 扩展内容 HTTP 服务端口（幂等，首次生效）
+pub fn set_http_port(port: u16) {
+    let _ = EXT_HTTP_PORT.set(port);
+}
+
 /// 每个扩展使用独立且稳定的主机名，禁止通过 document.domain 降级为共同来源。
 pub fn origin(id: &str) -> String {
     let host = content_host(id);
     if cfg!(target_os = "windows") || cfg!(target_os = "android") {
         format!("http://xhub-ext.{host}")
     } else {
-        format!("xhub-ext://{host}")
+        match EXT_HTTP_PORT.get() {
+            Some(&port) if port > 0 => format!("http://{host}:{port}"),
+            // HTTP 服务器未启动（极端失败）时退回自定义协议形态——iframe 在 macOS 上
+            // 不可用，但主窗 <img>（侧栏 logo）等场景仍可尽力工作
+            _ => format!("xhub-ext://{host}"),
+        }
     }
 }
 
@@ -196,6 +218,30 @@ pub fn handle(app: &tauri::AppHandle, request: Request<Vec<u8>>) -> Response<Vec
             .body(Vec::new())
             .unwrap(),
     }
+}
+
+/// macOS 扩展内容的 HTTP 路由入口（承载于 `proxy.rs` 本地服务器，占用根命名空间）。
+///
+/// 与 [`handle`]（自定义协议入口）共用同一套路径解析与安全校验；差别仅在传输层。
+/// - `host`：请求的 Host 头（`e-<hash>.localhost[:port]`），**带端口时剥除后**必须与
+///   路径里的扩展身份一致（`request_path_for_host`），防止 A 扩展页借他人主机名取内容，
+///   也顺带挡住 DNS 重绑定（外部域名的 Host 过不了身份比对）；
+/// - `raw_path`：`<扩展 id>/<相对路径>`（percent 编码原样保留，与 entry_url /
+///   根相对资源引用同形态）；
+/// - 返回 `Ok((MIME, body, CSP))`；CSP 与自定义协议入口逐字同源（含按扩展的 network
+///   权限与代理端口动态生成），失败返回 HTTP 状态码。
+pub fn serve_http(
+    app: &tauri::AppHandle,
+    host: &str,
+    raw_path: &str,
+    referer: Option<&str>,
+) -> Result<(String, Vec<u8>, String), u16> {
+    // Host 头在 http 形态下带端口（e-<hash>.localhost:51676），身份比对前先剥掉
+    let host_no_port = host.split(':').next().unwrap_or("");
+    let path = request_path_for_host(host_no_port, raw_path, referer)?;
+    let id = resolved_id(host_no_port, raw_path, referer);
+    let (mime, bytes) = serve(app, &path, None)?;
+    Ok((mime, bytes, content_csp(app, &id)))
 }
 
 fn resolved_id(host: &str, path: &str, referer: Option<&str>) -> String {

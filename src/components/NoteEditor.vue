@@ -26,6 +26,11 @@ import { copyPlainText } from '../utils/clipboardPlainText'
 import { restoreNoteImageSyntax } from '../utils/noteImageSyntax'
 import { expandOnEnter, matchWysiwygLine, type LineShortcut } from '../utils/markdownEnter'
 import { loosenHtmlBreaks, renderNoteMarkdown, restoreCrepeMarkdown } from '../utils/markdownHtml'
+import {
+  markdownExtraStringify,
+  noteMarkdownExtraPlugins,
+  renderMermaidPreview,
+} from '../utils/noteMarkdownExtras'
 import { deriveNoteTitle } from '../utils/markdown'
 import { NOTE_EDITOR_MODES, normalizeNoteEditorMode, type NoteEditorMode } from '../utils/noteEditorMode'
 import { getQuickEmojis } from '../utils/emoji'
@@ -285,12 +290,19 @@ function buildCrepe(root: HTMLElement, content: string): Crepe {
           languages: CODEMIRROR_LANGUAGES,
           searchPlaceholder: '搜索语言',
           noResultText: '没有匹配的语言',
+          previewLabel: '预览',
+          renderPreview: renderMermaidPreview,
         },
       },
   })
   // Crepe 的任务标签在 checked 有值时只画勾选框，有序列表的「1.」被丢掉。
   // 解析结果里 label / listType 还在，这里把序号拼回勾选框前面。实时预览和分屏预览都走 buildCrepe。
-  crepe.editor.config((ctx) => {
+  crepe.editor
+    .config((ctx) => {
+      markdownExtraStringify(ctx)
+    })
+    .use(noteMarkdownExtraPlugins)
+    .config((ctx) => {
     ctx.update(listItemBlockConfig.key, (prev) => ({
       ...prev,
       renderLabel: (props) => {
@@ -4069,6 +4081,121 @@ html[data-wallpaper-clear='1'] .crepe-root .milkdown {
 .crepe-root .milkdown .katex-display {
   max-width: 100%;
   overflow-x: auto;
+}
+
+.crepe-root .milkdown del {
+  text-decoration: line-through;
+}
+
+.crepe-root .milkdown mark {
+  background: color-mix(in srgb, var(--c-yellow) 55%, transparent);
+  color: inherit;
+  padding: 0 0.15em;
+  border-radius: 3px;
+}
+
+.crepe-root .milkdown details.xhub-details {
+  margin: 0.4em 0 0.8em;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  padding: 0.35em 0.75em 0.5em;
+  background: var(--bg-card-soft);
+}
+
+.crepe-root .milkdown details.xhub-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.crepe-root .milkdown details.xhub-details .xhub-details-body {
+  margin-top: 0.35em;
+}
+
+.crepe-root .milkdown sup[data-type='footnote_reference'],
+.crepe-root .milkdown sup.xhub-fn-ref {
+  color: var(--brand-500);
+  font-size: 0.75em;
+  margin: 0 0.1em;
+  cursor: pointer;
+}
+
+.crepe-root .milkdown .xhub-fn {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0.7em 0 0.3em;
+  color: var(--text-1);
+  font-size: 0.9375em;
+  line-height: 1.6;
+}
+
+.crepe-root .milkdown .xhub-fn-label {
+  flex: none;
+  font-weight: 600;
+}
+
+.crepe-root .milkdown .xhub-fn-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.crepe-root .milkdown .xhub-fn-body p {
+  margin: 0;
+}
+
+.crepe-root .milkdown .xhub-fn-back {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 0.15em;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--brand-500);
+  cursor: pointer;
+}
+
+.crepe-root .milkdown dl[data-type='footnote_definition'] {
+  margin: 0.8em 0 0.4em;
+  padding-top: 0.45em;
+  border-top: 1px solid var(--border-soft);
+  font-size: 0.875em;
+  color: var(--text-2);
+}
+
+.crepe-root .milkdown dl[data-type='footnote_definition'] dt {
+  float: left;
+  margin-right: 0.45em;
+  color: var(--brand-500);
+  font-weight: 600;
+}
+
+.crepe-root .milkdown dl[data-type='footnote_definition'] dd {
+  margin: 0;
+}
+
+.crepe-root .milkdown .preview-panel .preview {
+  overflow-x: auto;
+}
+
+.crepe-root .milkdown .preview-panel .preview svg {
+  max-width: none;
+  height: auto;
+}
+
+/* 箭头上 `|文字|` 的标签底。主题变量已经设成透明，这里再压一层，避免内联样式又铺回实色。 */
+.crepe-root .milkdown .edgeLabel,
+.crepe-root .milkdown .labelBkg {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+.crepe-root .milkdown .xhub-mermaid-error {
+  margin: 0;
+  color: var(--c-red-ink);
+  white-space: pre-wrap;
 }
 
 /* 把手容器默认 margin 0 10px：随边距收窄一并去掉，保证把手完整落在边距内 */

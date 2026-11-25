@@ -1,0 +1,10 @@
+---
+description: 提交前检查 npm 源，禁止把内网地址写进锁文件
+alwaysApply: true
+---
+
+# npm 源
+
+提交前检查 `package-lock.json` 的 `resolved` 地址。允许的公网源只有 `registry.npmjs.org` 和 `registry.npmmirror.com`。
+
+出现其它主机（例如内网 `mirrors.casiosz.cn`）时，先运行 `node scripts/check-npm-registry.mjs --fix`，把地址改成 `https://registry.npmjs.org/`，再跑不带 `--fix` 的同一条命令。检查不通过就不要提交。

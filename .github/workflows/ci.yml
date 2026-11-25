@@ -28,6 +28,9 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
+      - name: Reject intranet npm registries
+        run: node scripts/check-npm-registry.mjs
+
       - name: Install frontend dependencies
         run: npm ci
 

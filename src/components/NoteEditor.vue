@@ -4117,6 +4117,15 @@ html[data-wallpaper-clear='1'] .crepe-root .milkdown {
   color: var(--brand-500);
   font-size: 0.75em;
   margin: 0 0.1em;
+}
+
+.crepe-root .milkdown sup.xhub-fn-ref .xhub-fn-jump {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
   cursor: pointer;
 }
 
